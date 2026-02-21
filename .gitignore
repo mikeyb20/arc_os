@@ -1,0 +1,59 @@
+# Build artifacts
+build/
+*.o
+*.d
+*.elf
+*.bin
+*.iso
+*.img
+*.hdd
+
+# Kernel binary
+kernel.elf
+arc_os.iso
+
+# Object files and libraries
+*.a
+*.so
+*.ko
+
+# Preprocessor output
+*.i
+*.ii
+*.s
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+compile_commands.json
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.cache/
+
+# Debug
+*.dSYM/
+core
+core.*
+
+# OS image artifacts
+isodir/
+sysroot/
+initrd.img
+initrd.tar
+
+# Limine (downloaded)
+limine/
+
+# Docker
+.dockerignore
+
+# Misc
+.DS_Store
+*.log
