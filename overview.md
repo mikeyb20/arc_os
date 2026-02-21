@@ -50,13 +50,56 @@ Each horizontal line is an **abstraction boundary**. The key rule: layers only t
 - Plan HAL boundaries from day one so porting is realistic later
 
 ### 0.2 Cross-Compiler & Build System
-- **Leverage**: Use a pre-built LLVM/Clang cross-compiler (easier to set up than GCC cross)
-- **Build system**: CMake with a freestanding toolchain file (scales well, good IDE integration)
-  - Alternative: Meson (cleaner syntax, native cross-compilation support)
-- Linker scripts for kernel binary layout (per-architecture, selected by build config)
-- **Leverage**: Docker or Nix flake for reproducible toolchain — anyone can build with one command
-- Build targets: kernel image, initrd, bootable ISO, QEMU launch script
-- Out-of-tree build support from the start (build/ directory, not polluting source tree)
+
+#### Compiler: GCC Cross-Compiler
+- **Primary**: `x86_64-elf-gcc` cross-compiler targeting freestanding x86_64
+- **Host tests**: System GCC for compiling and running unit tests natively
+- **Compiler flags** (kernel):
+  ```
+  -ffreestanding -nostdlib -nostdinc -mno-red-zone -mcmodel=kernel
+  -fno-pic -fno-pie -fno-stack-protector (initially; add back with canary support)
+  -Wall -Wextra -Werror -std=c11
+  ```
+- Build or install from pre-built cross-compiler (see Phase 0 setup)
+
+#### Assembler: NASM
+- All x86_64 assembly stubs written in NASM syntax (Intel syntax, not AT&T)
+- Used for: boot entry stub, ISR stubs, context switch, syscall entry/exit
+
+#### Build System: CMake with Freestanding Toolchain
+- Custom toolchain file (`toolchain-x86_64.cmake`) specifying:
+  ```cmake
+  set(CMAKE_SYSTEM_NAME Generic)
+  set(CMAKE_SYSTEM_PROCESSOR x86_64)
+  set(CMAKE_C_COMPILER x86_64-elf-gcc)
+  set(CMAKE_ASM_NASM_COMPILER nasm)
+  set(CMAKE_C_FLAGS "-ffreestanding -nostdlib -mno-red-zone -mcmodel=kernel")
+  set(CMAKE_EXE_LINKER_FLAGS "-nostdlib -T ${CMAKE_SOURCE_DIR}/kernel/arch/x86_64/linker.ld")
+  ```
+- Build targets: `kernel.elf`, `arc_os.iso`, `run` (QEMU launch), `test` (host tests)
+- Out-of-tree build: all artifacts go in `build/`, source tree stays clean
+- `compile_commands.json` generation for IDE integration
+
+#### Linker Script
+- Per-architecture linker scripts in `kernel/arch/<arch>/linker.ld`
+- Defines kernel memory layout: `.text`, `.rodata`, `.data`, `.bss` sections
+- Sets kernel entry point and virtual base address (higher-half at `0xFFFFFFFF80000000`)
+
+#### Reproducible Environment
+- Docker container or install script with all dependencies pinned
+- Anyone can build with one command: `docker run --rm -v $(pwd):/src archos-builder cmake --build build`
+- Alternatively: `tools/setup.sh` script that installs all dependencies on Ubuntu/Debian
+
+#### Bootable Image Creation
+- **xorriso** for creating ISO images with Limine bootloader
+- Limine's `limine-deploy` tool for writing bootloader to ISO
+- ISO layout: Limine config, kernel ELF, optional initrd
+
+#### Missing Tools to Install
+```bash
+sudo apt-get install nasm qemu-system-x86 xorriso grub-pc-bin mtools
+```
+- Cross-compiler: build `x86_64-elf-gcc` from source or install pre-built (see docs/cross-compiler.md)
 
 ### 0.3 Project Structure for Scale
 ```
@@ -93,19 +136,115 @@ myos/
 ```
 
 ### 0.4 Development Environment & Debugging
-- **Leverage**: QEMU with `-s -S` flags for GDB remote debugging
-- **Leverage**: QEMU `-serial stdio` for kernel log output (your most important debug tool)
-- **Leverage**: QEMU `-monitor` for inspecting registers, memory, page tables at runtime
-- Custom kernel logging framework (printk equivalent) with severity levels and subsystem tags
-- QEMU test runner script: build → launch → check serial output → pass/fail
-- **Leverage**: GitHub Actions or similar CI for automated build + boot tests on every commit
-- Host-side unit testing with a framework like Google Test (test kernel data structures and algorithms natively on the host, no boot required)
+
+#### Emulator: QEMU
+- Primary emulator: `qemu-system-x86_64`
+- Standard launch flags:
+  ```bash
+  qemu-system-x86_64 \
+    -cdrom arc_os.iso \
+    -serial stdio \
+    -m 256M \
+    -no-reboot \
+    -no-shutdown \
+    -d int,cpu_reset \
+    -D qemu.log
+  ```
+- Debug launch (GDB attach):
+  ```bash
+  qemu-system-x86_64 \
+    -cdrom arc_os.iso \
+    -serial stdio \
+    -m 256M \
+    -no-reboot \
+    -no-shutdown \
+    -s -S  # -s = GDB on port 1234, -S = pause at start
+  ```
+- QEMU monitor (`-monitor telnet:localhost:4444,server,nowait`) for inspecting registers, memory, page tables at runtime
+
+#### Debugger: GDB
+- Connect to QEMU: `target remote localhost:1234`
+- Load kernel symbols: `symbol-file build/kernel.elf`
+- Useful commands: `info registers`, `x/16x $rsp` (stack), `monitor info mem` (page tables via QEMU monitor)
+- `.gdbinit` file in project root with standard setup commands
+
+#### Serial Output (Primary Debug Channel)
+- `-serial stdio` pipes kernel serial output to terminal
+- Custom kernel logging framework (`klog` / printk equivalent):
+  - Severity levels: `KLOG_DEBUG`, `KLOG_INFO`, `KLOG_WARN`, `KLOG_ERROR`, `KLOG_PANIC`
+  - Subsystem tags: `[MM]`, `[SCHED]`, `[VFS]`, `[HAL]`, `[DRIVER]`
+  - Format: `[SUBSYS] LEVEL: message`
+- Serial is always available — even when framebuffer code is broken
+
+#### CI: GitHub Actions
+- Workflow on every push and PR:
+  1. Build cross-compiler (cached)
+  2. Build kernel
+  3. Boot in QEMU with timeout
+  4. Check serial output for expected strings / absence of panics
+  5. Run host-side unit tests
+- Badge in README showing build status
+
+#### Host-Side Unit Testing
+- Test kernel algorithms (allocators, data structures, schedulers) natively on the host
+- Use a lightweight C test framework (Unity, or custom minimal harness)
+- Compile with system GCC, run without booting — much faster iteration
+- Test files in `tests/` directory, mirroring kernel source structure
 
 ### 0.5 Documentation & Architecture Decision Records
 - Maintain ADRs (Architecture Decision Records) for every major choice
 - Internal API documentation for each subsystem boundary
 - Reference material index: Intel SDM, AMD APM, ACPI spec, OSDev Wiki, relevant RFCs
 - Design docs before implementation for each phase (we'll build these together)
+
+### 0.6 Development Workflow
+
+The day-to-day development loop for kernel work:
+
+#### Edit → Build → Boot → Debug Cycle
+1. **Edit** code in `kernel/` (or tests in `tests/`)
+2. **Build** with CMake: `cmake --build build`
+3. **Boot** in QEMU: `./tools/run.sh` (wraps QEMU launch with standard flags)
+4. **Check serial output** — look for kernel log messages, panics, expected behavior
+5. **Debug with GDB** if something goes wrong — attach to QEMU, set breakpoints, inspect state
+
+#### QEMU Launch Script (`tools/run.sh`)
+```bash
+#!/bin/bash
+set -e
+cmake --build build
+qemu-system-x86_64 \
+  -cdrom build/arc_os.iso \
+  -serial stdio \
+  -m 256M \
+  -no-reboot \
+  -no-shutdown \
+  "$@"  # Pass extra flags (e.g., -s -S for GDB)
+```
+
+#### Debug Session Workflow
+```bash
+# Terminal 1: Boot QEMU paused
+./tools/run.sh -s -S
+
+# Terminal 2: Attach GDB
+gdb build/kernel.elf -ex "target remote :1234" -ex "break kmain" -ex "continue"
+```
+
+#### Serial Output as Primary Debug Channel
+- All kernel subsystems log to serial with subsystem tags
+- Panic handler prints register dump, stack trace, and panic message to serial
+- Automated tests parse serial output for pass/fail markers
+
+#### Snapshot/Checkpoint Strategy
+- QEMU savevm/loadvm for saving VM state at key points (after boot, after MM init, etc.)
+- Avoids re-booting from scratch when debugging later subsystems
+- Particularly useful for debugging user-space issues (save state right before exec)
+
+#### Testing Workflow
+- **Quick check**: `cmake --build build && ./tools/run.sh` — visual serial output check
+- **Unit tests**: `cmake --build build --target test` — host-side tests, no boot required
+- **Automated boot test**: `./tools/test-boot.sh` — boot QEMU, wait for expected serial output, timeout → fail
 
 ---
 
@@ -564,12 +703,14 @@ myos/
 
 ---
 
-## Existing Tools & Libraries Quick Reference
+## Tooling Strategy: Leverage vs Build
 
-This table summarizes what you can leverage at each phase and what you'd build when replacing it:
+The core strategy: leverage existing tools behind clean abstraction boundaries, then replace with custom implementations when the existing tool becomes a bottleneck or learning is the goal.
 
-| Phase | Leverage (Start With) | Build Your Own (Replace Later) |
-|-------|----------------------|-------------------------------|
+### Quick Reference
+
+| Component | Leverage (Start With) | Build Your Own (Replace Later) |
+|-----------|----------------------|-------------------------------|
 | Boot | Limine bootloader | Custom UEFI bootloader |
 | ACPI | uACPI or LAI | Custom ACPI parser |
 | Storage | VirtIO-blk | AHCI, NVMe drivers |
@@ -579,7 +720,65 @@ This table summarizes what you can leverage at each phase and what you'd build w
 | Shell | dash (port) | Custom shell |
 | Utilities | BusyBox (port) | Custom coreutils |
 | Windowing | TinyWL / custom | Full compositor |
-| Testing | Google Test, syzkaller | Custom test harness |
+| Testing | Unity / custom harness | Expanded test framework |
+
+### Detailed Leverage Strategy Per Component
+
+#### Bootloader: Limine → Custom UEFI Bootloader
+- **Initial tool**: Limine bootloader
+- **Why chosen**: Modern protocol, provides everything the kernel needs (memory map, framebuffer, ACPI RSDP, SMP info, kernel modules). Actively maintained, great documentation.
+- **Abstraction boundary**: Kernel consumes a `BootInfo` struct. The kernel never knows or cares which bootloader populated it.
+- **When to replace**: When you want to learn UEFI programming, need custom boot behavior, or want to remove the external dependency.
+- **Replacement complexity**: Medium-High. Writing a UEFI application that loads an ELF, sets up page tables, and jumps to the kernel. ~2-4 weeks of focused work.
+
+#### ACPI: uACPI/LAI → Custom Parser
+- **Initial tool**: uACPI (lightweight ACPI implementation for hobby OSes)
+- **Why chosen**: ACPI is enormously complex (the spec is 1000+ pages). A library gives you interrupt routing (MADT), power management (FADT), and device discovery immediately.
+- **Abstraction boundary**: Kernel calls `acpi_find_table(signature)` and gets parsed table pointers. Driver code reads specific table formats.
+- **When to replace**: Likely never for the full spec. May write custom parsers for specific simple tables (MADT, HPET) to reduce dependency.
+- **Replacement complexity**: High for full ACPI. Low-Medium for individual table parsers.
+
+#### Storage: VirtIO-blk → AHCI/NVMe
+- **Initial tool**: VirtIO block device driver
+- **Why chosen**: Simplest block device interface. QEMU-native, well-documented virtqueue model. Gets filesystem development unblocked immediately.
+- **Abstraction boundary**: Block device layer: `block_read(dev, lba, count, buf)`, `block_write(dev, lba, count, buf)`. Filesystem code never touches hardware.
+- **When to replace**: When targeting real hardware. AHCI (SATA) for broad compatibility, NVMe for modern drives.
+- **Replacement complexity**: Medium (AHCI), Medium-High (NVMe). Each is ~1-2 weeks.
+
+#### Network: VirtIO-net → Real NIC Drivers
+- **Initial tool**: VirtIO network device driver
+- **Why chosen**: Same virtqueue model as VirtIO-blk. Gets networking functional in QEMU without dealing with real hardware complexity.
+- **Abstraction boundary**: NIC interface: `nic_send(packet, len)`, `nic_set_receive_callback(fn)`. Network stack never touches hardware.
+- **When to replace**: When targeting real hardware. Intel e1000/e1000e is the standard first real NIC driver (ubiquitous, great docs).
+- **Replacement complexity**: Medium. e1000 is well-documented and a common hobby OS target.
+
+#### Network Stack: lwIP → Custom TCP/IP
+- **Initial tool**: Optionally port lwIP (Lightweight IP stack)
+- **Why chosen**: Full TCP/IP stack designed for embedded/small systems. Gives TCP, UDP, DHCP, DNS, ICMP immediately.
+- **Abstraction boundary**: Socket layer API. Application code calls `socket()`, `bind()`, `connect()`, `send()`, `recv()`.
+- **When to replace**: When you want full control, better performance, or the learning experience. TCP is the big challenge.
+- **Replacement complexity**: High. TCP alone (state machine, retransmission, congestion control) is a multi-week project.
+
+#### libc: musl → Custom libc
+- **Initial tool**: Port musl libc
+- **Why chosen**: Lightweight, clean, POSIX-compliant. Gives printf, malloc, string functions, pthreads stubs. Drives syscall interface design (implement what musl expects).
+- **Abstraction boundary**: User programs link against libc. Syscall numbers/conventions can change without breaking programs.
+- **When to replace**: When you want a non-POSIX API, tighter integration, or the learning experience.
+- **Replacement complexity**: Very High for full libc. Can be done incrementally (replace individual functions).
+
+#### Shell: dash → Custom Shell
+- **Initial tool**: Port dash (minimal POSIX shell, ~25k lines)
+- **Why chosen**: Fully functional shell with minimal footprint. Great validation of syscall correctness (requires fork, exec, wait, pipe, dup2, signals).
+- **Abstraction boundary**: Shell is a user-space program. Talks to kernel only through syscalls/libc.
+- **When to replace**: When you want custom features or the learning experience. Can develop in parallel.
+- **Replacement complexity**: Medium for basic shell. High for full job control and scripting.
+
+#### Utilities: BusyBox → Custom Coreutils
+- **Initial tool**: Port BusyBox
+- **Why chosen**: Single binary providing 300+ Unix utilities. Massively validates libc and syscall layer.
+- **Abstraction boundary**: User-space programs. Pure libc/syscall consumers.
+- **When to replace**: Selectively, for utilities you want to deeply understand or customize.
+- **Replacement complexity**: Low per individual utility, High for the full set.
 
 ---
 
@@ -606,14 +805,17 @@ Each step has a concrete milestone — a thing you can boot and demonstrate.
 
 ---
 
-## Key Design Decisions to Make Early
+## Key Design Decisions
 
-These ripple through the entire project. We should discuss each one in depth:
+These decisions are locked in. They ripple through the entire project and inform every implementation choice.
 
-1. **Monolithic vs Microkernel vs Hybrid** — How much runs in kernel space? (Monolithic is simpler and what I'd recommend to start; microkernel is cleaner but harder to get performing well)
-2. **Target Architecture** — x86_64 recommended for primary, RISC-V as validation port
-3. **POSIX Compliance Level** — Following POSIX closely makes porting software vastly easier (musl, BusyBox, dash all assume POSIX). Recommended: POSIX-compatible with room for extensions
-4. **Language** — C++ gives you RAII, templates, namespaces over C; Rust gives you safety but less OS dev ecosystem. C is the most battle-tested for kernels. Recommend C++ or C with your experience
-5. **Kernel Personality** — Unix-like recommended (enables reuse of enormous ecosystem)
-6. **Licensing** — MIT/BSD for maximum flexibility, GPL if you want copyleft
-7. **Primary Use Case** — Shapes every priority decision downstream
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| **Kernel type** | Monolithic | Simpler architecture, better performance, can evolve to hybrid later if needed. All core subsystems (MM, scheduler, VFS, drivers) run in kernel space. |
+| **Architecture** | x86_64 primary, RISC-V future port | Best documentation, QEMU support, largest OS dev community. RISC-V port validates HAL design. |
+| **Language** | C (C11/C17) | Most battle-tested for kernel development. Largest OS dev ecosystem, direct hardware control, no runtime overhead. NASM for assembly stubs. |
+| **POSIX compliance** | POSIX-compatible | Enables porting musl libc, BusyBox, dash — massive leverage for user-space. Room for custom extensions beyond POSIX. |
+| **Personality** | Unix-like | Reuse the enormous existing Unix ecosystem. Everything-is-a-file philosophy. Standard process model (fork/exec). |
+| **License** | MIT | Maximum flexibility. No copyleft restrictions on derivative works. |
+| **Bootloader** | Limine | Modern, clean boot protocol. Provides memory map, framebuffer, ACPI RSDP, SMP info. Easy to use, well-maintained. |
+| **Build system** | CMake | Scales well, good IDE integration, native cross-compilation support via toolchain files. |
