@@ -40,7 +40,7 @@ Create directory structure and all build infrastructure.
 
 **Milestone**: `cmake -B build -DCMAKE_TOOLCHAIN_FILE=toolchain-x86_64.cmake` configures without error.
 
-### Chunk 0.4 — Obtain Limine & Freestanding Headers — [ ] NOT STARTED
+### Chunk 0.4 — Obtain Limine & Freestanding Headers — [x] DONE
 - Clone Limine v8.x binary branch, build the `limine` CLI tool
 - Clone `freestnd-c-hdrs-0bsd` for `<stdint.h>`, `<stddef.h>`, `<stdbool.h>`, `<stdarg.h>`
 

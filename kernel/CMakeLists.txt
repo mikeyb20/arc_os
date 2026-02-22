@@ -26,6 +26,7 @@ if(KERNEL_SOURCES)
     # Include the kernel root so headers use paths like "mm/pmm.h"
     target_include_directories(kernel.elf PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
     )
 
     # Linker flags — freestanding, use our linker script
