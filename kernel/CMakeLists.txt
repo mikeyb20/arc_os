@@ -2,14 +2,17 @@
 
 # --- Assembly sources (NASM) ---
 set(KERNEL_ASM_SOURCES
-    # arch/x86_64/entry.asm  (Chunk 1.1)
+    arch/x86_64/entry.asm
 )
 
 # --- C sources ---
 set(KERNEL_C_SOURCES
-    # boot/boot_info.c       (Chunk 1.1)
-    # arch/x86_64/hal.c      (Chunk 1.2)
-    # lib/string.c           (Chunk 1.x)
+    boot/limine_requests.c
+    boot/limine.c
+    boot/kmain.c
+    lib/mem.c
+    lib/kprintf.c
+    arch/x86_64/serial.c
 )
 
 set(KERNEL_SOURCES ${KERNEL_ASM_SOURCES} ${KERNEL_C_SOURCES})

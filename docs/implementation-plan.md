@@ -50,7 +50,7 @@ Create directory structure and all build infrastructure.
 
 ## Phase 1: Booting & Early Kernel
 
-### Chunk 1.1 — NASM Entry Stub + Minimal kmain + First Boot (~180 lines, 4 files) — [ ] NOT STARTED
+### Chunk 1.1 — NASM Entry Stub + Minimal kmain + First Boot (~180 lines, 5 files) — [x] DONE
 
 **Files**:
 - `kernel/arch/x86_64/entry.asm` — `_start`: zero BSS, call kmain, halt loop. Limine provides stack + long mode.
@@ -60,7 +60,7 @@ Create directory structure and all build infrastructure.
 
 **Milestone**: `qemu-system-x86_64 -cdrom build/arc_os.iso` boots without triple fault. CPU halts cleanly.
 
-### Chunk 1.2 — Serial Port Output (~130 lines, 3 files) — [ ] NOT STARTED
+### Chunk 1.2 — Serial Port Output (~130 lines, 3 files) — [x] DONE
 
 **Files**:
 - `kernel/arch/x86_64/io.h` — Inline `inb`/`outb`/`inw`/`outw`/`io_wait`
@@ -68,7 +68,7 @@ Create directory structure and all build infrastructure.
 
 **Milestone**: QEMU serial shows `[BOOT] arc_os kernel booting...` and `[BOOT] Hello from kmain!`
 
-### Chunk 1.3 — BootInfo Abstraction + kprintf (~300 lines, 4 files) — [ ] NOT STARTED
+### Chunk 1.3 — BootInfo Abstraction + kprintf (~300 lines, 4 files) — [x] DONE
 
 **Files**:
 - `kernel/boot/bootinfo.h` — Bootloader-agnostic `BootInfo`, `MemoryMapEntry`, `Framebuffer` structs
