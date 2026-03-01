@@ -1,44 +1,10 @@
 /* arc_os — Host-side tests for kernel/lib/mem.c */
 
-#include <stdio.h>
-#include <string.h>
-
-/* Pull in the test macros from test_main.c via shared header convention.
- * We re-declare them here since this is a minimal framework. */
-#define ASSERT_TRUE(expr) do { \
-    if (!(expr)) { \
-        printf("  FAIL: %s:%d: %s\n", __FILE__, __LINE__, #expr); \
-        return 1; \
-    } \
-} while (0)
-
-#define ASSERT_EQ(a, b) do { \
-    long long _a = (long long)(a); \
-    long long _b = (long long)(b); \
-    if (_a != _b) { \
-        printf("  FAIL: %s:%d: %s == %s (got %lld vs %lld)\n", \
-               __FILE__, __LINE__, #a, #b, _a, _b); \
-        return 1; \
-    } \
-} while (0)
-
-#define ASSERT_MEM_EQ(a, b, n) do { \
-    if (memcmp((a), (b), (n)) != 0) { \
-        printf("  FAIL: %s:%d: memcmp(%s, %s, %d) != 0\n", \
-               __FILE__, __LINE__, #a, #b, (int)(n)); \
-        return 1; \
-    } \
-} while (0)
+#include "test_framework.h"
 
 /* We include the kernel mem.c directly so we test the actual implementation.
  * The kernel's mem.h uses <stddef.h> which works on the host. */
 #include "../kernel/lib/mem.c"
-
-typedef int (*test_fn)(void);
-typedef struct {
-    const char *name;
-    test_fn fn;
-} TestCase;
 
 /* --- memcpy tests --- */
 
