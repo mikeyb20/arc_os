@@ -10,6 +10,7 @@ set(KERNEL_ASM_SOURCES
     arch/x86_64/entry.asm
     arch/x86_64/gdt_flush.asm
     arch/x86_64/isr_stubs.asm
+    arch/x86_64/context_switch.asm
 )
 
 # --- C sources ---
@@ -28,6 +29,9 @@ set(KERNEL_C_SOURCES
     mm/pmm.c
     mm/vmm.c
     mm/kmalloc.c
+    proc/thread.c
+    proc/sched.c
+    proc/process.c
 )
 
 set(KERNEL_SOURCES ${KERNEL_ASM_SOURCES} ${KERNEL_C_SOURCES})

@@ -87,13 +87,13 @@ void isr_dispatch(InterruptFrame *frame) {
             return;
         }
 
+        /* Send EOI before handler — handler may context_switch and never return */
+        pic_send_eoi(irq);
+
         /* Call registered handler if present */
         if (handlers[vector] != NULL) {
             handlers[vector](frame);
         }
-
-        /* Send EOI */
-        pic_send_eoi(irq);
         return;
     }
 

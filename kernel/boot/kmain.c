@@ -7,6 +7,9 @@
 #include "mm/vmm.h"
 #include "mm/kmalloc.h"
 #include "boot/bootinfo.h"
+#include "proc/thread.h"
+#include "proc/sched.h"
+#include "proc/process.h"
 #include "lib/kprintf.h"
 #include "lib/mem.h"
 #include <stddef.h>
@@ -23,6 +26,24 @@ static const char *memmap_type_name(uint32_t type) {
     case MEMMAP_KERNEL_AND_MODULES: return "Kernel/Modules";
     case MEMMAP_FRAMEBUFFER:        return "Framebuffer";
     default:                        return "Unknown";
+    }
+}
+
+static void thread_a_entry(void *arg) {
+    (void)arg;
+    for (uint32_t i = 0; ; i++) {
+        kprintf("[THREAD A] running (tick=%lu)\n", pit_get_ticks());
+        /* Busy loop — will be preempted by timer */
+        for (volatile int j = 0; j < 500000; j++) {}
+    }
+}
+
+static void thread_b_entry(void *arg) {
+    (void)arg;
+    for (uint32_t i = 0; ; i++) {
+        kprintf("[THREAD B] running (tick=%lu)\n", pit_get_ticks());
+        /* Busy loop — will be preempted by timer */
+        for (volatile int j = 0; j < 500000; j++) {}
     }
 }
 
@@ -114,16 +135,34 @@ void kmain(void) {
     kprintf("[BOOT] Heap self-test passed (1000 alloc/free cycles)\n");
     kmalloc_dump_stats();
 
+    /* Initialize threading — converts boot context to thread 0 */
+    thread_init();
+
+    /* Initialize scheduler */
+    sched_init();
+
+    /* Initialize process management */
+    proc_init();
+
+    /* Create test processes */
+    Process *pa = proc_create(thread_a_entry, NULL);
+    Process *pb = proc_create(thread_b_entry, NULL);
+    if (pa == NULL || pb == NULL) {
+        kprintf("[BOOT] FATAL: failed to create test processes\n");
+        for (;;) __asm__ volatile ("cli; hlt");
+    }
+
+    /* Boot thread becomes the idle thread */
+    sched_set_idle_thread(thread_current());
+
     /* Initialize PIT timer at 100 Hz */
     pit_init(100);
 
-    /* Enable interrupts */
-    kprintf("[BOOT] Enabling interrupts...\n");
+    /* Enable interrupts — PIT will start preempting */
+    kprintf("[BOOT] Preemptive multitasking active.\n");
     __asm__ volatile ("sti");
 
-    kprintf("[BOOT] arc_os Phase 1+2 complete. Kernel ready.\n");
-
-    /* Halt loop — HLT wakes on interrupt, then halts again */
+    /* Idle loop — HLT wakes on interrupt, then halts again */
     for (;;) {
         __asm__ volatile ("hlt");
     }

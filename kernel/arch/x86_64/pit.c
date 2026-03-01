@@ -2,10 +2,14 @@
 #include "arch/x86_64/pic.h"
 #include "arch/x86_64/isr.h"
 #include "arch/x86_64/io.h"
+#include "proc/sched.h"
 #include "lib/kprintf.h"
 
 static volatile uint64_t pit_ticks = 0;
 static uint32_t pit_freq = 0;
+
+/* Schedule every SCHED_QUANTUM ticks (100ms at 100 Hz) */
+#define SCHED_QUANTUM 10
 
 static void pit_handler(InterruptFrame *frame) {
     (void)frame;
@@ -15,6 +19,11 @@ static void pit_handler(InterruptFrame *frame) {
     if (pit_ticks % pit_freq == 0) {
         uint64_t seconds = pit_ticks / pit_freq;
         kprintf("[TIMER] %lu seconds\n", seconds);
+    }
+
+    /* Preemptive scheduling — interrupts already disabled by interrupt gate */
+    if (pit_ticks % SCHED_QUANTUM == 0) {
+        sched_schedule();
     }
 }
 
