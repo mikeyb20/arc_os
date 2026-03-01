@@ -18,6 +18,12 @@ extern TestCase kmalloc_tests[];
 extern int kmalloc_test_count;
 extern TestCase isr_tests[];
 extern int isr_test_count;
+extern TestCase thread_tests[];
+extern int thread_test_count;
+extern TestCase sched_tests[];
+extern int sched_test_count;
+extern TestCase process_tests[];
+extern int process_test_count;
 
 static void run_suite(const char *suite_name, TestCase *tests, int count) {
     printf("[%s] Running %d tests\n", suite_name, count);
@@ -46,6 +52,9 @@ int main(int argc, char **argv) {
         { "kprintf", kprintf_tests, &kprintf_test_count },
         { "kmalloc", kmalloc_tests, &kmalloc_test_count },
         { "isr",     isr_tests,     &isr_test_count },
+        { "thread",  thread_tests,  &thread_test_count },
+        { "sched",   sched_tests,   &sched_test_count },
+        { "process", process_tests, &process_test_count },
     };
     int suite_count = (int)(sizeof(suites) / sizeof(suites[0]));
 
