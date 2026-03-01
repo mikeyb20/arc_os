@@ -6,6 +6,12 @@ set(CMAKE_ASM_NASM_OBJECT_FORMAT elf64)
 
 add_subdirectory(kernel)
 
+# Host-side tests — only when building natively (not cross-compiling)
+if(NOT CMAKE_CROSSCOMPILING)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
+
 # --- Convenience targets ---
 
 add_custom_target(iso

@@ -1,8 +1,15 @@
 # arc_os kernel build configuration
 
+# Kernel only builds with the cross-compiler
+if(NOT CMAKE_CROSSCOMPILING)
+    return()
+endif()
+
 # --- Assembly sources (NASM) ---
 set(KERNEL_ASM_SOURCES
     arch/x86_64/entry.asm
+    arch/x86_64/gdt_flush.asm
+    arch/x86_64/isr_stubs.asm
 )
 
 # --- C sources ---
@@ -13,6 +20,14 @@ set(KERNEL_C_SOURCES
     lib/mem.c
     lib/kprintf.c
     arch/x86_64/serial.c
+    arch/x86_64/gdt.c
+    arch/x86_64/idt.c
+    arch/x86_64/isr.c
+    arch/x86_64/pic.c
+    arch/x86_64/pit.c
+    mm/pmm.c
+    mm/vmm.c
+    mm/kmalloc.c
 )
 
 set(KERNEL_SOURCES ${KERNEL_ASM_SOURCES} ${KERNEL_C_SOURCES})
