@@ -24,4 +24,7 @@ uint64_t vmm_get_phys(uint64_t virt);
 /* Get the kernel PML4 physical address. */
 uint64_t vmm_get_kernel_pml4(void);
 
+/* Get the HHDM base offset (phys + offset = virt). */
+uint64_t vmm_get_hhdm_offset(void);
+
 #endif /* ARCHOS_MM_VMM_H */

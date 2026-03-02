@@ -10,6 +10,8 @@ add_executable(test_runner
     test_thread.c
     test_sched.c
     test_process.c
+    test_pci.c
+    test_virtio.c
 )
 
 # Include kernel source root for "lib/mem.h" etc, but NOT kernel/include
@@ -33,3 +35,5 @@ add_test(NAME test_isr     COMMAND test_runner --suite isr)
 add_test(NAME test_thread  COMMAND test_runner --suite thread)
 add_test(NAME test_sched   COMMAND test_runner --suite sched)
 add_test(NAME test_process COMMAND test_runner --suite process)
+add_test(NAME test_pci     COMMAND test_runner --suite pci)
+add_test(NAME test_virtio  COMMAND test_runner --suite virtio)

@@ -32,6 +32,9 @@ set(KERNEL_C_SOURCES
     proc/thread.c
     proc/sched.c
     proc/process.c
+    drivers/pci.c
+    drivers/virtio.c
+    drivers/virtio_blk.c
 )
 
 set(KERNEL_SOURCES ${KERNEL_ASM_SOURCES} ${KERNEL_C_SOURCES})

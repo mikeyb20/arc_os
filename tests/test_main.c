@@ -24,6 +24,10 @@ extern TestCase sched_tests[];
 extern int sched_test_count;
 extern TestCase process_tests[];
 extern int process_test_count;
+extern TestCase pci_tests[];
+extern int pci_test_count;
+extern TestCase virtio_tests[];
+extern int virtio_test_count;
 
 static void run_suite(const char *suite_name, TestCase *tests, int count) {
     printf("[%s] Running %d tests\n", suite_name, count);
@@ -55,6 +59,8 @@ int main(int argc, char **argv) {
         { "thread",  thread_tests,  &thread_test_count },
         { "sched",   sched_tests,   &sched_test_count },
         { "process", process_tests, &process_test_count },
+        { "pci",     pci_tests,     &pci_test_count },
+        { "virtio",  virtio_tests,  &virtio_test_count },
     };
     int suite_count = (int)(sizeof(suites) / sizeof(suites[0]));
 

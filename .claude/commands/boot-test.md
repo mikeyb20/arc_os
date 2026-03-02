@@ -10,6 +10,15 @@ Build the kernel, boot QEMU headless with a timeout, capture serial output, and 
    - If either is missing, report and stop
 
 3. **Boot QEMU headless with timeout**:
+   First, create a test disk if it doesn't exist:
+   ```bash
+   TEST_DISK="build/test_disk.img"
+   if [ ! -f "$TEST_DISK" ]; then
+     dd if=/dev/zero of="$TEST_DISK" bs=1M count=32 2>/dev/null
+     printf '\x55\xAA' | dd of="$TEST_DISK" bs=1 seek=510 conv=notrunc 2>/dev/null
+   fi
+   ```
+   Then boot:
    ```bash
    timeout 10 qemu-system-x86_64 \
      -cdrom build/arc_os.iso \
@@ -17,7 +26,10 @@ Build the kernel, boot QEMU headless with a timeout, capture serial output, and 
      -display none \
      -m 256M \
      -no-reboot \
-     -no-shutdown 2>&1
+     -no-shutdown \
+     -boot d \
+     -drive file=build/test_disk.img,format=raw,if=none,id=disk0 \
+     -device virtio-blk-pci,drive=disk0 2>&1
    ```
    Capture all output (stdout + stderr) into a variable.
 
@@ -50,7 +62,11 @@ Build the kernel, boot QEMU headless with a timeout, capture serial output, and 
    | `kernel/mm/pmm.c` | `PMM` or `Physical` |
    | `kernel/mm/vmm.c` | `VMM` or `Virtual` or `Paging` |
    | `kernel/mm/kmalloc.c` | `kmalloc` or `Heap` |
-   | `kernel/proc/scheduler.c` | `Scheduler` or `Sched` |
+   | `kernel/proc/sched.c` | `Scheduler` or `Sched` |
+   | `kernel/proc/thread.c` | `Threading` or `Thread` |
+   | `kernel/proc/process.c` | `Process` or `PROC` |
+   | `kernel/drivers/pci.c` | `PCI` |
+   | `kernel/drivers/virtio_blk.c` | `VIRTIO-BLK` |
    | `kernel/fs/vfs.c` | `VFS` |
 
    For each: PASS if substring found, FAIL if source exists but message missing, SKIP if source doesn't exist.

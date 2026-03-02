@@ -103,6 +103,10 @@ uint64_t vmm_get_kernel_pml4(void) {
     return kernel_pml4_phys;
 }
 
+uint64_t vmm_get_hhdm_offset(void) {
+    return hhdm_offset;
+}
+
 /* Map a range using 2MB huge pages where possible, 4K pages otherwise */
 static void map_range_2mb(uint64_t virt_start, uint64_t phys_start,
                           uint64_t size, uint32_t flags) {

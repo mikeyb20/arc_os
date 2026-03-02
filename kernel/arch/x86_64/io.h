@@ -27,6 +27,18 @@ static inline uint16_t inw(uint16_t port) {
     return ret;
 }
 
+/* Write a 32-bit doubleword to an I/O port. */
+static inline void outl(uint16_t port, uint32_t value) {
+    __asm__ volatile ("outl %0, %1" : : "a"(value), "Nd"(port));
+}
+
+/* Read a 32-bit doubleword from an I/O port. */
+static inline uint32_t inl(uint16_t port) {
+    uint32_t ret;
+    __asm__ volatile ("inl %1, %0" : "=a"(ret) : "Nd"(port));
+    return ret;
+}
+
 /* Small I/O delay — writes to port 0x80 (POST code port). */
 static inline void io_wait(void) {
     outb(0x80, 0);

@@ -10,6 +10,8 @@
 #include "proc/thread.h"
 #include "proc/sched.h"
 #include "proc/process.h"
+#include "drivers/pci.h"
+#include "drivers/virtio_blk.h"
 #include "lib/kprintf.h"
 #include "lib/mem.h"
 #include <stddef.h>
@@ -134,6 +136,28 @@ void kmain(void) {
     }
     kprintf("[BOOT] Heap self-test passed (1000 alloc/free cycles)\n");
     kmalloc_dump_stats();
+
+    /* Phase 4: PCI bus enumeration */
+    pci_init();
+
+    /* Phase 4: VirtIO block device */
+    if (virtio_blk_init() == 0) {
+        uint8_t sector_buf[512];
+        if (virtio_blk_read(0, 1, sector_buf) == 0) {
+            kprintf("[VIRTIO-BLK] Sector 0 read OK. First 16 bytes:\n");
+            kprintf("[VIRTIO-BLK] ");
+            for (int i = 0; i < 16; i++) {
+                kprintf("%x ", sector_buf[i]);
+            }
+            kprintf("\n");
+            /* Check for MBR signature */
+            if (sector_buf[510] == 0x55 && sector_buf[511] == 0xAA) {
+                kprintf("[VIRTIO-BLK] MBR signature detected (0x55AA)\n");
+            }
+        } else {
+            kprintf("[VIRTIO-BLK] Sector 0 read FAILED\n");
+        }
+    }
 
     /* Initialize threading — converts boot context to thread 0 */
     thread_init();
