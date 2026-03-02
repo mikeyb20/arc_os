@@ -388,6 +388,7 @@ gdb build/kernel.elf -ex "target remote :1234" -ex "break kmain" -ex "continue"
 - I/O model: interrupt-driven with optional DMA support
 - **Scalability**: Loadable kernel modules (optional, adds significant complexity)
   - Alternative: compile-time driver selection (simpler, still flexible)
+- **Deferred from Phase 4 review**: Move memory barrier helpers (`mfence`/`lfence` wrappers) from virtio.c into the HAL (arch layer) once a second driver needs them — currently only VirtIO uses them so abstraction is premature
 
 ### 4.2 Bus Enumeration
 - PCI/PCIe enumeration: scan configuration space, build device tree
@@ -412,6 +413,9 @@ gdb build/kernel.elf -ex "target remote :1234" -ex "break kmain" -ex "continue"
 - Available VirtIO devices: block, net, console, GPU, input, filesystem (9p), RNG
 - **Strategy**: Get your OS functional with VirtIO devices in QEMU, then write real hardware drivers as a separate workstream
 - Shared virtqueue ring buffer model — learn it once, apply to all VirtIO devices
+- **Deferred from Phase 4 review**:
+  - Cache negotiated feature bits in `VirtioDevice` struct — not needed until feature-dependent driver logic exists (e.g., VirtIO-net multiqueue)
+  - Replace per-request PMM alloc/free in `virtio_blk_read()` with a pre-allocated DMA buffer pool — current approach is correct but expensive under heavy I/O; optimize when VFS/filesystem layer drives real multi-sector workloads
 
 ### 4.5 Advanced Drivers (future workstreams)
 - USB stack: xHCI host controller → USB device framework → HID, mass storage, etc.
