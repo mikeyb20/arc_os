@@ -12,6 +12,8 @@ add_executable(test_runner
     test_process.c
     test_pci.c
     test_virtio.c
+    test_string.c
+    test_vfs.c
 )
 
 # Include kernel source root for "lib/mem.h" etc, but NOT kernel/include
@@ -37,3 +39,5 @@ add_test(NAME test_sched   COMMAND test_runner --suite sched)
 add_test(NAME test_process COMMAND test_runner --suite process)
 add_test(NAME test_pci     COMMAND test_runner --suite pci)
 add_test(NAME test_virtio  COMMAND test_runner --suite virtio)
+add_test(NAME test_string  COMMAND test_runner --suite string)
+add_test(NAME test_vfs     COMMAND test_runner --suite vfs)

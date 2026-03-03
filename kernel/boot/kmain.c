@@ -14,6 +14,8 @@
 #include "drivers/virtio_blk.h"
 #include "lib/kprintf.h"
 #include "lib/mem.h"
+#include "fs/vfs.h"
+#include "fs/ramfs.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -136,6 +138,37 @@ void kmain(void) {
     }
     kprintf("[BOOT] Heap self-test passed (1000 alloc/free cycles)\n");
     kmalloc_dump_stats();
+
+    /* Phase 6: VFS + ramfs */
+    vfs_init();
+    VfsNode *vfs_root_node = ramfs_init();
+    vfs_set_root(vfs_root_node);
+    kprintf("[VFS] Initialized with ramfs root (inode=%lu)\n", vfs_root_node->inode_num);
+
+    /* Demo: create a file, write, read back */
+    vfs_mkdir("/etc", 0755);
+    VfsFile vfs_demo_file;
+    if (vfs_open("/etc/hostname", O_CREAT | O_RDWR, &vfs_demo_file) == 0) {
+        const char *hostname = "arc_os\n";
+        vfs_write(&vfs_demo_file, hostname, 7);
+        vfs_seek(&vfs_demo_file, 0, SEEK_SET);
+        char hostname_buf[32];
+        int n = vfs_read(&vfs_demo_file, hostname_buf, sizeof(hostname_buf));
+        hostname_buf[n] = '\0';
+        kprintf("[VFS] /etc/hostname: %s", hostname_buf);
+        vfs_close(&vfs_demo_file);
+    }
+
+    /* List root directory */
+    VfsDirEntry vfs_entries[16];
+    int vfs_count = vfs_readdir("/", vfs_entries, 16);
+    kprintf("[VFS] Root has %d entries\n", vfs_count);
+    for (int i = 0; i < vfs_count; i++) {
+        kprintf("[VFS]   %s (inode=%lu, type=%s)\n",
+                vfs_entries[i].name,
+                vfs_entries[i].inode_num,
+                vfs_entries[i].type == VFS_DIRECTORY ? "dir" : "file");
+    }
 
     /* Phase 4: PCI bus enumeration */
     pci_init();

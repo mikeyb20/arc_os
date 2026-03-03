@@ -19,6 +19,7 @@ set(KERNEL_C_SOURCES
     boot/limine.c
     boot/kmain.c
     lib/mem.c
+    lib/string.c
     lib/kprintf.c
     arch/x86_64/serial.c
     arch/x86_64/gdt.c
@@ -35,6 +36,8 @@ set(KERNEL_C_SOURCES
     drivers/pci.c
     drivers/virtio.c
     drivers/virtio_blk.c
+    fs/vfs.c
+    fs/ramfs.c
 )
 
 set(KERNEL_SOURCES ${KERNEL_ASM_SOURCES} ${KERNEL_C_SOURCES})
