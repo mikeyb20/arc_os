@@ -286,6 +286,80 @@ static int test_proc_table_stores_entries(void) {
     return 0;
 }
 
+/* --- Additional process tests --- */
+
+static int test_state_alive_to_zombie(void) {
+    reset_proc_state();
+    proc_init();
+    Process *p = proc_create((thread_entry_t)0xDEAD, NULL);
+    ASSERT_TRUE(p != NULL);
+    ASSERT_EQ(p->state, PROC_ALIVE);
+    p->state = PROC_ZOMBIE;
+    ASSERT_EQ(p->state, PROC_ZOMBIE);
+    return 0;
+}
+
+static int test_state_zombie_to_terminated(void) {
+    reset_proc_state();
+    proc_init();
+    Process *p = proc_create((thread_entry_t)0xDEAD, NULL);
+    ASSERT_TRUE(p != NULL);
+    p->state = PROC_ZOMBIE;
+    p->state = PROC_TERMINATED;
+    ASSERT_EQ(p->state, PROC_TERMINATED);
+    return 0;
+}
+
+static int test_state_values_distinct(void) {
+    ASSERT_NEQ(PROC_ALIVE, PROC_ZOMBIE);
+    ASSERT_NEQ(PROC_ZOMBIE, PROC_TERMINATED);
+    ASSERT_NEQ(PROC_ALIVE, PROC_TERMINATED);
+    return 0;
+}
+
+static int test_max_processes_boundary(void) {
+    reset_proc_state();
+    proc_init();
+    /* Create THREAD_POOL_SIZE - 1 processes (one slot used by boot) */
+    for (int i = 0; i < THREAD_POOL_SIZE - 1; i++) {
+        Process *p = proc_create((thread_entry_t)0xDEAD, NULL);
+        ASSERT_TRUE(p != NULL);
+    }
+    /* Verify proc_table has entries */
+    for (int i = 0; i < THREAD_POOL_SIZE; i++) {
+        ASSERT_TRUE(proc_table[i] != NULL);
+    }
+    return 0;
+}
+
+static int test_parent_null_by_default(void) {
+    reset_proc_state();
+    proc_init();
+    Process *p = proc_create((thread_entry_t)0xDEAD, NULL);
+    ASSERT_TRUE(p != NULL);
+    ASSERT_TRUE(p->parent == NULL);
+    return 0;
+}
+
+static int test_current_after_thread_switch(void) {
+    reset_proc_state();
+    proc_init();
+    Process *p1 = proc_create((thread_entry_t)0xDEAD, NULL);
+    ASSERT_TRUE(p1 != NULL);
+
+    /* Simulate thread switch by changing test_current_thread */
+    test_current_thread = p1->main_thread;
+    Process *cur = proc_current();
+    ASSERT_TRUE(cur == p1);
+    ASSERT_EQ(cur->pid, p1->pid);
+
+    /* Switch back to boot thread */
+    test_current_thread = &boot_thread;
+    cur = proc_current();
+    ASSERT_EQ(cur->pid, 0);
+    return 0;
+}
+
 /* --- Test suite export --- */
 
 TestCase process_tests[] = {
@@ -298,6 +372,12 @@ TestCase process_tests[] = {
     { "current_returns_boot",       test_proc_current_returns_boot },
     { "create_pid_sequence",        test_proc_create_pid_sequence },
     { "table_stores_entries",       test_proc_table_stores_entries },
+    { "state_alive_to_zombie",      test_state_alive_to_zombie },
+    { "state_zombie_to_terminated", test_state_zombie_to_terminated },
+    { "state_values_distinct",      test_state_values_distinct },
+    { "max_processes_boundary",     test_max_processes_boundary },
+    { "parent_null_by_default",     test_parent_null_by_default },
+    { "current_after_thread_switch", test_current_after_thread_switch },
 };
 
 int process_test_count = sizeof(process_tests) / sizeof(process_tests[0]);

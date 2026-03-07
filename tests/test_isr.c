@@ -10,17 +10,17 @@
 /* Stub kprintf */
 static inline void kprintf(const char *fmt, ...) { (void)fmt; }
 
-/* Test-controlled PIC stubs */
+/* Test-controlled PIC stubs (static to avoid linker clash with test_pic.c) */
 static bool test_pic_spurious_result;
 static int test_eoi_called;
 static uint8_t test_eoi_irq;
 
-bool pic_is_spurious(uint8_t irq) {
+static bool pic_is_spurious(uint8_t irq) {
     (void)irq;
     return test_pic_spurious_result;
 }
 
-void pic_send_eoi(uint8_t irq) {
+static void pic_send_eoi(uint8_t irq) {
     test_eoi_called++;
     test_eoi_irq = irq;
 }
@@ -170,6 +170,120 @@ static int test_multiple_handlers(void) {
     return 0;
 }
 
+/* --- Additional ISR tests --- */
+
+/* Second handler for replacement tests */
+static int handler2_called;
+static uint64_t handler2_vector;
+
+static void test_handler2(InterruptFrame *frame) {
+    handler2_called++;
+    handler2_vector = frame->vector;
+}
+
+static int test_handler_replacement(void) {
+    reset_test_state();
+    handler2_called = 0;
+    handler2_vector = 0;
+
+    isr_register_handler(48, test_handler);
+    InterruptFrame f = make_frame(48);
+    isr_dispatch(&f);
+    ASSERT_EQ(handler_called, 1);
+
+    /* Replace with handler2 */
+    handler_called = 0;
+    isr_register_handler(48, test_handler2);
+    isr_dispatch(&f);
+    ASSERT_EQ(handler_called, 0);   /* Original not called */
+    ASSERT_EQ(handler2_called, 1);  /* Replacement called */
+    ASSERT_EQ(handler2_vector, 48);
+    return 0;
+}
+
+static int test_vector_255_boundary(void) {
+    reset_test_state();
+    isr_register_handler(255, test_handler);
+    InterruptFrame f = make_frame(255);
+    isr_dispatch(&f);
+    ASSERT_EQ(handler_called, 1);
+    ASSERT_EQ(handler_vector, 255);
+    return 0;
+}
+
+static int test_vector_0_boundary(void) {
+    reset_test_state();
+    isr_register_handler(0, test_handler);  /* Division Error */
+    InterruptFrame f = make_frame(0);
+    isr_dispatch(&f);
+    ASSERT_EQ(handler_called, 1);
+    ASSERT_EQ(handler_vector, 0);
+    ASSERT_EQ(test_eoi_called, 0);  /* Exception, no EOI */
+    return 0;
+}
+
+static int test_null_handler_default_path(void) {
+    reset_test_state();
+    /* Vector 100: not an IRQ, not an exception (>31), no handler */
+    InterruptFrame f = make_frame(100);
+    isr_dispatch(&f);
+    ASSERT_EQ(handler_called, 0);
+    ASSERT_EQ(test_eoi_called, 0);
+    return 0;
+}
+
+static int test_null_handler_irq_eoi(void) {
+    reset_test_state();
+    /* Vector 35 = IRQ 3, no handler registered */
+    InterruptFrame f = make_frame(35);
+    isr_dispatch(&f);
+    ASSERT_EQ(handler_called, 0);
+    ASSERT_EQ(test_eoi_called, 1);  /* EOI still sent for IRQ */
+    ASSERT_EQ(test_eoi_irq, 3);
+    return 0;
+}
+
+static int test_replace_handler_with_null(void) {
+    reset_test_state();
+    isr_register_handler(48, test_handler);
+    isr_register_handler(48, NULL);
+
+    InterruptFrame f = make_frame(48);
+    isr_dispatch(&f);
+    ASSERT_EQ(handler_called, 0);
+    return 0;
+}
+
+static int test_irq_range_boundaries(void) {
+    reset_test_state();
+
+    /* Vector 32 = first IRQ (IRQ 0) */
+    isr_register_handler(32, test_handler);
+    InterruptFrame f = make_frame(32);
+    isr_dispatch(&f);
+    ASSERT_EQ(handler_called, 1);
+    ASSERT_EQ(test_eoi_called, 1);
+    ASSERT_EQ(test_eoi_irq, 0);
+
+    /* Vector 47 = last IRQ (IRQ 15) */
+    reset_test_state();
+    isr_register_handler(47, test_handler);
+    f = make_frame(47);
+    isr_dispatch(&f);
+    ASSERT_EQ(handler_called, 1);
+    ASSERT_EQ(test_eoi_called, 1);
+    ASSERT_EQ(test_eoi_irq, 15);
+
+    /* Vector 48 = NOT an IRQ — should not send EOI */
+    reset_test_state();
+    isr_register_handler(48, test_handler);
+    f = make_frame(48);
+    isr_dispatch(&f);
+    ASSERT_EQ(handler_called, 1);
+    ASSERT_EQ(test_eoi_called, 0);
+    return 0;
+}
+
 /* --- Test suite export --- */
 
 TestCase isr_tests[] = {
@@ -181,6 +295,13 @@ TestCase isr_tests[] = {
     { "high_vector_no_handler",        test_high_vector_no_handler_no_crash },
     { "register_bounds",               test_register_bounds },
     { "multiple_handlers",             test_multiple_handlers },
+    { "handler_replacement",           test_handler_replacement },
+    { "vector_255_boundary",           test_vector_255_boundary },
+    { "vector_0_boundary",             test_vector_0_boundary },
+    { "null_handler_default_path",     test_null_handler_default_path },
+    { "null_handler_irq_eoi",          test_null_handler_irq_eoi },
+    { "replace_handler_with_null",     test_replace_handler_with_null },
+    { "irq_range_boundaries",         test_irq_range_boundaries },
 };
 
 int isr_test_count = sizeof(isr_tests) / sizeof(isr_tests[0]);

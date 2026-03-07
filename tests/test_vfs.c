@@ -280,6 +280,257 @@ static int test_stat_returns_info(void) {
     return 0;
 }
 
+/* --- Additional edge case tests --- */
+
+static int test_open_trunc_clears_data(void) {
+    setup_vfs();
+    VfsFile f;
+    ASSERT_EQ(vfs_open("/trunc.txt", O_CREAT | O_RDWR, &f), 0);
+    vfs_write(&f, "hello", 5);
+    vfs_close(&f);
+
+    ASSERT_EQ(vfs_open("/trunc.txt", O_RDWR | O_TRUNC, &f), 0);
+    ASSERT_EQ(f.node->size, 0);
+    char buf[16];
+    int n = vfs_read(&f, buf, sizeof(buf));
+    ASSERT_EQ(n, 0);
+    vfs_close(&f);
+    return 0;
+}
+
+static int test_open_trunc_then_write(void) {
+    setup_vfs();
+    VfsFile f;
+    ASSERT_EQ(vfs_open("/trunc2.txt", O_CREAT | O_RDWR, &f), 0);
+    vfs_write(&f, "old data", 8);
+    vfs_close(&f);
+
+    ASSERT_EQ(vfs_open("/trunc2.txt", O_RDWR | O_TRUNC, &f), 0);
+    vfs_write(&f, "new", 3);
+    vfs_seek(&f, 0, SEEK_SET);
+    char buf[16];
+    memset(buf, 0, sizeof(buf));
+    int n = vfs_read(&f, buf, sizeof(buf));
+    ASSERT_EQ(n, 3);
+    ASSERT_MEM_EQ(buf, "new", 3);
+    vfs_close(&f);
+    return 0;
+}
+
+static int test_open_creat_trunc_new_file(void) {
+    setup_vfs();
+    VfsFile f;
+    ASSERT_EQ(vfs_open("/newtrunc.txt", O_CREAT | O_TRUNC | O_RDWR, &f), 0);
+    ASSERT_EQ(f.node->size, 0);
+    vfs_close(&f);
+    return 0;
+}
+
+static int test_ramfs_max_children_boundary(void) {
+    setup_vfs();
+    char name[32];
+    for (int i = 0; i < 128; i++) {
+        sprintf(name, "/file%d.txt", i);
+        VfsFile f;
+        ASSERT_EQ(vfs_open(name, O_CREAT | O_RDWR, &f), 0);
+        vfs_close(&f);
+    }
+    /* 129th should fail */
+    VfsFile f;
+    int ret = vfs_open("/overflow.txt", O_CREAT | O_RDWR, &f);
+    ASSERT_EQ(ret, -ENOMEM);
+    return 0;
+}
+
+static int test_ramfs_max_children_mkdir(void) {
+    setup_vfs();
+    char name[32];
+    for (int i = 0; i < 128; i++) {
+        sprintf(name, "/dir%d", i);
+        ASSERT_EQ(vfs_mkdir(name, 0755), 0);
+    }
+    ASSERT_EQ(vfs_mkdir("/overflow_dir", 0755), -ENOMEM);
+    return 0;
+}
+
+static int test_long_filename_max_length(void) {
+    setup_vfs();
+    /* 255-char filename */
+    char path[258];
+    path[0] = '/';
+    memset(path + 1, 'a', 255);
+    path[256] = '\0';
+
+    VfsFile f;
+    ASSERT_EQ(vfs_open(path, O_CREAT | O_RDWR, &f), 0);
+    vfs_close(&f);
+
+    VfsStat st;
+    ASSERT_EQ(vfs_stat(path, &st), 0);
+    return 0;
+}
+
+static int test_deep_nested_path(void) {
+    setup_vfs();
+    ASSERT_EQ(vfs_mkdir("/a", 0755), 0);
+    ASSERT_EQ(vfs_mkdir("/a/b", 0755), 0);
+    ASSERT_EQ(vfs_mkdir("/a/b/c", 0755), 0);
+    ASSERT_EQ(vfs_mkdir("/a/b/c/d", 0755), 0);
+
+    VfsFile f;
+    ASSERT_EQ(vfs_open("/a/b/c/d/deep.txt", O_CREAT | O_RDWR, &f), 0);
+    vfs_close(&f);
+
+    VfsStat st;
+    ASSERT_EQ(vfs_stat("/a/b/c/d/deep.txt", &st), 0);
+    ASSERT_EQ(st.type, VFS_FILE);
+    return 0;
+}
+
+static int test_open_no_creat_nonexistent(void) {
+    setup_vfs();
+    VfsFile f;
+    ASSERT_EQ(vfs_open("/missing.txt", O_RDWR, &f), -ENOENT);
+    return 0;
+}
+
+static int test_open_no_creat_wronly_nonexistent(void) {
+    setup_vfs();
+    VfsFile f;
+    ASSERT_EQ(vfs_open("/missing.txt", O_WRONLY, &f), -ENOENT);
+    return 0;
+}
+
+static int test_write_extends_file_with_seek_gap(void) {
+    setup_vfs();
+    VfsFile f;
+    ASSERT_EQ(vfs_open("/gap.txt", O_CREAT | O_RDWR, &f), 0);
+    /* Seek to offset 10, then write */
+    vfs_seek(&f, 10, SEEK_SET);
+    vfs_write(&f, "hi", 2);
+    ASSERT_EQ(f.node->size, 12);
+
+    /* Read back — bytes 0-9 should be zero */
+    vfs_seek(&f, 0, SEEK_SET);
+    char buf[12];
+    int n = vfs_read(&f, buf, 12);
+    ASSERT_EQ(n, 12);
+    for (int i = 0; i < 10; i++) {
+        ASSERT_EQ(buf[i], 0);
+    }
+    ASSERT_EQ(buf[10], 'h');
+    ASSERT_EQ(buf[11], 'i');
+    vfs_close(&f);
+    return 0;
+}
+
+static int test_double_unlink_fails(void) {
+    setup_vfs();
+    VfsFile f;
+    vfs_open("/once.txt", O_CREAT | O_RDWR, &f);
+    vfs_close(&f);
+    ASSERT_EQ(vfs_unlink("/once.txt"), 0);
+    ASSERT_EQ(vfs_unlink("/once.txt"), -ENOENT);
+    return 0;
+}
+
+static int test_unlink_nonempty_dir_fails(void) {
+    setup_vfs();
+    ASSERT_EQ(vfs_mkdir("/mydir", 0755), 0);
+    VfsFile f;
+    vfs_open("/mydir/child.txt", O_CREAT | O_RDWR, &f);
+    vfs_close(&f);
+    ASSERT_EQ(vfs_unlink("/mydir"), -ENOTEMPTY);
+    return 0;
+}
+
+static int test_unlink_empty_dir_succeeds(void) {
+    setup_vfs();
+    ASSERT_EQ(vfs_mkdir("/emptydir", 0755), 0);
+    ASSERT_EQ(vfs_unlink("/emptydir"), 0);
+    VfsStat st;
+    ASSERT_EQ(vfs_stat("/emptydir", &st), -ENOENT);
+    return 0;
+}
+
+static int test_open_directory_fails(void) {
+    setup_vfs();
+    ASSERT_EQ(vfs_mkdir("/adir", 0755), 0);
+    VfsFile f;
+    ASSERT_EQ(vfs_open("/adir", O_RDWR, &f), -EISDIR);
+    return 0;
+}
+
+static int test_mkdir_duplicate_fails(void) {
+    setup_vfs();
+    ASSERT_EQ(vfs_mkdir("/dup", 0755), 0);
+    ASSERT_EQ(vfs_mkdir("/dup", 0755), -EEXIST);
+    return 0;
+}
+
+static int test_read_past_eof_returns_zero(void) {
+    setup_vfs();
+    VfsFile f;
+    ASSERT_EQ(vfs_open("/small.txt", O_CREAT | O_RDWR, &f), 0);
+    vfs_write(&f, "ab", 2);
+    vfs_seek(&f, 100, SEEK_SET);
+    char buf[16];
+    int n = vfs_read(&f, buf, sizeof(buf));
+    ASSERT_EQ(n, 0);
+    vfs_close(&f);
+    return 0;
+}
+
+static int test_write_rdonly_fails(void) {
+    setup_vfs();
+    VfsFile f;
+    ASSERT_EQ(vfs_open("/ro.txt", O_CREAT | O_RDWR, &f), 0);
+    vfs_write(&f, "data", 4);
+    vfs_close(&f);
+
+    ASSERT_EQ(vfs_open("/ro.txt", O_RDONLY, &f), 0);
+    int n = vfs_write(&f, "nope", 4);
+    ASSERT_EQ(n, -EINVAL);
+    vfs_close(&f);
+    return 0;
+}
+
+static int test_read_wronly_fails(void) {
+    setup_vfs();
+    VfsFile f;
+    ASSERT_EQ(vfs_open("/wo.txt", O_CREAT | O_WRONLY, &f), 0);
+    vfs_write(&f, "data", 4);
+    vfs_seek(&f, 0, SEEK_SET);
+    char buf[16];
+    int n = vfs_read(&f, buf, sizeof(buf));
+    ASSERT_EQ(n, -EINVAL);
+    vfs_close(&f);
+    return 0;
+}
+
+static int test_readdir_max_limits_output(void) {
+    setup_vfs();
+    VfsFile f;
+    vfs_open("/a.txt", O_CREAT | O_RDWR, &f); vfs_close(&f);
+    vfs_open("/b.txt", O_CREAT | O_RDWR, &f); vfs_close(&f);
+    vfs_open("/c.txt", O_CREAT | O_RDWR, &f); vfs_close(&f);
+
+    VfsDirEntry entries[2];
+    int count = vfs_readdir("/", entries, 2);
+    ASSERT_EQ(count, 2);
+    return 0;
+}
+
+static int test_stat_directory_size_zero(void) {
+    setup_vfs();
+    ASSERT_EQ(vfs_mkdir("/szdir", 0755), 0);
+    VfsStat st;
+    ASSERT_EQ(vfs_stat("/szdir", &st), 0);
+    ASSERT_EQ(st.type, VFS_DIRECTORY);
+    ASSERT_EQ(st.size, 0);
+    return 0;
+}
+
 /* --- Test suite export --- */
 
 TestCase vfs_tests[] = {
@@ -298,6 +549,26 @@ TestCase vfs_tests[] = {
     { "unlink_removes_file",    test_unlink_removes_file },
     { "unlink_nonexistent_fails", test_unlink_nonexistent_fails },
     { "stat_returns_info",      test_stat_returns_info },
+    { "open_trunc_clears_data",        test_open_trunc_clears_data },
+    { "open_trunc_then_write",         test_open_trunc_then_write },
+    { "open_creat_trunc_new_file",     test_open_creat_trunc_new_file },
+    { "ramfs_max_children_boundary",   test_ramfs_max_children_boundary },
+    { "ramfs_max_children_mkdir",      test_ramfs_max_children_mkdir },
+    { "long_filename_max_length",      test_long_filename_max_length },
+    { "deep_nested_path",              test_deep_nested_path },
+    { "open_no_creat_nonexistent",     test_open_no_creat_nonexistent },
+    { "open_no_creat_wronly_nonexistent", test_open_no_creat_wronly_nonexistent },
+    { "write_extends_file_with_seek_gap", test_write_extends_file_with_seek_gap },
+    { "double_unlink_fails",           test_double_unlink_fails },
+    { "unlink_nonempty_dir_fails",     test_unlink_nonempty_dir_fails },
+    { "unlink_empty_dir_succeeds",     test_unlink_empty_dir_succeeds },
+    { "open_directory_fails",          test_open_directory_fails },
+    { "mkdir_duplicate_fails",         test_mkdir_duplicate_fails },
+    { "read_past_eof_returns_zero",    test_read_past_eof_returns_zero },
+    { "write_rdonly_fails",            test_write_rdonly_fails },
+    { "read_wronly_fails",             test_read_wronly_fails },
+    { "readdir_max_limits_output",     test_readdir_max_limits_output },
+    { "stat_directory_size_zero",      test_stat_directory_size_zero },
 };
 
 int vfs_test_count = sizeof(vfs_tests) / sizeof(vfs_tests[0]);

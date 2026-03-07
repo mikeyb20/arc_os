@@ -14,6 +14,12 @@ add_executable(test_runner
     test_virtio.c
     test_string.c
     test_vfs.c
+    test_vmm.c
+    test_spinlock.c
+    test_gdt.c
+    test_idt.c
+    test_bootinfo.c
+    test_pic.c
 )
 
 # Include kernel source root for "lib/mem.h" etc, but NOT kernel/include
@@ -24,6 +30,14 @@ target_include_directories(test_runner PRIVATE
 )
 
 target_compile_options(test_runner PRIVATE -Wall -Wextra -std=c11)
+
+# test_bootinfo.c includes limine.c which does #include <limine.h>.
+# Use -idirafter so kernel/include is searched AFTER system paths,
+# avoiding conflicts with freestanding stdarg.h etc.
+set_source_files_properties(test_bootinfo.c PROPERTIES
+    COMPILE_FLAGS "-idirafter ${CMAKE_SOURCE_DIR}/kernel/include"
+)
+target_link_libraries(test_runner PRIVATE pthread)
 
 # Run all suites
 add_test(NAME arc_os_tests COMMAND test_runner)
@@ -40,4 +54,10 @@ add_test(NAME test_process COMMAND test_runner --suite process)
 add_test(NAME test_pci     COMMAND test_runner --suite pci)
 add_test(NAME test_virtio  COMMAND test_runner --suite virtio)
 add_test(NAME test_string  COMMAND test_runner --suite string)
-add_test(NAME test_vfs     COMMAND test_runner --suite vfs)
+add_test(NAME test_vfs      COMMAND test_runner --suite vfs)
+add_test(NAME test_vmm      COMMAND test_runner --suite vmm)
+add_test(NAME test_spinlock  COMMAND test_runner --suite spinlock)
+add_test(NAME test_gdt       COMMAND test_runner --suite gdt)
+add_test(NAME test_idt       COMMAND test_runner --suite idt)
+add_test(NAME test_bootinfo  COMMAND test_runner --suite bootinfo)
+add_test(NAME test_pic       COMMAND test_runner --suite pic)
