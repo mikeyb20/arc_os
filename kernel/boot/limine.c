@@ -1,6 +1,7 @@
 #include <limine.h>
 #include "boot/bootinfo.h"
 #include "lib/mem.h"
+#include "lib/string.h"
 
 /* Limine request variables defined in limine_requests.c. */
 extern volatile struct limine_memmap_request          memmap_request;
@@ -8,6 +9,7 @@ extern volatile struct limine_hhdm_request            hhdm_request;
 extern volatile struct limine_framebuffer_request     framebuffer_request;
 extern volatile struct limine_kernel_address_request  kernel_address_request;
 extern volatile struct limine_rsdp_request            rsdp_request;
+extern volatile struct limine_module_request          module_request;
 
 static BootInfo g_boot_info;
 
@@ -69,6 +71,26 @@ const BootInfo *bootinfo_init(void) {
     if (rsdp != NULL) {
         uint64_t virt = (uint64_t)(uintptr_t)rsdp->address;
         g_boot_info.acpi_rsdp = virt - g_boot_info.hhdm_offset;
+    }
+
+    /* Boot modules (init binary, etc.) */
+    struct limine_module_response *mod_resp = module_request.response;
+    if (mod_resp != NULL) {
+        uint64_t mod_count = mod_resp->module_count;
+        if (mod_count > BOOTINFO_MAX_MODULES) {
+            mod_count = BOOTINFO_MAX_MODULES;
+        }
+        for (uint64_t i = 0; i < mod_count; i++) {
+            struct limine_file *f = mod_resp->modules[i];
+            g_boot_info.modules[i].address = f->address;
+            g_boot_info.modules[i].size = f->size;
+            if (f->path != NULL) {
+                strncpy(g_boot_info.modules[i].path, f->path,
+                        sizeof(g_boot_info.modules[i].path) - 1);
+                g_boot_info.modules[i].path[sizeof(g_boot_info.modules[i].path) - 1] = '\0';
+            }
+        }
+        g_boot_info.module_count = mod_count;
     }
 
     return &g_boot_info;

@@ -7,6 +7,7 @@
 #define ARCHOS_PROC_THREAD_H
 #define ARCHOS_PROC_SCHED_H
 #define ARCHOS_MM_KMALLOC_H
+#define ARCHOS_MM_VMM_H          /* Guard vmm.h — we stub its functions */
 #define ARCHOS_LIB_KPRINTF_H
 #define ARCHOS_LIB_MEM_H        /* Use libc memset/memcpy */
 #define ARCHOS_PROC_PROCESS_H
@@ -38,6 +39,7 @@ typedef struct Thread {
     ThreadContext   context;
     uint8_t        *stack_base;
     size_t          stack_size;
+    uint64_t        kernel_stack_top;
     thread_entry_t  entry;
     void           *arg;
     struct Thread  *next;
@@ -47,14 +49,22 @@ typedef struct Thread {
 #define PROC_ZOMBIE      1
 #define PROC_TERMINATED  2
 
+typedef struct FdTable FdTable;
+
 typedef struct Process {
     pid_t           pid;
     uint8_t         state;
     Thread         *main_thread;
     uint64_t        page_table;
+    FdTable        *fd_table;
+    uint64_t        brk_current;
+    uint64_t        brk_start;
     struct Process *parent;
     struct Process *next;
 } Process;
+
+/* Stub for vmm_create_user_pml4 */
+static uint64_t vmm_create_user_pml4(void) { return 0x300000; }
 
 /* Allocation flags */
 #define GFP_KERNEL  0x00
@@ -132,7 +142,10 @@ static void sched_add_thread(Thread *t) {
 /* Forward-declare process.c public functions (since we guarded process.h) */
 void proc_init(void);
 Process *proc_create(thread_entry_t entry, void *arg);
+Process *proc_create_user(void);
 Process *proc_current(void);
+Process *proc_get_by_tid(uint32_t tid);
+void proc_set_main_thread(Process *p, Thread *t);
 
 /* Include the real process.c */
 #include "../kernel/proc/process.c"

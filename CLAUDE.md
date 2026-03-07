@@ -29,21 +29,21 @@ See `overview.md` for the full 13-phase development roadmap.
 ```
 arc_os/
 ├── kernel/
-│   ├── arch/x86_64/      # HAL implementation, arch-specific code
+│   ├── arch/x86_64/      # Arch-specific code (GDT, IDT, PIC, PIT, paging, context switch)
 │   ├── boot/             # Boot protocol parsing (BootInfo)
 │   ├── mm/               # Memory management (PMM, VMM, kmalloc)
 │   ├── proc/             # Process & thread management, scheduler
-│   ├── fs/               # VFS and filesystem drivers
-│   ├── drivers/          # Device drivers (char/, block/, net/)
-│   ├── net/              # Network stack
-│   ├── ipc/              # IPC mechanisms
-│   ├── security/         # Permissions, capabilities
-│   └── lib/              # Kernel utility library
-├── libc/                 # User-space C library (musl port initially)
-├── userland/             # User-space programs (init, shell, coreutils)
+│   ├── fs/               # VFS layer and ramfs
+│   ├── drivers/          # Device drivers (pci, virtio, virtio_blk)
+│   ├── include/          # Freestanding C headers + limine.h
+│   ├── net/              # Network stack (empty — future)
+│   ├── ipc/              # IPC mechanisms (empty — future)
+│   ├── security/         # Permissions, capabilities (empty — future)
+│   └── lib/              # Kernel utility library (mem, string, kprintf)
+├── userland/             # User-space programs (scaffolded init)
 ├── tools/                # Build tools, image creation scripts
 ├── tests/                # Host-side unit tests
-├── docs/                 # ADRs, API docs
+├── docs/                 # Implementation plan, deferred items
 └── CMakeLists.txt
 ```
 

@@ -32,6 +32,12 @@ extern TestCase string_tests[];
 extern int string_test_count;
 extern TestCase vfs_tests[];
 extern int vfs_test_count;
+extern TestCase syscall_tests[];
+extern int syscall_test_count;
+extern TestCase elf_tests[];
+extern int elf_test_count;
+extern TestCase fd_tests[];
+extern int fd_test_count;
 
 static void run_suite(const char *suite_name, TestCase *tests, int count) {
     printf("[%s] Running %d tests\n", suite_name, count);
@@ -67,6 +73,9 @@ int main(int argc, char **argv) {
         { "virtio",  virtio_tests,  &virtio_test_count },
         { "string",  string_tests,  &string_test_count },
         { "vfs",     vfs_tests,     &vfs_test_count },
+        { "syscall", syscall_tests, &syscall_test_count },
+        { "elf",     elf_tests,     &elf_test_count },
+        { "fd",      fd_tests,      &fd_test_count },
     };
     int suite_count = (int)(sizeof(suites) / sizeof(suites[0]));
 

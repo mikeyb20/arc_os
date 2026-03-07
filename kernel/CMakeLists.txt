@@ -11,6 +11,8 @@ set(KERNEL_ASM_SOURCES
     arch/x86_64/gdt_flush.asm
     arch/x86_64/isr_stubs.asm
     arch/x86_64/context_switch.asm
+    arch/x86_64/syscall_entry.asm
+    arch/x86_64/usermode.asm
 )
 
 # --- C sources ---
@@ -30,9 +32,13 @@ set(KERNEL_C_SOURCES
     mm/pmm.c
     mm/vmm.c
     mm/kmalloc.c
+    arch/x86_64/syscall.c
     proc/thread.c
     proc/sched.c
     proc/process.c
+    proc/elf.c
+    proc/init.c
+    proc/fd.c
     drivers/pci.c
     drivers/virtio.c
     drivers/virtio_blk.c

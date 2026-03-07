@@ -1,6 +1,7 @@
 #include "proc/process.h"
 #include "proc/sched.h"
 #include "mm/kmalloc.h"
+#include "mm/vmm.h"
 #include "lib/kprintf.h"
 
 static Process *proc_list = NULL;
@@ -61,6 +62,25 @@ Process *proc_create(thread_entry_t entry, void *arg) {
     return p;
 }
 
+Process *proc_create_user(void) {
+    Process *p = kmalloc(sizeof(Process), GFP_ZERO);
+    if (p == NULL) return NULL;
+
+    p->pid = next_pid++;
+    p->state = PROC_ALIVE;
+    p->main_thread = NULL;
+    p->page_table = vmm_create_user_pml4();
+    p->fd_table = NULL;
+    p->brk_current = 0;
+    p->brk_start = 0;
+    p->parent = NULL;
+    p->next = proc_list;
+    proc_list = p;
+
+    kprintf("[PROC] Created user process pid=%u (pml4=0x%lx)\n", p->pid, p->page_table);
+    return p;
+}
+
 Process *proc_current(void) {
     Thread *t = thread_current();
     if (t == NULL) return NULL;
@@ -68,4 +88,18 @@ Process *proc_current(void) {
         return proc_table[t->tid];
     }
     return NULL;
+}
+
+Process *proc_get_by_tid(uint32_t tid) {
+    if (tid < MAX_PROCESSES) {
+        return proc_table[tid];
+    }
+    return NULL;
+}
+
+void proc_set_main_thread(Process *p, Thread *t) {
+    p->main_thread = t;
+    if (t->tid < MAX_PROCESSES) {
+        proc_table[t->tid] = p;
+    }
 }

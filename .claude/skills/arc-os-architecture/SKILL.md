@@ -46,7 +46,7 @@ arc_os uses the **Abstraction Boundary Model**: the OS is a stack of replaceable
 
 Track implementation progress in `overview.md` → "Suggested Order of Attack" section.
 
-**Current focus**: Phase 0 (tooling, build system, environment setup)
+**Current state**: Phases 0-2 complete, Phase 3 core complete, Phase 4 PCI+VirtIO-blk complete, Phase 6.1-6.2 VFS+ramfs complete
 
 ## Reference Files
 

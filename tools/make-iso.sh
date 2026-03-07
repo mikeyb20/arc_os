@@ -27,6 +27,11 @@ mkdir -p "$ISO_ROOT/boot" "$ISO_ROOT/boot/limine" "$ISO_ROOT/EFI/BOOT"
 cp "$BUILD_DIR/kernel.elf" "$ISO_ROOT/boot/kernel.elf"
 cp "$PROJECT_DIR/limine.conf" "$ISO_ROOT/boot/limine/limine.conf"
 
+# Copy init binary if it exists
+if [ -f "$BUILD_DIR/init" ]; then
+    cp "$BUILD_DIR/init" "$ISO_ROOT/boot/init"
+fi
+
 # Copy Limine binaries
 cp "$LIMINE_DIR/limine-bios.sys" "$ISO_ROOT/boot/limine/"
 cp "$LIMINE_DIR/limine-bios-cd.bin" "$ISO_ROOT/boot/limine/"

@@ -38,6 +38,7 @@ typedef struct Thread {
     ThreadContext   context;
     uint8_t        *stack_base;     /* Heap-allocated kernel stack (NULL for boot thread) */
     size_t          stack_size;
+    uint64_t        kernel_stack_top; /* Top of kernel stack for TSS.rsp0 / SYSCALL */
     thread_entry_t  entry;
     void           *arg;
     struct Thread  *next;           /* Intrusive list for scheduler */

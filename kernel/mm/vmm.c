@@ -144,6 +144,96 @@ static void map_range_2mb(uint64_t virt_start, uint64_t phys_start,
     }
 }
 
+/* --- Per-process address space functions --- */
+
+/* Ensure a table entry exists at table[index] in an arbitrary PML4.
+ * Same as ensure_table() but operates on any page table root. */
+static uint64_t *ensure_table_in(uint64_t *table, uint64_t index) {
+    if (!(table[index] & PTE_PRESENT)) {
+        uint64_t new_table = alloc_table_page();
+        table[index] = new_table | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
+    }
+    return (uint64_t *)phys_to_virt(table[index] & PTE_ADDR_MASK);
+}
+
+uint64_t vmm_create_user_pml4(void) {
+    uint64_t pml4_phys = alloc_table_page();
+    uint64_t *new_pml4 = (uint64_t *)phys_to_virt(pml4_phys);
+    uint64_t *kern_pml4 = (uint64_t *)phys_to_virt(kernel_pml4_phys);
+
+    /* Copy kernel-half PML4 entries (256-511) so kernel is mapped in every process */
+    for (int i = 256; i < 512; i++) {
+        new_pml4[i] = kern_pml4[i];
+    }
+    /* User half (0-255) is already zeroed by alloc_table_page() */
+
+    return pml4_phys;
+}
+
+void vmm_destroy_user_pml4(uint64_t pml4_phys) {
+    uint64_t *pml4 = (uint64_t *)phys_to_virt(pml4_phys);
+
+    /* Free user-half page table structures (entries 0-255) */
+    for (int i = 0; i < 256; i++) {
+        if (!(pml4[i] & PTE_PRESENT)) continue;
+        uint64_t *pdpt = (uint64_t *)phys_to_virt(pml4[i] & PTE_ADDR_MASK);
+        for (int j = 0; j < 512; j++) {
+            if (!(pdpt[j] & PTE_PRESENT) || (pdpt[j] & PTE_HUGE)) continue;
+            uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[j] & PTE_ADDR_MASK);
+            for (int k = 0; k < 512; k++) {
+                if (!(pd[k] & PTE_PRESENT) || (pd[k] & PTE_HUGE)) continue;
+                /* Free the PT page (not the leaf physical pages) */
+                pmm_free_page(pd[k] & PTE_ADDR_MASK);
+            }
+            pmm_free_page(pdpt[j] & PTE_ADDR_MASK);
+        }
+        pmm_free_page(pml4[i] & PTE_ADDR_MASK);
+    }
+    pmm_free_page(pml4_phys);
+}
+
+void vmm_map_page_in(uint64_t pml4_phys, uint64_t virt, uint64_t phys, uint32_t flags) {
+    uint64_t *pml4 = (uint64_t *)phys_to_virt(pml4_phys);
+    uint64_t *pdpt = ensure_table_in(pml4, PML4_INDEX(virt));
+    uint64_t *pd   = ensure_table_in(pdpt, PDPT_INDEX(virt));
+    uint64_t *pt   = ensure_table_in(pd,   PD_INDEX(virt));
+
+    pt[PT_INDEX(virt)] = phys | vmm_flags_to_pte(flags);
+}
+
+void vmm_unmap_page_in(uint64_t pml4_phys, uint64_t virt) {
+    uint64_t *pml4 = (uint64_t *)phys_to_virt(pml4_phys);
+    if (!(pml4[PML4_INDEX(virt)] & PTE_PRESENT)) return;
+
+    uint64_t *pdpt = (uint64_t *)phys_to_virt(pml4[PML4_INDEX(virt)] & PTE_ADDR_MASK);
+    if (!(pdpt[PDPT_INDEX(virt)] & PTE_PRESENT)) return;
+
+    uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[PDPT_INDEX(virt)] & PTE_ADDR_MASK);
+    if (!(pd[PD_INDEX(virt)] & PTE_PRESENT)) return;
+
+    uint64_t *pt = (uint64_t *)phys_to_virt(pd[PD_INDEX(virt)] & PTE_ADDR_MASK);
+    pt[PT_INDEX(virt)] = 0;
+    paging_invlpg(virt);
+}
+
+uint64_t vmm_get_phys_in(uint64_t pml4_phys, uint64_t virt) {
+    uint64_t *pml4 = (uint64_t *)phys_to_virt(pml4_phys);
+    if (!(pml4[PML4_INDEX(virt)] & PTE_PRESENT)) return 0;
+
+    uint64_t *pdpt = (uint64_t *)phys_to_virt(pml4[PML4_INDEX(virt)] & PTE_ADDR_MASK);
+    if (!(pdpt[PDPT_INDEX(virt)] & PTE_PRESENT)) return 0;
+
+    uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[PDPT_INDEX(virt)] & PTE_ADDR_MASK);
+    if (!(pd[PD_INDEX(virt)] & PTE_PRESENT)) return 0;
+
+    uint64_t *pt = (uint64_t *)phys_to_virt(pd[PD_INDEX(virt)] & PTE_ADDR_MASK);
+    if (!(pt[PT_INDEX(virt)] & PTE_PRESENT)) return 0;
+
+    return (pt[PT_INDEX(virt)] & PTE_ADDR_MASK) + (virt & 0xFFF);
+}
+
+/* --- Initialization --- */
+
 void vmm_init(const BootInfo *info) {
     hhdm_offset = info->hhdm_offset;
 
