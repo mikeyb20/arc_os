@@ -27,16 +27,19 @@
 #define PD_INDEX(va)    (((va) >> 21) & 0x1FF)
 #define PT_INDEX(va)    (((va) >> 12) & 0x1FF)
 
+/* Read CR3 — returns the physical address of the current PML4 table. */
 static inline uint64_t paging_read_cr3(void) {
     uint64_t cr3;
     __asm__ volatile ("mov %%cr3, %0" : "=r"(cr3));
     return cr3;
 }
 
+/* Write CR3 — switch to a new PML4. Flushes the entire TLB. */
 static inline void paging_write_cr3(uint64_t cr3) {
     __asm__ volatile ("mov %0, %%cr3" : : "r"(cr3) : "memory");
 }
 
+/* Invalidate the TLB entry for a single virtual address. */
 static inline void paging_invlpg(uint64_t vaddr) {
     __asm__ volatile ("invlpg (%0)" : : "r"(vaddr) : "memory");
 }

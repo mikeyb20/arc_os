@@ -41,7 +41,20 @@
 typedef struct VfsNode VfsNode;
 typedef struct VfsDirEntry VfsDirEntry;
 
-/* Operations table — each filesystem implements these */
+/* Operations table — each filesystem implements these.
+ *
+ * Return convention: negative errno on error, 0 or positive on success.
+ * All callbacks are optional (may be NULL). The VFS layer checks for NULL
+ * before calling and returns -ENOSYS if the operation is not supported.
+ *
+ * read:     Read up to 'size' bytes at 'offset' into 'buf'. Returns bytes read (>=0).
+ * write:    Write up to 'size' bytes from 'buf' at 'offset'. Returns bytes written (>=0).
+ * lookup:   Find a child by name in 'dir'. Returns VfsNode* or NULL if not found.
+ * create:   Create a new child (file or dir) in 'dir'. Returns VfsNode* or NULL on error.
+ * unlink:   Remove a child by name from 'dir'. Returns 0 on success.
+ * readdir:  Fill 'entries' with up to 'max' directory entries. Returns entry count (>=0).
+ * truncate: Set node size to 'size', discarding data beyond. No return value.
+ */
 typedef struct {
     int      (*read)(VfsNode *node, void *buf, uint32_t offset, uint32_t size);
     int      (*write)(VfsNode *node, const void *buf, uint32_t offset, uint32_t size);

@@ -1,90 +1,81 @@
 # HAL Interface Reference
 
-The Hardware Abstraction Layer isolates all architecture-specific code. Everything above the HAL is portable across architectures.
+## Current State
 
-## HAL Header: `kernel/arch/hal.h`
+> **Note**: A unified `kernel/arch/hal.h` does not exist yet. HAL consolidation (Chunk 1.10) is deferred. The kernel currently calls architecture-specific functions directly. This document describes the de-facto HAL — the set of arch-specific interfaces used by portable kernel code.
 
-This is the portable interface. Each architecture implements these functions in `kernel/arch/<arch>/`.
-
-## Core Initialization
+## Initialization (direct calls, no HAL wrapper)
 
 ```c
-/* Initialize architecture: GDT, IDT, segment registers, CPU mode setup */
-void hal_init(void);
+/* kernel/arch/x86_64/gdt.h */
+void gdt_init(void);                    /* GDT + TSS setup and load */
+void gdt_set_kernel_stack(uint64_t rsp0); /* Set TSS.RSP0 for ring transitions */
 
-/* Early console for pre-MM output (serial port) */
-void hal_early_putchar(char c);
+/* kernel/arch/x86_64/idt.h */
+void idt_init(void);                    /* IDT setup with ISR stubs */
+
+/* kernel/arch/x86_64/pic.h */
+void pic_init(void);                    /* PIC remap: IRQ 0-7→32-39, 8-15→40-47 */
+
+/* kernel/arch/x86_64/pit.h */
+void pit_init(uint32_t frequency);      /* PIT channel 0 at given Hz */
+
+/* kernel/arch/x86_64/serial.h */
+void serial_init(void);                 /* COM1 (0x3F8) init */
 ```
 
-## Interrupt Control
+## Interrupt Control (inline asm, no HAL wrapper)
 
 ```c
-/* Enable/disable interrupts globally */
-void hal_enable_interrupts(void);
-void hal_disable_interrupts(void);
-
-/* Save and restore interrupt state (for nested critical sections) */
-uint64_t hal_save_interrupt_state(void);
-void hal_restore_interrupt_state(uint64_t state);
-```
-
-## Timer
-
-```c
-/* Read current tick count (monotonic) */
-uint64_t hal_read_timer(void);
-
-/* Set a one-shot or periodic timer callback */
-void hal_set_timer(uint64_t interval_ms, void (*callback)(void));
+/* Used directly via inline asm — no hal_enable_interrupts() wrapper exists */
+asm volatile ("sti");   /* Enable interrupts */
+asm volatile ("cli");   /* Disable interrupts */
 ```
 
 ## Paging / Virtual Memory
 
 ```c
-/* Map a virtual page to a physical frame with given flags */
-int hal_map_page(uintptr_t virt, uintptr_t phys, uint64_t flags);
+/* kernel/arch/x86_64/paging.h — inline functions */
+uint64_t paging_read_cr3(void);         /* Read current PML4 physical address */
+void paging_write_cr3(uint64_t cr3);    /* Switch address space */
+void paging_invlpg(uint64_t vaddr);     /* Invalidate TLB entry */
 
-/* Unmap a virtual page */
-void hal_unmap_page(uintptr_t virt);
-
-/* Invalidate a TLB entry for a given virtual address */
-void hal_invalidate_page(uintptr_t virt);
-
-/* Switch to a different address space (page table root) */
-void hal_switch_address_space(uintptr_t page_table_phys);
+/* kernel/mm/vmm.h — portable VMM interface (calls paging.h internally) */
+void vmm_map_page(uint64_t virt, uint64_t phys, uint32_t flags);
+void vmm_unmap_page(uint64_t virt);
+uint64_t vmm_get_phys(uint64_t virt);
 ```
 
 ## Context Switching
 
 ```c
-/* Switch from old thread context to new thread context */
-void hal_context_switch(thread_t *old, thread_t *new);
+/* kernel/arch/x86_64/context_switch.asm — called directly, no hal_context_switch() */
+void context_switch(uint64_t *old_rsp, uint64_t new_rsp);
+/* Saves callee-saved regs (r15-r12, rbx, rbp) + RSP; restores from new stack */
 ```
 
-## SMP (Phase 12)
+## GDT Layout
+
+| Index | Selector | Segment | Notes |
+|-------|----------|---------|-------|
+| 0 | 0x00 | Null | Required by x86 |
+| 1 | 0x08 | Kernel Code | 64-bit, DPL 0 |
+| 2 | 0x10 | Kernel Data | DPL 0 |
+| 3 | 0x18 | User Data | DPL 3, must precede user code for SYSRET |
+| 4 | 0x20 | User Code | 64-bit, DPL 3 |
+| 5 | 0x28 | TSS | 16-byte descriptor (two GDT slots) |
+
+## IST (Interrupt Stack Table)
+
+- **IST1**: Double fault handler — uses a dedicated 4KB static stack to ensure double faults are always catchable even if the kernel stack is corrupted
+- IST2-IST7: Not currently used (NMI handler does not use a dedicated IST entry)
+
+## Page Flags (VMM portable flags)
 
 ```c
-/* Get current CPU ID */
-uint32_t hal_get_cpu_id(void);
-
-/* Send inter-processor interrupt */
-void hal_send_ipi(uint32_t target_cpu, uint8_t vector);
+#define VMM_FLAG_WRITABLE  (1 << 0)
+#define VMM_FLAG_USER      (1 << 1)
+#define VMM_FLAG_NOEXEC    (1 << 2)
 ```
 
-## Page Flags
-
-```c
-#define PAGE_PRESENT    (1 << 0)
-#define PAGE_WRITABLE   (1 << 1)
-#define PAGE_USER       (1 << 2)
-#define PAGE_NO_EXECUTE (1ULL << 63)  /* x86_64 NX bit */
-```
-
-## x86_64 Implementation Notes
-
-- GDT with kernel code/data and user code/data segments, TSS
-- IDT with 256 entries (exceptions 0-31, IRQs 32+, syscall 128)
-- Long mode verification on entry
-- SSE enabled (required by System V ABI for x86_64)
-- CR3 holds PML4 physical address for address space switching
-- Context switch saves/restores: RBX, RBP, R12-R15, RSP, RIP (callee-saved)
+These are mapped to x86_64 PTE flags internally by `vmm_map_page()`.

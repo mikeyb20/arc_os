@@ -62,8 +62,8 @@ Large pages: 2MB (PD entry, no PT) or 1GB (PDPT entry, no PD/PT).
 
 - Each kernel thread gets its own kernel stack
 - Stack size: 16KB (4 pages) initially
-- Guard page below each stack (unmapped, triggers page fault on overflow)
-- IST (Interrupt Stack Table) entries for double fault and NMI handlers
+- Guard pages below stacks: planned but not yet implemented
+- IST1 used for double fault handler (4KB static stack). NMI does not use a dedicated IST entry.
 
 ## Constants
 
