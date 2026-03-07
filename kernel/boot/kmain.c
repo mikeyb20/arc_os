@@ -10,6 +10,8 @@
 #include "proc/thread.h"
 #include "proc/sched.h"
 #include "proc/process.h"
+#include "arch/x86_64/syscall.h"
+#include "proc/init.h"
 #include "drivers/pci.h"
 #include "drivers/virtio_blk.h"
 #include "lib/kprintf.h"
@@ -201,12 +203,18 @@ void kmain(void) {
     /* Initialize process management */
     proc_init();
 
-    /* Create test processes */
-    Process *pa = proc_create(thread_a_entry, NULL);
-    Process *pb = proc_create(thread_b_entry, NULL);
-    if (pa == NULL || pb == NULL) {
-        kprintf("[BOOT] FATAL: failed to create test processes\n");
-        for (;;) __asm__ volatile ("cli; hlt");
+    /* Initialize SYSCALL/SYSRET */
+    syscall_init();
+
+    /* Launch init process from boot module */
+    if (init_launch(info) != 0) {
+        kprintf("[BOOT] WARNING: init_launch failed, falling back to test threads\n");
+        Process *pa = proc_create(thread_a_entry, NULL);
+        Process *pb = proc_create(thread_b_entry, NULL);
+        if (pa == NULL || pb == NULL) {
+            kprintf("[BOOT] FATAL: failed to create test processes\n");
+            for (;;) __asm__ volatile ("cli; hlt");
+        }
     }
 
     /* Boot thread becomes the idle thread */

@@ -31,6 +31,7 @@ void thread_init(void) {
     boot->state = THREAD_RUNNING;
     boot->stack_base = NULL;    /* Boot thread uses the original kernel stack */
     boot->stack_size = 0;
+    boot->kernel_stack_top = 0; /* Boot thread never enters user mode */
     boot->entry = NULL;
     boot->arg = NULL;
     boot->next = NULL;
@@ -53,6 +54,7 @@ Thread *thread_create(thread_entry_t entry, void *arg) {
     t->tid = next_tid++;
     t->state = THREAD_READY;
     t->stack_size = THREAD_STACK_SIZE;
+    t->kernel_stack_top = (uint64_t)(t->stack_base + THREAD_STACK_SIZE);
     t->entry = entry;
     t->arg = arg;
     t->next = NULL;

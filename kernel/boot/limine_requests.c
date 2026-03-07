@@ -61,6 +61,14 @@ volatile struct limine_kernel_address_request kernel_address_request = {
     .response = NULL
 };
 
+/* Boot modules (init binary, etc.) */
+LIMINE_SECTION
+volatile struct limine_module_request module_request = {
+    .id = LIMINE_MODULE_REQUEST,
+    .revision = 0,
+    .response = NULL
+};
+
 LIMINE_SECTION
 volatile uint64_t limine_requests_end_marker[2] = {
     0xadc0e0531bb10d03, 0x9572709f31764c62

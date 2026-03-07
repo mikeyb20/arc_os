@@ -7,20 +7,14 @@ CMake-based build system with a freestanding cross-compilation toolchain file. B
 ## Build Commands
 
 ```bash
-# Configure (first time)
-cmake -B build -DCMAKE_TOOLCHAIN_FILE=toolchain-x86_64.cmake
+# Configure and build kernel (cross-compiled)
+cmake -B build -DCMAKE_TOOLCHAIN_FILE=toolchain-x86_64.cmake && cmake --build build
 
-# Build kernel
-cmake --build build
-
-# Build and create ISO
-cmake --build build --target iso
+# Build and run host-side tests (separate build directory, system GCC)
+cmake -B build_host && cmake --build build_host && ctest --test-dir build_host
 
 # Run in QEMU
 cmake --build build --target run
-
-# Run host-side tests
-cmake --build build --target test
 
 # Clean
 cmake --build build --target clean
@@ -74,16 +68,17 @@ Defines kernel memory layout:
 CMakeLists.txt              # Top-level: orchestrates kernel + tests
 toolchain-x86_64.cmake     # Cross-compilation toolchain
 kernel/
-  CMakeLists.txt            # Kernel build rules
+  CMakeLists.txt            # Kernel build rules (guarded: returns early if not cross-compiling)
   arch/x86_64/
     linker.ld               # Linker script
-    CMakeLists.txt           # Arch-specific sources
 tests/
-  CMakeLists.txt            # Host-side test build rules
+  CMakeLists.txt            # Host-side test build rules (16 suites, 173 tests)
 tools/
   run.sh                    # QEMU launch script
   debug.sh                  # QEMU + GDB launch script
   make-iso.sh               # ISO creation script
+  build-cross-compiler.sh   # Build x86_64-elf-gcc from source
+  setup-deps.sh             # Install system package dependencies
 ```
 
 ## NASM Integration

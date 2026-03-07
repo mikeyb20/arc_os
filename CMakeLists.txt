@@ -5,6 +5,7 @@ project(arc_os C ASM_NASM)
 set(CMAKE_ASM_NASM_OBJECT_FORMAT elf64)
 
 add_subdirectory(kernel)
+add_subdirectory(userland)
 
 # Host-side tests — only when building natively (not cross-compiling)
 if(NOT CMAKE_CROSSCOMPILING)

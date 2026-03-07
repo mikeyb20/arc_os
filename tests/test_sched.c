@@ -8,6 +8,12 @@
 #define ARCHOS_LIB_KPRINTF_H
 #define ARCHOS_PROC_THREAD_H
 #define ARCHOS_PROC_SCHED_H
+#define ARCHOS_PROC_PROCESS_H
+#define ARCHOS_ARCH_X86_64_GDT_H
+#define ARCHOS_ARCH_X86_64_SYSCALL_H
+#define ARCHOS_ARCH_X86_64_PAGING_H
+#define ARCHOS_MM_VMM_H
+#define ARCHOS_BOOT_BOOTINFO_H
 
 /* Stub kprintf */
 static inline void kprintf(const char *fmt, ...) { (void)fmt; }
@@ -41,6 +47,7 @@ typedef struct Thread {
     ThreadContext   context;
     uint8_t        *stack_base;
     size_t          stack_size;
+    uint64_t        kernel_stack_top;
     thread_entry_t  entry;
     void           *arg;
     struct Thread  *next;
@@ -72,6 +79,27 @@ static Thread *thread_current(void) {
 static void thread_set_current(Thread *t) {
     test_current_thread = t;
 }
+
+/* Stubs for process/arch functions used by sched.c */
+typedef uint32_t pid_t;
+typedef struct FdTable FdTable;
+typedef struct Process {
+    pid_t pid;
+    uint8_t state;
+    Thread *main_thread;
+    uint64_t page_table;
+    FdTable *fd_table;
+    uint64_t brk_current;
+    uint64_t brk_start;
+    struct Process *parent;
+    struct Process *next;
+} Process;
+
+static Process *proc_get_by_tid(uint32_t tid) { (void)tid; return NULL; }
+static void gdt_set_kernel_stack(uint64_t rsp0) { (void)rsp0; }
+static uint64_t vmm_get_kernel_pml4(void) { return 0x1000; }
+static void paging_write_cr3(uint64_t cr3) { (void)cr3; }
+static uint64_t syscall_kernel_rsp;
 
 /* Tracking context_switch stub (static to avoid linker clash) */
 static int ctx_switch_count;

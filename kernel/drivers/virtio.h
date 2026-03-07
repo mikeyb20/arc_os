@@ -35,6 +35,8 @@
 
 /* --- Vring structures (per VirtIO 1.0 spec, legacy layout) --- */
 
+/* Descriptor: points to a data buffer. Chained via 'next' when F_NEXT is set.
+ * F_WRITE marks device-writable buffers (device writes into them). */
 typedef struct {
     uint64_t addr;    /* Physical address of buffer */
     uint32_t len;     /* Length of buffer */
@@ -42,17 +44,22 @@ typedef struct {
     uint16_t next;    /* Next descriptor in chain (if F_NEXT) */
 } VringDesc;
 
+/* Available ring: driver writes descriptor head indices here for the device
+ * to consume. 'idx' is the next slot the driver will write to. */
 typedef struct {
     uint16_t flags;
     uint16_t idx;     /* Next index to write */
     uint16_t ring[];  /* Descriptor indices */
 } VringAvail;
 
+/* Single element in the used ring, returned by the device after processing. */
 typedef struct {
     uint32_t id;      /* Descriptor chain head index */
     uint32_t len;     /* Bytes written by device */
 } VringUsedElem;
 
+/* Used ring: device writes completed descriptor heads here for the driver
+ * to collect. 'idx' is the next slot the device will write to. */
 typedef struct {
     uint16_t flags;
     uint16_t idx;     /* Next index device will write */

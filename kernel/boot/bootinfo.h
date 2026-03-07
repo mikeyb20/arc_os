@@ -39,6 +39,15 @@ typedef struct {
     uint8_t  blue_mask_shift;
 } Framebuffer;
 
+/* Boot module (loaded by bootloader alongside kernel) */
+typedef struct {
+    void    *address;
+    uint64_t size;
+    char     path[128];
+} BootModule;
+
+#define BOOTINFO_MAX_MODULES 8
+
 /* Bootloader-agnostic boot information. */
 typedef struct {
     MemoryMapEntry memory_map[BOOTINFO_MAX_MEMMAP_ENTRIES];
@@ -49,6 +58,8 @@ typedef struct {
     uint64_t       kernel_phys_base;
     uint64_t       kernel_virt_base;
     uint64_t       hhdm_offset;
+    BootModule     modules[BOOTINFO_MAX_MODULES];
+    uint64_t       module_count;
 } BootInfo;
 
 /* Parse bootloader data into a BootInfo struct.

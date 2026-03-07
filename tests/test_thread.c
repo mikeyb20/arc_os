@@ -41,6 +41,7 @@ typedef struct Thread {
     ThreadContext   context;
     uint8_t        *stack_base;
     size_t          stack_size;
+    uint64_t        kernel_stack_top;
     thread_entry_t  entry;
     void           *arg;
     struct Thread  *next;

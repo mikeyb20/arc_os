@@ -8,6 +8,23 @@ A long-term project outline for building a custom operating system. Designed aro
 
 ---
 
+## Current Status
+
+| Phase | Status | Notes |
+|-------|--------|-------|
+| 0 | COMPLETE | Toolchain, build system, Limine, freestanding headers |
+| 1 | MOSTLY COMPLETE | Serial, BootInfo, kprintf, GDT, IDT, PIC, PIT. Deferred: framebuffer console (1.4), PS/2 keyboard (1.9), HAL consolidation (1.10) |
+| 2 | COMPLETE | PMM bitmap allocator, VMM with own page tables, kmalloc free-list heap |
+| 3 | CORE COMPLETE | TCB, context switch, round-robin scheduler, preemptive multitasking, spinlock. Deferred: sleep queues, mutexes/semaphores/condvars, TLS, work queues |
+| 4 | PARTIAL | PCI enumeration + VirtIO common + VirtIO-blk polling read. Deferred: ACPI (4.1) |
+| 5 | SCAFFOLDED | SYSCALL/SYSRET infrastructure exists in source (`kernel/arch/x86_64/syscall.{h,c}`, `syscall_entry.asm`, `msr.h`) but is not yet compiled into the kernel |
+| 6 | PARTIAL | VFS layer + ramfs complete (6.1-6.2). Not started: file syscalls (6.3), FAT32 (6.4) |
+| 7-13 | NOT STARTED | |
+
+**Test infrastructure**: 16 suites, 173 host-side tests — all passing.
+
+---
+
 ## Project Philosophy: The Abstraction Boundary Model
 
 The OS is structured as a stack of replaceable layers. Each layer exposes a stable internal interface to the layers above it. The implementation behind that interface can be swapped freely.
@@ -790,13 +807,13 @@ The core strategy: leverage existing tools behind clean abstraction boundaries, 
 
 Each step has a concrete milestone — a thing you can boot and demonstrate.
 
-1. **Phase 0** → Toolchain builds, QEMU launches, GDB attaches
-2. **Phase 1.1–1.2** → Kernel boots via Limine, prints "Hello" to framebuffer and serial
-3. **Phase 1.3–1.5** → Interrupts work, timer ticks, keyboard echoes characters
-4. **Phase 2.1–2.3** → Physical allocator, paging, kmalloc all working; can allocate and free
-5. **Phase 3.1–3.3** → Two kernel threads alternating output on screen (multitasking works)
-6. **Phase 4.3** → VirtIO-blk reads a sector from a disk image
-7. **Phase 6.1–6.2** → VFS + ramfs: can create/read/write files in memory
+1. **Phase 0** → Toolchain builds, QEMU launches, GDB attaches — **DONE**
+2. **Phase 1.1–1.2** → Kernel boots via Limine, prints "Hello" to serial — **DONE**
+3. **Phase 1.3–1.5** → Interrupts work, timer ticks — **DONE** (keyboard deferred)
+4. **Phase 2.1–2.3** → Physical allocator, paging, kmalloc all working; can allocate and free — **DONE**
+5. **Phase 3.1–3.3** → Two kernel threads alternating output on screen (multitasking works) — **DONE**
+6. **Phase 4.2–4.4** → VirtIO-blk reads a sector from a disk image — **DONE**
+7. **Phase 6.1–6.2** → VFS + ramfs: can create/read/write files in memory — **DONE**
 8. **Phase 5.1–5.4** → First user-space ELF binary runs, calls write() syscall
 9. **Phase 5.3** → musl libc ported, user programs can use printf()
 10. **Phase 6.3** → FAT32 read/write on VirtIO-blk disk image

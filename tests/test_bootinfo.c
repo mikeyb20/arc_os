@@ -7,6 +7,7 @@
 /* Guard kernel headers */
 #define ARCHOS_LIB_MEM_H    /* Use libc memset */
 #define ARCHOS_LIB_KPRINTF_H
+#define ARCHOS_LIB_STRING_H /* Use libc strncpy */
 
 /* Stub kprintf */
 static inline void kprintf(const char *fmt, ...) { (void)fmt; }
@@ -26,6 +27,7 @@ volatile struct limine_hhdm_request           hhdm_request;
 volatile struct limine_framebuffer_request    framebuffer_request;
 volatile struct limine_kernel_address_request kernel_address_request;
 volatile struct limine_rsdp_request           rsdp_request;
+volatile struct limine_module_request        module_request;
 
 /* Include the real limine.c */
 #include "../kernel/boot/limine.c"
@@ -65,6 +67,7 @@ static void reset_bootinfo_state(void) {
     framebuffer_request.response = NULL;
     kernel_address_request.response = NULL;
     rsdp_request.response = NULL;
+    module_request.response = NULL;
 }
 
 static void setup_mmap_entries(int count) {

@@ -1,5 +1,10 @@
 #include "proc/sched.h"
+#include "proc/process.h"
 #include "proc/spinlock.h"
+#include "arch/x86_64/gdt.h"
+#include "arch/x86_64/syscall.h"
+#include "arch/x86_64/paging.h"
+#include "mm/vmm.h"
 #include "lib/kprintf.h"
 
 /* Run queue: singly-linked FIFO list */
@@ -88,6 +93,23 @@ void sched_schedule(void) {
     thread_set_current(next);
 
     if (next != old) {
+        /* Update TSS.rsp0 and SYSCALL kernel stack for the new thread */
+        if (next->kernel_stack_top != 0) {
+            gdt_set_kernel_stack(next->kernel_stack_top);
+            syscall_kernel_rsp = next->kernel_stack_top;
+        }
+
+        /* Switch CR3 if switching between different address spaces */
+        Process *old_proc = proc_get_by_tid(old->tid);
+        Process *new_proc = proc_get_by_tid(next->tid);
+        uint64_t old_cr3 = (old_proc && old_proc->page_table) ?
+                            old_proc->page_table : vmm_get_kernel_pml4();
+        uint64_t new_cr3 = (new_proc && new_proc->page_table) ?
+                            new_proc->page_table : vmm_get_kernel_pml4();
+        if (new_cr3 != old_cr3) {
+            paging_write_cr3(new_cr3);
+        }
+
         context_switch(&old->context, &next->context);
     }
 }

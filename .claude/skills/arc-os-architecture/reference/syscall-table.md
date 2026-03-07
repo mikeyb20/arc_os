@@ -1,5 +1,9 @@
 # Syscall Table Reference
 
+## Implementation State
+
+> **Note**: SYSCALL/SYSRET infrastructure exists in source files (`kernel/arch/x86_64/syscall.h`, `syscall.c`, `syscall_entry.asm`, `msr.h`) but is **not yet compiled into the kernel**. The scaffolded code defines `SYSCALL_MAX=64` and registers handlers via `syscall_register()`. It will be compiled and integrated in Phase 5.
+
 ## Overview
 
 System calls are the user-kernel boundary. The syscall table is the contract — syscall numbers are stable once assigned and never reused.
@@ -26,7 +30,23 @@ Populated as implemented. Reserved number ranges:
 | 256-319 | System info/control |
 | 320+ | Extensions |
 
-### Minimal Initial Set (Phase 5)
+### Scaffolded Numbering (in `kernel/arch/x86_64/syscall.h`)
+
+These are the numbers defined in the scaffolded source code (not yet compiled):
+
+| Number | Name | Notes |
+|--------|------|-------|
+| 0 | `SYS_EXIT` | |
+| 1 | `SYS_WRITE` | |
+| 2 | `SYS_GETPID` | |
+| 3 | `SYS_OPEN` | |
+| 4 | `SYS_READ` | |
+| 5 | `SYS_CLOSE` | |
+| 6 | `SYS_BRK` | |
+
+Note: the scaffolded numbering differs from the reference plan below (e.g., `GETPID` is 2 in scaffolded code vs 8 in the plan). Numbering will be finalized when Phase 5 is implemented.
+
+### Reference Plan (Phase 5)
 
 | Number | Name | Signature | Description |
 |--------|------|-----------|-------------|
