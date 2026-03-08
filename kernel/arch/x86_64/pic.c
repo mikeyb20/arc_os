@@ -3,39 +3,33 @@
 #include "lib/kprintf.h"
 
 void pic_init(void) {
-    /* Save existing masks */
-    uint8_t mask1 = inb(PIC1_DATA);
-    uint8_t mask2 = inb(PIC2_DATA);
-
     /* ICW1: start initialization sequence (cascade mode, ICW4 needed) */
-    outb(PIC1_COMMAND, 0x11);
+    outb(PIC1_COMMAND, PIC_ICW1_INIT);
     io_wait();
-    outb(PIC2_COMMAND, 0x11);
+    outb(PIC2_COMMAND, PIC_ICW1_INIT);
     io_wait();
 
     /* ICW2: set vector offsets */
-    outb(PIC1_DATA, PIC1_OFFSET);  /* IRQ 0-7  → 32-39 */
+    outb(PIC1_DATA, PIC1_OFFSET);
     io_wait();
-    outb(PIC2_DATA, PIC2_OFFSET);  /* IRQ 8-15 → 40-47 */
+    outb(PIC2_DATA, PIC2_OFFSET);
     io_wait();
 
     /* ICW3: tell PIC1 there is a slave at IRQ2, tell PIC2 its cascade identity */
-    outb(PIC1_DATA, 0x04);  /* IRQ2 has slave */
+    outb(PIC1_DATA, PIC_ICW3_MASTER);
     io_wait();
-    outb(PIC2_DATA, 0x02);  /* Slave identity = 2 */
+    outb(PIC2_DATA, PIC_ICW3_SLAVE);
     io_wait();
 
     /* ICW4: 8086 mode */
-    outb(PIC1_DATA, 0x01);
+    outb(PIC1_DATA, PIC_ICW4_8086);
     io_wait();
-    outb(PIC2_DATA, 0x01);
+    outb(PIC2_DATA, PIC_ICW4_8086);
     io_wait();
 
     /* Mask all IRQs (will be unmasked individually as handlers register) */
-    (void)mask1;
-    (void)mask2;
-    outb(PIC1_DATA, 0xFF);
-    outb(PIC2_DATA, 0xFF);
+    outb(PIC1_DATA, PIC_MASK_ALL);
+    outb(PIC2_DATA, PIC_MASK_ALL);
 
     kprintf("[HAL] PIC remapped (IRQ 0-7 -> %d-%d, IRQ 8-15 -> %d-%d)\n",
             PIC1_OFFSET, PIC1_OFFSET + 7, PIC2_OFFSET, PIC2_OFFSET + 7);

@@ -219,7 +219,7 @@ void *krealloc(void *ptr, size_t new_size) {
     BlockHeader *block = (BlockHeader *)((uint8_t *)ptr - HEADER_SIZE);
     if (block->magic != BLOCK_MAGIC) {
         kprintf("[HEAP] CORRUPTION: krealloc invalid magic at %p\n", (void *)block);
-        return NULL;
+        for (;;) __asm__ volatile ("cli; hlt");
     }
 
     new_size = align_up(new_size);

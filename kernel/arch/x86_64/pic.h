@@ -14,6 +14,13 @@
 #define PIC_EOI       0x20  /* End of interrupt */
 #define PIC_READ_ISR  0x0B  /* Read In-Service Register */
 
+/* ICW (Initialization Command Word) constants */
+#define PIC_ICW1_INIT     0x11  /* ICW1: cascade mode, ICW4 needed */
+#define PIC_ICW3_MASTER   0x04  /* ICW3: slave on IRQ2 */
+#define PIC_ICW3_SLAVE    0x02  /* ICW3: slave cascade identity = 2 */
+#define PIC_ICW4_8086     0x01  /* ICW4: 8086 mode */
+#define PIC_MASK_ALL      0xFF  /* Mask all IRQs */
+
 /* IRQ remapping offsets */
 #define PIC1_OFFSET   32    /* IRQ 0-7  → vectors 32-39 */
 #define PIC2_OFFSET   40    /* IRQ 8-15 → vectors 40-47 */

@@ -4,6 +4,14 @@
 #include "lib/mem.h"
 #include "lib/kprintf.h"
 
+/* Huge page sizes and masks */
+#define PAGE_SIZE_2MB       0x200000ULL
+#define PAGE_MASK_2MB       (PAGE_SIZE_2MB - 1)           /* 0x1FFFFF */
+#define PAGE_SIZE_1GB       0x40000000ULL
+#define PAGE_MASK_1GB       (PAGE_SIZE_1GB - 1)           /* 0x3FFFFFFF */
+#define PTE_ADDR_MASK_2MB   0x000FFFFFFFE00000ULL
+#define PAGE_OFFSET_MASK    (PAGE_SIZE - 1)               /* 0xFFF */
+
 /* Linker symbols */
 extern char _kernel_start[];
 extern char _kernel_end[];
@@ -49,28 +57,11 @@ static uint64_t *ensure_table(uint64_t *table, uint64_t index) {
 }
 
 void vmm_map_page(uint64_t virt, uint64_t phys, uint32_t flags) {
-    uint64_t *pml4 = (uint64_t *)phys_to_virt(kernel_pml4_phys);
-    uint64_t *pdpt = ensure_table(pml4, PML4_INDEX(virt));
-    uint64_t *pd   = ensure_table(pdpt, PDPT_INDEX(virt));
-    uint64_t *pt   = ensure_table(pd,   PD_INDEX(virt));
-
-    pt[PT_INDEX(virt)] = phys | vmm_flags_to_pte(flags);
+    vmm_map_page_in(kernel_pml4_phys, virt, phys, flags);
 }
 
 void vmm_unmap_page(uint64_t virt) {
-    uint64_t *pml4 = (uint64_t *)phys_to_virt(kernel_pml4_phys);
-    if (!(pml4[PML4_INDEX(virt)] & PTE_PRESENT)) return;
-
-    uint64_t *pdpt = (uint64_t *)phys_to_virt(pml4[PML4_INDEX(virt)] & PTE_ADDR_MASK);
-    if (!(pdpt[PDPT_INDEX(virt)] & PTE_PRESENT)) return;
-
-    uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[PDPT_INDEX(virt)] & PTE_ADDR_MASK);
-    if (!(pd[PD_INDEX(virt)] & PTE_PRESENT)) return;
-
-    uint64_t *pt = (uint64_t *)phys_to_virt(pd[PD_INDEX(virt)] & PTE_ADDR_MASK);
-    pt[PT_INDEX(virt)] = 0;
-
-    paging_invlpg(virt);
+    vmm_unmap_page_in(kernel_pml4_phys, virt);
 }
 
 uint64_t vmm_get_phys(uint64_t virt) {
@@ -82,7 +73,7 @@ uint64_t vmm_get_phys(uint64_t virt) {
 
     /* Check for 1GB huge page */
     if (pdpt[PDPT_INDEX(virt)] & PTE_HUGE) {
-        return (pdpt[PDPT_INDEX(virt)] & PTE_ADDR_MASK) + (virt & 0x3FFFFFFF);
+        return (pdpt[PDPT_INDEX(virt)] & PTE_ADDR_MASK) + (virt & PAGE_MASK_1GB);
     }
 
     uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[PDPT_INDEX(virt)] & PTE_ADDR_MASK);
@@ -90,13 +81,13 @@ uint64_t vmm_get_phys(uint64_t virt) {
 
     /* Check for 2MB huge page */
     if (pd[PD_INDEX(virt)] & PTE_HUGE) {
-        return (pd[PD_INDEX(virt)] & 0x000FFFFFFFE00000ULL) + (virt & 0x1FFFFF);
+        return (pd[PD_INDEX(virt)] & PTE_ADDR_MASK_2MB) + (virt & PAGE_MASK_2MB);
     }
 
     uint64_t *pt = (uint64_t *)phys_to_virt(pd[PD_INDEX(virt)] & PTE_ADDR_MASK);
     if (!(pt[PT_INDEX(virt)] & PTE_PRESENT)) return 0;
 
-    return (pt[PT_INDEX(virt)] & PTE_ADDR_MASK) + (virt & 0xFFF);
+    return (pt[PT_INDEX(virt)] & PTE_ADDR_MASK) + (virt & PAGE_OFFSET_MASK);
 }
 
 uint64_t vmm_get_kernel_pml4(void) {
@@ -119,23 +110,14 @@ static void map_range_2mb(uint64_t virt_start, uint64_t phys_start,
         uint64_t remaining = size - offset;
 
         /* Try 2MB page if aligned and enough remaining */
-        if ((virt & 0x1FFFFF) == 0 && (phys & 0x1FFFFF) == 0 && remaining >= 0x200000) {
-            /* Ensure PML4 and PDPT entries exist */
+        if ((virt & PAGE_MASK_2MB) == 0 && (phys & PAGE_MASK_2MB) == 0 && remaining >= PAGE_SIZE_2MB) {
             uint64_t *pml4 = (uint64_t *)phys_to_virt(kernel_pml4_phys);
-            if (!(pml4[PML4_INDEX(virt)] & PTE_PRESENT)) {
-                uint64_t new_table = alloc_table_page();
-                pml4[PML4_INDEX(virt)] = new_table | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
-            }
-            uint64_t *pdpt = (uint64_t *)phys_to_virt(pml4[PML4_INDEX(virt)] & PTE_ADDR_MASK);
-            if (!(pdpt[PDPT_INDEX(virt)] & PTE_PRESENT)) {
-                uint64_t new_table = alloc_table_page();
-                pdpt[PDPT_INDEX(virt)] = new_table | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
-            }
-            uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[PDPT_INDEX(virt)] & PTE_ADDR_MASK);
+            uint64_t *pdpt = ensure_table(pml4, PML4_INDEX(virt));
+            uint64_t *pd   = ensure_table(pdpt, PDPT_INDEX(virt));
 
             /* Set as 2MB huge page */
             pd[PD_INDEX(virt)] = phys | pte_flags | PTE_HUGE;
-            offset += 0x200000;
+            offset += PAGE_SIZE_2MB;
         } else {
             /* Fall back to 4K page */
             vmm_map_page(virt, phys, flags);
@@ -145,16 +127,6 @@ static void map_range_2mb(uint64_t virt_start, uint64_t phys_start,
 }
 
 /* --- Per-process address space functions --- */
-
-/* Ensure a table entry exists at table[index] in an arbitrary PML4.
- * Same as ensure_table() but operates on any page table root. */
-static uint64_t *ensure_table_in(uint64_t *table, uint64_t index) {
-    if (!(table[index] & PTE_PRESENT)) {
-        uint64_t new_table = alloc_table_page();
-        table[index] = new_table | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
-    }
-    return (uint64_t *)phys_to_virt(table[index] & PTE_ADDR_MASK);
-}
 
 uint64_t vmm_create_user_pml4(void) {
     uint64_t pml4_phys = alloc_table_page();
@@ -194,9 +166,9 @@ void vmm_destroy_user_pml4(uint64_t pml4_phys) {
 
 void vmm_map_page_in(uint64_t pml4_phys, uint64_t virt, uint64_t phys, uint32_t flags) {
     uint64_t *pml4 = (uint64_t *)phys_to_virt(pml4_phys);
-    uint64_t *pdpt = ensure_table_in(pml4, PML4_INDEX(virt));
-    uint64_t *pd   = ensure_table_in(pdpt, PDPT_INDEX(virt));
-    uint64_t *pt   = ensure_table_in(pd,   PD_INDEX(virt));
+    uint64_t *pdpt = ensure_table(pml4, PML4_INDEX(virt));
+    uint64_t *pd   = ensure_table(pdpt, PDPT_INDEX(virt));
+    uint64_t *pt   = ensure_table(pd,   PD_INDEX(virt));
 
     pt[PT_INDEX(virt)] = phys | vmm_flags_to_pte(flags);
 }
@@ -229,7 +201,7 @@ uint64_t vmm_get_phys_in(uint64_t pml4_phys, uint64_t virt) {
     uint64_t *pt = (uint64_t *)phys_to_virt(pd[PD_INDEX(virt)] & PTE_ADDR_MASK);
     if (!(pt[PT_INDEX(virt)] & PTE_PRESENT)) return 0;
 
-    return (pt[PT_INDEX(virt)] & PTE_ADDR_MASK) + (virt & 0xFFF);
+    return (pt[PT_INDEX(virt)] & PTE_ADDR_MASK) + (virt & PAGE_OFFSET_MASK);
 }
 
 /* --- Initialization --- */
@@ -249,7 +221,7 @@ void vmm_init(const BootInfo *info) {
         if (top > highest_phys) highest_phys = top;
     }
     /* Round up to 2MB boundary for clean huge page mapping */
-    highest_phys = (highest_phys + 0x1FFFFF) & ~0x1FFFFFULL;
+    highest_phys = (highest_phys + PAGE_MASK_2MB) & ~PAGE_MASK_2MB;
 
     kprintf("[VMM] Mapping HHDM: 0x%lx -> phys 0x0 (%lu MB)\n",
             hhdm_offset, highest_phys / (1024 * 1024));
@@ -273,7 +245,6 @@ void vmm_init(const BootInfo *info) {
 
     /* 3. Map framebuffer if present */
     if (info->fb_present) {
-        uint64_t fb_virt = (uint64_t)info->framebuffer.address;
         /* The framebuffer virtual address from Limine is in the HHDM, which we
          * already mapped. Find its physical address from the memory map. */
         for (uint64_t i = 0; i < info->memory_map_count; i++) {
@@ -283,7 +254,6 @@ void vmm_init(const BootInfo *info) {
                 break;
             }
         }
-        (void)fb_virt;
     }
 
     /* Switch to our page tables */
