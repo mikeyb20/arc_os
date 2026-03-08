@@ -75,8 +75,8 @@ void kmalloc_init(void) {
 
 /* Split a block if it's large enough to hold the requested size plus another block */
 static void split_block(BlockHeader *block, size_t size) {
+    if (block->size < size + HEADER_SIZE + ALIGN_SIZE) return;  /* Not worth splitting */
     size_t remaining = block->size - size - HEADER_SIZE;
-    if (remaining < ALIGN_SIZE) return;  /* Not worth splitting */
 
     BlockHeader *new_block = (BlockHeader *)((uint8_t *)block + HEADER_SIZE + size);
     new_block->magic = BLOCK_MAGIC;
@@ -140,12 +140,13 @@ void *kmalloc(size_t size, uint32_t flags) {
         block = block->next;
     }
 
-    /* Calculate how much more we need */
+    /* Calculate how much more we need.
+     * Add HEADER_SIZE slack so split_block has room for a remainder block. */
     size_t need;
     if (block->free) {
-        need = size - block->size;
+        need = size - block->size + HEADER_SIZE;
     } else {
-        need = size + HEADER_SIZE;
+        need = size + 2 * HEADER_SIZE;
     }
 
     /* Save the end before growing */

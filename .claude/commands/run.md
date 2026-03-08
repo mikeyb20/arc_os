@@ -10,7 +10,10 @@ Build the arc_os kernel and launch it in QEMU with standard flags.
      -serial stdio \
      -m 256M \
      -no-reboot \
-     -no-shutdown
+     -no-shutdown \
+     -boot d \
+     -drive file=build/test_disk.img,format=raw,if=none,id=disk0 \
+     -device virtio-blk-pci,drive=disk0
    ```
    Or use the launch script: `./tools/run.sh`
 3. Monitor serial output for kernel messages

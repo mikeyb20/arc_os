@@ -147,18 +147,31 @@ void kmain(void) {
     vfs_set_root(vfs_root_node);
     kprintf("[VFS] Initialized with ramfs root (inode=%lu)\n", vfs_root_node->inode_num);
 
-    /* Demo: create a file, write, read back */
+    /* Load boot modules into ramfs */
+    vfs_mkdir("/boot", 0755);
+    for (uint64_t i = 0; i < info->module_count; i++) {
+        const char *path = info->modules[i].path;
+        const void *data = info->modules[i].address;
+        uint64_t size = info->modules[i].size;
+
+        VfsFile mod_file;
+        if (vfs_open(path, O_CREAT | O_WRONLY, &mod_file) == 0) {
+            vfs_write(&mod_file, data, (uint32_t)size);
+            vfs_close(&mod_file);
+            kprintf("[BOOT] Loaded module '%s' (%lu bytes) into ramfs\n", path, size);
+        }
+    }
+
+    /* VFS demo: create /etc/hostname — exercises large ramfs allocations */
     vfs_mkdir("/etc", 0755);
-    VfsFile vfs_demo_file;
-    if (vfs_open("/etc/hostname", O_CREAT | O_RDWR, &vfs_demo_file) == 0) {
-        const char *hostname = "arc_os\n";
-        vfs_write(&vfs_demo_file, hostname, 7);
-        vfs_seek(&vfs_demo_file, 0, SEEK_SET);
-        char hostname_buf[32];
-        int n = vfs_read(&vfs_demo_file, hostname_buf, sizeof(hostname_buf));
-        hostname_buf[n] = '\0';
-        kprintf("[VFS] /etc/hostname: %s", hostname_buf);
-        vfs_close(&vfs_demo_file);
+    {
+        VfsFile hf;
+        if (vfs_open("/etc/hostname", O_CREAT | O_WRONLY, &hf) == 0) {
+            const char *hostname = "arc_os\n";
+            vfs_write(&hf, hostname, 7);
+            vfs_close(&hf);
+            kprintf("[VFS] Created /etc/hostname\n");
+        }
     }
 
     /* List root directory */

@@ -211,6 +211,32 @@ static int test_canary_survives_normal_use(void) {
     return 0;
 }
 
+static int test_split_block_no_underflow(void) {
+    setup_heap();
+
+    /* Fill heap so the last block is NOT free, forcing heap_grow path */
+    size_t fill_size = (4 * PAGE_SIZE) - HEADER_SIZE - 64;
+    void *fill = kmalloc(fill_size, GFP_KERNEL);
+    ASSERT_TRUE(fill != NULL);
+
+    /* Allocate a page-aligned size — this triggers the grow path where
+     * the old code had: need = size + HEADER_SIZE (one header short).
+     * split_block would then underflow: remaining = block->size - size - HEADER_SIZE
+     * when block->size == size (grown exactly size + HEADER_SIZE bytes).
+     * With the fix, need = size + 2*HEADER_SIZE, giving split_block room. */
+    void *p = kmalloc(PAGE_SIZE, GFP_KERNEL);
+    ASSERT_TRUE(p != NULL);
+
+    /* Verify we can still allocate after — heap is not corrupted */
+    void *q = kmalloc(64, GFP_KERNEL);
+    ASSERT_TRUE(q != NULL);
+
+    kfree(q);
+    kfree(p);
+    kfree(fill);
+    return 0;
+}
+
 /* --- Test suite export --- */
 
 TestCase kmalloc_tests[] = {
@@ -227,6 +253,7 @@ TestCase kmalloc_tests[] = {
     { "krealloc_shrink_preserves",  test_krealloc_shrink_preserves_data },
     { "double_free_no_crash",       test_double_free_no_crash },
     { "canary_survives_normal",     test_canary_survives_normal_use },
+    { "split_block_no_underflow",   test_split_block_no_underflow },
 };
 
 int kmalloc_test_count = sizeof(kmalloc_tests) / sizeof(kmalloc_tests[0]);
