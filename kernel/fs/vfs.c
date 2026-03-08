@@ -72,7 +72,7 @@ static VfsNode *vfs_resolve_parent(const char *path, char *name_out, size_t name
     /* Resolve the parent path by walking components up to last_slash */
     VfsNode *node = vfs_root;
     const char *p = path;
-    char comp[256];
+    char comp[VFS_NAME_MAX];
 
     while (p < last_slash) {
         p = path_next_component(p, comp, sizeof(comp));
@@ -109,7 +109,7 @@ VfsNode *vfs_resolve(const char *path) {
 
     VfsNode *node = vfs_root;
     const char *p = path;
-    char comp[256];
+    char comp[VFS_NAME_MAX];
 
     while ((p = path_next_component(p, comp, sizeof(comp))) != NULL) {
         if (node->type != VFS_DIRECTORY || node->ops == NULL || node->ops->lookup == NULL) {
@@ -138,7 +138,7 @@ int vfs_open(const char *path, uint32_t flags, VfsFile *out) {
 
         /* Create the file: resolve parent, then call create */
         int err = 0;
-        char name[256];
+        char name[VFS_NAME_MAX];
         VfsNode *parent = vfs_resolve_parent(path, name, sizeof(name), &err);
         if (parent == NULL) return -err;
 
@@ -254,7 +254,7 @@ int vfs_mkdir(const char *path, uint32_t mode) {
 
     /* Resolve parent and get name */
     int err = 0;
-    char name[256];
+    char name[VFS_NAME_MAX];
     VfsNode *parent = vfs_resolve_parent(path, name, sizeof(name), &err);
     if (parent == NULL) return -err;
 
@@ -284,7 +284,7 @@ int vfs_unlink(const char *path) {
     if (path == NULL || vfs_root == NULL) return -EINVAL;
 
     int err = 0;
-    char name[256];
+    char name[VFS_NAME_MAX];
     VfsNode *parent = vfs_resolve_parent(path, name, sizeof(name), &err);
     if (parent == NULL) return -err;
 

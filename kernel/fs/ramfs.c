@@ -180,8 +180,8 @@ static int ramfs_readdir(VfsNode *dir, VfsDirEntry *entries, uint32_t max) {
 
     uint32_t count = (rn->num_children < max) ? rn->num_children : max;
     for (uint32_t i = 0; i < count; i++) {
-        strncpy(entries[i].name, rn->children[i].name, 255);
-        entries[i].name[255] = '\0';
+        strncpy(entries[i].name, rn->children[i].name, RAMFS_NAME_MAX);
+        entries[i].name[RAMFS_NAME_MAX] = '\0';
         entries[i].inode_num = rn->children[i].node->vnode.inode_num;
         entries[i].type = rn->children[i].node->vnode.type;
     }

@@ -100,10 +100,12 @@ int init_launch(const BootInfo *info) {
     }
 
     /* Allocate FD table */
-    p->fd_table = kmalloc(sizeof(FdTable), GFP_ZERO);
-    if (p->fd_table != NULL) {
-        fd_table_init(p->fd_table);
+    p->fd_table = kmalloc(sizeof(FdTable), 0);
+    if (p->fd_table == NULL) {
+        kprintf("[INIT] FATAL: cannot allocate fd table\n");
+        return -1;
     }
+    fd_table_init(p->fd_table);
 
     /* Create kernel thread that will load ELF and transition to user mode */
     g_init_args.elf_data = init_mod->address;

@@ -8,6 +8,9 @@
 #define VFS_FILE      0
 #define VFS_DIRECTORY 1
 
+/* Maximum length of a path component name (excluding NUL) */
+#define VFS_NAME_MAX  256
+
 /* Open flags */
 #define O_RDONLY   0x00
 #define O_WRONLY   0x01
@@ -84,7 +87,7 @@ typedef struct {
 
 /* Directory entry (for readdir) */
 struct VfsDirEntry {
-    char     name[256];
+    char     name[VFS_NAME_MAX];
     uint64_t inode_num;
     uint8_t  type;
 };
