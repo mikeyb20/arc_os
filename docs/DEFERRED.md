@@ -24,8 +24,8 @@ Items intentionally postponed from their original phase. Each entry notes the or
 
 ## Phase 5: System Calls & User Space
 
-- **fork/exec/wait syscalls (5.5)** — Process creation and program execution. Required for shell and multi-process workflows.
-- **User pointer validation (copy_from_user/copy_to_user)** — Safe copying between user and kernel address spaces. Required before accepting arbitrary user pointers in syscall handlers.
+- ~~**fork/exec/wait syscalls (5.5)**~~ **DONE** — fork with vmm_fork_address_space, exec via ELF from VFS, wait with zombie reaping.
+- ~~**User pointer validation (copy_from_user/copy_to_user)**~~ **DONE** — user_ptr_valid checks bounds below USER_ADDR_LIMIT.
 
 ## Phase 6: File Systems
 

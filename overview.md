@@ -13,15 +13,16 @@ A long-term project outline for building a custom operating system. Designed aro
 | Phase | Status | Notes |
 |-------|--------|-------|
 | 0 | COMPLETE | Toolchain, build system, Limine, freestanding headers |
-| 1 | MOSTLY COMPLETE | Serial, BootInfo, kprintf, GDT, IDT, PIC, PIT. Deferred: framebuffer console (1.4), PS/2 keyboard (1.9), HAL consolidation (1.10) |
+| 1 | MOSTLY COMPLETE | Serial, BootInfo, kprintf, GDT, IDT, PIC, PIT, PS/2 keyboard. Deferred: framebuffer console (1.4), HAL consolidation (1.10) |
 | 2 | COMPLETE | PMM bitmap allocator, VMM with own page tables, kmalloc free-list heap |
 | 3 | CORE COMPLETE | TCB, context switch, round-robin scheduler, preemptive multitasking, spinlock. Deferred: sleep queues, mutexes/semaphores/condvars, TLS, work queues |
 | 4 | PARTIAL | PCI enumeration + VirtIO common + VirtIO-blk polling read. Deferred: ACPI (4.1) |
-| 5 | MOSTLY COMPLETE | SYSCALL/SYSRET, per-process address spaces, ELF64 loader, init process, FD table (5.1-5.4). Deferred: fork/exec/wait (5.5) |
-| 6 | PARTIAL | VFS layer + ramfs complete (6.1-6.2). Not started: file syscalls (6.3), FAT32 (6.4) |
-| 7-13 | NOT STARTED | |
+| 5 | COMPLETE | SYSCALL/SYSRET, per-process address spaces, ELF64 loader, init process, FD table, fork/exec/wait, user pointer validation |
+| 6 | MOSTLY COMPLETE | VFS + ramfs (6.1-6.2), file syscalls exposed to user space (6.3). Deferred: FAT32 (6.4) |
+| 7 | PARTIAL | PS/2 keyboard driver, TTY subsystem, interactive shell (14 builtins), echo/hello binaries. Not started: pipes, signals |
+| 8-13 | NOT STARTED | |
 
-**Test infrastructure**: 21 suites, 291 host-side tests — all passing.
+**Test infrastructure**: 26 suites, 345 host-side tests — all passing.
 
 ---
 
@@ -809,20 +810,22 @@ Each step has a concrete milestone — a thing you can boot and demonstrate.
 
 1. **Phase 0** → Toolchain builds, QEMU launches, GDB attaches — **DONE**
 2. **Phase 1.1–1.2** → Kernel boots via Limine, prints "Hello" to serial — **DONE**
-3. **Phase 1.3–1.5** → Interrupts work, timer ticks — **DONE** (keyboard deferred)
+3. **Phase 1.3–1.5** → Interrupts work, timer ticks — **DONE**
 4. **Phase 2.1–2.3** → Physical allocator, paging, kmalloc all working; can allocate and free — **DONE**
 5. **Phase 3.1–3.3** → Two kernel threads alternating output on screen (multitasking works) — **DONE**
 6. **Phase 4.2–4.4** → VirtIO-blk reads a sector from a disk image — **DONE**
 7. **Phase 6.1–6.2** → VFS + ramfs: can create/read/write files in memory — **DONE**
 8. **Phase 5.1–5.4** → First user-space ELF binary runs, calls write() syscall — **DONE**
-9. **Phase 5.3** → musl libc ported, user programs can use printf()
-10. **Phase 6.3** → FAT32 read/write on VirtIO-blk disk image
-11. **Phase 10** → Shell running (ported dash or custom), can launch programs
-12. **Phase 7** → Pipes and signals working — can do `ls | grep foo`
-13. **Phase 8** → Ping works over VirtIO-net (ICMP echo reply)
-14. **Phase 9** → Multi-user login, file permissions enforced
-15. **Phase 12** → Boots and runs on multiple cores
-16. **Phase 11, 13** → Graphics, polish, hardening — ongoing
+9. **Phase 5.5** → fork/exec/wait, user pointer validation — **DONE**
+10. **Phase 6.3** → File syscalls (lseek, stat, mkdir, readdir, unlink) exposed to user space — **DONE**
+11. **Phase 7 (partial)** → PS/2 keyboard, TTY, interactive shell with 14 builtins — **DONE**
+12. **Phase 5.3** → musl libc ported, user programs can use printf()
+13. **Phase 6.4** → FAT32 read/write on VirtIO-blk disk image
+14. **Phase 7 (remainder)** → Pipes and signals working — can do `ls | grep foo`
+15. **Phase 8** → Ping works over VirtIO-net (ICMP echo reply)
+16. **Phase 9** → Multi-user login, file permissions enforced
+17. **Phase 12** → Boots and runs on multiple cores
+18. **Phase 11, 13** → Graphics, polish, hardening — ongoing
 
 ---
 

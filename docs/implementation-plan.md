@@ -118,7 +118,7 @@ Create directory structure and all build infrastructure.
 
 **Milestone**: Serial shows `[TIMER] 1 seconds`, `[TIMER] 2 seconds`, ...
 
-### Chunk 1.9 — PS/2 Keyboard (~140 lines, 2 files) — [ ] NOT STARTED (deferred)
+### Chunk 1.9 — PS/2 Keyboard (~140 lines, 2 files) — [x] DONE
 
 **Files**:
 - `kernel/drivers/ps2_keyboard.h` + `ps2_keyboard.c` — IRQ 1 handler, scancode set 1 → ASCII, shift/caps, echo to serial + framebuffer
@@ -191,14 +191,14 @@ Create directory structure and all build infrastructure.
 | 5.2 | Per-process address spaces | 200 | DONE |
 | 5.3 | ELF64 loader | 250 | DONE |
 | 5.4 | First user-space process | 150 | DONE |
-| 5.5 | fork/exec/wait | 300 | NOT STARTED |
+| 5.5 | fork/exec/wait | 300 | DONE |
 
 ### Phase 6: File Systems
 | Chunk | Description | ~Lines | Status |
 |-------|-------------|--------|--------|
 | 6.1 | VFS interface + data structures | 250 | DONE |
 | 6.2 | ramfs (in-memory filesystem) | 300 | DONE |
-| 6.3 | File syscalls (open/read/write/close) | 200 | NOT STARTED |
+| 6.3 | File syscalls (open/read/write/close/lseek/stat/mkdir/readdir/unlink) | 200 | DONE |
 | 6.4 | FAT32 read support | 300 | NOT STARTED |
 
 ---
@@ -223,11 +223,11 @@ Create directory structure and all build infrastructure.
 Items intentionally postponed from their original phase:
 
 - **Phase 1.4**: Framebuffer console (pixel rendering, bitmap font)
-- **Phase 1.9**: PS/2 keyboard driver
+- ~~**Phase 1.9**: PS/2 keyboard driver~~ **DONE**
 - **Phase 1.10**: HAL consolidation (`hal.h` unified interface)
 - **Phase 3.4**: Sleeping mutexes, semaphores, condition variables (spinlock done)
 - **Phase 3**: Sleep queues, thread-local storage, work queues
 - **Phase 4.1**: ACPI table parsing
 - **Phase 4**: Memory barrier HAL abstraction, VirtIO feature caching, DMA buffer pool
-- **Phase 5**: fork/exec/wait (5.5), user pointer validation (copy_from_user/copy_to_user)
+- ~~**Phase 5**: fork/exec/wait (5.5), user pointer validation (copy_from_user/copy_to_user)~~ **DONE**
 - **Phase 6**: Dentry cache, mount table
