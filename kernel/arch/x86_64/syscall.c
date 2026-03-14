@@ -16,6 +16,10 @@
 #define RFLAGS_IF  (1ULL << 9)   /* Interrupt Flag */
 #define RFLAGS_DF  (1ULL << 10)  /* Direction Flag */
 
+/* Standard file descriptor numbers */
+#define FD_STDOUT  1
+#define FD_STDERR  2
+
 /* Syscall handler table */
 static syscall_handler_t syscall_table[SYSCALL_MAX];
 
@@ -42,7 +46,7 @@ static int64_t sys_write(uint64_t fd, uint64_t buf_addr, uint64_t count,
     (void)a3; (void)a4; (void)a5;
 
     /* For now, only fd 1 (stdout) and fd 2 (stderr) go to serial */
-    if (fd != 1 && fd != 2) {
+    if (fd != FD_STDOUT && fd != FD_STDERR) {
         return -EBADF;
     }
 
@@ -126,8 +130,8 @@ static int64_t sys_brk(uint64_t new_brk, uint64_t a1, uint64_t a2,
     if (new_brk < p->brk_start) return (int64_t)p->brk_current;
 
     /* Map new pages if growing */
-    uint64_t old_page = (p->brk_current + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
-    uint64_t new_page = (new_brk + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
+    uint64_t old_page = PAGE_ALIGN_UP(p->brk_current);
+    uint64_t new_page = PAGE_ALIGN_UP(new_brk);
     uint64_t hhdm = vmm_get_hhdm_offset();
 
     for (uint64_t vaddr = old_page; vaddr < new_page; vaddr += PAGE_SIZE) {

@@ -23,6 +23,8 @@ static inline void kprintf(const char *fmt, ...) { (void)fmt; }
 
 #define PT_ENTRIES     512
 #define PAGE_SIZE      4096
+#define PAGE_ALIGN_UP(x)    (((x) + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1ULL))
+#define PAGE_ALIGN_DOWN(x)  ((x) & ~(PAGE_SIZE - 1ULL))
 
 /* Index extraction macros */
 #define PML4_INDEX(va)  (((va) >> 39) & 0x1FF)

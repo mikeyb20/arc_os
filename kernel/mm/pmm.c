@@ -3,6 +3,8 @@
 #include "lib/mem.h"
 #include "lib/kprintf.h"
 
+#define BITS_PER_QWORD 64
+
 /* Bitmap: bit=1 means page is allocated, bit=0 means free */
 static uint64_t *bitmap;
 static uint64_t bitmap_size;    /* Size in bytes */
@@ -14,15 +16,15 @@ static uint64_t hhdm_offset;
 /* --- Bitmap helpers --- */
 
 void pmm_bitmap_set(uint64_t *bm, uint64_t bit) {
-    bm[bit / 64] |= (1ULL << (bit % 64));
+    bm[bit / BITS_PER_QWORD] |= (1ULL << (bit % BITS_PER_QWORD));
 }
 
 void pmm_bitmap_clear(uint64_t *bm, uint64_t bit) {
-    bm[bit / 64] &= ~(1ULL << (bit % 64));
+    bm[bit / BITS_PER_QWORD] &= ~(1ULL << (bit % BITS_PER_QWORD));
 }
 
 int pmm_bitmap_test(const uint64_t *bm, uint64_t bit) {
-    return (bm[bit / 64] >> (bit % 64)) & 1;
+    return (bm[bit / BITS_PER_QWORD] >> (bit % BITS_PER_QWORD)) & 1;
 }
 
 /* Find first free bit in bitmap. Returns bit index, or total_pages if none. */
@@ -31,8 +33,8 @@ static uint64_t bitmap_find_first_free(void) {
     for (uint64_t i = 0; i < qwords; i++) {
         if (bitmap[i] != ~0ULL) {
             /* There's at least one free bit in this qword */
-            for (int b = 0; b < 64; b++) {
-                uint64_t page = i * 64 + (uint64_t)b;
+            for (int b = 0; b < BITS_PER_QWORD; b++) {
+                uint64_t page = i * BITS_PER_QWORD + (uint64_t)b;
                 if (page >= total_pages) return total_pages;
                 if (!(bitmap[i] & (1ULL << b))) {
                     return page;
@@ -60,6 +62,21 @@ static uint64_t bitmap_find_contiguous(size_t count) {
     return total_pages;
 }
 
+/* Find a usable memory region large enough to hold 'size' bytes.
+ * Returns the page-aligned physical address, or 0 if none found. */
+static uint64_t pmm_find_bitmap_region(const BootInfo *info, uint64_t size) {
+    for (uint64_t i = 0; i < info->memory_map_count; i++) {
+        const MemoryMapEntry *e = &info->memory_map[i];
+        if (e->type == MEMMAP_USABLE && e->length >= size) {
+            uint64_t addr = PAGE_ALIGN_UP(e->base);
+            if (addr + size <= e->base + e->length) {
+                return addr;
+            }
+        }
+    }
+    return 0;
+}
+
 void pmm_init(const BootInfo *info) {
     hhdm_offset = info->hhdm_offset;
 
@@ -74,25 +91,10 @@ void pmm_init(const BootInfo *info) {
     }
 
     total_pages = highest_addr / PAGE_SIZE;
-    bitmap_size = (total_pages + 63) / 64 * sizeof(uint64_t);  /* Round up to 8-byte aligned */
+    bitmap_size = (total_pages + BITS_PER_QWORD - 1) / BITS_PER_QWORD * sizeof(uint64_t);
 
     /* Pass 2: Find a usable region large enough to hold the bitmap */
-    uint64_t bitmap_phys = 0;
-    for (uint64_t i = 0; i < info->memory_map_count; i++) {
-        const MemoryMapEntry *e = &info->memory_map[i];
-        if (e->type == MEMMAP_USABLE && e->length >= bitmap_size) {
-            bitmap_phys = e->base;
-            /* Align to page boundary */
-            if (bitmap_phys % PAGE_SIZE != 0) {
-                bitmap_phys = (bitmap_phys + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
-            }
-            /* Verify it still fits after alignment */
-            if (bitmap_phys + bitmap_size <= e->base + e->length) {
-                break;
-            }
-        }
-        bitmap_phys = 0;
-    }
+    uint64_t bitmap_phys = pmm_find_bitmap_region(info, bitmap_size);
 
     if (bitmap_phys == 0) {
         kprintf("[PMM] FATAL: no usable region for bitmap (%lu bytes needed)\n",

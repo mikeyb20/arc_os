@@ -65,6 +65,60 @@ static void elf_copy_page_data(void *page_virt, uint64_t vaddr,
     }
 }
 
+/* Load a single PT_LOAD segment: validate bounds, map pages, copy data. */
+static int elf_load_segment(const Elf64_Phdr *phdr, const void *data,
+                            size_t file_size, uint64_t pml4_phys,
+                            uint64_t hhdm, uint64_t *highest_addr) {
+    /* Verify segment is in user space */
+    if (phdr->p_vaddr >= USER_VADDR_MAX ||
+        phdr->p_vaddr + phdr->p_memsz > USER_VADDR_MAX) {
+        kprintf("[ELF] Segment vaddr 0x%lx outside user space\n", phdr->p_vaddr);
+        return -EINVAL;
+    }
+
+    /* Verify file data bounds */
+    if (phdr->p_filesz > 0 &&
+        phdr->p_offset + phdr->p_filesz > file_size) {
+        kprintf("[ELF] Segment file data extends past file\n");
+        return -EINVAL;
+    }
+
+    /* Convert ELF flags to VMM flags */
+    uint32_t vmm_flags = VMM_FLAG_USER;
+    if (phdr->p_flags & PF_W) vmm_flags |= VMM_FLAG_WRITABLE;
+    if (!(phdr->p_flags & PF_X)) vmm_flags |= VMM_FLAG_NOEXEC;
+
+    /* Map pages for this segment */
+    uint64_t seg_start = PAGE_ALIGN_DOWN(phdr->p_vaddr);
+    uint64_t seg_end = PAGE_ALIGN_UP(phdr->p_vaddr + phdr->p_memsz);
+
+    for (uint64_t vaddr = seg_start; vaddr < seg_end; vaddr += PAGE_SIZE) {
+        uint64_t phys = pmm_alloc_page();
+        if (phys == 0) {
+            kprintf("[ELF] Out of memory mapping segment\n");
+            return -ENOMEM;
+        }
+
+        void *page_virt = (void *)(phys + hhdm);
+        memset(page_virt, 0, PAGE_SIZE);
+        elf_copy_page_data(page_virt, vaddr, phdr, data);
+        vmm_map_page_in(pml4_phys, vaddr, phys, vmm_flags);
+    }
+
+    /* Track highest loaded address for brk */
+    uint64_t seg_top = phdr->p_vaddr + phdr->p_memsz;
+    if (seg_top > *highest_addr) {
+        *highest_addr = seg_top;
+    }
+
+    kprintf("[ELF] Loaded segment: vaddr=0x%lx memsz=0x%lx filesz=0x%lx flags=%s%s%s\n",
+            phdr->p_vaddr, phdr->p_memsz, phdr->p_filesz,
+            (phdr->p_flags & PF_R) ? "r" : "-",
+            (phdr->p_flags & PF_W) ? "w" : "-",
+            (phdr->p_flags & PF_X) ? "x" : "-");
+    return 0;
+}
+
 int elf_load(const void *data, size_t size, uint64_t pml4_phys, ElfLoadResult *result) {
     if (data == NULL || result == NULL || size < sizeof(Elf64_Ehdr)) {
         return -EINVAL;
@@ -82,60 +136,13 @@ int elf_load(const void *data, size_t size, uint64_t pml4_phys, ElfLoadResult *r
         const Elf64_Phdr *phdr = (const Elf64_Phdr *)
             ((const uint8_t *)data + ehdr->e_phoff + i * ehdr->e_phentsize);
 
-        if (phdr->p_type != PT_LOAD) continue;
-        if (phdr->p_memsz == 0) continue;
-
-        /* Verify segment is in user space */
-        if (phdr->p_vaddr >= USER_VADDR_MAX ||
-            phdr->p_vaddr + phdr->p_memsz > USER_VADDR_MAX) {
-            kprintf("[ELF] Segment vaddr 0x%lx outside user space\n", phdr->p_vaddr);
-            return -EINVAL;
-        }
-
-        /* Verify file data bounds */
-        if (phdr->p_filesz > 0 &&
-            phdr->p_offset + phdr->p_filesz > size) {
-            kprintf("[ELF] Segment file data extends past file\n");
-            return -EINVAL;
-        }
-
-        /* Convert ELF flags to VMM flags */
-        uint32_t vmm_flags = VMM_FLAG_USER;
-        if (phdr->p_flags & PF_W) vmm_flags |= VMM_FLAG_WRITABLE;
-        if (!(phdr->p_flags & PF_X)) vmm_flags |= VMM_FLAG_NOEXEC;
-
-        /* Map pages for this segment */
-        uint64_t seg_start = phdr->p_vaddr & ~(uint64_t)(PAGE_SIZE - 1);
-        uint64_t seg_end = (phdr->p_vaddr + phdr->p_memsz + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
-
-        for (uint64_t vaddr = seg_start; vaddr < seg_end; vaddr += PAGE_SIZE) {
-            uint64_t phys = pmm_alloc_page();
-            if (phys == 0) {
-                kprintf("[ELF] Out of memory mapping segment\n");
-                return -ENOMEM;
-            }
-
-            void *page_virt = (void *)(phys + hhdm);
-            memset(page_virt, 0, PAGE_SIZE);
-            elf_copy_page_data(page_virt, vaddr, phdr, data);
-            vmm_map_page_in(pml4_phys, vaddr, phys, vmm_flags);
-        }
-
-        /* Track highest loaded address for brk */
-        uint64_t seg_top = phdr->p_vaddr + phdr->p_memsz;
-        if (seg_top > highest_addr) {
-            highest_addr = seg_top;
-        }
-
-        kprintf("[ELF] Loaded segment: vaddr=0x%lx memsz=0x%lx filesz=0x%lx flags=%s%s%s\n",
-                phdr->p_vaddr, phdr->p_memsz, phdr->p_filesz,
-                (phdr->p_flags & PF_R) ? "r" : "-",
-                (phdr->p_flags & PF_W) ? "w" : "-",
-                (phdr->p_flags & PF_X) ? "x" : "-");
+        if (phdr->p_type != PT_LOAD || phdr->p_memsz == 0) continue;
+        err = elf_load_segment(phdr, data, size, pml4_phys, hhdm, &highest_addr);
+        if (err != 0) return err;
     }
 
     result->entry_point = ehdr->e_entry;
-    result->brk_start = (highest_addr + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
+    result->brk_start = PAGE_ALIGN_UP(highest_addr);
 
     kprintf("[ELF] Loaded: entry=0x%lx brk_start=0x%lx\n",
             result->entry_point, result->brk_start);

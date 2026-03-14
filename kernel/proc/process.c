@@ -29,10 +29,6 @@ void proc_init(void) {
 
     proc_setup(p);
     p->main_thread = thread_current();
-    p->page_table = 0;  /* Uses current kernel page tables */
-    p->parent = NULL;
-    p->next = NULL;  /* Boot process is list head — no predecessor */
-    proc_list = p;
     if (p->main_thread->tid < MAX_PROCESSES) {
         proc_table[p->main_thread->tid] = p;
     }
