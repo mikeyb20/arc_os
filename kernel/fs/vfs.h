@@ -7,6 +7,7 @@
 /* Node types */
 #define VFS_FILE      0
 #define VFS_DIRECTORY 1
+#define VFS_PIPE      2
 
 /* Maximum length of a path component name (excluding NUL) */
 #define VFS_NAME_MAX  256
@@ -42,6 +43,8 @@
 #define ENOTEMPTY   39
 #define ECHILD      10
 #define EAGAIN      11
+#define ESPIPE      29
+#define EPIPE       32
 
 /* Forward declarations */
 typedef struct VfsNode VfsNode;

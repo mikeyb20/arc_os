@@ -17,6 +17,7 @@
 #include "fs/vfs.h"
 #include "user_access.h"
 #include "drivers/tty.h"
+#include "fs/pipe.h"
 
 /* Exported from syscall_entry.asm: user context saved during SYSCALL */
 extern uint64_t syscall_saved_user_rip;
@@ -48,6 +49,19 @@ static int64_t sys_exit(uint64_t status, uint64_t a1, uint64_t a2,
     Process *p = proc_current();
     kprintf("[SYSCALL] exit(%lu) from pid=%u\n", status, p->pid);
 
+    /* Close all open file descriptors (critical for pipe EOF signaling) */
+    if (p->fd_table != NULL) {
+        for (int i = 0; i < MAX_FDS; i++) {
+            if (p->fd_table->entries[i].in_use) {
+                VfsFile *f = &p->fd_table->entries[i].file;
+                if (f->node && f->node->type == VFS_PIPE) {
+                    pipe_close(f->node);
+                }
+                p->fd_table->entries[i].in_use = 0;
+            }
+        }
+    }
+
     /* Set exit status and mark as zombie for parent to reap */
     p->exit_status = (int32_t)status;
     p->state = PROC_ZOMBIE;
@@ -58,18 +72,32 @@ static int64_t sys_exit(uint64_t status, uint64_t a1, uint64_t a2,
     __builtin_unreachable();
 }
 
-/* SYS_WRITE: write to fd (fd 1/2 → serial via TTY) */
+/* SYS_WRITE: write to fd (fd 1/2 → TTY unless redirected via dup2) */
 static int64_t sys_write(uint64_t fd, uint64_t buf_addr, uint64_t count,
                          uint64_t a3, uint64_t a4, uint64_t a5) {
     (void)a3; (void)a4; (void)a5;
 
-    /* fd 1 (stdout) and fd 2 (stderr) go to TTY (serial output) */
-    if (fd != 1 && fd != 2) {
-        return -EBADF;
+    if (!user_ptr_valid((const void *)buf_addr, count)) return -EINVAL;
+
+    Process *p = proc_current();
+
+    if (fd == 1 || fd == 2) {
+        /* Check fd table first — dup2 may have redirected stdout/stderr */
+        if (p != NULL && p->fd_table != NULL) {
+            VfsFile *file = fd_get(p->fd_table, (int)fd);
+            if (file != NULL) {
+                return vfs_write(file, (const void *)buf_addr, (uint32_t)count);
+            }
+        }
+        /* Default: TTY output */
+        return tty_write((const void *)buf_addr, (uint32_t)count);
     }
 
-    if (!user_ptr_valid((const void *)buf_addr, count)) return -EINVAL;
-    return tty_write((const void *)buf_addr, (uint32_t)count);
+    /* Other fds — look up in fd table */
+    if (p == NULL || p->fd_table == NULL) return -EBADF;
+    VfsFile *file = fd_get(p->fd_table, (int)fd);
+    if (file == NULL) return -EBADF;
+    return vfs_write(file, (const void *)buf_addr, (uint32_t)count);
 }
 
 /* SYS_GETPID: return current process ID */
@@ -108,10 +136,20 @@ static int64_t sys_read(uint64_t fd, uint64_t buf_addr, uint64_t count,
 
     if (!user_ptr_valid((void *)buf_addr, count)) return -EINVAL;
 
-    /* fd 0 (stdin) reads from TTY */
-    if (fd == 0) return tty_read((void *)buf_addr, (uint32_t)count);
-
     Process *p = proc_current();
+
+    if (fd == 0) {
+        /* Check fd table first — dup2 may have redirected stdin */
+        if (p != NULL && p->fd_table != NULL) {
+            VfsFile *file = fd_get(p->fd_table, 0);
+            if (file != NULL) {
+                return vfs_read(file, (void *)buf_addr, (uint32_t)count);
+            }
+        }
+        /* Default: TTY input */
+        return tty_read((void *)buf_addr, (uint32_t)count);
+    }
+
     if (p == NULL || p->fd_table == NULL) return -ENOSYS;
 
     VfsFile *file = fd_get(p->fd_table, (int)fd);
@@ -130,6 +168,9 @@ static int64_t sys_close(uint64_t fd, uint64_t a1, uint64_t a2,
     VfsFile *file = fd_get(p->fd_table, (int)fd);
     if (file == NULL) return -EBADF;
 
+    if (file->node && file->node->type == VFS_PIPE) {
+        pipe_close(file->node);
+    }
     vfs_close(file);
     fd_free(p->fd_table, (int)fd);
     return 0;
@@ -174,6 +215,8 @@ static int64_t sys_lseek(uint64_t fd, uint64_t offset, uint64_t whence,
 
     VfsFile *file = fd_get(p->fd_table, (int)fd);
     if (file == NULL) return -EBADF;
+
+    if (file->node && file->node->type == VFS_PIPE) return -ESPIPE;
 
     return vfs_seek(file, (int64_t)offset, (int)whence);
 }
@@ -375,6 +418,88 @@ static int64_t sys_exec(uint64_t path_addr, uint64_t a1, uint64_t a2,
     jump_to_usermode(result.entry_point, USER_STACK_TOP);
 }
 
+/* SYS_DUP2: duplicate a file descriptor */
+static int64_t sys_dup2(uint64_t oldfd, uint64_t newfd, uint64_t a2,
+                        uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a2; (void)a3; (void)a4; (void)a5;
+    Process *p = proc_current();
+    if (p == NULL || p->fd_table == NULL) return -ENOSYS;
+    if (oldfd >= MAX_FDS || newfd >= MAX_FDS) return -EBADF;
+    if (oldfd == newfd) return (int64_t)newfd;
+
+    VfsFile *src = fd_get(p->fd_table, (int)oldfd);
+    if (src == NULL) return -EBADF;
+
+    /* If newfd is open, close it first */
+    FdEntry *dst_entry = &p->fd_table->entries[newfd];
+    if (dst_entry->in_use) {
+        if (dst_entry->file.node && dst_entry->file.node->type == VFS_PIPE) {
+            pipe_close(dst_entry->file.node);
+        }
+        dst_entry->in_use = 0;
+    }
+
+    /* Copy the file entry */
+    dst_entry->file = *src;
+    dst_entry->in_use = 1;
+
+    /* If it's a pipe, bump the ref count */
+    if (dst_entry->file.node && dst_entry->file.node->type == VFS_PIPE) {
+        pipe_addref(dst_entry->file.node);
+    }
+
+    return (int64_t)newfd;
+}
+
+/* SYS_PIPE: create a pipe */
+static int64_t sys_pipe(uint64_t pipefd_addr, uint64_t a1, uint64_t a2,
+                        uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+
+    if (!user_ptr_valid((void *)pipefd_addr, 2 * sizeof(int32_t))) return -EINVAL;
+
+    Process *p = proc_current();
+    if (p == NULL || p->fd_table == NULL) return -ENOSYS;
+
+    VfsNode *read_node, *write_node;
+    int err = pipe_create(&read_node, &write_node);
+    if (err != 0) return err;
+
+    int rfd = fd_alloc(p->fd_table);
+    if (rfd < 0) {
+        pipe_close(read_node);
+        pipe_close(write_node);
+        return -ENOMEM;
+    }
+
+    int wfd = fd_alloc(p->fd_table);
+    if (wfd < 0) {
+        fd_free(p->fd_table, rfd);
+        pipe_close(read_node);
+        pipe_close(write_node);
+        return -ENOMEM;
+    }
+
+    /* Set up read end */
+    VfsFile *rf = fd_get(p->fd_table, rfd);
+    rf->node = read_node;
+    rf->offset = 0;
+    rf->flags = O_RDONLY;
+
+    /* Set up write end */
+    VfsFile *wf = fd_get(p->fd_table, wfd);
+    wf->node = write_node;
+    wf->offset = 0;
+    wf->flags = O_WRONLY;
+
+    /* Write fds to user space */
+    int32_t *user_fds = (int32_t *)pipefd_addr;
+    user_fds[0] = (int32_t)rfd;
+    user_fds[1] = (int32_t)wfd;
+
+    return 0;
+}
+
 /* --- Dispatcher --- */
 
 int64_t syscall_dispatch(uint64_t num, uint64_t a0, uint64_t a1, uint64_t a2,
@@ -429,6 +554,8 @@ void syscall_init(void) {
     syscall_register(SYS_FORK,    sys_fork);
     syscall_register(SYS_EXEC,    sys_exec);
     syscall_register(SYS_WAIT,    sys_wait);
+    syscall_register(SYS_DUP2,    sys_dup2);
+    syscall_register(SYS_PIPE,    sys_pipe);
 
     kprintf("[SYSCALL] Initialized (LSTAR=0x%lx, STAR=0x%lx)\n",
             (uint64_t)syscall_entry, star);

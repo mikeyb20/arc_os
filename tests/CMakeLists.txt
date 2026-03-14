@@ -27,6 +27,7 @@ add_executable(test_runner
     test_tty.c
     test_keyboard.c
     test_shell.c
+    test_pipe.c
 )
 
 # Include kernel source root for "lib/mem.h" etc, but NOT kernel/include
@@ -75,3 +76,4 @@ add_test(NAME test_user_access  COMMAND test_runner --suite user_access)
 add_test(NAME test_tty          COMMAND test_runner --suite tty)
 add_test(NAME test_keyboard     COMMAND test_runner --suite keyboard)
 add_test(NAME test_shell        COMMAND test_runner --suite shell)
+add_test(NAME test_pipe         COMMAND test_runner --suite pipe)

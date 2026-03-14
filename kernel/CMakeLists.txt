@@ -46,6 +46,7 @@ set(KERNEL_C_SOURCES
     drivers/keyboard.c
     fs/vfs.c
     fs/ramfs.c
+    fs/pipe.c
 )
 
 set(KERNEL_SOURCES ${KERNEL_ASM_SOURCES} ${KERNEL_C_SOURCES})

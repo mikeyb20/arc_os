@@ -28,9 +28,11 @@ static inline int64_t syscall3(uint64_t num, uint64_t a0, uint64_t a1, uint64_t 
 #define SYS_MKDIR   9
 #define SYS_READDIR 10
 #define SYS_UNLINK  11
+#define SYS_DUP2    14
 #define SYS_FORK    16
 #define SYS_EXEC    17
 #define SYS_WAIT    18
+#define SYS_PIPE    19
 
 /* --- Open flags (must match kernel/fs/vfs.h) --- */
 
@@ -288,7 +290,16 @@ static void cmd_ls(int argc, char *argv[]) {
 }
 
 static void cmd_cat(int argc, char *argv[]) {
-    if (argc < 2) { println("usage: cat <file>"); return; }
+    if (argc < 2) {
+        /* No file argument — read from stdin (for pipe support) */
+        char buf[256];
+        for (;;) {
+            int64_t n = syscall3(SYS_READ, 0, (uint64_t)buf, 256);
+            if (n <= 0) break;
+            syscall3(SYS_WRITE, 1, (uint64_t)buf, (uint64_t)n);
+        }
+        return;
+    }
     int64_t fd = syscall3(SYS_OPEN, (uint64_t)argv[1], O_RDONLY, 0);
     if (fd < 0) { print_error(argv[1], fd); return; }
 
@@ -395,6 +406,98 @@ static void cmd_pid(int argc, char *argv[]) {
     print("\n");
 }
 
+/* --- Pipe support --- */
+
+/* Find first unquoted '|' in line. Returns pointer to it, or NULL. */
+static char *find_pipe(char *line) {
+    for (int i = 0; line[i]; i++) {
+        if (line[i] == '|') return &line[i];
+    }
+    return (void *)0;
+}
+
+/* Strip leading spaces from a string */
+static char *skip_spaces(char *s) {
+    while (*s == ' ') s++;
+    return s;
+}
+
+/* Execute a pipeline: left | right */
+static void execute_pipe(char *left, char *right) {
+    left = skip_spaces(left);
+    right = skip_spaces(right);
+
+    /* Create pipe */
+    int32_t pipefd[2];
+    int64_t err = syscall3(SYS_PIPE, (uint64_t)pipefd, 0, 0);
+    if (err < 0) {
+        print_error("pipe", err);
+        return;
+    }
+
+    /* Fork child 1 (writer — runs left command, stdout → pipe write end) */
+    int64_t pid1 = syscall3(SYS_FORK, 0, 0, 0);
+    if (pid1 < 0) {
+        print_error("fork", pid1);
+        syscall3(SYS_CLOSE, (uint64_t)pipefd[0], 0, 0);
+        syscall3(SYS_CLOSE, (uint64_t)pipefd[1], 0, 0);
+        return;
+    }
+    if (pid1 == 0) {
+        /* Child 1: close read end, dup write end to stdout, close original */
+        syscall3(SYS_CLOSE, (uint64_t)pipefd[0], 0, 0);
+        syscall3(SYS_DUP2, (uint64_t)pipefd[1], 1, 0);
+        syscall3(SYS_CLOSE, (uint64_t)pipefd[1], 0, 0);
+
+        /* Parse and run left command */
+        char *argv[MAX_ARGS];
+        int argc = parse_line(left, argv);
+        if (argc > 0) {
+            /* Try exec first */
+            int64_t r = syscall3(SYS_EXEC, (uint64_t)argv[0], 0, 0);
+            (void)r;
+            /* Exec failed — try as builtin */
+            dispatch(argc, argv);
+        }
+        syscall3(SYS_EXIT, 0, 0, 0);
+        for (;;) __asm__ volatile ("ud2");
+    }
+
+    /* Fork child 2 (reader — runs right command, stdin → pipe read end) */
+    int64_t pid2 = syscall3(SYS_FORK, 0, 0, 0);
+    if (pid2 < 0) {
+        print_error("fork", pid2);
+        syscall3(SYS_CLOSE, (uint64_t)pipefd[0], 0, 0);
+        syscall3(SYS_CLOSE, (uint64_t)pipefd[1], 0, 0);
+        /* Wait for child1 */
+        syscall3(SYS_WAIT, 0, 0, 0);
+        return;
+    }
+    if (pid2 == 0) {
+        /* Child 2: close write end, dup read end to stdin, close original */
+        syscall3(SYS_CLOSE, (uint64_t)pipefd[1], 0, 0);
+        syscall3(SYS_DUP2, (uint64_t)pipefd[0], 0, 0);
+        syscall3(SYS_CLOSE, (uint64_t)pipefd[0], 0, 0);
+
+        /* Parse and run right command */
+        char *argv[MAX_ARGS];
+        int argc = parse_line(right, argv);
+        if (argc > 0) {
+            int64_t r = syscall3(SYS_EXEC, (uint64_t)argv[0], 0, 0);
+            (void)r;
+            dispatch(argc, argv);
+        }
+        syscall3(SYS_EXIT, 0, 0, 0);
+        for (;;) __asm__ volatile ("ud2");
+    }
+
+    /* Parent: close both pipe ends, wait for both children */
+    syscall3(SYS_CLOSE, (uint64_t)pipefd[0], 0, 0);
+    syscall3(SYS_CLOSE, (uint64_t)pipefd[1], 0, 0);
+    syscall3(SYS_WAIT, 0, 0, 0);
+    syscall3(SYS_WAIT, 0, 0, 0);
+}
+
 /* --- Entry point --- */
 
 void _start(void) {
@@ -411,8 +514,20 @@ void _start(void) {
         if (n <= 0) break;
         line[n] = '\0';
 
-        int argc = parse_line(line, argv);
-        dispatch(argc, argv);
+        /* Strip trailing newline for pipe detection */
+        for (int i = 0; line[i]; i++) {
+            if (line[i] == '\n') { line[i] = '\0'; break; }
+        }
+
+        /* Check for pipe */
+        char *pipe_pos = find_pipe(line);
+        if (pipe_pos != (void *)0) {
+            *pipe_pos = '\0';
+            execute_pipe(line, pipe_pos + 1);
+        } else {
+            int argc = parse_line(line, argv);
+            dispatch(argc, argv);
+        }
     }
 
     syscall3(SYS_EXIT, 0, 0, 0);

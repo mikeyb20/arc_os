@@ -1,6 +1,7 @@
 #include "proc/fd.h"
 #include "lib/mem.h"
 #include "mm/kmalloc.h"
+#include "fs/pipe.h"
 
 void fd_table_init(FdTable *table) {
     memset(table, 0, sizeof(FdTable));
@@ -34,5 +35,14 @@ FdTable *fd_table_dup(const FdTable *src) {
     FdTable *dst = kmalloc(sizeof(FdTable), 0);
     if (dst == NULL) return NULL;
     memcpy(dst, src, sizeof(FdTable));
+
+    /* Bump pipe ref counts for the new table's references */
+    for (int i = 0; i < MAX_FDS; i++) {
+        if (dst->entries[i].in_use &&
+            dst->entries[i].file.node &&
+            dst->entries[i].file.node->type == VFS_PIPE) {
+            pipe_addref(dst->entries[i].file.node);
+        }
+    }
     return dst;
 }

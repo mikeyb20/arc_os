@@ -58,6 +58,8 @@ extern TestCase keyboard_tests[];
 extern int keyboard_test_count;
 extern TestCase shell_tests[];
 extern int shell_test_count;
+extern TestCase pipe_tests[];
+extern int pipe_test_count;
 
 static void run_suite(const char *suite_name, TestCase *tests, int count) {
     printf("[%s] Running %d tests\n", suite_name, count);
@@ -106,6 +108,7 @@ int main(int argc, char **argv) {
         { "tty",          tty_tests,          &tty_test_count },
         { "keyboard",     keyboard_tests,     &keyboard_test_count },
         { "shell",        shell_tests,        &shell_test_count },
+        { "pipe",         pipe_tests,         &pipe_test_count },
     };
     int suite_count = (int)(sizeof(suites) / sizeof(suites[0]));
 
