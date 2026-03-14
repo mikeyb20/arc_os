@@ -28,7 +28,7 @@ void idt_init(void) {
     for (int i = 0; i < ISR_COUNT; i++) {
         uint8_t ist = 0;
         /* Double fault (vector 8) uses IST1 */
-        if (i == 8) {
+        if (i == EXCEPTION_DOUBLE_FAULT) {
             ist = 1;
         }
         idt_set_gate(i, isr_stub_table[i], GDT_KERNEL_CODE,

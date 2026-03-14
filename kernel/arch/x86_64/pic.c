@@ -2,6 +2,10 @@
 #include "arch/x86_64/io.h"
 #include "lib/kprintf.h"
 
+/* ISR bit masks for spurious IRQ detection */
+#define PIC1_ISR_IRQ7   (1 << 7)    /* PIC1 in-service bit for IRQ 7 */
+#define PIC2_ISR_IRQ15  (1 << 15)   /* PIC2 in-service bit for IRQ 15 */
+
 void pic_init(void) {
     /* ICW1: start initialization sequence (cascade mode, ICW4 needed) */
     outb(PIC1_COMMAND, PIC_ICW1_INIT);
@@ -36,36 +40,28 @@ void pic_init(void) {
 }
 
 void pic_send_eoi(uint8_t irq) {
-    if (irq >= 8) {
+    if (irq >= PIC_IRQS_PER_CHIP) {
         outb(PIC2_COMMAND, PIC_EOI);
     }
     outb(PIC1_COMMAND, PIC_EOI);
 }
 
-void pic_unmask(uint8_t irq) {
-    uint16_t port;
-    if (irq < 8) {
-        port = PIC1_DATA;
-    } else {
-        port = PIC2_DATA;
-        irq -= 8;
+static uint16_t pic_irq_port(uint8_t *irq) {
+    if (*irq < PIC_IRQS_PER_CHIP) {
+        return PIC1_DATA;
     }
-    uint8_t mask = inb(port);
-    mask &= ~(1 << irq);
-    outb(port, mask);
+    *irq -= PIC_IRQS_PER_CHIP;
+    return PIC2_DATA;
+}
+
+void pic_unmask(uint8_t irq) {
+    uint16_t port = pic_irq_port(&irq);
+    outb(port, inb(port) & ~(1 << irq));
 }
 
 void pic_mask(uint8_t irq) {
-    uint16_t port;
-    if (irq < 8) {
-        port = PIC1_DATA;
-    } else {
-        port = PIC2_DATA;
-        irq -= 8;
-    }
-    uint8_t mask = inb(port);
-    mask |= (1 << irq);
-    outb(port, mask);
+    uint16_t port = pic_irq_port(&irq);
+    outb(port, inb(port) | (1 << irq));
 }
 
 uint16_t pic_get_isr(void) {
@@ -77,14 +73,12 @@ uint16_t pic_get_isr(void) {
 bool pic_is_spurious(uint8_t irq) {
     uint16_t isr = pic_get_isr();
 
-    if (irq == 7) {
-        /* Spurious IRQ 7: check if PIC1 ISR bit 7 is set */
-        if (!(isr & (1 << 7))) {
+    if (irq == PIC1_SPURIOUS_IRQ) {
+        if (!(isr & PIC1_ISR_IRQ7)) {
             return true;  /* Spurious — don't send EOI */
         }
-    } else if (irq == 15) {
-        /* Spurious IRQ 15: check if PIC2 ISR bit 7 is set */
-        if (!(isr & (1 << 15))) {
+    } else if (irq == PIC2_SPURIOUS_IRQ) {
+        if (!(isr & PIC2_ISR_IRQ15)) {
             /* Still need to send EOI to PIC1 (cascade) */
             outb(PIC1_COMMAND, PIC_EOI);
             return true;

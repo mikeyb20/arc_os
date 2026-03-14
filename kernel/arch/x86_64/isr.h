@@ -10,6 +10,11 @@
 #define IRQ_BASE   32
 #define IRQ_COUNT  16
 
+/* CPU exception vector numbers */
+#define EXCEPTION_DOUBLE_FAULT  8
+#define EXCEPTION_PAGE_FAULT   14
+#define EXCEPTION_COUNT        32  /* Vectors 0-31 are CPU exceptions */
+
 /* Interrupt frame pushed by isr_common (must match asm push order) */
 typedef struct __attribute__((packed)) {
     /* Pushed by isr_common (in reverse order of pushes) */

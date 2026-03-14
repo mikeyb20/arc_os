@@ -39,9 +39,12 @@ static inline uint32_t inl(uint16_t port) {
     return ret;
 }
 
-/* Small I/O delay — writes to port 0x80 (POST code port). */
+/* POST code port used for I/O delay */
+#define IO_POST_PORT  0x80
+
+/* Small I/O delay — writes to POST code port. */
 static inline void io_wait(void) {
-    outb(0x80, 0);
+    outb(IO_POST_PORT, 0);
 }
 
 #endif

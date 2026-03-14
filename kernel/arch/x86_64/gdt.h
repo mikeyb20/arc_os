@@ -10,6 +10,19 @@
 #define GDT_USER_CODE    0x20
 #define GDT_TSS          0x28
 
+/* GDT access byte fields */
+#define GDT_ACCESS_PRESENT    0x80  /* Segment present */
+#define GDT_ACCESS_DPL3       0x60  /* Descriptor privilege level 3 */
+#define GDT_ACCESS_SEGMENT    0x10  /* Code/data segment (not system) */
+#define GDT_ACCESS_EXEC       0x08  /* Executable (code segment) */
+#define GDT_ACCESS_RW         0x02  /* Readable (code) / Writable (data) */
+
+/* GDT flags (upper nibble of granularity byte) */
+#define GDT_FLAG_LONG_MODE    0x2   /* 64-bit code segment */
+
+/* TSS access byte */
+#define GDT_ACCESS_TSS64      0x89  /* Present, 64-bit TSS (available) */
+
 /* GDT entry (8 bytes) */
 typedef struct __attribute__((packed)) {
     uint16_t limit_low;

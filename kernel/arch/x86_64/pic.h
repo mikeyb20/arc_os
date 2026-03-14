@@ -21,6 +21,13 @@
 #define PIC_ICW4_8086     0x01  /* ICW4: 8086 mode */
 #define PIC_MASK_ALL      0xFF  /* Mask all IRQs */
 
+/* PIC chip geometry */
+#define PIC_IRQS_PER_CHIP    8
+
+/* Spurious IRQ lines */
+#define PIC1_SPURIOUS_IRQ    7
+#define PIC2_SPURIOUS_IRQ   15
+
 /* IRQ remapping offsets */
 #define PIC1_OFFSET   32    /* IRQ 0-7  → vectors 32-39 */
 #define PIC2_OFFSET   40    /* IRQ 8-15 → vectors 40-47 */

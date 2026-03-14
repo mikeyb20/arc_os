@@ -6,7 +6,7 @@
 static isr_handler_t handlers[ISR_COUNT];
 
 /* Human-readable names for CPU exception vectors 0-31 */
-static const char *exception_names[32] = {
+static const char *exception_names[EXCEPTION_COUNT] = {
     "Division Error",              /* 0 */
     "Debug",                       /* 1 */
     "Non-Maskable Interrupt",      /* 2 */
@@ -63,7 +63,7 @@ static void default_exception_handler(InterruptFrame *frame) {
             frame->cs, frame->ss, frame->rflags);
 
     /* Page fault: print CR2 (faulting address) */
-    if (frame->vector == 14) {
+    if (frame->vector == EXCEPTION_PAGE_FAULT) {
         uint64_t cr2;
         __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
         kprintf("  CR2 = 0x%lx (faulting address)\n", cr2);
@@ -104,7 +104,7 @@ void isr_dispatch(InterruptFrame *frame) {
     }
 
     /* Unhandled CPU exception (0-31) — print diagnostic and halt */
-    if (vector < 32) {
+    if (vector < EXCEPTION_COUNT) {
         default_exception_handler(frame);
     }
 }

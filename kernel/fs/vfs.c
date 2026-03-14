@@ -1,6 +1,5 @@
 #include "fs/vfs.h"
 #include "lib/string.h"
-#include "lib/mem.h"
 
 static VfsNode *vfs_root;
 
