@@ -4,8 +4,10 @@
 #define SERIAL_COM1 0x3F8
 
 /* 8250/16550 UART register offsets (relative to COM base port) */
-#define SERIAL_REG_DATA   0   /* Data / Divisor Latch Low (when DLAB=1) */
-#define SERIAL_REG_IER    1   /* Interrupt Enable / Divisor Latch High */
+#define SERIAL_REG_DATA   0   /* Data (DLAB=0) */
+#define SERIAL_REG_DLL    0   /* Divisor Latch Low (DLAB=1) */
+#define SERIAL_REG_IER    1   /* Interrupt Enable (DLAB=0) */
+#define SERIAL_REG_DLH    1   /* Divisor Latch High (DLAB=1) */
 #define SERIAL_REG_FCR    2   /* FIFO Control */
 #define SERIAL_REG_LCR    3   /* Line Control */
 #define SERIAL_REG_MCR    4   /* Modem Control */

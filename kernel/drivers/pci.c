@@ -3,16 +3,44 @@
 #include "lib/kprintf.h"
 #include <stddef.h>
 
+/* PCI config address construction */
+#define PCI_ENABLE_BIT          (1U << 31)
+#define PCI_DEVICE_MASK         0x1F
+#define PCI_FUNCTION_MASK       0x07
+#define PCI_OFFSET_MASK         0xFC
+
+/* Header and BAR parsing */
+#define PCI_HEADER_TYPE_MASK    0x7F
+#define PCI_NUM_BARS            6
+#define PCI_BAR_STRIDE          4
+#define PCI_BAR_IO_MASK         0xFFFC
+
+/* Byte/word extraction from 32-bit PCI config registers */
+#define PCI_BYTE0_MASK   0xFF
+#define PCI_BYTE1_SHIFT  8
+#define PCI_BYTE2_SHIFT  16
+#define PCI_BYTE3_SHIFT  24
+#define PCI_WORD0_MASK   0xFFFF
+#define PCI_WORD1_SHIFT  16
+
+/* Bus scan limits */
+#define PCI_MAX_BUSES           256
+#define PCI_MAX_DEV_PER_BUS     32
+#define PCI_MAX_FUNCTIONS       8
+
+/* Vendor ID indicating absent device */
+#define PCI_VENDOR_INVALID      0x0000
+
 static PciDevice devices[PCI_MAX_DEVICES];
 static int device_count;
 
 static inline uint32_t pci_config_addr(uint8_t bus, uint8_t device,
                                         uint8_t func, uint8_t offset) {
-    return (1U << 31)
+    return PCI_ENABLE_BIT
          | ((uint32_t)bus << 16)
-         | ((uint32_t)(device & 0x1F) << 11)
-         | ((uint32_t)(func & 0x07) << 8)
-         | (offset & 0xFC);
+         | ((uint32_t)(device & PCI_DEVICE_MASK) << 11)
+         | ((uint32_t)(func & PCI_FUNCTION_MASK) << 8)
+         | (offset & PCI_OFFSET_MASK);
 }
 
 uint32_t pci_config_read32(uint8_t bus, uint8_t device, uint8_t func, uint8_t offset) {
@@ -38,44 +66,44 @@ static void pci_populate_device(uint8_t bus, uint8_t dev, uint8_t func,
     d->device_id     = devid;
 
     uint32_t class_reg = pci_config_read32(bus, dev, func, PCI_REG_CLASS);
-    d->class_code = (class_reg >> 24) & 0xFF;
-    d->subclass   = (class_reg >> 16) & 0xFF;
-    d->prog_if    = (class_reg >>  8) & 0xFF;
-    d->revision   = class_reg & 0xFF;
+    d->class_code = (class_reg >> PCI_BYTE3_SHIFT) & PCI_BYTE0_MASK;
+    d->subclass   = (class_reg >> PCI_BYTE2_SHIFT) & PCI_BYTE0_MASK;
+    d->prog_if    = (class_reg >> PCI_BYTE1_SHIFT) & PCI_BYTE0_MASK;
+    d->revision   = class_reg & PCI_BYTE0_MASK;
 
     /* Header type is byte 2 of the dword at offset 0x0C */
-    d->header_type = (pci_config_read32(bus, dev, func, PCI_REG_HEADER_TYPE) >> 16) & 0xFF;
+    d->header_type = (pci_config_read32(bus, dev, func, PCI_REG_HEADER_TYPE) >> PCI_BYTE2_SHIFT) & PCI_BYTE0_MASK;
 
     /* Read BARs (only for header type 0 — normal devices) */
-    if ((d->header_type & 0x7F) == 0) {
-        for (int i = 0; i < 6; i++) {
-            d->bar[i] = pci_config_read32(bus, dev, func, PCI_REG_BAR0 + i * 4);
+    if ((d->header_type & PCI_HEADER_TYPE_MASK) == 0) {
+        for (int i = 0; i < PCI_NUM_BARS; i++) {
+            d->bar[i] = pci_config_read32(bus, dev, func, PCI_REG_BAR0 + i * PCI_BAR_STRIDE);
         }
     }
 
     uint32_t irq_reg = pci_config_read32(bus, dev, func, PCI_REG_IRQ_LINE);
-    d->irq_line = irq_reg & 0xFF;
-    d->irq_pin  = (irq_reg >> 8) & 0xFF;
+    d->irq_line = irq_reg & PCI_BYTE0_MASK;
+    d->irq_pin  = (irq_reg >> PCI_BYTE1_SHIFT) & PCI_BYTE0_MASK;
 
     device_count++;
 }
 
 static void pci_scan_device(uint8_t bus, uint8_t dev) {
     uint32_t id_reg = pci_config_read32(bus, dev, 0, PCI_REG_VENDOR_ID);
-    uint16_t vendor = id_reg & 0xFFFF;
-    uint16_t devid  = (id_reg >> 16) & 0xFFFF;
-    if (vendor == PCI_VENDOR_NONE || vendor == 0x0000) return;
+    uint16_t vendor = id_reg & PCI_WORD0_MASK;
+    uint16_t devid  = (id_reg >> PCI_WORD1_SHIFT) & PCI_WORD0_MASK;
+    if (vendor == PCI_VENDOR_NONE || vendor == PCI_VENDOR_INVALID) return;
 
     pci_populate_device(bus, dev, 0, vendor, devid);
 
     /* Check if multi-function device — reuse header_type from the device
      * we just populated (avoids a redundant config read). */
     if (device_count > 0 && (devices[device_count - 1].header_type & PCI_HEADER_MULTIFUNCTION)) {
-        for (uint8_t func = 1; func < 8; func++) {
+        for (uint8_t func = 1; func < PCI_MAX_FUNCTIONS; func++) {
             id_reg = pci_config_read32(bus, dev, func, PCI_REG_VENDOR_ID);
-            vendor = id_reg & 0xFFFF;
-            devid  = (id_reg >> 16) & 0xFFFF;
-            if (vendor == PCI_VENDOR_NONE || vendor == 0x0000) continue;
+            vendor = id_reg & PCI_WORD0_MASK;
+            devid  = (id_reg >> PCI_WORD1_SHIFT) & PCI_WORD0_MASK;
+            if (vendor == PCI_VENDOR_NONE || vendor == PCI_VENDOR_INVALID) continue;
             pci_populate_device(bus, dev, func, vendor, devid);
         }
     }
@@ -84,8 +112,8 @@ static void pci_scan_device(uint8_t bus, uint8_t dev) {
 void pci_init(void) {
     device_count = 0;
 
-    for (int bus = 0; bus < 256; bus++) {
-        for (int dev = 0; dev < 32; dev++) {
+    for (int bus = 0; bus < PCI_MAX_BUSES; bus++) {
+        for (int dev = 0; dev < PCI_MAX_DEV_PER_BUS; dev++) {
             pci_scan_device((uint8_t)bus, (uint8_t)dev);
         }
     }
@@ -119,7 +147,7 @@ void pci_enable_bus_master(const PciDevice *dev) {
 
 uint16_t pci_bar_io_base(uint32_t bar) {
     /* Bit 0 = 1 means I/O space. Bits [1:0] are flags, base is bits [31:2]. */
-    return (uint16_t)(bar & 0xFFFC);
+    return (uint16_t)(bar & PCI_BAR_IO_MASK);
 }
 
 int pci_get_device_count(void) {

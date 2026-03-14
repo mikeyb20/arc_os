@@ -12,6 +12,9 @@
 #define PTE_ADDR_MASK_2MB   0x000FFFFFFFE00000ULL
 #define PAGE_OFFSET_MASK    (PAGE_SIZE - 1)               /* 0xFFF */
 
+/* PML4 index where kernel mappings begin (upper half) */
+#define PML4_KERNEL_START   256
+
 /* Linker symbols */
 extern char _kernel_start[];
 extern char _kernel_end[];
@@ -54,6 +57,30 @@ static uint64_t *ensure_table(uint64_t *table, uint64_t index) {
         table[index] = new_table | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
     }
     return (uint64_t *)phys_to_virt(table[index] & PTE_ADDR_MASK);
+}
+
+/* Walk a 4-level page table to find the PT entry for a virtual address.
+ * Returns pointer to the PT entry, or NULL if any intermediate level is absent. */
+static uint64_t *walk_to_pt_entry(uint64_t pml4_phys, uint64_t virt) {
+    uint64_t *pml4 = (uint64_t *)phys_to_virt(pml4_phys);
+    if (!(pml4[PML4_INDEX(virt)] & PTE_PRESENT)) return NULL;
+
+    uint64_t *pdpt = (uint64_t *)phys_to_virt(pml4[PML4_INDEX(virt)] & PTE_ADDR_MASK);
+    if (!(pdpt[PDPT_INDEX(virt)] & PTE_PRESENT)) return NULL;
+
+    uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[PDPT_INDEX(virt)] & PTE_ADDR_MASK);
+    if (!(pd[PD_INDEX(virt)] & PTE_PRESENT)) return NULL;
+
+    uint64_t *pt = (uint64_t *)phys_to_virt(pd[PD_INDEX(virt)] & PTE_ADDR_MASK);
+    return &pt[PT_INDEX(virt)];
+}
+
+/* Free all present, non-huge PT pages in a page directory. */
+static void free_pd_entries(uint64_t *pd) {
+    for (int i = 0; i < PT_ENTRIES; i++) {
+        if (!(pd[i] & PTE_PRESENT) || (pd[i] & PTE_HUGE)) continue;
+        pmm_free_page(pd[i] & PTE_ADDR_MASK);
+    }
 }
 
 void vmm_map_page(uint64_t virt, uint64_t phys, uint32_t flags) {
@@ -133,11 +160,11 @@ uint64_t vmm_create_user_pml4(void) {
     uint64_t *new_pml4 = (uint64_t *)phys_to_virt(pml4_phys);
     uint64_t *kern_pml4 = (uint64_t *)phys_to_virt(kernel_pml4_phys);
 
-    /* Copy kernel-half PML4 entries (256-511) so kernel is mapped in every process */
-    for (int i = 256; i < 512; i++) {
+    /* Copy kernel-half PML4 entries so kernel is mapped in every process */
+    for (int i = PML4_KERNEL_START; i < PT_ENTRIES; i++) {
         new_pml4[i] = kern_pml4[i];
     }
-    /* User half (0-255) is already zeroed by alloc_table_page() */
+    /* User half (0 to PML4_KERNEL_START-1) is already zeroed by alloc_table_page() */
 
     return pml4_phys;
 }
@@ -145,18 +172,14 @@ uint64_t vmm_create_user_pml4(void) {
 void vmm_destroy_user_pml4(uint64_t pml4_phys) {
     uint64_t *pml4 = (uint64_t *)phys_to_virt(pml4_phys);
 
-    /* Free user-half page table structures (entries 0-255) */
-    for (int i = 0; i < 256; i++) {
+    /* Free user-half page table structures */
+    for (int i = 0; i < PML4_KERNEL_START; i++) {
         if (!(pml4[i] & PTE_PRESENT)) continue;
         uint64_t *pdpt = (uint64_t *)phys_to_virt(pml4[i] & PTE_ADDR_MASK);
-        for (int j = 0; j < 512; j++) {
+        for (int j = 0; j < PT_ENTRIES; j++) {
             if (!(pdpt[j] & PTE_PRESENT) || (pdpt[j] & PTE_HUGE)) continue;
             uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[j] & PTE_ADDR_MASK);
-            for (int k = 0; k < 512; k++) {
-                if (!(pd[k] & PTE_PRESENT) || (pd[k] & PTE_HUGE)) continue;
-                /* Free the PT page (not the leaf physical pages) */
-                pmm_free_page(pd[k] & PTE_ADDR_MASK);
-            }
+            free_pd_entries(pd);
             pmm_free_page(pdpt[j] & PTE_ADDR_MASK);
         }
         pmm_free_page(pml4[i] & PTE_ADDR_MASK);
@@ -174,34 +197,16 @@ void vmm_map_page_in(uint64_t pml4_phys, uint64_t virt, uint64_t phys, uint32_t 
 }
 
 void vmm_unmap_page_in(uint64_t pml4_phys, uint64_t virt) {
-    uint64_t *pml4 = (uint64_t *)phys_to_virt(pml4_phys);
-    if (!(pml4[PML4_INDEX(virt)] & PTE_PRESENT)) return;
-
-    uint64_t *pdpt = (uint64_t *)phys_to_virt(pml4[PML4_INDEX(virt)] & PTE_ADDR_MASK);
-    if (!(pdpt[PDPT_INDEX(virt)] & PTE_PRESENT)) return;
-
-    uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[PDPT_INDEX(virt)] & PTE_ADDR_MASK);
-    if (!(pd[PD_INDEX(virt)] & PTE_PRESENT)) return;
-
-    uint64_t *pt = (uint64_t *)phys_to_virt(pd[PD_INDEX(virt)] & PTE_ADDR_MASK);
-    pt[PT_INDEX(virt)] = 0;
+    uint64_t *pte = walk_to_pt_entry(pml4_phys, virt);
+    if (pte == NULL) return;
+    *pte = 0;
     paging_invlpg(virt);
 }
 
 uint64_t vmm_get_phys_in(uint64_t pml4_phys, uint64_t virt) {
-    uint64_t *pml4 = (uint64_t *)phys_to_virt(pml4_phys);
-    if (!(pml4[PML4_INDEX(virt)] & PTE_PRESENT)) return 0;
-
-    uint64_t *pdpt = (uint64_t *)phys_to_virt(pml4[PML4_INDEX(virt)] & PTE_ADDR_MASK);
-    if (!(pdpt[PDPT_INDEX(virt)] & PTE_PRESENT)) return 0;
-
-    uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[PDPT_INDEX(virt)] & PTE_ADDR_MASK);
-    if (!(pd[PD_INDEX(virt)] & PTE_PRESENT)) return 0;
-
-    uint64_t *pt = (uint64_t *)phys_to_virt(pd[PD_INDEX(virt)] & PTE_ADDR_MASK);
-    if (!(pt[PT_INDEX(virt)] & PTE_PRESENT)) return 0;
-
-    return (pt[PT_INDEX(virt)] & PTE_ADDR_MASK) + (virt & PAGE_OFFSET_MASK);
+    uint64_t *pte = walk_to_pt_entry(pml4_phys, virt);
+    if (pte == NULL || !(*pte & PTE_PRESENT)) return 0;
+    return (*pte & PTE_ADDR_MASK) + (virt & PAGE_OFFSET_MASK);
 }
 
 /* --- Initialization --- */
@@ -233,7 +238,7 @@ void vmm_init(const BootInfo *info) {
     uint64_t kernel_phys = info->kernel_phys_base;
     uint64_t kernel_size = (uint64_t)_kernel_end - (uint64_t)_kernel_start;
     /* Round up to page boundary */
-    kernel_size = (kernel_size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1ULL);
+    kernel_size = PAGE_ALIGN_UP(kernel_size);
 
     kprintf("[VMM] Mapping kernel: 0x%lx -> phys 0x%lx (%lu KB)\n",
             kernel_virt, kernel_phys, kernel_size / 1024);

@@ -70,12 +70,12 @@ static VfsNode *vfs_resolve_parent(const char *path, char *name_out, size_t name
 
     /* Resolve the parent path by walking components up to last_slash */
     VfsNode *node = vfs_root;
-    const char *p = path;
+    const char *cursor = path;
     char comp[VFS_NAME_MAX];
 
-    while (p < last_slash) {
-        p = path_next_component(p, comp, sizeof(comp));
-        if (p == NULL) break;
+    while (cursor < last_slash) {
+        cursor = path_next_component(cursor, comp, sizeof(comp));
+        if (cursor == NULL) break;
 
         if (node->type != VFS_DIRECTORY || node->ops == NULL || node->ops->lookup == NULL) {
             *errno_out = ENOTDIR;
@@ -90,7 +90,7 @@ static VfsNode *vfs_resolve_parent(const char *path, char *name_out, size_t name
         node = child;
 
         /* If we've consumed up to or past last_slash, stop */
-        if (p >= last_slash) break;
+        if (cursor >= last_slash) break;
     }
 
     if (node->type != VFS_DIRECTORY) {
@@ -107,10 +107,10 @@ VfsNode *vfs_resolve(const char *path) {
     }
 
     VfsNode *node = vfs_root;
-    const char *p = path;
+    const char *cursor = path;
     char comp[VFS_NAME_MAX];
 
-    while ((p = path_next_component(p, comp, sizeof(comp))) != NULL) {
+    while ((cursor = path_next_component(cursor, comp, sizeof(comp))) != NULL) {
         if (node->type != VFS_DIRECTORY || node->ops == NULL || node->ops->lookup == NULL) {
             return NULL;
         }

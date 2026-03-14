@@ -9,10 +9,10 @@ void serial_init(void) {
     outb(SERIAL_COM1 + SERIAL_REG_LCR, SERIAL_LCR_DLAB);
 
     /* Set divisor to 12 (lo byte) — 9600 baud */
-    outb(SERIAL_COM1 + SERIAL_REG_DATA, SERIAL_BAUD_9600);
+    outb(SERIAL_COM1 + SERIAL_REG_DLL, SERIAL_BAUD_9600);
 
     /* Divisor high byte */
-    outb(SERIAL_COM1 + SERIAL_REG_IER, 0x00);
+    outb(SERIAL_COM1 + SERIAL_REG_DLH, 0x00);
 
     /* 8 bits, no parity, 1 stop bit (8N1), DLAB off */
     outb(SERIAL_COM1 + SERIAL_REG_LCR, SERIAL_LCR_8N1);
