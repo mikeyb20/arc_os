@@ -12,6 +12,14 @@ static pid_t next_pid = 0;
 #define MAX_PROCESSES 64
 static Process *proc_table[MAX_PROCESSES];
 
+/* Common PCB setup: assign PID, set state, link into process list. */
+static void proc_setup(Process *p) {
+    p->pid = next_pid++;
+    p->state = PROC_ALIVE;
+    p->next = proc_list;
+    proc_list = p;
+}
+
 void proc_init(void) {
     Process *p = kmalloc(sizeof(Process), GFP_ZERO);
     if (p == NULL) {
@@ -19,13 +27,11 @@ void proc_init(void) {
         for (;;) __asm__ volatile ("cli; hlt");
     }
 
-    p->pid = next_pid++;
-    p->state = PROC_ALIVE;
+    proc_setup(p);
     p->main_thread = thread_current();
     p->page_table = 0;  /* Uses current kernel page tables */
     p->parent = NULL;
-    p->next = NULL;
-
+    p->next = NULL;  /* Boot process is list head — no predecessor */
     proc_list = p;
     if (p->main_thread->tid < MAX_PROCESSES) {
         proc_table[p->main_thread->tid] = p;
@@ -44,13 +50,9 @@ Process *proc_create(thread_entry_t entry, void *arg) {
         return NULL;
     }
 
-    p->pid = next_pid++;
-    p->state = PROC_ALIVE;
+    proc_setup(p);
     p->main_thread = t;
     p->page_table = 0;  /* Share kernel page tables for now */
-    p->parent = NULL;
-    p->next = proc_list;
-    proc_list = p;
 
     if (t->tid < MAX_PROCESSES) {
         proc_table[t->tid] = p;
@@ -66,16 +68,8 @@ Process *proc_create_user(void) {
     Process *p = kmalloc(sizeof(Process), GFP_ZERO);
     if (p == NULL) return NULL;
 
-    p->pid = next_pid++;
-    p->state = PROC_ALIVE;
-    p->main_thread = NULL;
+    proc_setup(p);
     p->page_table = vmm_create_user_pml4();
-    p->fd_table = NULL;
-    p->brk_current = 0;
-    p->brk_start = 0;
-    p->parent = NULL;
-    p->next = proc_list;
-    proc_list = p;
 
     kprintf("[PROC] Created user process pid=%u (pml4=0x%lx)\n", p->pid, p->page_table);
     return p;

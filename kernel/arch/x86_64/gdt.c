@@ -28,7 +28,7 @@ static void gdt_set_tss(int index, uint64_t base, uint32_t limit) {
     desc->limit_low   = (uint16_t)(limit & 0xFFFF);
     desc->base_low    = (uint16_t)(base & 0xFFFF);
     desc->base_mid    = (uint8_t)((base >> 16) & 0xFF);
-    desc->access      = 0x89;  /* Present, 64-bit TSS (available) */
+    desc->access      = GDT_ACCESS_TSS64;
     desc->granularity  = (uint8_t)((limit >> 16) & 0x0F);
     desc->base_high   = (uint8_t)((base >> 24) & 0xFF);
     desc->base_upper  = (uint32_t)(base >> 32);
@@ -43,16 +43,16 @@ void gdt_init(void) {
     /* Entry 0: Null descriptor (required) */
 
     /* Entry 1 (0x08): Kernel code — DPL 0, executable, readable, long mode */
-    gdt_set_entry(1, 0x9A, 0x2);  /* access=Present|DPL0|Code|Exec|Read, flags=Long */
+    gdt_set_entry(1, GDT_ACCESS_PRESENT | GDT_ACCESS_SEGMENT | GDT_ACCESS_EXEC | GDT_ACCESS_RW, GDT_FLAG_LONG_MODE);
 
     /* Entry 2 (0x10): Kernel data — DPL 0, writable */
-    gdt_set_entry(2, 0x92, 0x0);  /* access=Present|DPL0|Data|Write, flags=none */
+    gdt_set_entry(2, GDT_ACCESS_PRESENT | GDT_ACCESS_SEGMENT | GDT_ACCESS_RW, 0);
 
     /* Entry 3 (0x18): User data — DPL 3, writable */
-    gdt_set_entry(3, 0xF2, 0x0);  /* access=Present|DPL3|Data|Write, flags=none */
+    gdt_set_entry(3, GDT_ACCESS_PRESENT | GDT_ACCESS_DPL3 | GDT_ACCESS_SEGMENT | GDT_ACCESS_RW, 0);
 
     /* Entry 4 (0x20): User code — DPL 3, executable, readable, long mode */
-    gdt_set_entry(4, 0xFA, 0x2);  /* access=Present|DPL3|Code|Exec|Read, flags=Long */
+    gdt_set_entry(4, GDT_ACCESS_PRESENT | GDT_ACCESS_DPL3 | GDT_ACCESS_SEGMENT | GDT_ACCESS_EXEC | GDT_ACCESS_RW, GDT_FLAG_LONG_MODE);
 
     /* Entry 5-6 (0x28): TSS descriptor (16 bytes, spans two GDT slots) */
     tss.iomap_base = sizeof(TSS);

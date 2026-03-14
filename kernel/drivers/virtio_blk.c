@@ -105,9 +105,10 @@ int virtio_blk_read(uint64_t sector, uint32_t count, void *buf) {
     uint16_t d2 = virtq_alloc_desc(vq);
     if (d0 == VRING_DESC_NONE || d1 == VRING_DESC_NONE || d2 == VRING_DESC_NONE) {
         kprintf("[VIRTIO-BLK] No free descriptors\n");
-        if (d0 != VRING_DESC_NONE) virtq_free_chain(vq, d0);
-        if (d1 != VRING_DESC_NONE) virtq_free_chain(vq, d1);
-        if (d2 != VRING_DESC_NONE) virtq_free_chain(vq, d2);
+        uint16_t descs[] = { d0, d1, d2 };
+        for (int i = 0; i < 3; i++) {
+            if (descs[i] != VRING_DESC_NONE) virtq_free_chain(vq, descs[i]);
+        }
         pmm_free_page(req_phys);
         free_contiguous_pages(data_phys, data_pages);
         return -1;

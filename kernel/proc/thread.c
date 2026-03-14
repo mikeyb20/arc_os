@@ -29,12 +29,6 @@ void thread_init(void) {
 
     boot->tid = next_tid++;
     boot->state = THREAD_RUNNING;
-    boot->stack_base = NULL;    /* Boot thread uses the original kernel stack */
-    boot->stack_size = 0;
-    boot->kernel_stack_top = 0; /* Boot thread never enters user mode */
-    boot->entry = NULL;
-    boot->arg = NULL;
-    boot->next = NULL;
 
     current_thread = boot;
     kprintf("[PROC] Threading initialized (boot thread tid=%u)\n", boot->tid);
@@ -69,14 +63,6 @@ Thread *thread_create(thread_entry_t entry, void *arg) {
 
     /* RSP points to the return address (what ret will pop) */
     t->context.rsp = (uint64_t)&stack_top[-1];
-
-    /* Zero callee-saved registers for clean start */
-    t->context.r15 = 0;
-    t->context.r14 = 0;
-    t->context.r13 = 0;
-    t->context.r12 = 0;
-    t->context.rbx = 0;
-    t->context.rbp = 0;
 
     kprintf("[PROC] Created thread tid=%u\n", t->tid);
     return t;

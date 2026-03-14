@@ -34,7 +34,7 @@ void pit_init(uint32_t freq_hz) {
     uint16_t divisor = (uint16_t)(PIT_BASE_FREQ / freq_hz);
 
     /* Channel 0, access mode lobyte/hibyte, mode 2 (rate generator) */
-    outb(PIT_COMMAND, 0x34);
+    outb(PIT_COMMAND, PIT_CMD_CHANNEL0 | PIT_CMD_LOHI | PIT_CMD_MODE2);
 
     /* Send divisor */
     outb(PIT_CHANNEL0, (uint8_t)(divisor & 0xFF));

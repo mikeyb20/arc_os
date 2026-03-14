@@ -8,14 +8,7 @@
 /* Maximum user-space virtual address (canonical lower half) */
 #define USER_VADDR_MAX 0x0000800000000000ULL
 
-int elf_load(const void *data, size_t size, uint64_t pml4_phys, ElfLoadResult *result) {
-    if (data == NULL || result == NULL || size < sizeof(Elf64_Ehdr)) {
-        return -EINVAL;
-    }
-
-    const Elf64_Ehdr *ehdr = (const Elf64_Ehdr *)data;
-
-    /* Validate ELF magic */
+static int elf_validate_header(const Elf64_Ehdr *ehdr, size_t size) {
     if (ehdr->e_ident[EI_MAG0] != ELF_MAGIC0 ||
         ehdr->e_ident[EI_MAG1] != ELF_MAGIC1 ||
         ehdr->e_ident[EI_MAG2] != ELF_MAGIC2 ||
@@ -23,8 +16,6 @@ int elf_load(const void *data, size_t size, uint64_t pml4_phys, ElfLoadResult *r
         kprintf("[ELF] Bad magic\n");
         return -EINVAL;
     }
-
-    /* Validate ELF class and encoding */
     if (ehdr->e_ident[EI_CLASS] != ELFCLASS64) {
         kprintf("[ELF] Not 64-bit\n");
         return -EINVAL;
@@ -33,8 +24,6 @@ int elf_load(const void *data, size_t size, uint64_t pml4_phys, ElfLoadResult *r
         kprintf("[ELF] Not little-endian\n");
         return -EINVAL;
     }
-
-    /* Validate type and machine */
     if (ehdr->e_type != ET_EXEC) {
         kprintf("[ELF] Not an executable (type=%u)\n", ehdr->e_type);
         return -EINVAL;
@@ -43,8 +32,6 @@ int elf_load(const void *data, size_t size, uint64_t pml4_phys, ElfLoadResult *r
         kprintf("[ELF] Not x86_64 (machine=%u)\n", ehdr->e_machine);
         return -EINVAL;
     }
-
-    /* Validate program header table bounds */
     if (ehdr->e_phoff == 0 || ehdr->e_phnum == 0) {
         kprintf("[ELF] No program headers\n");
         return -EINVAL;
@@ -53,6 +40,39 @@ int elf_load(const void *data, size_t size, uint64_t pml4_phys, ElfLoadResult *r
         kprintf("[ELF] Program headers extend past file\n");
         return -EINVAL;
     }
+    return 0;
+}
+
+/* Copy file data that overlaps with a single mapped page. */
+static void elf_copy_page_data(void *page_virt, uint64_t vaddr,
+                               const Elf64_Phdr *phdr, const void *data) {
+    if (phdr->p_filesz == 0) return;
+
+    uint64_t file_start = phdr->p_vaddr;
+    uint64_t file_end   = phdr->p_vaddr + phdr->p_filesz;
+    uint64_t page_start = vaddr;
+    uint64_t page_end   = vaddr + PAGE_SIZE;
+
+    uint64_t copy_start = (file_start > page_start) ? file_start : page_start;
+    uint64_t copy_end   = (file_end < page_end) ? file_end : page_end;
+
+    if (copy_start < copy_end) {
+        uint64_t file_offset = phdr->p_offset + (copy_start - phdr->p_vaddr);
+        uint64_t page_offset = copy_start - page_start;
+        memcpy((uint8_t *)page_virt + page_offset,
+               (const uint8_t *)data + file_offset,
+               copy_end - copy_start);
+    }
+}
+
+int elf_load(const void *data, size_t size, uint64_t pml4_phys, ElfLoadResult *result) {
+    if (data == NULL || result == NULL || size < sizeof(Elf64_Ehdr)) {
+        return -EINVAL;
+    }
+
+    const Elf64_Ehdr *ehdr = (const Elf64_Ehdr *)data;
+    int err = elf_validate_header(ehdr, size);
+    if (err != 0) return err;
 
     uint64_t highest_addr = 0;
     uint64_t hhdm = vmm_get_hhdm_offset();
@@ -95,33 +115,9 @@ int elf_load(const void *data, size_t size, uint64_t pml4_phys, ElfLoadResult *r
                 return -ENOMEM;
             }
 
-            /* Zero the page first (handles BSS and partial pages) */
             void *page_virt = (void *)(phys + hhdm);
             memset(page_virt, 0, PAGE_SIZE);
-
-            /* Copy file data if this page overlaps with the file portion */
-            if (phdr->p_filesz > 0) {
-                uint64_t file_start = phdr->p_vaddr;
-                uint64_t file_end = phdr->p_vaddr + phdr->p_filesz;
-
-                /* Calculate overlap between this page and file data */
-                uint64_t page_start = vaddr;
-                uint64_t page_end = vaddr + PAGE_SIZE;
-
-                uint64_t copy_start = (file_start > page_start) ? file_start : page_start;
-                uint64_t copy_end = (file_end < page_end) ? file_end : page_end;
-
-                if (copy_start < copy_end) {
-                    uint64_t file_offset = phdr->p_offset + (copy_start - phdr->p_vaddr);
-                    uint64_t page_offset = copy_start - page_start;
-                    uint64_t copy_len = copy_end - copy_start;
-
-                    memcpy((uint8_t *)page_virt + page_offset,
-                           (const uint8_t *)data + file_offset,
-                           copy_len);
-                }
-            }
-
+            elf_copy_page_data(page_virt, vaddr, phdr, data);
             vmm_map_page_in(pml4_phys, vaddr, phys, vmm_flags);
         }
 

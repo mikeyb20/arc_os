@@ -92,6 +92,17 @@ static void split_block(BlockHeader *block, size_t size) {
     block->size = size;
 }
 
+/* Allocate from a free block: split, mark used, optionally zero. */
+static void *block_allocate(BlockHeader *block, size_t size, uint32_t flags) {
+    split_block(block, size);
+    block->free = 0;
+    void *ptr = (void *)((uint8_t *)block + HEADER_SIZE);
+    if (flags & GFP_ZERO) {
+        memset(ptr, 0, size);
+    }
+    return ptr;
+}
+
 /* Coalesce a block with its next neighbor if both are free */
 static void coalesce_forward(BlockHeader *block) {
     while (block->next && block->next->free) {
@@ -120,15 +131,7 @@ void *kmalloc(size_t size, uint32_t flags) {
         }
 
         if (block->free && block->size >= size) {
-            /* Found a fit */
-            split_block(block, size);
-            block->free = 0;
-
-            void *ptr = (void *)((uint8_t *)block + HEADER_SIZE);
-            if (flags & GFP_ZERO) {
-                memset(ptr, 0, size);
-            }
-            return ptr;
+            return block_allocate(block, size, flags);
         }
         block = block->next;
     }
@@ -171,15 +174,7 @@ void *kmalloc(size_t size, uint32_t flags) {
         block = new_block;
     }
 
-    /* Now allocate from this block */
-    split_block(block, size);
-    block->free = 0;
-
-    void *ptr = (void *)((uint8_t *)block + HEADER_SIZE);
-    if (flags & GFP_ZERO) {
-        memset(ptr, 0, size);
-    }
-    return ptr;
+    return block_allocate(block, size, flags);
 }
 
 void kfree(void *ptr) {

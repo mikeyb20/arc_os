@@ -12,6 +12,10 @@
 #include "lib/mem.h"
 #include "fs/vfs.h"
 
+/* RFLAGS bits cleared by SFMASK on SYSCALL entry */
+#define RFLAGS_IF  (1ULL << 9)   /* Interrupt Flag */
+#define RFLAGS_DF  (1ULL << 10)  /* Direction Flag */
+
 /* Syscall handler table */
 static syscall_handler_t syscall_table[SYSCALL_MAX];
 
@@ -29,7 +33,7 @@ static int64_t sys_exit(uint64_t status, uint64_t a1, uint64_t a2,
     sched_schedule();
     /* Should not return */
     for (;;) __asm__ volatile ("hlt");
-    return 0;
+    __builtin_unreachable();
 }
 
 /* SYS_WRITE: write to fd (fd 1/2 → serial output) */
@@ -167,14 +171,14 @@ void syscall_init(void) {
      *    STAR[47:32] = kernel CS (0x08); kernel SS = CS + 8 = 0x10
      *    STAR[63:48] = user base (0x10); SYSRET loads CS = base+16 = 0x20|3, SS = base+8 = 0x18|3
      *    This matches our GDT layout: 0x08=kcode, 0x10=kdata, 0x18=udata, 0x20=ucode */
-    uint64_t star = ((uint64_t)0x0010 << 48) | ((uint64_t)0x0008 << 32);
+    uint64_t star = ((uint64_t)GDT_KERNEL_DATA << 48) | ((uint64_t)GDT_KERNEL_CODE << 32);
     wrmsr(MSR_STAR, star);
 
     /* 3. Set LSTAR = syscall entry point */
     wrmsr(MSR_LSTAR, (uint64_t)syscall_entry);
 
     /* 4. Set SFMASK: clear IF (bit 9) and DF (bit 10) on SYSCALL entry */
-    wrmsr(MSR_SFMASK, (1ULL << 9) | (1ULL << 10));
+    wrmsr(MSR_SFMASK, RFLAGS_IF | RFLAGS_DF);
 
     /* 5. Register built-in handlers */
     syscall_register(SYS_EXIT,   sys_exit);

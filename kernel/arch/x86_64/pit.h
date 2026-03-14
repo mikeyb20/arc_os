@@ -7,6 +7,11 @@
 #define PIT_CHANNEL0  0x40
 #define PIT_COMMAND   0x43
 
+/* PIT command register bit fields */
+#define PIT_CMD_CHANNEL0   0x00  /* Select channel 0 */
+#define PIT_CMD_LOHI       0x30  /* Access mode: lobyte/hibyte */
+#define PIT_CMD_MODE2      0x04  /* Mode 2: rate generator */
+
 /* PIT base frequency: 1193182 Hz */
 #define PIT_BASE_FREQ 1193182
 
