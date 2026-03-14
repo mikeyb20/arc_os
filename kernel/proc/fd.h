@@ -30,4 +30,7 @@ void fd_free(FdTable *table, int fd);
 /* Get the VfsFile for a file descriptor. Returns NULL if invalid/unused. */
 VfsFile *fd_get(FdTable *table, int fd);
 
+/* Duplicate an entire fd table. Returns new table or NULL on failure. */
+FdTable *fd_table_dup(const FdTable *src);
+
 #endif /* ARCHOS_PROC_FD_H */

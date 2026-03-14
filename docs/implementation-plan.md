@@ -187,10 +187,10 @@ Create directory structure and all build infrastructure.
 ### Phase 5: Syscalls & User Space
 | Chunk | Description | ~Lines | Status |
 |-------|-------------|--------|--------|
-| 5.1 | SYSCALL/SYSRET entry, dispatcher table | 200 | NOT STARTED |
-| 5.2 | Per-process address spaces | 200 | NOT STARTED |
-| 5.3 | ELF64 loader | 250 | NOT STARTED |
-| 5.4 | First user-space process | 150 | NOT STARTED |
+| 5.1 | SYSCALL/SYSRET entry, dispatcher table | 200 | DONE |
+| 5.2 | Per-process address spaces | 200 | DONE |
+| 5.3 | ELF64 loader | 250 | DONE |
+| 5.4 | First user-space process | 150 | DONE |
 | 5.5 | fork/exec/wait | 300 | NOT STARTED |
 
 ### Phase 6: File Systems
@@ -229,4 +229,5 @@ Items intentionally postponed from their original phase:
 - **Phase 3**: Sleep queues, thread-local storage, work queues
 - **Phase 4.1**: ACPI table parsing
 - **Phase 4**: Memory barrier HAL abstraction, VirtIO feature caching, DMA buffer pool
-- **Phase 6**: Dentry cache, mount table, per-process fd table
+- **Phase 5**: fork/exec/wait (5.5), user pointer validation (copy_from_user/copy_to_user)
+- **Phase 6**: Dentry cache, mount table

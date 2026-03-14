@@ -48,4 +48,12 @@ void vmm_unmap_page_in(uint64_t pml4, uint64_t virt);
 /* Get the physical address for a virtual address in a specific address space. */
 uint64_t vmm_get_phys_in(uint64_t pml4, uint64_t virt);
 
+/* Fork a user address space: create new PML4, copy all user-half pages.
+ * Returns new PML4 physical address, or 0 on failure. */
+uint64_t vmm_fork_address_space(uint64_t src_pml4_phys);
+
+/* Free all user-half leaf pages AND page table structures for a PML4.
+ * After this, the PML4 is destroyed (cannot be reused). */
+void vmm_free_user_pages(uint64_t pml4_phys);
+
 #endif /* ARCHOS_MM_VMM_H */

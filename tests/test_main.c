@@ -50,6 +50,14 @@ extern TestCase bootinfo_tests[];
 extern int bootinfo_test_count;
 extern TestCase pic_tests[];
 extern int pic_test_count;
+extern TestCase user_access_tests[];
+extern int user_access_test_count;
+extern TestCase tty_tests[];
+extern int tty_test_count;
+extern TestCase keyboard_tests[];
+extern int keyboard_test_count;
+extern TestCase shell_tests[];
+extern int shell_test_count;
 
 static void run_suite(const char *suite_name, TestCase *tests, int count) {
     printf("[%s] Running %d tests\n", suite_name, count);
@@ -94,6 +102,10 @@ int main(int argc, char **argv) {
         { "idt",       idt_tests,       &idt_test_count },
         { "bootinfo",  bootinfo_tests,  &bootinfo_test_count },
         { "pic",       pic_tests,       &pic_test_count },
+        { "user_access", user_access_tests, &user_access_test_count },
+        { "tty",          tty_tests,          &tty_test_count },
+        { "keyboard",     keyboard_tests,     &keyboard_test_count },
+        { "shell",        shell_tests,        &shell_test_count },
     };
     int suite_count = (int)(sizeof(suites) / sizeof(suites[0]));
 

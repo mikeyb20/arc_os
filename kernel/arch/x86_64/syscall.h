@@ -14,6 +14,18 @@
 #define SYS_READ    4
 #define SYS_CLOSE   5
 #define SYS_BRK     6
+#define SYS_LSEEK   7
+#define SYS_STAT    8
+#define SYS_MKDIR   9
+#define SYS_READDIR 10
+#define SYS_UNLINK  11
+#define SYS_FSTAT   12
+#define SYS_DUP     13
+#define SYS_DUP2    14
+#define SYS_GETPPID 15
+#define SYS_FORK    16
+#define SYS_EXEC    17
+#define SYS_WAIT    18
 
 /* Syscall handler type: up to 6 arguments, returns int64_t */
 typedef int64_t (*syscall_handler_t)(uint64_t, uint64_t, uint64_t,

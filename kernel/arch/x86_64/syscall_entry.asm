@@ -28,6 +28,18 @@ syscall_entry:
     push r14
     push r15
 
+    ; Save user context to globals for fork()
+    mov [rel syscall_saved_user_rip], rcx
+    mov [rel syscall_saved_user_rflags], r11
+    push qword [rel syscall_user_rsp]
+    pop qword [rel syscall_saved_user_rsp]
+    mov [rel syscall_saved_user_rbp], rbp
+    mov [rel syscall_saved_user_rbx], rbx
+    mov [rel syscall_saved_user_r12], r12
+    mov [rel syscall_saved_user_r13], r13
+    mov [rel syscall_saved_user_r14], r14
+    mov [rel syscall_saved_user_r15], r15
+
     ; Shuffle registers for C calling convention:
     ;   syscall_dispatch(num, a0, a1, a2, a3, a4, a5)
     ;   RDI=num  RSI=a0  RDX=a1  RCX=a2  R8=a3  R9=a4  [rsp]=a5
@@ -61,3 +73,22 @@ syscall_entry:
 
 section .bss
 syscall_user_rsp: resq 1   ; scratch for user RSP (single-CPU only)
+
+global syscall_saved_user_rip
+global syscall_saved_user_rsp
+global syscall_saved_user_rflags
+global syscall_saved_user_rbp
+global syscall_saved_user_rbx
+global syscall_saved_user_r12
+global syscall_saved_user_r13
+global syscall_saved_user_r14
+global syscall_saved_user_r15
+syscall_saved_user_rip:    resq 1
+syscall_saved_user_rsp:    resq 1
+syscall_saved_user_rflags: resq 1
+syscall_saved_user_rbp:    resq 1
+syscall_saved_user_rbx:    resq 1
+syscall_saved_user_r12:    resq 1
+syscall_saved_user_r13:    resq 1
+syscall_saved_user_r14:    resq 1
+syscall_saved_user_r15:    resq 1

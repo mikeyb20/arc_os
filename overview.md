@@ -17,11 +17,11 @@ A long-term project outline for building a custom operating system. Designed aro
 | 2 | COMPLETE | PMM bitmap allocator, VMM with own page tables, kmalloc free-list heap |
 | 3 | CORE COMPLETE | TCB, context switch, round-robin scheduler, preemptive multitasking, spinlock. Deferred: sleep queues, mutexes/semaphores/condvars, TLS, work queues |
 | 4 | PARTIAL | PCI enumeration + VirtIO common + VirtIO-blk polling read. Deferred: ACPI (4.1) |
-| 5 | SCAFFOLDED | SYSCALL/SYSRET infrastructure exists in source (`kernel/arch/x86_64/syscall.{h,c}`, `syscall_entry.asm`, `msr.h`) but is not yet compiled into the kernel |
+| 5 | MOSTLY COMPLETE | SYSCALL/SYSRET, per-process address spaces, ELF64 loader, init process, FD table (5.1-5.4). Deferred: fork/exec/wait (5.5) |
 | 6 | PARTIAL | VFS layer + ramfs complete (6.1-6.2). Not started: file syscalls (6.3), FAT32 (6.4) |
 | 7-13 | NOT STARTED | |
 
-**Test infrastructure**: 16 suites, 173 host-side tests — all passing.
+**Test infrastructure**: 21 suites, 291 host-side tests — all passing.
 
 ---
 
@@ -814,7 +814,7 @@ Each step has a concrete milestone — a thing you can boot and demonstrate.
 5. **Phase 3.1–3.3** → Two kernel threads alternating output on screen (multitasking works) — **DONE**
 6. **Phase 4.2–4.4** → VirtIO-blk reads a sector from a disk image — **DONE**
 7. **Phase 6.1–6.2** → VFS + ramfs: can create/read/write files in memory — **DONE**
-8. **Phase 5.1–5.4** → First user-space ELF binary runs, calls write() syscall
+8. **Phase 5.1–5.4** → First user-space ELF binary runs, calls write() syscall — **DONE**
 9. **Phase 5.3** → musl libc ported, user programs can use printf()
 10. **Phase 6.3** → FAT32 read/write on VirtIO-blk disk image
 11. **Phase 10** → Shell running (ported dash or custom), can launch programs

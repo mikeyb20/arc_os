@@ -14,6 +14,8 @@
 #include "proc/init.h"
 #include "drivers/pci.h"
 #include "drivers/virtio_blk.h"
+#include "drivers/tty.h"
+#include "drivers/keyboard.h"
 #include "lib/kprintf.h"
 #include "lib/mem.h"
 #include "fs/vfs.h"
@@ -218,6 +220,10 @@ void kmain(void) {
 
     /* Initialize SYSCALL/SYSRET */
     syscall_init();
+
+    /* Initialize TTY and PS/2 keyboard (TTY first — keyboard handler calls tty_input_char) */
+    tty_init();
+    keyboard_init();
 
     /* Launch init process from boot module */
     if (init_launch(info) != 0) {

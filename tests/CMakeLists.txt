@@ -23,6 +23,10 @@ add_executable(test_runner
     test_idt.c
     test_bootinfo.c
     test_pic.c
+    test_user_access.c
+    test_tty.c
+    test_keyboard.c
+    test_shell.c
 )
 
 # Include kernel source root for "lib/mem.h" etc, but NOT kernel/include
@@ -66,4 +70,8 @@ add_test(NAME test_spinlock  COMMAND test_runner --suite spinlock)
 add_test(NAME test_gdt       COMMAND test_runner --suite gdt)
 add_test(NAME test_idt       COMMAND test_runner --suite idt)
 add_test(NAME test_bootinfo  COMMAND test_runner --suite bootinfo)
-add_test(NAME test_pic       COMMAND test_runner --suite pic)
+add_test(NAME test_pic          COMMAND test_runner --suite pic)
+add_test(NAME test_user_access  COMMAND test_runner --suite user_access)
+add_test(NAME test_tty          COMMAND test_runner --suite tty)
+add_test(NAME test_keyboard     COMMAND test_runner --suite keyboard)
+add_test(NAME test_shell        COMMAND test_runner --suite shell)

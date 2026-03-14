@@ -204,6 +204,88 @@ uint64_t vmm_get_phys_in(uint64_t pml4_phys, uint64_t virt) {
     return (pt[PT_INDEX(virt)] & PTE_ADDR_MASK) + (virt & PAGE_OFFSET_MASK);
 }
 
+/* --- Address space fork/teardown --- */
+
+uint64_t vmm_fork_address_space(uint64_t src_pml4_phys) {
+    uint64_t dst_pml4_phys = vmm_create_user_pml4();
+    if (dst_pml4_phys == 0) return 0;
+
+    uint64_t *src_pml4 = (uint64_t *)phys_to_virt(src_pml4_phys);
+
+    for (int i = 0; i < 256; i++) {
+        if (!(src_pml4[i] & PTE_PRESENT)) continue;
+        uint64_t *src_pdpt = (uint64_t *)phys_to_virt(src_pml4[i] & PTE_ADDR_MASK);
+
+        for (int j = 0; j < 512; j++) {
+            if (!(src_pdpt[j] & PTE_PRESENT)) continue;
+            if (src_pdpt[j] & PTE_HUGE) continue;
+
+            uint64_t *src_pd = (uint64_t *)phys_to_virt(src_pdpt[j] & PTE_ADDR_MASK);
+
+            for (int k = 0; k < 512; k++) {
+                if (!(src_pd[k] & PTE_PRESENT)) continue;
+                if (src_pd[k] & PTE_HUGE) continue;
+
+                uint64_t *src_pt = (uint64_t *)phys_to_virt(src_pd[k] & PTE_ADDR_MASK);
+
+                for (int l = 0; l < 512; l++) {
+                    if (!(src_pt[l] & PTE_PRESENT)) continue;
+
+                    uint64_t src_phys = src_pt[l] & PTE_ADDR_MASK;
+                    uint64_t flags = src_pt[l] & ~PTE_ADDR_MASK;
+
+                    uint64_t dst_phys = pmm_alloc_page();
+                    if (dst_phys == 0) {
+                        vmm_destroy_user_pml4(dst_pml4_phys);
+                        return 0;
+                    }
+
+                    memcpy(phys_to_virt(dst_phys), phys_to_virt(src_phys), PAGE_SIZE);
+
+                    uint64_t vaddr = ((uint64_t)i << 39) | ((uint64_t)j << 30) |
+                                     ((uint64_t)k << 21) | ((uint64_t)l << 12);
+
+                    vmm_map_page_in(dst_pml4_phys, vaddr, dst_phys,
+                                    ((flags & PTE_WRITABLE) ? VMM_FLAG_WRITABLE : 0) |
+                                    ((flags & PTE_USER)     ? VMM_FLAG_USER     : 0) |
+                                    ((flags & PTE_NX)       ? VMM_FLAG_NOEXEC   : 0));
+                }
+            }
+        }
+    }
+
+    return dst_pml4_phys;
+}
+
+void vmm_free_user_pages(uint64_t pml4_phys) {
+    uint64_t *pml4 = (uint64_t *)phys_to_virt(pml4_phys);
+
+    for (int i = 0; i < 256; i++) {
+        if (!(pml4[i] & PTE_PRESENT)) continue;
+        uint64_t *pdpt = (uint64_t *)phys_to_virt(pml4[i] & PTE_ADDR_MASK);
+
+        for (int j = 0; j < 512; j++) {
+            if (!(pdpt[j] & PTE_PRESENT) || (pdpt[j] & PTE_HUGE)) continue;
+            uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[j] & PTE_ADDR_MASK);
+
+            for (int k = 0; k < 512; k++) {
+                if (!(pd[k] & PTE_PRESENT) || (pd[k] & PTE_HUGE)) continue;
+                uint64_t *pt = (uint64_t *)phys_to_virt(pd[k] & PTE_ADDR_MASK);
+
+                for (int l = 0; l < 512; l++) {
+                    if (pt[l] & PTE_PRESENT) {
+                        pmm_free_page(pt[l] & PTE_ADDR_MASK);
+                    }
+                }
+                pmm_free_page(pd[k] & PTE_ADDR_MASK);
+            }
+            pmm_free_page(pdpt[j] & PTE_ADDR_MASK);
+        }
+        pmm_free_page(pml4[i] & PTE_ADDR_MASK);
+    }
+    pmm_free_page(pml4_phys);
+}
+
 /* --- Initialization --- */
 
 void vmm_init(const BootInfo *info) {

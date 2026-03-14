@@ -42,6 +42,8 @@ set(KERNEL_C_SOURCES
     drivers/pci.c
     drivers/virtio.c
     drivers/virtio_blk.c
+    drivers/tty.c
+    drivers/keyboard.c
     fs/vfs.c
     fs/ramfs.c
 )

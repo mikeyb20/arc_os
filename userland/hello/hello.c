@@ -1,9 +1,7 @@
-/* arc_os — Init process (PID 1)
- * Execs the shell as the interactive user interface. */
+/* arc_os — Hello binary for exec() testing */
 
 #include <stdint.h>
 
-/* Inline SYSCALL wrapper (3 arguments) */
 static inline int64_t syscall3(uint64_t num, uint64_t a0, uint64_t a1, uint64_t a2) {
     int64_t ret;
     __asm__ volatile (
@@ -16,8 +14,8 @@ static inline int64_t syscall3(uint64_t num, uint64_t a0, uint64_t a1, uint64_t 
 }
 
 void _start(void) {
-    /* Exec the shell — replaces this process image */
-    syscall3(17, (uint64_t)"/boot/shell", 0, 0);  /* SYS_EXEC */
-    syscall3(0, 1, 0, 0);  /* exit(1) if exec fails */
+    const char *msg = "Hello from exec'd binary!\n";
+    syscall3(1, 1, (uint64_t)msg, 26);
+    syscall3(0, 0, 0, 0);
     for (;;) __asm__ volatile ("ud2");
 }

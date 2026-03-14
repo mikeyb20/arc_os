@@ -11,6 +11,11 @@
 #define ARCHOS_LIB_KPRINTF_H
 #define ARCHOS_LIB_MEM_H        /* Use libc memset/memcpy */
 #define ARCHOS_PROC_PROCESS_H
+#define ARCHOS_PROC_FD_H
+#define ARCHOS_ARCH_X86_64_USERMODE_H
+#define ARCHOS_ARCH_X86_64_GDT_H
+#define ARCHOS_ARCH_X86_64_SYSCALL_H
+#define ARCHOS_ARCH_X86_64_PAGING_H
 
 /* Stub kprintf */
 static inline void kprintf(const char *fmt, ...) { (void)fmt; }
@@ -51,9 +56,23 @@ typedef struct Thread {
 
 typedef struct FdTable FdTable;
 
+/* Saved user context for fork */
+typedef struct ForkContext {
+    uint64_t user_rip;
+    uint64_t user_rsp;
+    uint64_t user_rflags;
+    uint64_t user_rbp;
+    uint64_t user_rbx;
+    uint64_t user_r12;
+    uint64_t user_r13;
+    uint64_t user_r14;
+    uint64_t user_r15;
+} ForkContext;
+
 typedef struct Process {
     pid_t           pid;
     uint8_t         state;
+    int32_t         exit_status;
     Thread         *main_thread;
     uint64_t        page_table;
     FdTable        *fd_table;
@@ -63,8 +82,24 @@ typedef struct Process {
     struct Process *next;
 } Process;
 
-/* Stub for vmm_create_user_pml4 */
+/* VMM stubs */
 static uint64_t vmm_create_user_pml4(void) { return 0x300000; }
+static void vmm_destroy_user_pml4(uint64_t pml4) { (void)pml4; }
+static uint64_t vmm_fork_address_space(uint64_t src) { (void)src; return 0x400000; }
+
+/* FD stubs */
+static FdTable *fd_table_dup(const FdTable *src) { (void)src; return NULL; }
+
+/* Arch stubs */
+static void gdt_set_kernel_stack(uint64_t rsp0) { (void)rsp0; }
+static void paging_write_cr3(uint64_t cr3) { (void)cr3; }
+static uint64_t syscall_kernel_rsp;
+__attribute__((noreturn))
+static void fork_return_to_user(const ForkContext *ctx) {
+    (void)ctx;
+    /* Should never be called in tests */
+    for (;;) {}
+}
 
 /* Allocation flags */
 #define GFP_KERNEL  0x00
@@ -146,6 +181,10 @@ Process *proc_create_user(void);
 Process *proc_current(void);
 Process *proc_get_by_tid(uint32_t tid);
 void proc_set_main_thread(Process *p, Thread *t);
+Process *proc_fork(Process *parent, const ForkContext *user_ctx);
+Process *proc_find_zombie_child(Process *parent);
+int proc_reap(Process *child, int32_t *status_out);
+int proc_has_children(Process *parent);
 
 /* Include the real process.c */
 #include "../kernel/proc/process.c"

@@ -32,6 +32,21 @@ if [ -f "$BUILD_DIR/init" ]; then
     cp "$BUILD_DIR/init" "$ISO_ROOT/boot/init"
 fi
 
+# Copy hello binary if it exists
+if [ -f "$BUILD_DIR/hello" ]; then
+    cp "$BUILD_DIR/hello" "$ISO_ROOT/boot/hello"
+fi
+
+# Copy echo binary if it exists
+if [ -f "$BUILD_DIR/echo" ]; then
+    cp "$BUILD_DIR/echo" "$ISO_ROOT/boot/echo"
+fi
+
+# Copy shell binary if it exists
+if [ -f "$BUILD_DIR/shell" ]; then
+    cp "$BUILD_DIR/shell" "$ISO_ROOT/boot/shell"
+fi
+
 # Copy Limine binaries
 cp "$LIMINE_DIR/limine-bios.sys" "$ISO_ROOT/boot/limine/"
 cp "$LIMINE_DIR/limine-bios-cd.bin" "$ISO_ROOT/boot/limine/"

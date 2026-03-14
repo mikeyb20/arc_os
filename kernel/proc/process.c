@@ -1,7 +1,12 @@
 #include "proc/process.h"
 #include "proc/sched.h"
+#include "proc/fd.h"
 #include "mm/kmalloc.h"
 #include "mm/vmm.h"
+#include "arch/x86_64/usermode.h"
+#include "arch/x86_64/gdt.h"
+#include "arch/x86_64/syscall.h"
+#include "arch/x86_64/paging.h"
 #include "lib/kprintf.h"
 
 static Process *proc_list = NULL;
@@ -102,4 +107,105 @@ void proc_set_main_thread(Process *p, Thread *t) {
     if (t->tid < MAX_PROCESSES) {
         proc_table[t->tid] = p;
     }
+}
+
+/* --- Fork support --- */
+
+/* Data passed to the fork child's kernel thread */
+typedef struct {
+    Process    *child;
+    ForkContext ctx;
+} ForkChildArgs;
+
+static ForkChildArgs g_fork_child_args; /* Single-CPU: only one fork at a time */
+
+/* Kernel thread entry for the forked child */
+static void fork_child_entry(void *arg) {
+    ForkChildArgs *args = (ForkChildArgs *)arg;
+    Process *child = args->child;
+
+    /* Set TSS.rsp0 and syscall kernel RSP for this thread */
+    Thread *t = thread_current();
+    gdt_set_kernel_stack(t->kernel_stack_top);
+    syscall_kernel_rsp = t->kernel_stack_top;
+
+    /* Switch to child's address space */
+    paging_write_cr3(child->page_table);
+
+    /* Return to user mode with RAX=0, restoring callee-saved registers */
+    fork_return_to_user(&args->ctx);
+}
+
+Process *proc_fork(Process *parent, const ForkContext *user_ctx) {
+    if (parent == NULL || parent->page_table == 0) return NULL;
+
+    /* 1. Fork address space */
+    uint64_t child_pml4 = vmm_fork_address_space(parent->page_table);
+    if (child_pml4 == 0) return NULL;
+
+    /* 2. Create child process PCB */
+    Process *child = kmalloc(sizeof(Process), GFP_ZERO);
+    if (child == NULL) {
+        vmm_destroy_user_pml4(child_pml4);
+        return NULL;
+    }
+    child->pid = next_pid++;
+    child->state = PROC_ALIVE;
+    child->page_table = child_pml4;
+    child->brk_start = parent->brk_start;
+    child->brk_current = parent->brk_current;
+    child->parent = parent;
+
+    /* 3. Duplicate FD table */
+    child->fd_table = fd_table_dup(parent->fd_table);
+
+    /* 4. Add to process list */
+    child->next = proc_list;
+    proc_list = child;
+
+    /* 5. Create child's kernel thread */
+    g_fork_child_args.child = child;
+    g_fork_child_args.ctx = *user_ctx;
+
+    Thread *t = thread_create(fork_child_entry, &g_fork_child_args);
+    if (t == NULL) {
+        kfree(child->fd_table);
+        vmm_destroy_user_pml4(child_pml4);
+        kfree(child);
+        return NULL;
+    }
+    proc_set_main_thread(child, t);
+    sched_add_thread(t);
+
+    kprintf("[PROC] Forked pid=%u -> pid=%u\n", parent->pid, child->pid);
+    return child;
+}
+
+/* --- Zombie/reap helpers --- */
+
+Process *proc_find_zombie_child(Process *parent) {
+    for (Process *p = proc_list; p != NULL; p = p->next) {
+        if (p->parent == parent && p->state == PROC_ZOMBIE) {
+            return p;
+        }
+    }
+    return NULL;
+}
+
+int proc_has_children(Process *parent) {
+    for (Process *p = proc_list; p != NULL; p = p->next) {
+        if (p->parent == parent && p->state != PROC_TERMINATED) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int proc_reap(Process *child, int32_t *status_out) {
+    if (child == NULL || child->state != PROC_ZOMBIE) return -22; /* -EINVAL */
+    if (status_out != NULL) {
+        *status_out = child->exit_status;
+    }
+    child->state = PROC_TERMINATED;
+    return (int)child->pid;
 }

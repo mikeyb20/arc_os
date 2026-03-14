@@ -5,7 +5,7 @@ Items intentionally postponed from their original phase. Each entry notes the or
 ## Phase 1: Booting & Early Kernel
 
 - **1.4 Framebuffer console** — Pixel rendering with bitmap font, cursor, scrolling. Serial output is sufficient for current development; framebuffer adds complexity without unlocking new capabilities yet.
-- **1.9 PS/2 keyboard** — IRQ 1 handler, scancode→ASCII. Not needed until interactive shell work begins.
+- **1.9 PS/2 keyboard** — ~~Deferred~~ **DONE** — IRQ 1 handler, scancode set 1 → ASCII, shift/ctrl/caps tracking. Integrated with TTY subsystem.
 - **1.10 HAL consolidation** — Unified `kernel/arch/hal.h` interface wrapping GDT/IDT/PIC/PIT/paging. Current direct calls work fine; abstraction is premature until a second architecture port is attempted.
 
 ## Phase 3: Threading & Scheduling
@@ -22,8 +22,12 @@ Items intentionally postponed from their original phase. Each entry notes the or
 - **VirtIO feature caching** — Cache negotiated feature bits in `VirtioDevice` struct. Not needed until feature-dependent driver logic exists (e.g., VirtIO-net multiqueue).
 - **DMA buffer pool** — Pre-allocated DMA buffers for VirtIO. Current per-request PMM alloc/free is correct but expensive under heavy I/O; optimize when VFS drives real multi-sector workloads.
 
+## Phase 5: System Calls & User Space
+
+- **fork/exec/wait syscalls (5.5)** — Process creation and program execution. Required for shell and multi-process workflows.
+- **User pointer validation (copy_from_user/copy_to_user)** — Safe copying between user and kernel address spaces. Required before accepting arbitrary user pointers in syscall handlers.
+
 ## Phase 6: File Systems
 
 - **Dentry cache** — Resolved path component caching for performance. Current flat path resolution is adequate for ramfs.
 - **Mount table** — Maps mount points to filesystem instances. Needed when multiple filesystems coexist.
-- **Per-process fd table** — File descriptor table per process. Needed when user-space processes exist (Phase 5).

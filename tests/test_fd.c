@@ -61,6 +61,21 @@ static VfsFile *fd_get(FdTable *table, int fd) {
     return &table->entries[fd].file;
 }
 
+/* Stub kmalloc/kfree for fd_table_dup */
+static void *kmalloc(size_t size, uint32_t flags) {
+    (void)flags;
+    return malloc(size);
+}
+static void kfree(void *ptr) { free(ptr); }
+
+static FdTable *fd_table_dup(const FdTable *src) {
+    if (src == NULL) return NULL;
+    FdTable *dst = kmalloc(sizeof(FdTable), 0);
+    if (dst == NULL) return NULL;
+    memcpy(dst, src, sizeof(FdTable));
+    return dst;
+}
+
 /* --- Tests --- */
 
 TEST(init_all_unused) {
@@ -140,6 +155,31 @@ TEST(free_out_of_range) {
     return 0;
 }
 
+TEST(dup_table_copies_entries) {
+    FdTable src;
+    fd_table_init(&src);
+    int fd0 = fd_alloc(&src);
+    int fd1 = fd_alloc(&src);
+    src.entries[fd0].file.offset = 42;
+    src.entries[fd1].file.offset = 99;
+
+    FdTable *dst = fd_table_dup(&src);
+    ASSERT_TRUE(dst != NULL);
+    ASSERT_TRUE(dst != &src);
+    ASSERT_EQ(dst->entries[fd0].in_use, 1);
+    ASSERT_EQ(dst->entries[fd1].in_use, 1);
+    ASSERT_EQ(dst->entries[fd0].file.offset, 42);
+    ASSERT_EQ(dst->entries[fd1].file.offset, 99);
+    ASSERT_EQ(dst->entries[2].in_use, 0);
+    free(dst);
+    return 0;
+}
+
+TEST(dup_null_returns_null) {
+    ASSERT_TRUE(fd_table_dup(NULL) == NULL);
+    return 0;
+}
+
 /* --- Suite --- */
 
 TestCase fd_tests[] = {
@@ -151,5 +191,7 @@ TestCase fd_tests[] = {
     TEST_ENTRY(get_after_free),
     TEST_ENTRY(full_table_returns_minus_one),
     TEST_ENTRY(free_out_of_range),
+    TEST_ENTRY(dup_table_copies_entries),
+    TEST_ENTRY(dup_null_returns_null),
 };
 int fd_test_count = sizeof(fd_tests) / sizeof(fd_tests[0]);

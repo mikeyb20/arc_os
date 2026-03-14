@@ -102,6 +102,43 @@ TEST(null_slot_returns_enosys) {
     return 0;
 }
 
+TEST(file_syscall_numbers_routed) {
+    memset(test_syscall_table, 0, sizeof(test_syscall_table));
+    /* Register at file syscall numbers (7-11) */
+    test_register(7, handler_add);     /* SYS_LSEEK */
+    test_register(8, handler_negate);  /* SYS_STAT */
+    test_register(9, handler_add);     /* SYS_MKDIR */
+    test_register(10, handler_negate); /* SYS_READDIR */
+    test_register(11, handler_add);    /* SYS_UNLINK */
+    ASSERT_EQ(test_dispatch(7, 10, 20, 0, 0, 0, 0), 30);
+    ASSERT_EQ(test_dispatch(8, 5, 0, 0, 0, 0, 0), -5);
+    ASSERT_EQ(test_dispatch(9, 1, 2, 0, 0, 0, 0), 3);
+    ASSERT_EQ(test_dispatch(10, 7, 0, 0, 0, 0, 0), -7);
+    ASSERT_EQ(test_dispatch(11, 100, 200, 0, 0, 0, 0), 300);
+    return 0;
+}
+
+TEST(fork_exec_wait_numbers_routed) {
+    memset(test_syscall_table, 0, sizeof(test_syscall_table));
+    test_register(16, handler_add);    /* SYS_FORK */
+    test_register(17, handler_negate); /* SYS_EXEC */
+    test_register(18, handler_add);    /* SYS_WAIT */
+    ASSERT_EQ(test_dispatch(16, 3, 4, 0, 0, 0, 0), 7);
+    ASSERT_EQ(test_dispatch(17, 42, 0, 0, 0, 0, 0), -42);
+    ASSERT_EQ(test_dispatch(18, 50, 50, 0, 0, 0, 0), 100);
+    return 0;
+}
+
+TEST(unregistered_file_syscalls_return_enosys) {
+    memset(test_syscall_table, 0, sizeof(test_syscall_table));
+    ASSERT_EQ(test_dispatch(7, 0, 0, 0, 0, 0, 0), -38);
+    ASSERT_EQ(test_dispatch(8, 0, 0, 0, 0, 0, 0), -38);
+    ASSERT_EQ(test_dispatch(9, 0, 0, 0, 0, 0, 0), -38);
+    ASSERT_EQ(test_dispatch(10, 0, 0, 0, 0, 0, 0), -38);
+    ASSERT_EQ(test_dispatch(11, 0, 0, 0, 0, 0, 0), -38);
+    return 0;
+}
+
 /* --- Suite --- */
 
 TestCase syscall_tests[] = {
@@ -112,5 +149,8 @@ TestCase syscall_tests[] = {
     TEST_ENTRY(max_syscall_number),
     TEST_ENTRY(overwrite_handler),
     TEST_ENTRY(null_slot_returns_enosys),
+    TEST_ENTRY(file_syscall_numbers_routed),
+    TEST_ENTRY(fork_exec_wait_numbers_routed),
+    TEST_ENTRY(unregistered_file_syscalls_return_enosys),
 };
 int syscall_test_count = sizeof(syscall_tests) / sizeof(syscall_tests[0]);

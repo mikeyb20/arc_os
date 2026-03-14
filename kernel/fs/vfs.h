@@ -38,7 +38,10 @@
 #define EINVAL      22
 #define ENOSPC      28
 #define ENOSYS      38
+#define EIO          5
 #define ENOTEMPTY   39
+#define ECHILD      10
+#define EAGAIN      11
 
 /* Forward declarations */
 typedef struct VfsNode VfsNode;

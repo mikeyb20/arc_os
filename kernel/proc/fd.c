@@ -1,5 +1,6 @@
 #include "proc/fd.h"
 #include "lib/mem.h"
+#include "mm/kmalloc.h"
 
 void fd_table_init(FdTable *table) {
     memset(table, 0, sizeof(FdTable));
@@ -26,4 +27,12 @@ VfsFile *fd_get(FdTable *table, int fd) {
         return NULL;
     }
     return &table->entries[fd].file;
+}
+
+FdTable *fd_table_dup(const FdTable *src) {
+    if (src == NULL) return NULL;
+    FdTable *dst = kmalloc(sizeof(FdTable), 0);
+    if (dst == NULL) return NULL;
+    memcpy(dst, src, sizeof(FdTable));
+    return dst;
 }
