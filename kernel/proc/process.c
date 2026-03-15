@@ -24,7 +24,7 @@ void proc_init(void) {
     Process *p = kmalloc(sizeof(Process), GFP_ZERO);
     if (p == NULL) {
         kprintf("[PROC] FATAL: cannot allocate boot process PCB\n");
-        for (;;) __asm__ volatile ("cli; hlt");
+        KERNEL_PANIC();
     }
 
     proc_setup(p);

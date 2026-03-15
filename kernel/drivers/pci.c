@@ -15,11 +15,7 @@
 #define PCI_BAR_STRIDE          4
 #define PCI_BAR_IO_MASK         0xFFFC
 
-/* Byte/word extraction from 32-bit PCI config registers */
-#define PCI_BYTE0_MASK   0xFF
-#define PCI_BYTE1_SHIFT  8
-#define PCI_BYTE2_SHIFT  16
-#define PCI_BYTE3_SHIFT  24
+/* Word extraction from 32-bit PCI config registers */
 #define PCI_WORD0_MASK   0xFFFF
 #define PCI_WORD1_SHIFT  16
 
@@ -53,6 +49,11 @@ void pci_config_write32(uint8_t bus, uint8_t device, uint8_t func, uint8_t offse
     outl(PCI_CONFIG_DATA, value);
 }
 
+/* Extract a single byte (0-3) from a 32-bit PCI config register. */
+static inline uint8_t pci_reg_byte(uint32_t reg, int byte) {
+    return (uint8_t)((reg >> (byte * 8)) & 0xFF);
+}
+
 /* Populate a PciDevice entry. Caller already verified vendor != 0xFFFF. */
 static void pci_populate_device(uint8_t bus, uint8_t dev, uint8_t func,
                                 uint16_t vendor, uint16_t devid) {
@@ -66,13 +67,13 @@ static void pci_populate_device(uint8_t bus, uint8_t dev, uint8_t func,
     d->device_id     = devid;
 
     uint32_t class_reg = pci_config_read32(bus, dev, func, PCI_REG_CLASS);
-    d->class_code = (class_reg >> PCI_BYTE3_SHIFT) & PCI_BYTE0_MASK;
-    d->subclass   = (class_reg >> PCI_BYTE2_SHIFT) & PCI_BYTE0_MASK;
-    d->prog_if    = (class_reg >> PCI_BYTE1_SHIFT) & PCI_BYTE0_MASK;
-    d->revision   = class_reg & PCI_BYTE0_MASK;
+    d->class_code = pci_reg_byte(class_reg, 3);
+    d->subclass   = pci_reg_byte(class_reg, 2);
+    d->prog_if    = pci_reg_byte(class_reg, 1);
+    d->revision   = pci_reg_byte(class_reg, 0);
 
     /* Header type is byte 2 of the dword at offset 0x0C */
-    d->header_type = (pci_config_read32(bus, dev, func, PCI_REG_HEADER_TYPE) >> PCI_BYTE2_SHIFT) & PCI_BYTE0_MASK;
+    d->header_type = pci_reg_byte(pci_config_read32(bus, dev, func, PCI_REG_HEADER_TYPE), 2);
 
     /* Read BARs (only for header type 0 — normal devices) */
     if ((d->header_type & PCI_HEADER_TYPE_MASK) == 0) {
@@ -82,8 +83,8 @@ static void pci_populate_device(uint8_t bus, uint8_t dev, uint8_t func,
     }
 
     uint32_t irq_reg = pci_config_read32(bus, dev, func, PCI_REG_IRQ_LINE);
-    d->irq_line = irq_reg & PCI_BYTE0_MASK;
-    d->irq_pin  = (irq_reg >> PCI_BYTE1_SHIFT) & PCI_BYTE0_MASK;
+    d->irq_line = pci_reg_byte(irq_reg, 0);
+    d->irq_pin  = pci_reg_byte(irq_reg, 1);
 
     device_count++;
 }

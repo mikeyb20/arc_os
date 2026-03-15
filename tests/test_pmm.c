@@ -9,6 +9,7 @@
 
 /* Stub kprintf — silences all kernel prints */
 static inline void kprintf(const char *fmt, ...) { (void)fmt; }
+#define KERNEL_PANIC() do { } while(0)
 
 /* Include the real PMM implementation */
 #include "../kernel/mm/pmm.c"

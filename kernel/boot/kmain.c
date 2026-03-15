@@ -89,14 +89,14 @@ static void heap_self_test(void) {
         void *p = kmalloc(sz, GFP_ZERO);
         if (p == NULL) {
             kprintf("[BOOT] FAIL: kmalloc returned NULL at iteration %d\n", i);
-            for (;;) __asm__ volatile ("cli; hlt");
+            KERNEL_PANIC();
         }
         /* Verify zero-fill */
         uint8_t *bytes = (uint8_t *)p;
         for (size_t j = 0; j < sz; j++) {
             if (bytes[j] != 0) {
                 kprintf("[BOOT] FAIL: GFP_ZERO not zeroed at iteration %d\n", i);
-                for (;;) __asm__ volatile ("cli; hlt");
+                KERNEL_PANIC();
             }
         }
         /* Write pattern, then free */
@@ -181,9 +181,7 @@ void kmain(void) {
     const BootInfo *info = bootinfo_init();
     if (info == NULL) {
         serial_puts("[BOOT] FATAL: failed to parse boot info\n");
-        for (;;) {
-            __asm__ volatile ("cli; hlt");
-        }
+        KERNEL_PANIC();
     }
 
     boot_log_info(info);
@@ -212,7 +210,7 @@ void kmain(void) {
         Process *pb = proc_create(test_thread_entry, (void *)"THREAD B");
         if (pa == NULL || pb == NULL) {
             kprintf("[BOOT] FATAL: failed to create test processes\n");
-            for (;;) __asm__ volatile ("cli; hlt");
+            KERNEL_PANIC();
         }
     }
 

@@ -99,7 +99,7 @@ void pmm_init(const BootInfo *info) {
     if (bitmap_phys == 0) {
         kprintf("[PMM] FATAL: no usable region for bitmap (%lu bytes needed)\n",
                 bitmap_size);
-        for (;;) __asm__ volatile ("cli; hlt");
+        KERNEL_PANIC();
     }
 
     /* Map bitmap via HHDM */

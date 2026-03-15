@@ -32,7 +32,7 @@ static uint64_t alloc_table_page(void) {
     uint64_t phys = pmm_alloc_page();
     if (phys == 0) {
         kprintf("[VMM] FATAL: out of memory for page table\n");
-        for (;;) __asm__ volatile ("cli; hlt");
+        KERNEL_PANIC();
     }
     memset(phys_to_virt(phys), 0, PAGE_SIZE);
     return phys;

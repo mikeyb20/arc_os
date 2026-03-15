@@ -18,6 +18,7 @@
 
 /* Minimum allocation alignment */
 #define ALIGN_SIZE  16
+#define ALIGN_MASK  (~(ALIGN_SIZE - 1))
 
 /* Free-list block header */
 typedef struct BlockHeader {
@@ -28,7 +29,7 @@ typedef struct BlockHeader {
     struct BlockHeader *prev;     /* Previous block in list */
 } BlockHeader;
 
-#define HEADER_SIZE  ((sizeof(BlockHeader) + ALIGN_SIZE - 1) & ~(ALIGN_SIZE - 1))
+#define HEADER_SIZE  ((sizeof(BlockHeader) + ALIGN_SIZE - 1) & ALIGN_MASK)
 
 static BlockHeader *heap_start_block;
 static uint64_t heap_current_end;  /* Current end of mapped heap */
@@ -53,7 +54,7 @@ static int heap_grow(size_t min_bytes) {
 
 /* Align a size up to ALIGN_SIZE */
 static size_t align_up(size_t size) {
-    return (size + ALIGN_SIZE - 1) & ~(ALIGN_SIZE - 1);
+    return (size + ALIGN_SIZE - 1) & ALIGN_MASK;
 }
 
 void kmalloc_init(void) {
@@ -62,7 +63,7 @@ void kmalloc_init(void) {
     /* Map initial heap pages (16 KB) */
     if (heap_grow(HEAP_INIT_PAGES * PAGE_SIZE) != 0) {
         kprintf("[HEAP] FATAL: cannot allocate initial heap pages\n");
-        for (;;) __asm__ volatile ("cli; hlt");
+        KERNEL_PANIC();
     }
 
     /* Initialize first free block spanning the entire initial heap */
@@ -173,7 +174,7 @@ void *kmalloc(size_t size, uint32_t flags) {
     while (block != NULL) {
         if (block->magic != BLOCK_MAGIC) {
             kprintf("[HEAP] CORRUPTION: invalid magic at %p\n", (void *)block);
-            for (;;) __asm__ volatile ("cli; hlt");
+            KERNEL_PANIC();
         }
 
         if (block->free && block->size >= size) {
@@ -196,7 +197,7 @@ void kfree(void *ptr) {
     if (block->magic != BLOCK_MAGIC) {
         kprintf("[HEAP] CORRUPTION: kfree invalid magic at %p (ptr=%p)\n",
                 (void *)block, ptr);
-        for (;;) __asm__ volatile ("cli; hlt");
+        KERNEL_PANIC();
     }
 
     if (block->free) {
@@ -225,7 +226,7 @@ void *krealloc(void *ptr, size_t new_size) {
     BlockHeader *block = (BlockHeader *)((uint8_t *)ptr - HEADER_SIZE);
     if (block->magic != BLOCK_MAGIC) {
         kprintf("[HEAP] CORRUPTION: krealloc invalid magic at %p\n", (void *)block);
-        for (;;) __asm__ volatile ("cli; hlt");
+        KERNEL_PANIC();
     }
 
     new_size = align_up(new_size);

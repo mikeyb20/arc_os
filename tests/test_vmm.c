@@ -12,6 +12,7 @@
 
 /* Stub kprintf */
 static inline void kprintf(const char *fmt, ...) { (void)fmt; }
+#define KERNEL_PANIC() do { } while(0)
 
 /* PTE constants (from paging.h) */
 #define PTE_PRESENT    (1ULL << 0)

@@ -14,6 +14,7 @@
 
 /* Stub kprintf */
 static inline void kprintf(const char *fmt, ...) { (void)fmt; }
+#define KERNEL_PANIC() do { } while(0)
 
 /* Reproduce types (headers are guarded out) */
 typedef uint32_t tid_t;
