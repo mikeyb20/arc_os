@@ -220,6 +220,20 @@ uint64_t vmm_get_phys_in(uint64_t pml4_phys, uint64_t virt) {
 
 /* --- Address space fork/teardown --- */
 
+/* Copy a single user page and map the copy into the destination address space.
+ * Returns 0 on success, -1 on OOM. */
+static int fork_copy_page(uint64_t src_pte, uint64_t dst_pml4, uint64_t vaddr) {
+    uint64_t src_phys = src_pte & PTE_ADDR_MASK;
+    uint64_t flags = src_pte & ~PTE_ADDR_MASK;
+
+    uint64_t dst_phys = pmm_alloc_page();
+    if (dst_phys == 0) return -1;
+
+    memcpy(phys_to_virt(dst_phys), phys_to_virt(src_phys), PAGE_SIZE);
+    vmm_map_page_in(dst_pml4, vaddr, dst_phys, pte_to_vmm_flags(flags));
+    return 0;
+}
+
 uint64_t vmm_fork_address_space(uint64_t src_pml4_phys) {
     uint64_t dst_pml4_phys = vmm_create_user_pml4();
     if (dst_pml4_phys == 0) return 0;
@@ -245,28 +259,40 @@ uint64_t vmm_fork_address_space(uint64_t src_pml4_phys) {
                 for (int pt_idx = 0; pt_idx < PT_ENTRIES; pt_idx++) {
                     if (!(src_pt[pt_idx] & PTE_PRESENT)) continue;
 
-                    uint64_t src_phys = src_pt[pt_idx] & PTE_ADDR_MASK;
-                    uint64_t flags = src_pt[pt_idx] & ~PTE_ADDR_MASK;
-
-                    uint64_t dst_phys = pmm_alloc_page();
-                    if (dst_phys == 0) {
-                        vmm_destroy_user_pml4(dst_pml4_phys);
-                        return 0;
-                    }
-
-                    memcpy(phys_to_virt(dst_phys), phys_to_virt(src_phys), PAGE_SIZE);
-
                     uint64_t vaddr = ((uint64_t)pml4_idx << 39) | ((uint64_t)pdpt_idx << 30) |
                                      ((uint64_t)pd_idx << 21) | ((uint64_t)pt_idx << 12);
 
-                    vmm_map_page_in(dst_pml4_phys, vaddr, dst_phys,
-                                    pte_to_vmm_flags(flags));
+                    if (fork_copy_page(src_pt[pt_idx], dst_pml4_phys, vaddr) != 0) {
+                        vmm_destroy_user_pml4(dst_pml4_phys);
+                        return 0;
+                    }
                 }
             }
         }
     }
 
     return dst_pml4_phys;
+}
+
+/* Free all present leaf pages in a page table, then free the PT page itself. */
+static void free_pt_and_leaves(uint64_t pt_phys) {
+    uint64_t *pt = (uint64_t *)phys_to_virt(pt_phys);
+    for (int i = 0; i < PT_ENTRIES; i++) {
+        if (pt[i] & PTE_PRESENT) {
+            pmm_free_page(pt[i] & PTE_ADDR_MASK);
+        }
+    }
+    pmm_free_page(pt_phys);
+}
+
+/* Free all page tables under a page directory, their leaves, then the PD page. */
+static void free_pd_and_children(uint64_t pd_phys) {
+    uint64_t *pd = (uint64_t *)phys_to_virt(pd_phys);
+    for (int i = 0; i < PT_ENTRIES; i++) {
+        if (!(pd[i] & PTE_PRESENT) || (pd[i] & PTE_HUGE)) continue;
+        free_pt_and_leaves(pd[i] & PTE_ADDR_MASK);
+    }
+    pmm_free_page(pd_phys);
 }
 
 void vmm_free_user_pages(uint64_t pml4_phys) {
@@ -278,20 +304,7 @@ void vmm_free_user_pages(uint64_t pml4_phys) {
 
         for (int pdpt_idx = 0; pdpt_idx < PT_ENTRIES; pdpt_idx++) {
             if (!(pdpt[pdpt_idx] & PTE_PRESENT) || (pdpt[pdpt_idx] & PTE_HUGE)) continue;
-            uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpt_idx] & PTE_ADDR_MASK);
-
-            for (int pd_idx = 0; pd_idx < PT_ENTRIES; pd_idx++) {
-                if (!(pd[pd_idx] & PTE_PRESENT) || (pd[pd_idx] & PTE_HUGE)) continue;
-                uint64_t *pt = (uint64_t *)phys_to_virt(pd[pd_idx] & PTE_ADDR_MASK);
-
-                for (int pt_idx = 0; pt_idx < PT_ENTRIES; pt_idx++) {
-                    if (pt[pt_idx] & PTE_PRESENT) {
-                        pmm_free_page(pt[pt_idx] & PTE_ADDR_MASK);
-                    }
-                }
-                pmm_free_page(pd[pd_idx] & PTE_ADDR_MASK);
-            }
-            pmm_free_page(pdpt[pdpt_idx] & PTE_ADDR_MASK);
+            free_pd_and_children(pdpt[pdpt_idx] & PTE_ADDR_MASK);
         }
         pmm_free_page(pml4[pml4_idx] & PTE_ADDR_MASK);
     }

@@ -353,17 +353,9 @@ static int64_t sys_fork(uint64_t a0, uint64_t a1, uint64_t a2,
     return (int64_t)child->pid;
 }
 
-/* SYS_EXEC: replace process image with new ELF binary */
-static int64_t sys_exec(uint64_t path_addr, uint64_t a1, uint64_t a2,
-                        uint64_t a3, uint64_t a4, uint64_t a5) {
-    (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
-    Process *p = proc_current();
-    if (p == NULL) return -ENOSYS;
-
-    if (!user_ptr_valid((const void *)path_addr, 1)) return -EINVAL;
-    const char *path = (const char *)path_addr;
-
-    /* 1. Open and read ELF file from VFS */
+/* Read an ELF binary from VFS into a kmalloc'd buffer.
+ * Caller must kfree(*out_buf) on success. */
+static int exec_read_elf(const char *path, void **out_buf, uint64_t *out_size) {
     VfsFile file;
     int err = vfs_open(path, O_RDONLY, &file);
     if (err != 0) return err;
@@ -387,53 +379,63 @@ static int64_t sys_exec(uint64_t path_addr, uint64_t a1, uint64_t a2,
         return -EIO;
     }
 
-    /* 2. Tear down old user address space */
-    uint64_t old_pml4 = p->page_table;
+    *out_buf = elf_buf;
+    *out_size = file_size;
+    return 0;
+}
 
-    /* 3. Create fresh user address space */
-    uint64_t new_pml4 = vmm_create_user_pml4();
-    if (new_pml4 == 0) {
-        kfree(elf_buf);
-        return -ENOMEM;
-    }
-
-    /* 4. Load ELF into new address space */
-    ElfLoadResult result;
-    err = elf_load(elf_buf, file_size, new_pml4, &result);
-    kfree(elf_buf);
-    if (err != 0) {
-        vmm_destroy_user_pml4(new_pml4);
-        return err;
-    }
-
-    /* 5. Allocate user stack in new address space */
+/* Allocate and map zeroed user stack pages in the given address space. */
+static int exec_map_user_stack(uint64_t pml4_phys) {
     uint64_t hhdm = vmm_get_hhdm_offset();
     uint64_t stack_bottom = USER_STACK_TOP - (USER_STACK_PAGES * PAGE_SIZE);
     for (uint64_t vaddr = stack_bottom; vaddr < USER_STACK_TOP; vaddr += PAGE_SIZE) {
         uint64_t phys = pmm_alloc_page();
-        if (phys == 0) {
-            vmm_free_user_pages(new_pml4);
-            return -ENOMEM;
-        }
+        if (phys == 0) return -ENOMEM;
         memset((void *)(phys + hhdm), 0, PAGE_SIZE);
-        vmm_map_page_in(new_pml4, vaddr, phys,
+        vmm_map_page_in(pml4_phys, vaddr, phys,
                         VMM_FLAG_USER | VMM_FLAG_WRITABLE);
     }
+    return 0;
+}
 
-    /* 6. Update process */
+/* SYS_EXEC: replace process image with new ELF binary */
+static int64_t sys_exec(uint64_t path_addr, uint64_t a1, uint64_t a2,
+                        uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+    Process *p = proc_current();
+    if (p == NULL) return -ENOSYS;
+    if (!user_ptr_valid((const void *)path_addr, 1)) return -EINVAL;
+    const char *path = (const char *)path_addr;
+
+    /* 1. Read ELF binary from VFS */
+    void *elf_buf;
+    uint64_t file_size;
+    int err = exec_read_elf(path, &elf_buf, &file_size);
+    if (err != 0) return err;
+
+    /* 2. Create fresh user address space */
+    uint64_t old_pml4 = p->page_table;
+    uint64_t new_pml4 = vmm_create_user_pml4();
+    if (new_pml4 == 0) { kfree(elf_buf); return -ENOMEM; }
+
+    /* 3. Load ELF segments */
+    ElfLoadResult result;
+    err = elf_load(elf_buf, file_size, new_pml4, &result);
+    kfree(elf_buf);
+    if (err != 0) { vmm_destroy_user_pml4(new_pml4); return err; }
+
+    /* 4. Map user stack */
+    err = exec_map_user_stack(new_pml4);
+    if (err != 0) { vmm_free_user_pages(new_pml4); return err; }
+
+    /* 5. Switch to new address space */
     p->page_table = new_pml4;
     p->brk_start = result.brk_start;
     p->brk_current = result.brk_start;
-
-    /* 7. Free old address space */
     vmm_free_user_pages(old_pml4);
-
-    /* 8. Switch to new page tables and jump to new entry */
     paging_write_cr3(new_pml4);
 
     kprintf("[EXEC] pid=%u loaded '%s' entry=0x%lx\n", p->pid, path, result.entry_point);
-
-    /* Does not return — jumps to user mode */
     jump_to_usermode(result.entry_point, USER_STACK_TOP);
 }
 
