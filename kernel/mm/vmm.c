@@ -4,6 +4,12 @@
 #include "lib/mem.h"
 #include "lib/kprintf.h"
 
+/* Errno value needed for vmm_map_user_stack (defined in fs/vfs.h;
+ * duplicated here to avoid mm→fs layer dependency). */
+#ifndef ENOMEM
+#define ENOMEM 12
+#endif
+
 /* Huge page sizes and masks */
 #define PAGE_SIZE_2MB       0x200000ULL
 #define PAGE_MASK_2MB       (PAGE_SIZE_2MB - 1)           /* 0x1FFFFF */
@@ -309,6 +315,18 @@ void vmm_free_user_pages(uint64_t pml4_phys) {
         pmm_free_page(pml4[pml4_idx] & PTE_ADDR_MASK);
     }
     pmm_free_page(pml4_phys);
+}
+
+int vmm_map_user_stack(uint64_t pml4_phys) {
+    uint64_t stack_bottom = USER_STACK_TOP - (USER_STACK_PAGES * PAGE_SIZE);
+    for (uint64_t vaddr = stack_bottom; vaddr < USER_STACK_TOP; vaddr += PAGE_SIZE) {
+        uint64_t phys = pmm_alloc_page();
+        if (phys == 0) return -ENOMEM;
+        memset(phys_to_virt(phys), 0, PAGE_SIZE);
+        vmm_map_page_in(pml4_phys, vaddr, phys,
+                        VMM_FLAG_USER | VMM_FLAG_WRITABLE);
+    }
+    return 0;
 }
 
 /* --- Initialization --- */

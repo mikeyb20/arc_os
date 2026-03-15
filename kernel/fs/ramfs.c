@@ -52,8 +52,6 @@ static RamfsNode *ramfs_alloc_node(uint8_t type) {
 
     rn->vnode.inode_num = next_inode++;
     rn->vnode.type = type;
-    rn->vnode.size = 0;
-    rn->vnode.mode = 0;
     rn->vnode.ops = &ramfs_ops;
     rn->vnode.private_data = rn;
 
@@ -63,7 +61,6 @@ static RamfsNode *ramfs_alloc_node(uint8_t type) {
             kfree(rn);
             return NULL;
         }
-        rn->num_children = 0;
     }
 
     return rn;

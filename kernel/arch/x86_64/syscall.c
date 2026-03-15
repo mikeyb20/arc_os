@@ -384,20 +384,6 @@ static int exec_read_elf(const char *path, void **out_buf, uint64_t *out_size) {
     return 0;
 }
 
-/* Allocate and map zeroed user stack pages in the given address space. */
-static int exec_map_user_stack(uint64_t pml4_phys) {
-    uint64_t hhdm = vmm_get_hhdm_offset();
-    uint64_t stack_bottom = USER_STACK_TOP - (USER_STACK_PAGES * PAGE_SIZE);
-    for (uint64_t vaddr = stack_bottom; vaddr < USER_STACK_TOP; vaddr += PAGE_SIZE) {
-        uint64_t phys = pmm_alloc_page();
-        if (phys == 0) return -ENOMEM;
-        memset((void *)(phys + hhdm), 0, PAGE_SIZE);
-        vmm_map_page_in(pml4_phys, vaddr, phys,
-                        VMM_FLAG_USER | VMM_FLAG_WRITABLE);
-    }
-    return 0;
-}
-
 /* SYS_EXEC: replace process image with new ELF binary */
 static int64_t sys_exec(uint64_t path_addr, uint64_t a1, uint64_t a2,
                         uint64_t a3, uint64_t a4, uint64_t a5) {
@@ -425,7 +411,7 @@ static int64_t sys_exec(uint64_t path_addr, uint64_t a1, uint64_t a2,
     if (err != 0) { vmm_destroy_user_pml4(new_pml4); return err; }
 
     /* 4. Map user stack */
-    err = exec_map_user_stack(new_pml4);
+    err = vmm_map_user_stack(new_pml4);
     if (err != 0) { vmm_free_user_pages(new_pml4); return err; }
 
     /* 5. Switch to new address space */
