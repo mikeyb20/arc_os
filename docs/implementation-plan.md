@@ -201,6 +201,15 @@ Create directory structure and all build infrastructure.
 | 6.3 | File syscalls (open/read/write/close/lseek/stat/mkdir/readdir/unlink) | 200 | DONE |
 | 6.4 | FAT32 read support | 300 | NOT STARTED |
 
+### Phase 7: IPC & Shell
+| Chunk | Description | ~Lines | Status |
+|-------|-------------|--------|--------|
+| 7.1 | PS/2 keyboard driver | 140 | DONE |
+| 7.2 | TTY subsystem | 180 | DONE |
+| 7.3 | Interactive shell (14 builtins) | 350 | DONE |
+| 7.4 | Pipes | 250 | DONE |
+| 7.5 | Signals | 330 | DONE |
+
 ---
 
 ## Totals
@@ -213,8 +222,9 @@ Create directory structure and all build infrastructure.
 | 3 | 4 | 610 | Preemptive multitasking with synchronization |
 | 4 | 4 | 800 | VirtIO block device reads sectors |
 | 5 | 5 | 1,100 | User-space ELF binary runs, fork/exec/wait |
-| 6 | 4 | 1,050 | VFS + ramfs + FAT32, file syscalls |
-| **Total** | **34 chunks** | **~6,375** | |
+| 6 | 4 | 1,050 | VFS + ramfs, file syscalls |
+| 7 | 5 | 1,220 | IPC, interactive shell with keyboard/TTY |
+| **Total** | **39 chunks** | **~7,595** | |
 
 ---
 
@@ -231,3 +241,4 @@ Items intentionally postponed from their original phase:
 - **Phase 4**: Memory barrier HAL abstraction, VirtIO feature caching, DMA buffer pool
 - ~~**Phase 5**: fork/exec/wait (5.5), user pointer validation (copy_from_user/copy_to_user)~~ **DONE**
 - **Phase 6**: Dentry cache, mount table
+- **Phase 7**: Signal masking (`sigprocmask`), `sigaction` with `sa_flags`, `-EINTR` for interrupted blocking syscalls, `sigaltstack`, process groups / `killpg`, ISR return path signal checking

@@ -17,10 +17,11 @@ static pid_t next_pid = 0;
 #define MAX_PROCESSES 64
 static Process *proc_table[MAX_PROCESSES];
 
-/* Common PCB setup: assign PID, set state, link into process list. */
+/* Common PCB setup: assign PID, set state, init signals, link into process list. */
 static void proc_setup(Process *p) {
     p->pid = next_pid++;
     p->state = PROC_ALIVE;
+    sig_init(&p->sig);
     p->next = proc_list;
     proc_list = p;
 }
@@ -96,6 +97,15 @@ Process *proc_get_by_tid(uint32_t tid) {
     return NULL;
 }
 
+Process *proc_get_by_pid(uint32_t pid) {
+    for (Process *p = proc_list; p != NULL; p = p->next) {
+        if (p->pid == pid && p->state != PROC_TERMINATED) {
+            return p;
+        }
+    }
+    return NULL;
+}
+
 void proc_set_main_thread(Process *p, Thread *t) {
     p->main_thread = t;
     if (t->tid < MAX_PROCESSES) {
@@ -145,6 +155,7 @@ Process *proc_fork(Process *parent, const ForkContext *user_ctx) {
     }
     child->pid = next_pid++;
     child->state = PROC_ALIVE;
+    sig_init(&child->sig);
     child->page_table = child_pml4;
     child->brk_start = parent->brk_start;
     child->brk_current = parent->brk_current;

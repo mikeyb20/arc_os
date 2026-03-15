@@ -18,6 +18,7 @@
 #include "user_access.h"
 #include "drivers/tty.h"
 #include "fs/pipe.h"
+#include "proc/signal.h"
 
 /* Exported from syscall_entry.asm: user context saved during SYSCALL */
 extern uint64_t syscall_saved_user_rip;
@@ -62,6 +63,11 @@ static int64_t sys_exit(uint64_t status, uint64_t a1, uint64_t a2,
         }
     }
 
+    /* Notify parent of child exit */
+    if (p->parent != NULL) {
+        sig_send(p->parent->pid, SIGCHLD);
+    }
+
     /* Set exit status and mark as zombie for parent to reap */
     p->exit_status = (int32_t)status;
     p->state = PROC_ZOMBIE;
@@ -86,7 +92,9 @@ static int64_t sys_write(uint64_t fd, uint64_t buf_addr, uint64_t count,
         if (p != NULL && p->fd_table != NULL) {
             VfsFile *file = fd_get(p->fd_table, (int)fd);
             if (file != NULL) {
-                return vfs_write(file, (const void *)buf_addr, (uint32_t)count);
+                int64_t ret = vfs_write(file, (const void *)buf_addr, (uint32_t)count);
+                if (ret == -EPIPE) sig_send(p->pid, SIGPIPE);
+                return ret;
             }
         }
         /* Default: TTY output */
@@ -97,7 +105,11 @@ static int64_t sys_write(uint64_t fd, uint64_t buf_addr, uint64_t count,
     if (p == NULL || p->fd_table == NULL) return -EBADF;
     VfsFile *file = fd_get(p->fd_table, (int)fd);
     if (file == NULL) return -EBADF;
-    return vfs_write(file, (const void *)buf_addr, (uint32_t)count);
+    int64_t ret = vfs_write(file, (const void *)buf_addr, (uint32_t)count);
+    if (ret == -EPIPE && p != NULL) {
+        sig_send(p->pid, SIGPIPE);
+    }
+    return ret;
 }
 
 /* SYS_GETPID: return current process ID */
@@ -398,7 +410,7 @@ static int64_t sys_exec(uint64_t path_addr, uint64_t a1, uint64_t a2,
         }
         memset((void *)(phys + hhdm), 0, PAGE_SIZE);
         vmm_map_page_in(new_pml4, vaddr, phys,
-                        VMM_FLAG_USER | VMM_FLAG_WRITABLE | VMM_FLAG_NOEXEC);
+                        VMM_FLAG_USER | VMM_FLAG_WRITABLE);
     }
 
     /* 6. Update process */
@@ -500,6 +512,40 @@ static int64_t sys_pipe(uint64_t pipefd_addr, uint64_t a1, uint64_t a2,
     return 0;
 }
 
+/* SYS_SIGNAL: register a signal handler */
+static int64_t sys_signal(uint64_t signo, uint64_t handler_addr, uint64_t a2,
+                           uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a2; (void)a3; (void)a4; (void)a5;
+    Process *p = proc_current();
+    if (p == NULL) return -ENOSYS;
+    sig_handler_t old = sig_set_handler(&p->sig, (int)signo, (sig_handler_t)handler_addr);
+    return (int64_t)(uint64_t)old;
+}
+
+/* SYS_KILL: send signal to a process */
+static int64_t sys_kill(uint64_t pid, uint64_t signo, uint64_t a2,
+                         uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a2; (void)a3; (void)a4; (void)a5;
+    return sig_send((uint32_t)pid, (int)signo);
+}
+
+/* SYS_SIGRETURN: restore context after signal handler */
+static int64_t sys_sigreturn(uint64_t a0, uint64_t a1, uint64_t a2,
+                              uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a0; (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+    Process *p = proc_current();
+    if (p == NULL) return -ENOSYS;
+
+    /* Read SignalFrame from user RSP */
+    uint64_t user_rsp = syscall_saved_user_rsp;
+    if (!user_ptr_valid((void *)user_rsp, sizeof(SignalFrame))) return -EINVAL;
+
+    SignalFrame *sf = (SignalFrame *)user_rsp;
+    p->sig.restore_frame = *sf;
+    p->sig.restoring = 1;
+    return 0;  /* dummy — sig_maybe_deliver will override RAX */
+}
+
 /* --- Dispatcher --- */
 
 int64_t syscall_dispatch(uint64_t num, uint64_t a0, uint64_t a1, uint64_t a2,
@@ -554,8 +600,11 @@ void syscall_init(void) {
     syscall_register(SYS_FORK,    sys_fork);
     syscall_register(SYS_EXEC,    sys_exec);
     syscall_register(SYS_WAIT,    sys_wait);
-    syscall_register(SYS_DUP2,    sys_dup2);
-    syscall_register(SYS_PIPE,    sys_pipe);
+    syscall_register(SYS_DUP2,      sys_dup2);
+    syscall_register(SYS_PIPE,      sys_pipe);
+    syscall_register(SYS_SIGNAL,    sys_signal);
+    syscall_register(SYS_KILL,      sys_kill);
+    syscall_register(SYS_SIGRETURN, sys_sigreturn);
 
     kprintf("[SYSCALL] Initialized (LSTAR=0x%lx, STAR=0x%lx)\n",
             (uint64_t)syscall_entry, star);

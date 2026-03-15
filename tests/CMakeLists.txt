@@ -28,6 +28,7 @@ add_executable(test_runner
     test_keyboard.c
     test_shell.c
     test_pipe.c
+    test_signal.c
 )
 
 # Include kernel source root for "lib/mem.h" etc, but NOT kernel/include
@@ -43,6 +44,9 @@ target_compile_options(test_runner PRIVATE -Wall -Wextra -std=c11)
 # Use -idirafter so kernel/include is searched AFTER system paths,
 # avoiding conflicts with freestanding stdarg.h etc.
 set_source_files_properties(test_bootinfo.c PROPERTIES
+    COMPILE_FLAGS "-idirafter ${CMAKE_SOURCE_DIR}/kernel/include"
+)
+set_source_files_properties(test_signal.c PROPERTIES
     COMPILE_FLAGS "-idirafter ${CMAKE_SOURCE_DIR}/kernel/include"
 )
 target_link_libraries(test_runner PRIVATE pthread)
@@ -77,3 +81,4 @@ add_test(NAME test_tty          COMMAND test_runner --suite tty)
 add_test(NAME test_keyboard     COMMAND test_runner --suite keyboard)
 add_test(NAME test_shell        COMMAND test_runner --suite shell)
 add_test(NAME test_pipe         COMMAND test_runner --suite pipe)
+add_test(NAME test_signal       COMMAND test_runner --suite signal)

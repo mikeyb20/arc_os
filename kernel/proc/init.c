@@ -53,7 +53,7 @@ static void init_thread_entry(void *arg) {
         }
         memset((void *)(phys + hhdm), 0, PAGE_SIZE);
         vmm_map_page_in(p->page_table, vaddr, phys,
-                        VMM_FLAG_USER | VMM_FLAG_WRITABLE | VMM_FLAG_NOEXEC);
+                        VMM_FLAG_USER | VMM_FLAG_WRITABLE);
     }
     kprintf("[INIT] User stack mapped: 0x%lx - 0x%lx\n", stack_bottom, USER_STACK_TOP);
 

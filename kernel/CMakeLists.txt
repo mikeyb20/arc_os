@@ -39,6 +39,7 @@ set(KERNEL_C_SOURCES
     proc/elf.c
     proc/init.c
     proc/fd.c
+    proc/signal.c
     drivers/pci.c
     drivers/virtio.c
     drivers/virtio_blk.c

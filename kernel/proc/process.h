@@ -2,6 +2,7 @@
 #define ARCHOS_PROC_PROCESS_H
 
 #include "proc/thread.h"
+#include "proc/signal.h"
 #include <stdint.h>
 
 /* Process ID type */
@@ -38,6 +39,7 @@ typedef struct Process {
     FdTable        *fd_table;       /* Per-process file descriptor table */
     uint64_t        brk_current;    /* Current program break */
     uint64_t        brk_start;      /* Initial program break */
+    SigState        sig;            /* Per-process signal state */
     struct Process *parent;
     struct Process *next;           /* Process list linkage */
 } Process;
@@ -56,6 +58,9 @@ Process *proc_current(void);
 
 /* Look up process by thread ID. Returns NULL if not found. */
 Process *proc_get_by_tid(uint32_t tid);
+
+/* Look up process by PID. Returns NULL if not found or terminated. */
+Process *proc_get_by_pid(uint32_t pid);
 
 /* Register a thread as the main thread of a process. */
 void proc_set_main_thread(Process *p, Thread *t);

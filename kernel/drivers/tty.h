@@ -18,4 +18,7 @@ int tty_read(void *buf, uint32_t count);
 /* Write count bytes to serial output */
 int tty_write(const void *buf, uint32_t count);
 
+/* Set the foreground process PID for Ctrl+C delivery */
+void tty_set_fg_pid(uint32_t pid);
+
 #endif /* ARCHOS_DRIVERS_TTY_H */

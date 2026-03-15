@@ -31,6 +31,7 @@
 /* Error codes (negative) */
 #define VFS_OK       0
 #define ENOENT       2
+#define ESRCH        3
 #define EBADF        9
 #define ENOMEM      12
 #define EEXIST      17

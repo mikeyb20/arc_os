@@ -19,10 +19,10 @@ A long-term project outline for building a custom operating system. Designed aro
 | 4 | PARTIAL | PCI enumeration + VirtIO common + VirtIO-blk polling read. Deferred: ACPI (4.1) |
 | 5 | COMPLETE | SYSCALL/SYSRET, per-process address spaces, ELF64 loader, init process, FD table, fork/exec/wait, user pointer validation |
 | 6 | MOSTLY COMPLETE | VFS + ramfs (6.1-6.2), file syscalls exposed to user space (6.3). Deferred: FAT32 (6.4) |
-| 7 | PARTIAL | PS/2 keyboard driver, TTY subsystem, interactive shell (14 builtins), echo/hello binaries. Not started: pipes, signals |
+| 7 | MOSTLY COMPLETE | PS/2 keyboard, TTY, interactive shell (14 builtins), echo/hello binaries, pipes (`cmd1 \| cmd2`), POSIX signals (signal/kill/sigreturn, SIGINT/SIGCHLD/SIGPIPE, Ctrl+C). Deferred: signal masking, sigaction, -EINTR, process groups |
 | 8-13 | NOT STARTED | |
 
-**Test infrastructure**: 26 suites, 345 host-side tests — all passing.
+**Test infrastructure**: 27 suites, 374 host-side tests — all passing.
 
 ---
 
@@ -530,15 +530,34 @@ gdb build/kernel.elf -ex "target remote :1234" -ex "break kmain" -ex "continue"
 
 ## Phase 7: Inter-Process Communication (IPC)
 
-### 7.1 Core IPC Mechanisms
-- **Pipes**: Unidirectional byte streams via kernel ring buffer
-  - Implement as a VFS file type — read/write work on pipe fds
-- **FIFOs**: Named pipes, visible in the filesystem
-- **Signals**: POSIX signal delivery (SIGTERM, SIGKILL, SIGCHLD, etc.)
-  - Signal handler registration, default actions, signal masking
-- **Wait/exit**: Process exit status collection, zombie reaping
+### 7.1 Current Implementation
+The following IPC and shell infrastructure is already working:
 
-### 7.2 Advanced IPC (deferred)
+- **PS/2 keyboard driver**: IRQ 1, scancode set 1, shift/ctrl/caps lock support
+- **TTY subsystem**: Ring buffer (256 bytes), line buffer (256 chars), canonical (line-buffered) mode, backspace handling
+- **Interactive shell**: 14 builtins — ls, cat, mkdir, rm, touch, write, stat, run, echo, pid, uname, help, clear, exit
+- **User binaries**: init (fork/exec orchestrator), shell, echo (stdin echo), hello (exec target)
+- **Basic wait/exit**: Process exit status collection and zombie reaping (implemented in Phase 5.5)
+
+### 7.2 Core IPC Mechanisms
+- **Pipes**: Unidirectional byte streams via kernel ring buffer — **DONE**
+  - Implemented as VFS_PIPE node type with separate read/write VfsOps
+  - Ring buffer (4096 bytes), ref-counted read/write ends, EOF on writer close, EPIPE on reader close
+  - `pipe()` syscall, `dup2()` for fd redirection, shell `cmd1 | cmd2` support
+- **FIFOs**: Named pipes, visible in the filesystem
+- **Signals**: POSIX signal delivery — **DONE**
+  - `signal()`, `kill()`, `sigreturn()` syscalls
+  - Per-process SigState with pending bitmask and handler table
+  - Signal delivery on syscall return path (sig_maybe_deliver modifies SyscallFrame)
+  - SignalFrame on user stack with sigreturn trampoline (mov eax,22; syscall; ud2)
+  - Default actions: terminate (SIGINT, SIGTERM, SIGKILL, etc.), ignore (SIGCHLD)
+  - SIGKILL always terminates (cannot be caught or ignored)
+  - SIGCHLD sent on child exit, SIGPIPE on broken pipe write
+  - Ctrl+C sends SIGINT to foreground process via TTY
+  - Deferred: signal masking (sigprocmask), sigaction, -EINTR for blocked syscalls, sigaltstack, process groups
+- ~~**Wait/exit**: Process exit status collection, zombie reaping~~ **DONE** (Phase 5.5)
+
+### 7.3 Advanced IPC (deferred)
 - Shared memory (mmap with MAP_SHARED)
 - Unix domain sockets
 - Message passing (if going microkernel or hybrid)
@@ -819,9 +838,10 @@ Each step has a concrete milestone — a thing you can boot and demonstrate.
 9. **Phase 5.5** → fork/exec/wait, user pointer validation — **DONE**
 10. **Phase 6.3** → File syscalls (lseek, stat, mkdir, readdir, unlink) exposed to user space — **DONE**
 11. **Phase 7 (partial)** → PS/2 keyboard, TTY, interactive shell with 14 builtins — **DONE**
-12. **Phase 5.3** → musl libc ported, user programs can use printf()
-13. **Phase 6.4** → FAT32 read/write on VirtIO-blk disk image
-14. **Phase 7 (remainder)** → Pipes and signals working — can do `ls | grep foo`
+12. **Phase 7 (pipes)** → Pipes working — `echo hello | cat` — **DONE**
+13. **Phase 7 (signals)** → Signal delivery, Ctrl+C, SIGCHLD, SIGPIPE — **DONE**
+14. **Phase 5.3** → musl libc ported, user programs can use printf()
+15. **Phase 6.4** → FAT32 read/write on VirtIO-blk disk image
 15. **Phase 8** → Ping works over VirtIO-net (ICMP echo reply)
 16. **Phase 9** → Multi-user login, file permissions enforced
 17. **Phase 12** → Boots and runs on multiple cores

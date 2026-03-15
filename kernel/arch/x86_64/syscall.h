@@ -26,7 +26,10 @@
 #define SYS_FORK    16
 #define SYS_EXEC    17
 #define SYS_WAIT    18
-#define SYS_PIPE    19
+#define SYS_PIPE      19
+#define SYS_SIGNAL    20
+#define SYS_KILL      21
+#define SYS_SIGRETURN 22
 
 /* Syscall handler type: up to 6 arguments, returns int64_t */
 typedef int64_t (*syscall_handler_t)(uint64_t, uint64_t, uint64_t,

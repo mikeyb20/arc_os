@@ -10,6 +10,8 @@ section .text
 global syscall_entry
 extern syscall_dispatch
 extern syscall_kernel_rsp
+extern sig_maybe_deliver
+extern sig_pending_arg
 
 syscall_entry:
     ; Save user RSP to scratch space (can't trust user stack)
@@ -56,7 +58,14 @@ syscall_entry:
     call syscall_dispatch
     add rsp, 8              ; pop 7th arg
 
-    ; Return value in RAX (already set by C function)
+    ; --- Signal delivery check ---
+    ; sig_maybe_deliver(frame_ptr=rsp, syscall_ret=rax)
+    mov rdi, rsp            ; SyscallFrame pointer
+    mov rsi, rax            ; syscall return value
+    mov qword [rel sig_pending_arg], 0
+    call sig_maybe_deliver
+    ; RAX = (possibly modified) return value
+    ; sig_pending_arg = signo for handler RDI, or 0
 
     ; Restore callee-saved registers and user context
     pop r15
@@ -67,6 +76,10 @@ syscall_entry:
     pop rbx
     pop rcx                 ; user RIP
     pop r11                 ; user RFLAGS
+
+    ; Load signal handler arg into RDI (0 if no signal)
+    mov rdi, [rel sig_pending_arg]
+
     pop rsp                 ; user RSP
 
     o64 sysret              ; return to user mode (64-bit SYSRET)

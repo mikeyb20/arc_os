@@ -11,6 +11,7 @@
 #define ARCHOS_LIB_KPRINTF_H
 #define ARCHOS_LIB_MEM_H        /* Use libc memset/memcpy */
 #define ARCHOS_PROC_PROCESS_H
+#define ARCHOS_PROC_SIGNAL_H
 #define ARCHOS_PROC_FD_H
 #define ARCHOS_ARCH_X86_64_USERMODE_H
 #define ARCHOS_ARCH_X86_64_GDT_H
@@ -56,6 +57,36 @@ typedef struct Thread {
 
 typedef struct FdTable FdTable;
 
+/* Signal types stub */
+typedef void (*sig_handler_t)(int);
+#define SIG_DFL  ((sig_handler_t)0)
+#define NSIG 32
+
+typedef struct {
+    uint8_t  trampoline[16];
+    uint64_t user_rip, user_rsp, user_rflags;
+    uint64_t rax, rbx, rbp, r12, r13, r14, r15;
+    uint64_t rdi, rsi, rdx, r8, r9, r10;
+    uint64_t signo, ret_addr;
+} SignalFrame;
+
+typedef struct {
+    uint64_t r15, r14, r13, r12, rbp, rbx, rcx, r11, rsp;
+} SyscallFrame;
+
+typedef struct {
+    uint32_t      pending;
+    sig_handler_t handlers[NSIG];
+    uint8_t       restoring;
+    SignalFrame   restore_frame;
+} SigState;
+
+static void sig_init(SigState *ss) {
+    ss->pending = 0;
+    ss->restoring = 0;
+    for (int i = 0; i < NSIG; i++) ss->handlers[i] = SIG_DFL;
+}
+
 /* Saved user context for fork */
 typedef struct ForkContext {
     uint64_t user_rip;
@@ -78,6 +109,7 @@ typedef struct Process {
     FdTable        *fd_table;
     uint64_t        brk_current;
     uint64_t        brk_start;
+    SigState        sig;
     struct Process *parent;
     struct Process *next;
 } Process;
@@ -181,6 +213,7 @@ Process *proc_create_user(void);
 Process *proc_current(void);
 Process *proc_get_by_tid(uint32_t tid);
 void proc_set_main_thread(Process *p, Thread *t);
+Process *proc_get_by_pid(uint32_t pid);
 Process *proc_fork(Process *parent, const ForkContext *user_ctx);
 Process *proc_find_zombie_child(Process *parent);
 int proc_reap(Process *child, int32_t *status_out);
