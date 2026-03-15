@@ -24,6 +24,8 @@ static uint32_t inl(uint16_t port) { (void)port; return 0; }
 
 /* Stub PMM */
 #define PAGE_SIZE 4096
+#define PAGE_ALIGN_UP(x)    (((x) + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1ULL))
+#define PAGE_ALIGN_DOWN(x)  ((x) & ~(PAGE_SIZE - 1ULL))
 static uint8_t fake_pmm_arena[PAGE_SIZE * 16] __attribute__((aligned(4096)));
 static int fake_pmm_next_page;
 

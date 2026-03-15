@@ -68,6 +68,10 @@ void sched_remove_thread(Thread *t) {
     }
 }
 
+static uint64_t proc_get_cr3(Process *proc) {
+    return (proc && proc->page_table) ? proc->page_table : vmm_get_kernel_pml4();
+}
+
 void sched_schedule(void) {
     Thread *old = thread_current();
     Thread *next = queue_pop();
@@ -102,10 +106,8 @@ void sched_schedule(void) {
         /* Switch CR3 if switching between different address spaces */
         Process *old_proc = proc_get_by_tid(old->tid);
         Process *new_proc = proc_get_by_tid(next->tid);
-        uint64_t old_cr3 = (old_proc && old_proc->page_table) ?
-                            old_proc->page_table : vmm_get_kernel_pml4();
-        uint64_t new_cr3 = (new_proc && new_proc->page_table) ?
-                            new_proc->page_table : vmm_get_kernel_pml4();
+        uint64_t old_cr3 = proc_get_cr3(old_proc);
+        uint64_t new_cr3 = proc_get_cr3(new_proc);
         if (new_cr3 != old_cr3) {
             paging_write_cr3(new_cr3);
         }

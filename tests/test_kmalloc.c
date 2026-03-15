@@ -18,6 +18,7 @@
 
 /* Stub kprintf */
 static inline void kprintf(const char *fmt, ...) { (void)fmt; }
+#define KERNEL_PANIC() do { } while(0)
 
 /* Static arena replaces the kernel heap region */
 #define ARENA_SIZE (512 * 1024)

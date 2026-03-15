@@ -30,15 +30,11 @@ void proc_init(void) {
     Process *p = kmalloc(sizeof(Process), GFP_ZERO);
     if (p == NULL) {
         kprintf("[PROC] FATAL: cannot allocate boot process PCB\n");
-        for (;;) __asm__ volatile ("cli; hlt");
+        KERNEL_PANIC();
     }
 
     proc_setup(p);
     p->main_thread = thread_current();
-    p->page_table = 0;  /* Uses current kernel page tables */
-    p->parent = NULL;
-    p->next = NULL;  /* Boot process is list head — no predecessor */
-    proc_list = p;
     if (p->main_thread->tid < MAX_PROCESSES) {
         proc_table[p->main_thread->tid] = p;
     }

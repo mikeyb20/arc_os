@@ -13,12 +13,17 @@
 section .text
 global jump_to_usermode
 
+; GDT segment selectors with Ring 3 privilege
+%define USER_DATA_RPL3  0x1B    ; GDT_USER_DATA | RPL=3
+%define USER_CODE_RPL3  0x23    ; GDT_USER_CODE | RPL=3
+%define RFLAGS_IF       0x202   ; RFLAGS with Interrupt Flag set
+
 jump_to_usermode:
     ; Build IRETQ frame
-    push 0x1B               ; SS = GDT_USER_DATA | RPL=3
+    push USER_DATA_RPL3     ; SS
     push rsi                ; RSP = user_rsp
-    push 0x202              ; RFLAGS = IF set
-    push 0x23               ; CS = GDT_USER_CODE | RPL=3
+    push RFLAGS_IF          ; RFLAGS
+    push USER_CODE_RPL3     ; CS
     push rdi                ; RIP = entry_rip
 
     ; Zero all general-purpose registers for clean user entry

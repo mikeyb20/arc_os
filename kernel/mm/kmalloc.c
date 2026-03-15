@@ -5,15 +5,20 @@
 #include "lib/kprintf.h"
 
 /* Heap starts at 0xFFFFFFFFC0000000 (kernel heap region) */
-#define HEAP_START  0xFFFFFFFFC0000000ULL
-#define HEAP_MAX    0xFFFFFFFFE0000000ULL  /* 512 MB max heap */
+#define HEAP_START       0xFFFFFFFFC0000000ULL
+#define HEAP_SIZE_MAX    (512ULL * 1024 * 1024)   /* 512 MB max heap */
+#define HEAP_MAX         (HEAP_START + HEAP_SIZE_MAX)
 
 /* Block header magic canary */
 #define BLOCK_MAGIC     0xDEADBEEFULL
 #define FREED_POISON    0xCC
 
+/* Number of pages in the initial heap allocation */
+#define HEAP_INIT_PAGES 4
+
 /* Minimum allocation alignment */
 #define ALIGN_SIZE  16
+#define ALIGN_MASK  (~(ALIGN_SIZE - 1))
 
 /* Free-list block header */
 typedef struct BlockHeader {
@@ -24,7 +29,7 @@ typedef struct BlockHeader {
     struct BlockHeader *prev;     /* Previous block in list */
 } BlockHeader;
 
-#define HEADER_SIZE  ((sizeof(BlockHeader) + ALIGN_SIZE - 1) & ~(ALIGN_SIZE - 1))
+#define HEADER_SIZE  ((sizeof(BlockHeader) + ALIGN_SIZE - 1) & ALIGN_MASK)
 
 static BlockHeader *heap_start_block;
 static uint64_t heap_current_end;  /* Current end of mapped heap */
@@ -49,28 +54,28 @@ static int heap_grow(size_t min_bytes) {
 
 /* Align a size up to ALIGN_SIZE */
 static size_t align_up(size_t size) {
-    return (size + ALIGN_SIZE - 1) & ~(ALIGN_SIZE - 1);
+    return (size + ALIGN_SIZE - 1) & ALIGN_MASK;
 }
 
 void kmalloc_init(void) {
     heap_current_end = HEAP_START;
 
     /* Map initial heap pages (16 KB) */
-    if (heap_grow(4 * PAGE_SIZE) != 0) {
+    if (heap_grow(HEAP_INIT_PAGES * PAGE_SIZE) != 0) {
         kprintf("[HEAP] FATAL: cannot allocate initial heap pages\n");
-        for (;;) __asm__ volatile ("cli; hlt");
+        KERNEL_PANIC();
     }
 
     /* Initialize first free block spanning the entire initial heap */
     heap_start_block = (BlockHeader *)HEAP_START;
     heap_start_block->magic = BLOCK_MAGIC;
-    heap_start_block->size  = (4 * PAGE_SIZE) - HEADER_SIZE;
+    heap_start_block->size  = (HEAP_INIT_PAGES * PAGE_SIZE) - HEADER_SIZE;
     heap_start_block->free  = 1;
     heap_start_block->next  = NULL;
     heap_start_block->prev  = NULL;
 
     kprintf("[HEAP] Initialized at 0x%lx (%lu KB initial)\n",
-            HEAP_START, (4 * PAGE_SIZE) / 1024);
+            HEAP_START, (HEAP_INIT_PAGES * PAGE_SIZE) / 1024);
 }
 
 /* Split a block if it's large enough to hold the requested size plus another block */
@@ -117,28 +122,10 @@ static void coalesce_forward(BlockHeader *block) {
     }
 }
 
-void *kmalloc(size_t size, uint32_t flags) {
-    if (size == 0) return NULL;
-
-    size = align_up(size);
-
-    /* First-fit search */
-    BlockHeader *block = heap_start_block;
-    while (block != NULL) {
-        if (block->magic != BLOCK_MAGIC) {
-            kprintf("[HEAP] CORRUPTION: invalid magic at %p\n", (void *)block);
-            for (;;) __asm__ volatile ("cli; hlt");
-        }
-
-        if (block->free && block->size >= size) {
-            return block_allocate(block, size, flags);
-        }
-        block = block->next;
-    }
-
-    /* No block found — grow the heap */
+/* Grow the heap and return a free block large enough for 'size' bytes. */
+static BlockHeader *heap_grow_for(size_t size) {
     /* Find the last block */
-    block = heap_start_block;
+    BlockHeader *block = heap_start_block;
     while (block->next != NULL) {
         block = block->next;
     }
@@ -174,6 +161,31 @@ void *kmalloc(size_t size, uint32_t flags) {
         block = new_block;
     }
 
+    return block;
+}
+
+void *kmalloc(size_t size, uint32_t flags) {
+    if (size == 0) return NULL;
+
+    size = align_up(size);
+
+    /* First-fit search */
+    BlockHeader *block = heap_start_block;
+    while (block != NULL) {
+        if (block->magic != BLOCK_MAGIC) {
+            kprintf("[HEAP] CORRUPTION: invalid magic at %p\n", (void *)block);
+            KERNEL_PANIC();
+        }
+
+        if (block->free && block->size >= size) {
+            return block_allocate(block, size, flags);
+        }
+        block = block->next;
+    }
+
+    /* No block found — grow the heap */
+    block = heap_grow_for(size);
+    if (block == NULL) return NULL;
     return block_allocate(block, size, flags);
 }
 
@@ -185,7 +197,7 @@ void kfree(void *ptr) {
     if (block->magic != BLOCK_MAGIC) {
         kprintf("[HEAP] CORRUPTION: kfree invalid magic at %p (ptr=%p)\n",
                 (void *)block, ptr);
-        for (;;) __asm__ volatile ("cli; hlt");
+        KERNEL_PANIC();
     }
 
     if (block->free) {
@@ -214,7 +226,7 @@ void *krealloc(void *ptr, size_t new_size) {
     BlockHeader *block = (BlockHeader *)((uint8_t *)ptr - HEADER_SIZE);
     if (block->magic != BLOCK_MAGIC) {
         kprintf("[HEAP] CORRUPTION: krealloc invalid magic at %p\n", (void *)block);
-        for (;;) __asm__ volatile ("cli; hlt");
+        KERNEL_PANIC();
     }
 
     new_size = align_up(new_size);

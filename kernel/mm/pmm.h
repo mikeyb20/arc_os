@@ -6,6 +6,8 @@
 #include "boot/bootinfo.h"
 
 #define PAGE_SIZE 4096
+#define PAGE_ALIGN_UP(x)    (((x) + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1ULL))
+#define PAGE_ALIGN_DOWN(x)  ((x) & ~(PAGE_SIZE - 1ULL))
 
 /* Initialize the PMM using the BootInfo memory map. */
 void pmm_init(const BootInfo *info);

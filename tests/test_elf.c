@@ -15,6 +15,8 @@
 
 /* Constants elf.c needs */
 #define PAGE_SIZE 4096
+#define PAGE_ALIGN_UP(x)    (((x) + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1ULL))
+#define PAGE_ALIGN_DOWN(x)  ((x) & ~(PAGE_SIZE - 1ULL))
 #define VMM_FLAG_WRITABLE  (1 << 0)
 #define VMM_FLAG_USER      (1 << 1)
 #define VMM_FLAG_NOEXEC    (1 << 2)

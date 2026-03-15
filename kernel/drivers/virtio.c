@@ -24,7 +24,7 @@ static uint64_t vring_used_size(uint16_t qsz) {
 static uint64_t vring_total_size(uint16_t qsz) {
     uint64_t part1 = vring_desc_size(qsz) + vring_avail_size(qsz);
     /* Align part1 up to page boundary */
-    part1 = (part1 + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
+    part1 = PAGE_ALIGN_UP(part1);
     uint64_t part2 = vring_used_size(qsz);
     return part1 + part2;
 }
@@ -117,7 +117,7 @@ int virtio_init_queue(VirtioDevice *vdev, int queue_index) {
     vq->avail = (VringAvail *)((uint8_t *)virt + vring_desc_size(qsz));
     /* Used ring is at page-aligned offset after desc+avail */
     uint64_t used_offset = vring_desc_size(qsz) + vring_avail_size(qsz);
-    used_offset = (used_offset + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
+    used_offset = PAGE_ALIGN_UP(used_offset);
     vq->used  = (VringUsed *)((uint8_t *)virt + used_offset);
 
     /* Initialize free descriptor list: chain all descriptors via next */

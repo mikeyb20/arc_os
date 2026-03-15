@@ -62,6 +62,43 @@ int virtio_blk_init(void) {
     return 0;
 }
 
+/* Build a 3-descriptor chain for a VirtIO-blk read request.
+ * Returns the head descriptor index, or VRING_DESC_NONE on failure. */
+static uint16_t blk_build_read_chain(Virtqueue *vq, uint64_t req_phys,
+                                      uint64_t data_phys, uint32_t data_bytes,
+                                      uint64_t status_phys) {
+    uint16_t desc_hdr  = virtq_alloc_desc(vq);
+    uint16_t desc_data = virtq_alloc_desc(vq);
+    uint16_t desc_stat = virtq_alloc_desc(vq);
+    if (desc_hdr == VRING_DESC_NONE || desc_data == VRING_DESC_NONE || desc_stat == VRING_DESC_NONE) {
+        uint16_t descs[] = { desc_hdr, desc_data, desc_stat };
+        for (int i = 0; i < 3; i++) {
+            if (descs[i] != VRING_DESC_NONE) virtq_free_chain(vq, descs[i]);
+        }
+        return VRING_DESC_NONE;
+    }
+
+    /* Descriptor 0: request header (device-readable) */
+    vq->desc[desc_hdr].addr  = req_phys;
+    vq->desc[desc_hdr].len   = sizeof(VirtioBlkReqHeader);
+    vq->desc[desc_hdr].flags = VRING_DESC_F_NEXT;
+    vq->desc[desc_hdr].next  = desc_data;
+
+    /* Descriptor 1: data buffer (device-writable for reads) */
+    vq->desc[desc_data].addr  = data_phys;
+    vq->desc[desc_data].len   = data_bytes;
+    vq->desc[desc_data].flags = VRING_DESC_F_WRITE | VRING_DESC_F_NEXT;
+    vq->desc[desc_data].next  = desc_stat;
+
+    /* Descriptor 2: status byte (device-writable) */
+    vq->desc[desc_stat].addr  = status_phys;
+    vq->desc[desc_stat].len   = 1;
+    vq->desc[desc_stat].flags = VRING_DESC_F_WRITE;
+    vq->desc[desc_stat].next  = VRING_DESC_NONE;
+
+    return desc_hdr;
+}
+
 int virtio_blk_read(uint64_t sector, uint32_t count, void *buf) {
     if (!blk_initialized) return -1;
     if (count == 0) return 0;
@@ -100,40 +137,16 @@ int virtio_blk_read(uint64_t sector, uint32_t count, void *buf) {
     uint64_t status_phys = req_phys + sizeof(VirtioBlkReqHeader);
 
     /* Build 3-descriptor chain: header → data → status */
-    uint16_t d0 = virtq_alloc_desc(vq);
-    uint16_t d1 = virtq_alloc_desc(vq);
-    uint16_t d2 = virtq_alloc_desc(vq);
-    if (d0 == VRING_DESC_NONE || d1 == VRING_DESC_NONE || d2 == VRING_DESC_NONE) {
+    uint16_t desc_head = blk_build_read_chain(vq, req_phys, data_phys, data_bytes, status_phys);
+    if (desc_head == VRING_DESC_NONE) {
         kprintf("[VIRTIO-BLK] No free descriptors\n");
-        uint16_t descs[] = { d0, d1, d2 };
-        for (int i = 0; i < 3; i++) {
-            if (descs[i] != VRING_DESC_NONE) virtq_free_chain(vq, descs[i]);
-        }
         pmm_free_page(req_phys);
         free_contiguous_pages(data_phys, data_pages);
         return -1;
     }
 
-    /* Descriptor 0: request header (device-readable) */
-    vq->desc[d0].addr  = req_phys;
-    vq->desc[d0].len   = sizeof(VirtioBlkReqHeader);
-    vq->desc[d0].flags = VRING_DESC_F_NEXT;
-    vq->desc[d0].next  = d1;
-
-    /* Descriptor 1: data buffer (device-writable for reads) */
-    vq->desc[d1].addr  = data_phys;
-    vq->desc[d1].len   = data_bytes;
-    vq->desc[d1].flags = VRING_DESC_F_WRITE | VRING_DESC_F_NEXT;
-    vq->desc[d1].next  = d2;
-
-    /* Descriptor 2: status byte (device-writable) */
-    vq->desc[d2].addr  = status_phys;
-    vq->desc[d2].len   = 1;
-    vq->desc[d2].flags = VRING_DESC_F_WRITE;
-    vq->desc[d2].next  = VRING_DESC_NONE;
-
     /* Submit and poll */
-    virtio_submit(&blk_vdev, 0, d0);
+    virtio_submit(&blk_vdev, 0, desc_head);
 
     /* Spin-poll for completion */
     int timeout = POLL_TIMEOUT;
@@ -143,7 +156,7 @@ int virtio_blk_read(uint64_t sector, uint32_t count, void *buf) {
 
     if (timeout == 0) {
         kprintf("[VIRTIO-BLK] Read timeout (sector %lu, count %u)\n", sector, count);
-        virtq_free_chain(vq, d0);
+        virtq_free_chain(vq, desc_head);
         pmm_free_page(req_phys);
         free_contiguous_pages(data_phys, data_pages);
         return -1;
@@ -152,7 +165,7 @@ int virtio_blk_read(uint64_t sector, uint32_t count, void *buf) {
     /* Pop used entry */
     uint32_t used_len;
     virtq_pop_used(vq, &used_len);
-    virtq_free_chain(vq, d0);
+    virtq_free_chain(vq, desc_head);
 
     /* Check status */
     int ret = -1;

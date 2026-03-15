@@ -11,4 +11,7 @@
  */
 void kprintf(const char *fmt, ...);
 
+/* Halt the CPU permanently — use after printing a fatal error message. */
+#define KERNEL_PANIC() do { for (;;) __asm__ volatile ("cli; hlt"); } while(0)
+
 #endif /* ARCHOS_LIB_KPRINTF_H */

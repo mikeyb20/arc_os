@@ -44,8 +44,8 @@ static void print_ptr(uint64_t val) {
     serial_putchar('x');
 
     /* Print exactly 16 hex digits, zero-padded. */
-    for (int i = 60; i >= 0; i -= 4) {
-        uint64_t nibble = (val >> i) & 0xF;
+    for (int shift = 60; shift >= 0; shift -= 4) {
+        uint64_t nibble = (val >> shift) & 0xF;
         serial_putchar((nibble < 10) ? '0' + nibble : 'a' + (nibble - 10));
     }
 }

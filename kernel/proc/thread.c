@@ -24,7 +24,7 @@ void thread_init(void) {
     Thread *boot = kmalloc(sizeof(Thread), GFP_ZERO);
     if (boot == NULL) {
         kprintf("[PROC] FATAL: cannot allocate boot thread TCB\n");
-        for (;;) __asm__ volatile ("cli; hlt");
+        KERNEL_PANIC();
     }
 
     boot->tid = next_tid++;

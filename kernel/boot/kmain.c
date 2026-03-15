@@ -37,36 +37,17 @@ static const char *memmap_type_name(uint32_t type) {
     }
 }
 
-static void thread_a_entry(void *arg) {
-    (void)arg;
-    for (uint32_t i = 0; ; i++) {
-        kprintf("[THREAD A] running (tick=%lu)\n", pit_get_ticks());
+static void test_thread_entry(void *arg) {
+    const char *label = (const char *)arg;
+    for (;;) {
+        kprintf("[%s] running (tick=%lu)\n", label, pit_get_ticks());
         /* Busy loop — will be preempted by timer */
         for (volatile int j = 0; j < 500000; j++) {}
     }
 }
 
-static void thread_b_entry(void *arg) {
-    (void)arg;
-    for (uint32_t i = 0; ; i++) {
-        kprintf("[THREAD B] running (tick=%lu)\n", pit_get_ticks());
-        /* Busy loop — will be preempted by timer */
-        for (volatile int j = 0; j < 500000; j++) {}
-    }
-}
-
-void kmain(void) {
-    serial_init();
-    serial_puts("[BOOT] arc_os kernel booting...\n");
-
-    const BootInfo *info = bootinfo_init();
-    if (info == NULL) {
-        serial_puts("[BOOT] FATAL: failed to parse boot info\n");
-        for (;;) {
-            __asm__ volatile ("cli; hlt");
-        }
-    }
-
+/* Print boot info: addresses, framebuffer, memory map, ACPI */
+static void boot_log_info(const BootInfo *info) {
     kprintf("[BOOT] HHDM offset: 0x%lx\n", info->hhdm_offset);
     kprintf("[BOOT] Kernel phys base: 0x%lx\n", info->kernel_phys_base);
     kprintf("[BOOT] Kernel virt base: 0x%lx\n", info->kernel_virt_base);
@@ -100,40 +81,24 @@ void kmain(void) {
     }
 
     kprintf("[BOOT] Boot info parsed successfully.\n");
+}
 
-    /* Initialize GDT with TSS */
-    gdt_init();
-
-    /* Initialize IDT with ISR stubs */
-    idt_init();
-
-    /* Initialize PIC — remap IRQs to vectors 32-47 */
-    pic_init();
-
-    /* Initialize physical memory manager */
-    pmm_init(info);
-
-    /* Initialize virtual memory manager — creates kernel page tables */
-    vmm_init(info);
-
-    /* Initialize kernel heap allocator */
-    kmalloc_init();
-
-    /* Heap self-test: 1000 alloc/free cycles */
+/* Run 1000 alloc/free cycles to verify heap integrity. */
+static void heap_self_test(void) {
     kprintf("[BOOT] Running heap self-test...\n");
     for (int i = 0; i < 1000; i++) {
         size_t sz = 16 + (uint32_t)(i * 37) % 512;  /* Varying sizes 16-527 */
         void *p = kmalloc(sz, GFP_ZERO);
         if (p == NULL) {
             kprintf("[BOOT] FAIL: kmalloc returned NULL at iteration %d\n", i);
-            for (;;) __asm__ volatile ("cli; hlt");
+            KERNEL_PANIC();
         }
         /* Verify zero-fill */
         uint8_t *bytes = (uint8_t *)p;
         for (size_t j = 0; j < sz; j++) {
             if (bytes[j] != 0) {
                 kprintf("[BOOT] FAIL: GFP_ZERO not zeroed at iteration %d\n", i);
-                for (;;) __asm__ volatile ("cli; hlt");
+                KERNEL_PANIC();
             }
         }
         /* Write pattern, then free */
@@ -142,8 +107,10 @@ void kmain(void) {
     }
     kprintf("[BOOT] Heap self-test passed (1000 alloc/free cycles)\n");
     kmalloc_dump_stats();
+}
 
-    /* Phase 6: VFS + ramfs */
+/* Initialize VFS with ramfs, load boot modules, create /etc/hostname. */
+static void vfs_setup(const BootInfo *info) {
     vfs_init();
     VfsNode *vfs_root_node = ramfs_init();
     vfs_set_root(vfs_root_node);
@@ -177,20 +144,19 @@ void kmain(void) {
     }
 
     /* List root directory */
-    VfsDirEntry vfs_entries[16];
-    int vfs_count = vfs_readdir("/", vfs_entries, 16);
-    kprintf("[VFS] Root has %d entries\n", vfs_count);
-    for (int i = 0; i < vfs_count; i++) {
+    VfsDirEntry entries[16];
+    int count = vfs_readdir("/", entries, 16);
+    kprintf("[VFS] Root has %d entries\n", count);
+    for (int i = 0; i < count; i++) {
         kprintf("[VFS]   %s (inode=%lu, type=%s)\n",
-                vfs_entries[i].name,
-                vfs_entries[i].inode_num,
-                vfs_entries[i].type == VFS_DIRECTORY ? "dir" : "file");
+                entries[i].name,
+                entries[i].inode_num,
+                entries[i].type == VFS_DIRECTORY ? "dir" : "file");
     }
+}
 
-    /* Phase 4: PCI bus enumeration */
-    pci_init();
-
-    /* Phase 4: VirtIO block device */
+/* Probe VirtIO-blk and read sector 0 if present. */
+static void virtio_blk_test(void) {
     if (virtio_blk_init() == 0) {
         uint8_t sector_buf[512];
         if (virtio_blk_read(0, 1, sector_buf) == 0) {
@@ -208,17 +174,35 @@ void kmain(void) {
             kprintf("[VIRTIO-BLK] Sector 0 read FAILED\n");
         }
     }
+}
+
+void kmain(void) {
+    serial_init();
+    serial_puts("[BOOT] arc_os kernel booting...\n");
+
+    const BootInfo *info = bootinfo_init();
+    if (info == NULL) {
+        serial_puts("[BOOT] FATAL: failed to parse boot info\n");
+        KERNEL_PANIC();
+    }
+
+    boot_log_info(info);
+
+    gdt_init();
+    idt_init();
+    pic_init();
+    pmm_init(info);
+    vmm_init(info);
+    kmalloc_init();
+    heap_self_test();
+    vfs_setup(info);
+    pci_init();
+    virtio_blk_test();
 
     /* Initialize threading — converts boot context to thread 0 */
     thread_init();
-
-    /* Initialize scheduler */
     sched_init();
-
-    /* Initialize process management */
     proc_init();
-
-    /* Initialize SYSCALL/SYSRET */
     syscall_init();
 
     /* Initialize TTY and PS/2 keyboard (TTY first — keyboard handler calls tty_input_char) */
@@ -228,11 +212,11 @@ void kmain(void) {
     /* Launch init process from boot module */
     if (init_launch(info) != 0) {
         kprintf("[BOOT] WARNING: init_launch failed, falling back to test threads\n");
-        Process *pa = proc_create(thread_a_entry, NULL);
-        Process *pb = proc_create(thread_b_entry, NULL);
+        Process *pa = proc_create(test_thread_entry, (void *)"THREAD A");
+        Process *pb = proc_create(test_thread_entry, (void *)"THREAD B");
         if (pa == NULL || pb == NULL) {
             kprintf("[BOOT] FATAL: failed to create test processes\n");
-            for (;;) __asm__ volatile ("cli; hlt");
+            KERNEL_PANIC();
         }
     }
 
