@@ -9,6 +9,7 @@
 #define ARCHOS_PROC_THREAD_H
 #define ARCHOS_PROC_SCHED_H
 #define ARCHOS_PROC_PROCESS_H
+#define ARCHOS_PROC_WAITQUEUE_H
 #define ARCHOS_ARCH_X86_64_GDT_H
 #define ARCHOS_ARCH_X86_64_SYSCALL_H
 #define ARCHOS_ARCH_X86_64_PAGING_H
@@ -83,6 +84,7 @@ static void thread_set_current(Thread *t) {
 /* Stubs for process/arch functions used by sched.c */
 typedef uint32_t pid_t;
 typedef struct FdTable FdTable;
+typedef struct WaitQueue { int dummy; } WaitQueue;
 typedef struct Process {
     pid_t pid;
     uint8_t state;
@@ -91,6 +93,7 @@ typedef struct Process {
     FdTable *fd_table;
     uint64_t brk_current;
     uint64_t brk_start;
+    WaitQueue child_exit_wq;
     struct Process *parent;
     struct Process *next;
 } Process;

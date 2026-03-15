@@ -9,7 +9,8 @@
 /* Guard out kernel headers */
 #define ARCHOS_LIB_MEM_H
 #define ARCHOS_MM_KMALLOC_H
-#define ARCHOS_PROC_SCHED_H
+#define ARCHOS_PROC_SPINLOCK_H
+#define ARCHOS_PROC_WAITQUEUE_H
 
 /* GFP flags */
 #define GFP_KERNEL  0x00
@@ -23,8 +24,19 @@ static void *kmalloc(size_t size, uint32_t flags) {
 }
 static void kfree(void *ptr) { free(ptr); }
 
-/* sched_yield — no-op in host tests */
-static void sched_yield(void) {}
+/* Spinlock/WaitQueue stubs for host tests */
+typedef struct { volatile uint32_t locked; uint64_t saved_flags; } Spinlock;
+#define SPINLOCK_INIT { .locked = 0, .saved_flags = 0 }
+static inline void spinlock_acquire(Spinlock *lock) { lock->locked = 1; }
+static inline void spinlock_release(Spinlock *lock) { lock->locked = 0; }
+
+struct Thread;
+typedef struct WaitQueue { Spinlock lock; struct Thread *head; struct Thread *tail; } WaitQueue;
+#define WAITQUEUE_INIT { .lock = SPINLOCK_INIT, .head = NULL, .tail = NULL }
+static void wq_init(WaitQueue *wq) { (void)wq; }
+static void wq_sleep(WaitQueue *wq, Spinlock *lock) { (void)wq; lock->locked = 0; }
+static int wq_wake(WaitQueue *wq) { (void)wq; return 0; }
+static int wq_wake_all(WaitQueue *wq) { (void)wq; return 0; }
 
 /* VfsNode/VfsOps types — include vfs.h definitions manually to avoid
  * kernel header dependency chain */

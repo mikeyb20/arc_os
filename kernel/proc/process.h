@@ -3,6 +3,7 @@
 
 #include "proc/thread.h"
 #include "proc/signal.h"
+#include "proc/waitqueue.h"
 #include <stdint.h>
 
 /* Process ID type */
@@ -40,6 +41,7 @@ typedef struct Process {
     uint64_t        brk_current;    /* Current program break */
     uint64_t        brk_start;      /* Initial program break */
     SigState        sig;            /* Per-process signal state */
+    WaitQueue       child_exit_wq;  /* Parents sleep here in sys_wait */
     struct Process *parent;
     struct Process *next;           /* Process list linkage */
 } Process;

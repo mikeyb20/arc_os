@@ -12,6 +12,7 @@
 #define ARCHOS_LIB_MEM_H        /* Use libc memset/memcpy */
 #define ARCHOS_PROC_PROCESS_H
 #define ARCHOS_PROC_SIGNAL_H
+#define ARCHOS_PROC_WAITQUEUE_H
 #define ARCHOS_PROC_FD_H
 #define ARCHOS_ARCH_X86_64_USERMODE_H
 #define ARCHOS_ARCH_X86_64_GDT_H
@@ -88,6 +89,10 @@ static void sig_init(SigState *ss) {
     for (int i = 0; i < NSIG; i++) ss->handlers[i] = SIG_DFL;
 }
 
+/* WaitQueue stub */
+typedef struct WaitQueue { int dummy; } WaitQueue;
+static void wq_init(WaitQueue *wq) { (void)wq; }
+
 /* Saved user context for fork */
 typedef struct ForkContext {
     uint64_t user_rip;
@@ -111,6 +116,7 @@ typedef struct Process {
     uint64_t        brk_current;
     uint64_t        brk_start;
     SigState        sig;
+    WaitQueue       child_exit_wq;
     struct Process *parent;
     struct Process *next;
 } Process;

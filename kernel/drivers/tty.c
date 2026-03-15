@@ -3,7 +3,7 @@
 
 #include "drivers/tty.h"
 #include "arch/x86_64/serial.h"
-#include "proc/sched.h"
+#include "proc/waitqueue.h"
 #include "proc/process.h"
 #include "proc/signal.h"
 #include "lib/kprintf.h"
@@ -29,6 +29,10 @@ static uint32_t line_pos;
 
 /* PID of the foreground process (set on tty_read) */
 static uint32_t tty_fg_pid;
+
+/* Wait queue for tty_read blocking */
+static Spinlock tty_lock = SPINLOCK_INIT;
+static WaitQueue tty_read_wq = WAITQUEUE_INIT;
 
 void tty_init(void) {
     read_head = 0;
@@ -72,6 +76,7 @@ void tty_input_char(char c) {
         read_head++;
         line_pos = 0;
         lines_ready++;
+        wq_wake(&tty_read_wq);
 
         /* Echo newline */
         serial_putchar('\n');
@@ -94,10 +99,13 @@ int tty_read(void *buf, uint32_t count) {
         tty_fg_pid = cur->pid;
     }
 
-    /* Yield-loop until a complete line is available */
+    /* Sleep until a complete line is available */
+    spinlock_acquire(&tty_lock);
     while (lines_ready == 0) {
-        sched_yield();
+        wq_sleep(&tty_read_wq, &tty_lock);
+        spinlock_acquire(&tty_lock);
     }
+    spinlock_release(&tty_lock);
 
     /* Copy from ring buffer up to count bytes, stop after '\n' */
     char *out = (char *)buf;

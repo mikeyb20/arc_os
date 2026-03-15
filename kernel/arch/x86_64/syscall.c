@@ -19,6 +19,7 @@
 #include "drivers/tty.h"
 #include "fs/pipe.h"
 #include "proc/signal.h"
+#include "proc/waitqueue.h"
 
 /* Exported from syscall_entry.asm: user context saved during SYSCALL */
 extern uint64_t syscall_saved_user_rip;
@@ -67,14 +68,15 @@ static int64_t sys_exit(uint64_t status, uint64_t a1, uint64_t a2,
         }
     }
 
-    /* Notify parent of child exit */
-    if (p->parent != NULL) {
-        sig_send(p->parent->pid, SIGCHLD);
-    }
-
     /* Set exit status and mark as zombie for parent to reap */
     p->exit_status = (int32_t)status;
     p->state = PROC_ZOMBIE;
+
+    /* Notify parent of child exit */
+    if (p->parent != NULL) {
+        wq_wake(&p->parent->child_exit_wq);
+        sig_send(p->parent->pid, SIGCHLD);
+    }
 
     thread_current()->state = THREAD_DEAD;
     sched_schedule();
@@ -286,6 +288,8 @@ static int64_t sys_unlink(uint64_t path_addr, uint64_t a1, uint64_t a2,
 }
 
 /* SYS_WAIT: wait for a child to exit, return child PID */
+static Spinlock wait_lock = SPINLOCK_INIT;
+
 static int64_t sys_wait(uint64_t status_addr, uint64_t a1, uint64_t a2,
                         uint64_t a3, uint64_t a4, uint64_t a5) {
     (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
@@ -295,34 +299,25 @@ static int64_t sys_wait(uint64_t status_addr, uint64_t a1, uint64_t a2,
     if (status_addr != 0 && !user_ptr_valid((void *)status_addr, sizeof(int32_t)))
         return -EINVAL;
 
-    /* Check for zombie children */
-    Process *zombie = proc_find_zombie_child(p);
-    if (zombie != NULL) {
-        int32_t status = 0;
-        int pid = proc_reap(zombie, &status);
-        if (status_addr != 0) {
-            *(int32_t *)status_addr = status;
+    spinlock_acquire(&wait_lock);
+    while (1) {
+        Process *zombie = proc_find_zombie_child(p);
+        if (zombie != NULL) {
+            spinlock_release(&wait_lock);
+            int32_t status = 0;
+            int pid = proc_reap(zombie, &status);
+            if (status_addr != 0) {
+                *(int32_t *)status_addr = status;
+            }
+            return pid;
         }
-        return pid;
+        if (!proc_has_children(p)) {
+            spinlock_release(&wait_lock);
+            return -ECHILD;
+        }
+        wq_sleep(&p->child_exit_wq, &wait_lock);
+        spinlock_acquire(&wait_lock);
     }
-
-    /* No zombie yet — check if we have any live children */
-    if (!proc_has_children(p)) {
-        return -ECHILD;
-    }
-
-    /* Children exist but none zombie yet — busy-wait */
-    while (proc_find_zombie_child(p) == NULL) {
-        sched_yield();
-    }
-
-    zombie = proc_find_zombie_child(p);
-    int32_t status = 0;
-    int pid = proc_reap(zombie, &status);
-    if (status_addr != 0) {
-        *(int32_t *)status_addr = status;
-    }
-    return pid;
 }
 
 /* SYS_FORK: create child process */

@@ -22,6 +22,7 @@ static void proc_setup(Process *p) {
     p->pid = next_pid++;
     p->state = PROC_ALIVE;
     sig_init(&p->sig);
+    wq_init(&p->child_exit_wq);
     p->next = proc_list;
     proc_list = p;
 }
@@ -152,6 +153,7 @@ Process *proc_fork(Process *parent, const ForkContext *user_ctx) {
     child->pid = next_pid++;
     child->state = PROC_ALIVE;
     sig_init(&child->sig);
+    wq_init(&child->child_exit_wq);
     child->page_table = child_pml4;
     child->brk_start = parent->brk_start;
     child->brk_current = parent->brk_current;
