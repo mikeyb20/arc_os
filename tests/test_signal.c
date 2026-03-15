@@ -10,6 +10,8 @@
 #define ARCHOS_LIB_MEM_H
 #define ARCHOS_MM_KMALLOC_H
 #define ARCHOS_PROC_SCHED_H
+#define ARCHOS_PROC_SPINLOCK_H
+#define ARCHOS_PROC_WAITQUEUE_H
 #define ARCHOS_PROC_THREAD_H
 #define ARCHOS_PROC_PROCESS_H
 #define ARCHOS_FS_VFS_H
@@ -108,6 +110,11 @@ sig_handler_t sig_set_handler(SigState *ss, int signo, sig_handler_t handler);
 int64_t sig_maybe_deliver(SyscallFrame *frame, int64_t syscall_ret);
 extern uint64_t sig_pending_arg;
 
+/* Spinlock/WaitQueue stubs */
+typedef struct { volatile uint32_t locked; uint64_t saved_flags; } Spinlock;
+#define SPINLOCK_INIT { .locked = 0, .saved_flags = 0 }
+typedef struct WaitQueue { Spinlock lock; struct Thread *head; struct Thread *tail; } WaitQueue;
+
 /* Process stub */
 #define PROC_ALIVE       0
 #define PROC_ZOMBIE      1
@@ -119,6 +126,7 @@ typedef struct Process {
     int32_t         exit_status;
     Thread         *main_thread;
     SigState        sig;
+    WaitQueue       child_exit_wq;
     struct Process *parent;
     struct Process *next;
 } Process;

@@ -22,6 +22,7 @@ static void proc_setup(Process *p) {
     p->pid = next_pid++;
     p->state = PROC_ALIVE;
     sig_init(&p->sig);
+    wq_init(&p->child_exit_wq);
     p->next = proc_list;
     proc_list = p;
 }

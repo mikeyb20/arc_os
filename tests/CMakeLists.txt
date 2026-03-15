@@ -29,6 +29,7 @@ add_executable(test_runner
     test_shell.c
     test_pipe.c
     test_signal.c
+    test_waitqueue.c
 )
 
 # Include kernel source root for "lib/mem.h" etc, but NOT kernel/include
@@ -82,3 +83,4 @@ add_test(NAME test_keyboard     COMMAND test_runner --suite keyboard)
 add_test(NAME test_shell        COMMAND test_runner --suite shell)
 add_test(NAME test_pipe         COMMAND test_runner --suite pipe)
 add_test(NAME test_signal       COMMAND test_runner --suite signal)
+add_test(NAME test_waitqueue    COMMAND test_runner --suite waitqueue)
