@@ -55,6 +55,73 @@ static int parse_line(char *line, char *argv[MAX_ARGS]) {
     return argc;
 }
 
+/* --- Reproduce Redirect struct and parse_redirects from shell.c --- */
+
+typedef struct {
+    const char *in_file;
+    const char *out_file;
+    int         append;
+} Redirect;
+
+/* Stub print for parse_redirects error messages */
+static void print(const char *s) { (void)s; }
+
+static int parse_redirects(int *argc, char *argv[], Redirect *r) {
+    r->in_file = (void *)0;
+    r->out_file = (void *)0;
+    r->append = 0;
+
+    int out = 0;
+    int i = 0;
+    while (i < *argc) {
+        char *tok = argv[i];
+
+        if (tok[0] == '>' && tok[1] == '>') {
+            if (tok[2] != '\0') {
+                r->out_file = &tok[2];
+            } else {
+                i++;
+                if (i >= *argc) {
+                    print("syntax error: missing filename after >>\n");
+                    return -1;
+                }
+                r->out_file = argv[i];
+            }
+            r->append = 1;
+            i++;
+        } else if (tok[0] == '>') {
+            if (tok[1] != '\0') {
+                r->out_file = &tok[1];
+            } else {
+                i++;
+                if (i >= *argc) {
+                    print("syntax error: missing filename after >\n");
+                    return -1;
+                }
+                r->out_file = argv[i];
+            }
+            r->append = 0;
+            i++;
+        } else if (tok[0] == '<') {
+            if (tok[1] != '\0') {
+                r->in_file = &tok[1];
+            } else {
+                i++;
+                if (i >= *argc) {
+                    print("syntax error: missing filename after <\n");
+                    return -1;
+                }
+                r->in_file = argv[i];
+            }
+            i++;
+        } else {
+            argv[out++] = argv[i++];
+        }
+    }
+    *argc = out;
+    return 0;
+}
+
 /* Suppress unused warnings for stubs reproduced from shell.c */
 static void suppress_unused(void) {
     (void)sh_memset;
@@ -196,6 +263,178 @@ static int test_strlen_empty(void) {
     return 0;
 }
 
+/* --- Redirect tests --- */
+
+static int test_redir_output_basic(void) {
+    char a0[] = "echo"; char a1[] = "hello"; char a2[] = ">"; char a3[] = "file";
+    char *argv[] = {a0, a1, a2, a3};
+    int argc = 4;
+    Redirect r;
+    ASSERT_EQ(parse_redirects(&argc, argv, &r), 0);
+    ASSERT_EQ(argc, 2);
+    ASSERT_STR_EQ(argv[0], "echo");
+    ASSERT_STR_EQ(argv[1], "hello");
+    ASSERT_STR_EQ(r.out_file, "file");
+    ASSERT_EQ(r.append, 0);
+    ASSERT_TRUE(r.in_file == (void *)0);
+    return 0;
+}
+
+static int test_redir_append_basic(void) {
+    char a0[] = "echo"; char a1[] = "hello"; char a2[] = ">>"; char a3[] = "file";
+    char *argv[] = {a0, a1, a2, a3};
+    int argc = 4;
+    Redirect r;
+    ASSERT_EQ(parse_redirects(&argc, argv, &r), 0);
+    ASSERT_EQ(argc, 2);
+    ASSERT_STR_EQ(r.out_file, "file");
+    ASSERT_EQ(r.append, 1);
+    return 0;
+}
+
+static int test_redir_input_basic(void) {
+    char a0[] = "cat"; char a1[] = "<"; char a2[] = "file";
+    char *argv[] = {a0, a1, a2};
+    int argc = 3;
+    Redirect r;
+    ASSERT_EQ(parse_redirects(&argc, argv, &r), 0);
+    ASSERT_EQ(argc, 1);
+    ASSERT_STR_EQ(argv[0], "cat");
+    ASSERT_STR_EQ(r.in_file, "file");
+    ASSERT_TRUE(r.out_file == (void *)0);
+    return 0;
+}
+
+static int test_redir_combined(void) {
+    char a0[] = "cat"; char a1[] = "<"; char a2[] = "in"; char a3[] = ">"; char a4[] = "out";
+    char *argv[] = {a0, a1, a2, a3, a4};
+    int argc = 5;
+    Redirect r;
+    ASSERT_EQ(parse_redirects(&argc, argv, &r), 0);
+    ASSERT_EQ(argc, 1);
+    ASSERT_STR_EQ(r.in_file, "in");
+    ASSERT_STR_EQ(r.out_file, "out");
+    return 0;
+}
+
+static int test_redir_output_attached(void) {
+    char a0[] = "echo"; char a1[] = ">file";
+    char *argv[] = {a0, a1};
+    int argc = 2;
+    Redirect r;
+    ASSERT_EQ(parse_redirects(&argc, argv, &r), 0);
+    ASSERT_EQ(argc, 1);
+    ASSERT_STR_EQ(r.out_file, "file");
+    ASSERT_EQ(r.append, 0);
+    return 0;
+}
+
+static int test_redir_append_attached(void) {
+    char a0[] = "echo"; char a1[] = ">>file";
+    char *argv[] = {a0, a1};
+    int argc = 2;
+    Redirect r;
+    ASSERT_EQ(parse_redirects(&argc, argv, &r), 0);
+    ASSERT_EQ(argc, 1);
+    ASSERT_STR_EQ(r.out_file, "file");
+    ASSERT_EQ(r.append, 1);
+    return 0;
+}
+
+static int test_redir_input_attached(void) {
+    char a0[] = "cat"; char a1[] = "<file";
+    char *argv[] = {a0, a1};
+    int argc = 2;
+    Redirect r;
+    ASSERT_EQ(parse_redirects(&argc, argv, &r), 0);
+    ASSERT_EQ(argc, 1);
+    ASSERT_STR_EQ(r.in_file, "file");
+    return 0;
+}
+
+static int test_redir_no_redirect(void) {
+    char a0[] = "ls"; char a1[] = "/boot";
+    char *argv[] = {a0, a1};
+    int argc = 2;
+    Redirect r;
+    ASSERT_EQ(parse_redirects(&argc, argv, &r), 0);
+    ASSERT_EQ(argc, 2);
+    ASSERT_TRUE(r.in_file == (void *)0);
+    ASSERT_TRUE(r.out_file == (void *)0);
+    return 0;
+}
+
+static int test_redir_missing_filename(void) {
+    char a0[] = "echo"; char a1[] = ">";
+    char *argv[] = {a0, a1};
+    int argc = 2;
+    Redirect r;
+    ASSERT_EQ(parse_redirects(&argc, argv, &r), -1);
+    return 0;
+}
+
+static int test_redir_at_start(void) {
+    char a0[] = ">"; char a1[] = "file"; char a2[] = "echo"; char a3[] = "hello";
+    char *argv[] = {a0, a1, a2, a3};
+    int argc = 4;
+    Redirect r;
+    ASSERT_EQ(parse_redirects(&argc, argv, &r), 0);
+    ASSERT_EQ(argc, 2);
+    ASSERT_STR_EQ(argv[0], "echo");
+    ASSERT_STR_EQ(argv[1], "hello");
+    ASSERT_STR_EQ(r.out_file, "file");
+    return 0;
+}
+
+static int test_redir_multiple_output(void) {
+    char a0[] = "echo"; char a1[] = ">"; char a2[] = "a"; char a3[] = ">"; char a4[] = "b";
+    char *argv[] = {a0, a1, a2, a3, a4};
+    int argc = 5;
+    Redirect r;
+    ASSERT_EQ(parse_redirects(&argc, argv, &r), 0);
+    ASSERT_EQ(argc, 1);
+    ASSERT_STR_EQ(r.out_file, "b");
+    return 0;
+}
+
+static int test_redir_input_and_append(void) {
+    char a0[] = "cat"; char a1[] = "<"; char a2[] = "in"; char a3[] = ">>"; char a4[] = "log";
+    char *argv[] = {a0, a1, a2, a3, a4};
+    int argc = 5;
+    Redirect r;
+    ASSERT_EQ(parse_redirects(&argc, argv, &r), 0);
+    ASSERT_EQ(argc, 1);
+    ASSERT_STR_EQ(r.in_file, "in");
+    ASSERT_STR_EQ(r.out_file, "log");
+    ASSERT_EQ(r.append, 1);
+    return 0;
+}
+
+static int test_redir_empty_command(void) {
+    char a0[] = ">"; char a1[] = "file";
+    char *argv[] = {a0, a1};
+    int argc = 2;
+    Redirect r;
+    ASSERT_EQ(parse_redirects(&argc, argv, &r), 0);
+    ASSERT_EQ(argc, 0);
+    ASSERT_STR_EQ(r.out_file, "file");
+    return 0;
+}
+
+static int test_redir_preserves_args(void) {
+    char a0[] = "echo"; char a1[] = "a"; char a2[] = "b"; char a3[] = ">"; char a4[] = "f";
+    char *argv[] = {a0, a1, a2, a3, a4};
+    int argc = 5;
+    Redirect r;
+    ASSERT_EQ(parse_redirects(&argc, argv, &r), 0);
+    ASSERT_EQ(argc, 3);
+    ASSERT_STR_EQ(argv[0], "echo");
+    ASSERT_STR_EQ(argv[1], "a");
+    ASSERT_STR_EQ(argv[2], "b");
+    ASSERT_STR_EQ(r.out_file, "f");
+    return 0;
+}
+
 /* --- Test suite export --- */
 
 TestCase shell_tests[] = {
@@ -218,6 +457,21 @@ TestCase shell_tests[] = {
     { "atoi_non_numeric",     test_atoi_non_numeric },
     { "strlen_basic",         test_strlen_basic },
     { "strlen_empty",         test_strlen_empty },
+    /* Redirect tests */
+    { "redir_output_basic",    test_redir_output_basic },
+    { "redir_append_basic",    test_redir_append_basic },
+    { "redir_input_basic",     test_redir_input_basic },
+    { "redir_combined",        test_redir_combined },
+    { "redir_output_attached", test_redir_output_attached },
+    { "redir_append_attached", test_redir_append_attached },
+    { "redir_input_attached",  test_redir_input_attached },
+    { "redir_no_redirect",     test_redir_no_redirect },
+    { "redir_missing_filename",test_redir_missing_filename },
+    { "redir_at_start",        test_redir_at_start },
+    { "redir_multiple_output", test_redir_multiple_output },
+    { "redir_input_and_append",test_redir_input_and_append },
+    { "redir_empty_command",   test_redir_empty_command },
+    { "redir_preserves_args",  test_redir_preserves_args },
 };
 
 int shell_test_count = sizeof(shell_tests) / sizeof(shell_tests[0]);

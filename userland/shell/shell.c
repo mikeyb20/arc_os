@@ -40,6 +40,7 @@ static inline int64_t syscall3(uint64_t num, uint64_t a0, uint64_t a1, uint64_t 
 #define O_WRONLY  0x01
 #define O_CREAT   0x40
 #define O_TRUNC   0x200
+#define O_APPEND  0x400
 
 /* --- VFS types (must match kernel/fs/vfs.h) --- */
 
@@ -150,6 +151,125 @@ static int parse_line(char *line, char *argv[MAX_ARGS]) {
         }
     }
     return argc;
+}
+
+/* Forward declaration for dispatch (needed by execute_with_redirect) */
+static void dispatch(int argc, char *argv[]);
+
+/* --- I/O Redirection --- */
+
+typedef struct {
+    const char *in_file;   /* < filename (NULL if none) */
+    const char *out_file;  /* > or >> filename (NULL if none) */
+    int         append;    /* 1 if >>, 0 if > */
+} Redirect;
+
+/* Scan argv for >, >>, < tokens. Compact argv in-place, decrement argc.
+ * Returns 0 on success, -1 if an operator has no filename after it. */
+static int parse_redirects(int *argc, char *argv[], Redirect *r) {
+    r->in_file = (void *)0;
+    r->out_file = (void *)0;
+    r->append = 0;
+
+    int out = 0;
+    int i = 0;
+    while (i < *argc) {
+        char *tok = argv[i];
+
+        /* Check >> first (before >) */
+        if (tok[0] == '>' && tok[1] == '>') {
+            /* >>file (attached) or >> file (separated) */
+            if (tok[2] != '\0') {
+                r->out_file = &tok[2];
+            } else {
+                i++;
+                if (i >= *argc) {
+                    print("syntax error: missing filename after >>\n");
+                    return -1;
+                }
+                r->out_file = argv[i];
+            }
+            r->append = 1;
+            i++;
+        } else if (tok[0] == '>') {
+            /* >file (attached) or > file (separated) */
+            if (tok[1] != '\0') {
+                r->out_file = &tok[1];
+            } else {
+                i++;
+                if (i >= *argc) {
+                    print("syntax error: missing filename after >\n");
+                    return -1;
+                }
+                r->out_file = argv[i];
+            }
+            r->append = 0;
+            i++;
+        } else if (tok[0] == '<') {
+            /* <file (attached) or < file (separated) */
+            if (tok[1] != '\0') {
+                r->in_file = &tok[1];
+            } else {
+                i++;
+                if (i >= *argc) {
+                    print("syntax error: missing filename after <\n");
+                    return -1;
+                }
+                r->in_file = argv[i];
+            }
+            i++;
+        } else {
+            argv[out++] = argv[i++];
+        }
+    }
+    *argc = out;
+    return 0;
+}
+
+/* Open files and dup2 to stdin/stdout. Returns 0 on success, -1 on error. */
+static int apply_redirects(const Redirect *r) {
+    if (r->in_file) {
+        int64_t fd = syscall3(SYS_OPEN, (uint64_t)r->in_file, O_RDONLY, 0);
+        if (fd < 0) { print_error(r->in_file, fd); return -1; }
+        syscall3(SYS_DUP2, (uint64_t)fd, 0, 0);
+        syscall3(SYS_CLOSE, (uint64_t)fd, 0, 0);
+    }
+    if (r->out_file) {
+        int flags = O_WRONLY | O_CREAT;
+        flags |= r->append ? O_APPEND : O_TRUNC;
+        int64_t fd = syscall3(SYS_OPEN, (uint64_t)r->out_file, (uint64_t)flags, 0);
+        if (fd < 0) { print_error(r->out_file, fd); return -1; }
+        syscall3(SYS_DUP2, (uint64_t)fd, 1, 0);
+        syscall3(SYS_CLOSE, (uint64_t)fd, 0, 0);
+    }
+    return 0;
+}
+
+/* Fork, apply redirects in child, dispatch or exec, parent waits. */
+static void execute_with_redirect(int argc, char *argv[], const Redirect *r) {
+    int64_t pid = syscall3(SYS_FORK, 0, 0, 0);
+    if (pid < 0) {
+        print_error("fork", pid);
+        return;
+    }
+    if (pid == 0) {
+        /* Child: apply redirects */
+        if (apply_redirects(r) < 0) {
+            syscall3(SYS_EXIT, 1, 0, 0);
+            for (;;) __asm__ volatile ("ud2");
+        }
+        if (argc > 0) {
+            /* Try exec first */
+            int64_t er = syscall3(SYS_EXEC, (uint64_t)argv[0], 0, 0);
+            (void)er;
+            /* Exec failed — try as builtin */
+            dispatch(argc, argv);
+        }
+        syscall3(SYS_EXIT, 0, 0, 0);
+        for (;;) __asm__ volatile ("ud2");
+    }
+    /* Parent: wait for child */
+    syscall3(SYS_WAIT, 0, 0, 0);
 }
 
 /* --- Builtin command implementations --- */
@@ -449,10 +569,13 @@ static void execute_pipe(char *left, char *right) {
         syscall3(SYS_DUP2, (uint64_t)pipefd[1], 1, 0);
         syscall3(SYS_CLOSE, (uint64_t)pipefd[1], 0, 0);
 
-        /* Parse and run left command */
+        /* Parse and run left command (with optional redirects) */
         char *argv[MAX_ARGS];
         int argc = parse_line(left, argv);
         if (argc > 0) {
+            Redirect redir = {0, 0, 0};
+            if (parse_redirects(&argc, argv, &redir) == 0)
+                apply_redirects(&redir);
             /* Try exec first */
             int64_t r = syscall3(SYS_EXEC, (uint64_t)argv[0], 0, 0);
             (void)r;
@@ -479,10 +602,13 @@ static void execute_pipe(char *left, char *right) {
         syscall3(SYS_DUP2, (uint64_t)pipefd[0], 0, 0);
         syscall3(SYS_CLOSE, (uint64_t)pipefd[0], 0, 0);
 
-        /* Parse and run right command */
+        /* Parse and run right command (with optional redirects) */
         char *argv[MAX_ARGS];
         int argc = parse_line(right, argv);
         if (argc > 0) {
+            Redirect redir = {0, 0, 0};
+            if (parse_redirects(&argc, argv, &redir) == 0)
+                apply_redirects(&redir);
             int64_t r = syscall3(SYS_EXEC, (uint64_t)argv[0], 0, 0);
             (void)r;
             dispatch(argc, argv);
@@ -526,7 +652,14 @@ void _start(void) {
             execute_pipe(line, pipe_pos + 1);
         } else {
             int argc = parse_line(line, argv);
-            dispatch(argc, argv);
+            Redirect redir = {0, 0, 0};
+            int rr = parse_redirects(&argc, argv, &redir);
+            if (rr < 0) continue;  /* parse error, already printed */
+            if (redir.in_file || redir.out_file) {
+                execute_with_redirect(argc, argv, &redir);
+            } else {
+                dispatch(argc, argv);
+            }
         }
     }
 

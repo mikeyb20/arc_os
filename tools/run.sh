@@ -12,10 +12,11 @@ bash tools/make-iso.sh
 # Create test disk if it doesn't exist
 TEST_DISK="$PROJECT_DIR/build/test_disk.img"
 if [ ! -f "$TEST_DISK" ]; then
-    echo "Creating 32MB test disk with MBR signature..."
-    dd if=/dev/zero of="$TEST_DISK" bs=1M count=32 2>/dev/null
-    # Write MBR signature (0x55AA at offset 510)
-    printf '\x55\xAA' | dd of="$TEST_DISK" bs=1 seek=510 conv=notrunc 2>/dev/null
+    echo "Creating 32MB FAT32 test disk..."
+    dd if=/dev/zero of="$TEST_DISK" bs=1M count=34 2>/dev/null
+    mkfs.fat -F 32 -n "ARCOS" "$TEST_DISK" >/dev/null
+    # Optionally seed a test file
+    echo -n "Hello from arc_os disk!" | mcopy -i "$TEST_DISK" - ::hello.txt
 fi
 
 qemu-system-x86_64 \
