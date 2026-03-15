@@ -132,4 +132,8 @@ int vfs_mkdir(const char *path, uint32_t mode);
 int vfs_readdir(const char *path, VfsDirEntry *entries, uint32_t max);
 int vfs_unlink(const char *path);
 
+/* Mount a filesystem root at a single mount point (e.g., "/disk").
+ * Only one mount point is supported. Path must be "/<name>". */
+int vfs_mount(const char *path, VfsNode *fs_root);
+
 #endif /* ARCHOS_FS_VFS_H */
