@@ -30,13 +30,13 @@ int pmm_bitmap_test(const uint64_t *bm, uint64_t bit) {
 /* Find first free bit in bitmap. Returns bit index, or total_pages if none. */
 static uint64_t bitmap_find_first_free(void) {
     uint64_t qwords = bitmap_size / sizeof(uint64_t);
-    for (uint64_t i = 0; i < qwords; i++) {
-        if (bitmap[i] != ~0ULL) {
+    for (uint64_t qword_idx = 0; qword_idx < qwords; qword_idx++) {
+        if (bitmap[qword_idx] != ~0ULL) {
             /* There's at least one free bit in this qword */
-            for (int b = 0; b < BITS_PER_QWORD; b++) {
-                uint64_t page = i * BITS_PER_QWORD + (uint64_t)b;
+            for (int bit_idx = 0; bit_idx < BITS_PER_QWORD; bit_idx++) {
+                uint64_t page = qword_idx * BITS_PER_QWORD + (uint64_t)bit_idx;
                 if (page >= total_pages) return total_pages;
-                if (!(bitmap[i] & (1ULL << b))) {
+                if (!(bitmap[qword_idx] & (1ULL << bit_idx))) {
                     return page;
                 }
             }

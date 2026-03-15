@@ -38,6 +38,13 @@ static inline void kprintf(const char *fmt, ...) { (void)fmt; }
 #define VMM_FLAG_USER      (1 << 1)
 #define VMM_FLAG_NOEXEC    (1 << 2)
 
+/* User-space constants (from vmm.h) */
+#define USER_STACK_TOP    0x00007FFFFFFFE000ULL
+#define USER_STACK_PAGES  4
+
+/* Errno (from vfs.h) */
+#define ENOMEM 12
+
 /* Memmap types (from bootinfo.h) */
 #define MEMMAP_FRAMEBUFFER 7
 

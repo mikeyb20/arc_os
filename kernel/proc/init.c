@@ -12,7 +12,6 @@
 #include "arch/x86_64/paging.h"
 #include "arch/x86_64/usermode.h"
 #include "lib/kprintf.h"
-#include "lib/mem.h"
 
 /* Argument passed to the init kernel thread */
 typedef struct {
@@ -43,19 +42,12 @@ static void init_thread_entry(void *arg) {
     p->brk_current = result.brk_start;
 
     /* Allocate and map user stack pages */
-    uint64_t stack_bottom = USER_STACK_TOP - (USER_STACK_PAGES * PAGE_SIZE);
-    uint64_t hhdm = vmm_get_hhdm_offset();
-    for (uint64_t vaddr = stack_bottom; vaddr < USER_STACK_TOP; vaddr += PAGE_SIZE) {
-        uint64_t phys = pmm_alloc_page();
-        if (phys == 0) {
-            kprintf("[INIT] FATAL: out of memory for user stack\n");
-            return;
-        }
-        memset((void *)(phys + hhdm), 0, PAGE_SIZE);
-        vmm_map_page_in(p->page_table, vaddr, phys,
-                        VMM_FLAG_USER | VMM_FLAG_WRITABLE);
+    if (vmm_map_user_stack(p->page_table) != 0) {
+        kprintf("[INIT] FATAL: out of memory for user stack\n");
+        return;
     }
-    kprintf("[INIT] User stack mapped: 0x%lx - 0x%lx\n", stack_bottom, USER_STACK_TOP);
+    kprintf("[INIT] User stack mapped: 0x%lx - 0x%lx\n",
+            USER_STACK_TOP - (USER_STACK_PAGES * PAGE_SIZE), USER_STACK_TOP);
 
     /* Set TSS.rsp0 and SYSCALL kernel RSP */
     Thread *t = thread_current();

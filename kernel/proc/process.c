@@ -159,7 +159,7 @@ Process *proc_fork(Process *parent, const ForkContext *user_ctx) {
     /* 3. Duplicate FD table */
     child->fd_table = fd_table_dup(parent->fd_table);
 
-    /* 5. Create child's kernel thread */
+    /* 4. Create child's kernel thread */
     g_fork_child_args.child = child;
     g_fork_child_args.ctx = *user_ctx;
 
