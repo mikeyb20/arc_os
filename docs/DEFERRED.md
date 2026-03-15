@@ -10,7 +10,7 @@ Items intentionally postponed from their original phase. Each entry notes the or
 
 ## Phase 3: Threading & Scheduling
 
-- **Sleep queues** — Threads blocked on timers or I/O. Required for sleeping mutexes and proper I/O wait.
+- ~~**Sleep queues**~~ **DONE** — Wait queues (`wq_sleep`/`wq_wake`/`wq_wake_all`) with condition-variable semantics. Converted busy-wait sites in sys_wait, pipes, and TTY to proper sleep/wake.
 - **Mutexes / semaphores / condition variables** — Sleeping locks for longer critical sections. Spinlocks suffice for current single-CPU kernel.
 - **Thread-local storage (TLS)** — Per-thread kernel data. Not needed until per-CPU data or complex driver state requires it.
 - **Work queues** — Deferred work items processed by worker threads. Needed when interrupt handlers must defer complex processing.

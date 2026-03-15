@@ -172,6 +172,12 @@ Create directory structure and all build infrastructure.
 - `kernel/proc/mutex.h` + `mutex.c` — Sleeping lock
 - **Milestone**: Shared counter reaches exactly 20000.
 
+### Chunk 3.5 — Wait Queues (~180 lines, 2 files) — [x] DONE
+- `kernel/proc/waitqueue.h` + `waitqueue.c` — FIFO sleep/wake primitive with condition-variable semantics
+- `wq_init()`, `wq_sleep(wq, lock)`, `wq_wake(wq)`, `wq_wake_all(wq)`
+- Converted busy-wait sites: sys_wait (parent blocks until child exits), pipe read/write (blocks until data/space available), TTY read (blocks until line ready)
+- **Milestone**: 15 host-side tests passing. sys_wait, pipe, and TTY no longer busy-wait.
+
 ---
 
 ## Phases 4-6: High-Level Breakdown
@@ -236,7 +242,8 @@ Items intentionally postponed from their original phase:
 - ~~**Phase 1.9**: PS/2 keyboard driver~~ **DONE**
 - **Phase 1.10**: HAL consolidation (`hal.h` unified interface)
 - **Phase 3.4**: Sleeping mutexes, semaphores, condition variables (spinlock done)
-- **Phase 3**: Sleep queues, thread-local storage, work queues
+- ~~**Phase 3**: Sleep queues~~ **DONE** — Wait queues (3.5)
+- **Phase 3**: Thread-local storage, work queues
 - **Phase 4.1**: ACPI table parsing
 - **Phase 4**: Memory barrier HAL abstraction, VirtIO feature caching, DMA buffer pool
 - ~~**Phase 5**: fork/exec/wait (5.5), user pointer validation (copy_from_user/copy_to_user)~~ **DONE**

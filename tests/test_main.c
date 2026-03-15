@@ -64,6 +64,8 @@ extern TestCase signal_tests[];
 extern int signal_test_count;
 extern TestCase waitqueue_tests[];
 extern int waitqueue_test_count;
+extern TestCase fat32_tests[];
+extern int fat32_test_count;
 
 static void run_suite(const char *suite_name, TestCase *tests, int count) {
     printf("[%s] Running %d tests\n", suite_name, count);
@@ -115,6 +117,7 @@ int main(int argc, char **argv) {
         { "pipe",         pipe_tests,         &pipe_test_count },
         { "signal",       signal_tests,       &signal_test_count },
         { "waitqueue",    waitqueue_tests,    &waitqueue_test_count },
+        { "fat32",        fat32_tests,        &fat32_test_count },
     };
     int suite_count = (int)(sizeof(suites) / sizeof(suites[0]));
 

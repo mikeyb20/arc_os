@@ -15,14 +15,14 @@ A long-term project outline for building a custom operating system. Designed aro
 | 0 | COMPLETE | Toolchain, build system, Limine, freestanding headers |
 | 1 | MOSTLY COMPLETE | Serial, BootInfo, kprintf, GDT, IDT, PIC, PIT, PS/2 keyboard. Deferred: framebuffer console (1.4), HAL consolidation (1.10) |
 | 2 | COMPLETE | PMM bitmap allocator, VMM with own page tables, kmalloc free-list heap |
-| 3 | CORE COMPLETE | TCB, context switch, round-robin scheduler, preemptive multitasking, spinlock. Deferred: sleep queues, mutexes/semaphores/condvars, TLS, work queues |
+| 3 | CORE COMPLETE | TCB, context switch, round-robin scheduler, preemptive multitasking, spinlock, wait queues. Deferred: mutexes/semaphores/condvars, TLS, work queues |
 | 4 | PARTIAL | PCI enumeration + VirtIO common + VirtIO-blk polling read. Deferred: ACPI (4.1) |
 | 5 | COMPLETE | SYSCALL/SYSRET, per-process address spaces, ELF64 loader, init process, FD table, fork/exec/wait, user pointer validation |
 | 6 | MOSTLY COMPLETE | VFS + ramfs (6.1-6.2), file syscalls exposed to user space (6.3). Deferred: FAT32 (6.4) |
-| 7 | MOSTLY COMPLETE | PS/2 keyboard, TTY, interactive shell (14 builtins), echo/hello binaries, pipes (`cmd1 \| cmd2`), POSIX signals (signal/kill/sigreturn, SIGINT/SIGCHLD/SIGPIPE, Ctrl+C). Deferred: signal masking, sigaction, -EINTR, process groups |
+| 7 | MOSTLY COMPLETE | PS/2 keyboard, TTY, interactive shell (14 builtins), echo/hello binaries, pipes (`cmd1 \| cmd2`), POSIX signals (signal/kill/sigreturn, SIGINT/SIGCHLD/SIGPIPE, Ctrl+C), wait queues replace busy-waits (sys_wait, pipe, TTY). Deferred: signal masking, sigaction, -EINTR, process groups |
 | 8-13 | NOT STARTED | |
 
-**Test infrastructure**: 27 suites, 374 host-side tests — all passing.
+**Test infrastructure**: 28 suites, 389 host-side tests — all passing.
 
 ---
 
@@ -384,7 +384,7 @@ gdb build/kernel.elf -ex "target remote :1234" -ex "break kmain" -ex "continue"
 - **Replace later**: Priority-based with multilevel feedback queues
 - **Replace even later**: CFS-like fair scheduler with per-CPU run queues
 - Cooperative scheduling first (threads explicitly yield), then add timer-driven preemption
-- Sleep queue: threads blocked on timers, I/O, or locks
+- ~~Sleep queue: threads blocked on timers, I/O, or locks~~ **DONE** — Wait queues (`wq_sleep`/`wq_wake`/`wq_wake_all`) with condition-variable semantics; used by sys_wait, pipes, and TTY
 - SMP awareness designed in from the start (per-CPU run queues) even if SMP comes later
 
 ### 3.4 Synchronization Primitives

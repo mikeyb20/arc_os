@@ -20,6 +20,7 @@
 #include "lib/mem.h"
 #include "fs/vfs.h"
 #include "fs/ramfs.h"
+#include "fs/fat32.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -155,24 +156,16 @@ static void vfs_setup(const BootInfo *info) {
     }
 }
 
-/* Probe VirtIO-blk and read sector 0 if present. */
-static void virtio_blk_test(void) {
-    if (virtio_blk_init() == 0) {
-        uint8_t sector_buf[512];
-        if (virtio_blk_read(0, 1, sector_buf) == 0) {
-            kprintf("[VIRTIO-BLK] Sector 0 read OK. First 16 bytes:\n");
-            kprintf("[VIRTIO-BLK] ");
-            for (int i = 0; i < 16; i++) {
-                kprintf("%x ", sector_buf[i]);
-            }
-            kprintf("\n");
-            /* Check for MBR signature */
-            if (sector_buf[510] == 0x55 && sector_buf[511] == 0xAA) {
-                kprintf("[VIRTIO-BLK] MBR signature detected (0x55AA)\n");
-            }
-        } else {
-            kprintf("[VIRTIO-BLK] Sector 0 read FAILED\n");
-        }
+/* Probe VirtIO-blk, try FAT32 mount. */
+static void virtio_blk_setup(void) {
+    if (virtio_blk_init() != 0) return;
+
+    VfsNode *fat_root = fat32_mount();
+    if (fat_root) {
+        vfs_mount("/disk", fat_root);
+        kprintf("[FAT32] Mounted at /disk\n");
+    } else {
+        kprintf("[VIRTIO-BLK] No FAT32 filesystem found on disk\n");
     }
 }
 
@@ -197,7 +190,7 @@ void kmain(void) {
     heap_self_test();
     vfs_setup(info);
     pci_init();
-    virtio_blk_test();
+    virtio_blk_setup();
 
     /* Initialize threading — converts boot context to thread 0 */
     thread_init();
