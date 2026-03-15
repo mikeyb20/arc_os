@@ -39,6 +39,9 @@ extern uint64_t syscall_saved_user_r15;
 #define FD_STDOUT  1
 #define FD_STDERR  2
 
+/* Maximum ELF binary size for sys_exec */
+#define MAX_ELF_SIZE  (16 * 1024 * 1024)  /* 16 MB */
+
 /* Syscall handler table */
 static syscall_handler_t syscall_table[SYSCALL_MAX];
 
@@ -79,7 +82,7 @@ static int64_t sys_exit(uint64_t status, uint64_t a1, uint64_t a2,
     thread_current()->state = THREAD_DEAD;
     sched_schedule();
     for (;;) __asm__ volatile ("hlt");
-    __builtin_unreachable();
+    __builtin_unreachable();  /* suppress -Wreturn-type */
 }
 
 /* SYS_WRITE: write to fd (fd 1/2 → TTY unless redirected via dup2) */
@@ -285,6 +288,16 @@ static int64_t sys_unlink(uint64_t path_addr, uint64_t a1, uint64_t a2,
     return vfs_unlink(path);
 }
 
+/* Reap a zombie child and optionally copy exit status to user space */
+static int reap_zombie(Process *zombie, uint64_t status_addr) {
+    int32_t status = 0;
+    int pid = proc_reap(zombie, &status);
+    if (status_addr != 0) {
+        *(int32_t *)status_addr = status;
+    }
+    return pid;
+}
+
 /* SYS_WAIT: wait for a child to exit, return child PID */
 static int64_t sys_wait(uint64_t status_addr, uint64_t a1, uint64_t a2,
                         uint64_t a3, uint64_t a4, uint64_t a5) {
@@ -297,14 +310,7 @@ static int64_t sys_wait(uint64_t status_addr, uint64_t a1, uint64_t a2,
 
     /* Check for zombie children */
     Process *zombie = proc_find_zombie_child(p);
-    if (zombie != NULL) {
-        int32_t status = 0;
-        int pid = proc_reap(zombie, &status);
-        if (status_addr != 0) {
-            *(int32_t *)status_addr = status;
-        }
-        return pid;
-    }
+    if (zombie != NULL) return reap_zombie(zombie, status_addr);
 
     /* No zombie yet — check if we have any live children */
     if (!proc_has_children(p)) {
@@ -312,17 +318,10 @@ static int64_t sys_wait(uint64_t status_addr, uint64_t a1, uint64_t a2,
     }
 
     /* Children exist but none zombie yet — busy-wait */
-    while (proc_find_zombie_child(p) == NULL) {
+    while ((zombie = proc_find_zombie_child(p)) == NULL) {
         sched_yield();
     }
-
-    zombie = proc_find_zombie_child(p);
-    int32_t status = 0;
-    int pid = proc_reap(zombie, &status);
-    if (status_addr != 0) {
-        *(int32_t *)status_addr = status;
-    }
-    return pid;
+    return reap_zombie(zombie, status_addr);
 }
 
 /* SYS_FORK: create child process */
@@ -366,7 +365,7 @@ static int64_t sys_exec(uint64_t path_addr, uint64_t a1, uint64_t a2,
     if (err != 0) return err;
 
     uint64_t file_size = file.node->size;
-    if (file_size == 0 || file_size > 16 * 1024 * 1024) {
+    if (file_size == 0 || file_size > MAX_ELF_SIZE) {
         vfs_close(&file);
         return -EINVAL;
     }
@@ -467,6 +466,14 @@ static int64_t sys_dup2(uint64_t oldfd, uint64_t newfd, uint64_t a2,
     return (int64_t)newfd;
 }
 
+/* Initialize a pipe fd entry */
+static void pipe_setup_fd(FdTable *ft, int fd, VfsNode *node, uint32_t flags) {
+    VfsFile *f = fd_get(ft, fd);
+    f->node = node;
+    f->offset = 0;
+    f->flags = flags;
+}
+
 /* SYS_PIPE: create a pipe */
 static int64_t sys_pipe(uint64_t pipefd_addr, uint64_t a1, uint64_t a2,
                         uint64_t a3, uint64_t a4, uint64_t a5) {
@@ -496,17 +503,8 @@ static int64_t sys_pipe(uint64_t pipefd_addr, uint64_t a1, uint64_t a2,
         return -ENOMEM;
     }
 
-    /* Set up read end */
-    VfsFile *rf = fd_get(p->fd_table, rfd);
-    rf->node = read_node;
-    rf->offset = 0;
-    rf->flags = O_RDONLY;
-
-    /* Set up write end */
-    VfsFile *wf = fd_get(p->fd_table, wfd);
-    wf->node = write_node;
-    wf->offset = 0;
-    wf->flags = O_WRONLY;
+    pipe_setup_fd(p->fd_table, rfd, read_node, O_RDONLY);
+    pipe_setup_fd(p->fd_table, wfd, write_node, O_WRONLY);
 
     /* Write fds to user space */
     int32_t *user_fds = (int32_t *)pipefd_addr;

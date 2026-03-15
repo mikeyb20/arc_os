@@ -217,27 +217,27 @@ uint64_t vmm_fork_address_space(uint64_t src_pml4_phys) {
 
     uint64_t *src_pml4 = (uint64_t *)phys_to_virt(src_pml4_phys);
 
-    for (int i = 0; i < 256; i++) {
-        if (!(src_pml4[i] & PTE_PRESENT)) continue;
-        uint64_t *src_pdpt = (uint64_t *)phys_to_virt(src_pml4[i] & PTE_ADDR_MASK);
+    for (int pml4_idx = 0; pml4_idx < PML4_KERNEL_START; pml4_idx++) {
+        if (!(src_pml4[pml4_idx] & PTE_PRESENT)) continue;
+        uint64_t *src_pdpt = (uint64_t *)phys_to_virt(src_pml4[pml4_idx] & PTE_ADDR_MASK);
 
-        for (int j = 0; j < 512; j++) {
-            if (!(src_pdpt[j] & PTE_PRESENT)) continue;
-            if (src_pdpt[j] & PTE_HUGE) continue;
+        for (int pdpt_idx = 0; pdpt_idx < PT_ENTRIES; pdpt_idx++) {
+            if (!(src_pdpt[pdpt_idx] & PTE_PRESENT)) continue;
+            if (src_pdpt[pdpt_idx] & PTE_HUGE) continue;
 
-            uint64_t *src_pd = (uint64_t *)phys_to_virt(src_pdpt[j] & PTE_ADDR_MASK);
+            uint64_t *src_pd = (uint64_t *)phys_to_virt(src_pdpt[pdpt_idx] & PTE_ADDR_MASK);
 
-            for (int k = 0; k < 512; k++) {
-                if (!(src_pd[k] & PTE_PRESENT)) continue;
-                if (src_pd[k] & PTE_HUGE) continue;
+            for (int pd_idx = 0; pd_idx < PT_ENTRIES; pd_idx++) {
+                if (!(src_pd[pd_idx] & PTE_PRESENT)) continue;
+                if (src_pd[pd_idx] & PTE_HUGE) continue;
 
-                uint64_t *src_pt = (uint64_t *)phys_to_virt(src_pd[k] & PTE_ADDR_MASK);
+                uint64_t *src_pt = (uint64_t *)phys_to_virt(src_pd[pd_idx] & PTE_ADDR_MASK);
 
-                for (int l = 0; l < 512; l++) {
-                    if (!(src_pt[l] & PTE_PRESENT)) continue;
+                for (int pt_idx = 0; pt_idx < PT_ENTRIES; pt_idx++) {
+                    if (!(src_pt[pt_idx] & PTE_PRESENT)) continue;
 
-                    uint64_t src_phys = src_pt[l] & PTE_ADDR_MASK;
-                    uint64_t flags = src_pt[l] & ~PTE_ADDR_MASK;
+                    uint64_t src_phys = src_pt[pt_idx] & PTE_ADDR_MASK;
+                    uint64_t flags = src_pt[pt_idx] & ~PTE_ADDR_MASK;
 
                     uint64_t dst_phys = pmm_alloc_page();
                     if (dst_phys == 0) {
@@ -247,8 +247,8 @@ uint64_t vmm_fork_address_space(uint64_t src_pml4_phys) {
 
                     memcpy(phys_to_virt(dst_phys), phys_to_virt(src_phys), PAGE_SIZE);
 
-                    uint64_t vaddr = ((uint64_t)i << 39) | ((uint64_t)j << 30) |
-                                     ((uint64_t)k << 21) | ((uint64_t)l << 12);
+                    uint64_t vaddr = ((uint64_t)pml4_idx << 39) | ((uint64_t)pdpt_idx << 30) |
+                                     ((uint64_t)pd_idx << 21) | ((uint64_t)pt_idx << 12);
 
                     vmm_map_page_in(dst_pml4_phys, vaddr, dst_phys,
                                     ((flags & PTE_WRITABLE) ? VMM_FLAG_WRITABLE : 0) |
@@ -265,28 +265,28 @@ uint64_t vmm_fork_address_space(uint64_t src_pml4_phys) {
 void vmm_free_user_pages(uint64_t pml4_phys) {
     uint64_t *pml4 = (uint64_t *)phys_to_virt(pml4_phys);
 
-    for (int i = 0; i < 256; i++) {
-        if (!(pml4[i] & PTE_PRESENT)) continue;
-        uint64_t *pdpt = (uint64_t *)phys_to_virt(pml4[i] & PTE_ADDR_MASK);
+    for (int pml4_idx = 0; pml4_idx < PML4_KERNEL_START; pml4_idx++) {
+        if (!(pml4[pml4_idx] & PTE_PRESENT)) continue;
+        uint64_t *pdpt = (uint64_t *)phys_to_virt(pml4[pml4_idx] & PTE_ADDR_MASK);
 
-        for (int j = 0; j < 512; j++) {
-            if (!(pdpt[j] & PTE_PRESENT) || (pdpt[j] & PTE_HUGE)) continue;
-            uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[j] & PTE_ADDR_MASK);
+        for (int pdpt_idx = 0; pdpt_idx < PT_ENTRIES; pdpt_idx++) {
+            if (!(pdpt[pdpt_idx] & PTE_PRESENT) || (pdpt[pdpt_idx] & PTE_HUGE)) continue;
+            uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[pdpt_idx] & PTE_ADDR_MASK);
 
-            for (int k = 0; k < 512; k++) {
-                if (!(pd[k] & PTE_PRESENT) || (pd[k] & PTE_HUGE)) continue;
-                uint64_t *pt = (uint64_t *)phys_to_virt(pd[k] & PTE_ADDR_MASK);
+            for (int pd_idx = 0; pd_idx < PT_ENTRIES; pd_idx++) {
+                if (!(pd[pd_idx] & PTE_PRESENT) || (pd[pd_idx] & PTE_HUGE)) continue;
+                uint64_t *pt = (uint64_t *)phys_to_virt(pd[pd_idx] & PTE_ADDR_MASK);
 
-                for (int l = 0; l < 512; l++) {
-                    if (pt[l] & PTE_PRESENT) {
-                        pmm_free_page(pt[l] & PTE_ADDR_MASK);
+                for (int pt_idx = 0; pt_idx < PT_ENTRIES; pt_idx++) {
+                    if (pt[pt_idx] & PTE_PRESENT) {
+                        pmm_free_page(pt[pt_idx] & PTE_ADDR_MASK);
                     }
                 }
-                pmm_free_page(pd[k] & PTE_ADDR_MASK);
+                pmm_free_page(pd[pd_idx] & PTE_ADDR_MASK);
             }
-            pmm_free_page(pdpt[j] & PTE_ADDR_MASK);
+            pmm_free_page(pdpt[pdpt_idx] & PTE_ADDR_MASK);
         }
-        pmm_free_page(pml4[i] & PTE_ADDR_MASK);
+        pmm_free_page(pml4[pml4_idx] & PTE_ADDR_MASK);
     }
     pmm_free_page(pml4_phys);
 }

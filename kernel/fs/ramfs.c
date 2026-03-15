@@ -111,16 +111,21 @@ static int ramfs_write(VfsNode *node, const void *buf, uint32_t offset, uint32_t
     return (int)size;
 }
 
+/* Find child by name in a directory, return index or UINT32_MAX if not found */
+static uint32_t ramfs_find_child(RamfsNode *parent, const char *name) {
+    for (uint32_t i = 0; i < parent->num_children; i++) {
+        if (strcmp(parent->children[i].name, name) == 0) return i;
+    }
+    return UINT32_MAX;
+}
+
 static VfsNode *ramfs_lookup(VfsNode *dir, const char *name) {
     RamfsNode *rn = to_ramfs(dir);
     if (dir->type != VFS_DIRECTORY) return NULL;
 
-    for (uint32_t i = 0; i < rn->num_children; i++) {
-        if (strcmp(rn->children[i].name, name) == 0) {
-            return &rn->children[i].node->vnode;
-        }
-    }
-    return NULL;
+    uint32_t idx = ramfs_find_child(rn, name);
+    if (idx == UINT32_MAX) return NULL;
+    return &rn->children[idx].node->vnode;
 }
 
 static VfsNode *ramfs_create(VfsNode *dir, const char *name, uint8_t type) {
@@ -143,35 +148,36 @@ static VfsNode *ramfs_create(VfsNode *dir, const char *name, uint8_t type) {
     return &child->vnode;
 }
 
+/* Free a ramfs node and its owned buffers */
+static void ramfs_free_node(RamfsNode *rn) {
+    if (rn->data) kfree(rn->data);
+    if (rn->children) kfree(rn->children);
+    kfree(rn);
+}
+
 static int ramfs_unlink(VfsNode *dir, const char *name) {
     RamfsNode *parent = to_ramfs(dir);
     if (dir->type != VFS_DIRECTORY) return -ENOTDIR;
 
-    for (uint32_t i = 0; i < parent->num_children; i++) {
-        if (strcmp(parent->children[i].name, name) == 0) {
-            RamfsNode *child = parent->children[i].node;
+    uint32_t idx = ramfs_find_child(parent, name);
+    if (idx == UINT32_MAX) return -ENOENT;
 
-            /* Don't unlink non-empty directories */
-            if (child->vnode.type == VFS_DIRECTORY && child->num_children > 0) {
-                return -ENOTEMPTY;
-            }
+    RamfsNode *child = parent->children[idx].node;
 
-            /* Free the child node's resources */
-            if (child->data) kfree(child->data);
-            if (child->children) kfree(child->children);
-            kfree(child);
-
-            /* Compact the children array */
-            for (uint32_t j = i; j + 1 < parent->num_children; j++) {
-                parent->children[j] = parent->children[j + 1];
-            }
-            parent->num_children--;
-
-            return VFS_OK;
-        }
+    /* Don't unlink non-empty directories */
+    if (child->vnode.type == VFS_DIRECTORY && child->num_children > 0) {
+        return -ENOTEMPTY;
     }
 
-    return -ENOENT;
+    ramfs_free_node(child);
+
+    /* Compact the children array */
+    for (uint32_t j = idx; j + 1 < parent->num_children; j++) {
+        parent->children[j] = parent->children[j + 1];
+    }
+    parent->num_children--;
+
+    return VFS_OK;
 }
 
 static int ramfs_readdir(VfsNode *dir, VfsDirEntry *entries, uint32_t max) {
