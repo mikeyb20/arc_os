@@ -16,18 +16,4 @@ static inline int user_ptr_valid(const void *ptr, size_t len) {
     return (end > start) && (end <= USER_ADDR_LIMIT);
 }
 
-/* Copy len bytes from user space to kernel space. Returns 0 or -EINVAL. */
-static inline int copy_from_user(void *dst, const void *user_src, size_t len) {
-    if (!user_ptr_valid(user_src, len)) return -22; /* -EINVAL */
-    __builtin_memcpy(dst, user_src, len);
-    return 0;
-}
-
-/* Copy len bytes from kernel space to user space. Returns 0 or -EINVAL. */
-static inline int copy_to_user(void *user_dst, const void *src, size_t len) {
-    if (!user_ptr_valid(user_dst, len)) return -22; /* -EINVAL */
-    __builtin_memcpy(user_dst, src, len);
-    return 0;
-}
-
 #endif /* ARCHOS_USER_ACCESS_H */

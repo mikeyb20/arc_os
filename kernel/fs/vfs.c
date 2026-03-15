@@ -156,7 +156,6 @@ int vfs_open(const char *path, uint32_t flags, VfsFile *out) {
     /* Truncate if requested */
     if ((flags & O_TRUNC) && node->ops && node->ops->truncate) {
         node->ops->truncate(node, 0);
-        node->size = 0;
     }
 
     out->node = node;

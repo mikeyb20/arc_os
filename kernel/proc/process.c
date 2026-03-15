@@ -149,9 +149,7 @@ Process *proc_fork(Process *parent, const ForkContext *user_ctx) {
         vmm_destroy_user_pml4(child_pml4);
         return NULL;
     }
-    child->pid = next_pid++;
-    child->state = PROC_ALIVE;
-    sig_init(&child->sig);
+    proc_setup(child);
     child->page_table = child_pml4;
     child->brk_start = parent->brk_start;
     child->brk_current = parent->brk_current;
@@ -159,10 +157,6 @@ Process *proc_fork(Process *parent, const ForkContext *user_ctx) {
 
     /* 3. Duplicate FD table */
     child->fd_table = fd_table_dup(parent->fd_table);
-
-    /* 4. Add to process list */
-    child->next = proc_list;
-    proc_list = child;
 
     /* 5. Create child's kernel thread */
     g_fork_child_args.child = child;

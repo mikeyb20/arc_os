@@ -1,7 +1,6 @@
 #include "arch/x86_64/syscall.h"
 #include "arch/x86_64/msr.h"
 #include "arch/x86_64/gdt.h"
-#include "arch/x86_64/serial.h"
 #include "proc/thread.h"
 #include "proc/process.h"
 #include "proc/sched.h"
@@ -36,6 +35,7 @@ extern uint64_t syscall_saved_user_r15;
 #define RFLAGS_DF  (1ULL << 10)  /* Direction Flag */
 
 /* Standard file descriptor numbers */
+#define FD_STDIN   0
 #define FD_STDOUT  1
 #define FD_STDERR  2
 
@@ -94,7 +94,7 @@ static int64_t sys_write(uint64_t fd, uint64_t buf_addr, uint64_t count,
 
     Process *p = proc_current();
 
-    if (fd == 1 || fd == 2) {
+    if (fd == FD_STDOUT || fd == FD_STDERR) {
         /* Check fd table first — dup2 may have redirected stdout/stderr */
         if (p != NULL && p->fd_table != NULL) {
             VfsFile *file = fd_get(p->fd_table, (int)fd);
@@ -113,7 +113,7 @@ static int64_t sys_write(uint64_t fd, uint64_t buf_addr, uint64_t count,
     VfsFile *file = fd_get(p->fd_table, (int)fd);
     if (file == NULL) return -EBADF;
     int64_t ret = vfs_write(file, (const void *)buf_addr, (uint32_t)count);
-    if (ret == -EPIPE && p != NULL) {
+    if (ret == -EPIPE) {
         sig_send(p->pid, SIGPIPE);
     }
     return ret;
@@ -157,7 +157,7 @@ static int64_t sys_read(uint64_t fd, uint64_t buf_addr, uint64_t count,
 
     Process *p = proc_current();
 
-    if (fd == 0) {
+    if (fd == FD_STDIN) {
         /* Check fd table first — dup2 may have redirected stdin */
         if (p != NULL && p->fd_table != NULL) {
             VfsFile *file = fd_get(p->fd_table, 0);

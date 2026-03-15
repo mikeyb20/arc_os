@@ -47,6 +47,15 @@ static uint64_t vmm_flags_to_pte(uint32_t flags) {
     return pte;
 }
 
+/* Convert x86_64 PTE flags back to portable VMM flags (inverse of vmm_flags_to_pte) */
+static uint32_t pte_to_vmm_flags(uint64_t pte_flags) {
+    uint32_t flags = 0;
+    if (pte_flags & PTE_WRITABLE) flags |= VMM_FLAG_WRITABLE;
+    if (pte_flags & PTE_USER)     flags |= VMM_FLAG_USER;
+    if (pte_flags & PTE_NX)       flags |= VMM_FLAG_NOEXEC;
+    return flags;
+}
+
 /* Ensure a page table entry at table[index] points to a valid next-level table.
  * Returns virtual pointer to the next-level table entries. */
 static uint64_t *ensure_table(uint64_t *table, uint64_t index) {
@@ -251,9 +260,7 @@ uint64_t vmm_fork_address_space(uint64_t src_pml4_phys) {
                                      ((uint64_t)pd_idx << 21) | ((uint64_t)pt_idx << 12);
 
                     vmm_map_page_in(dst_pml4_phys, vaddr, dst_phys,
-                                    ((flags & PTE_WRITABLE) ? VMM_FLAG_WRITABLE : 0) |
-                                    ((flags & PTE_USER)     ? VMM_FLAG_USER     : 0) |
-                                    ((flags & PTE_NX)       ? VMM_FLAG_NOEXEC   : 0));
+                                    pte_to_vmm_flags(flags));
                 }
             }
         }

@@ -74,109 +74,96 @@ static void sig_terminate(Process *p, int signo) {
     sched_schedule();
 }
 
+/* Restore context saved by sigreturn */
+static int64_t sig_restore_context(SigState *ss, SyscallFrame *frame) {
+    ss->restoring = 0;
+    SignalFrame *sf = &ss->restore_frame;
+    frame->rcx = sf->user_rip;
+    frame->r11 = sf->user_rflags;
+    frame->rsp = sf->user_rsp;
+    frame->rbx = sf->rbx;
+    frame->rbp = sf->rbp;
+    frame->r12 = sf->r12;
+    frame->r13 = sf->r13;
+    frame->r14 = sf->r14;
+    frame->r15 = sf->r15;
+    sig_pending_arg = 0;
+    return (int64_t)sf->rax;
+}
+
+/* Build SignalFrame on user stack, redirect SYSRET to handler.
+ * Returns 0 on success, -1 if user stack is invalid. */
+static int sig_setup_frame(SyscallFrame *frame, sig_handler_t handler,
+                           int signo, int64_t syscall_ret) {
+    uint64_t user_rsp = frame->rsp;
+    user_rsp -= sizeof(SignalFrame);
+    user_rsp &= ~0xFULL;  /* 16-byte align */
+
+    if (!user_ptr_valid((void *)user_rsp, sizeof(SignalFrame)))
+        return -1;
+
+    SignalFrame *sf = (SignalFrame *)user_rsp;
+    memcpy(sf->trampoline, sigreturn_trampoline, 16);
+    sf->user_rip    = frame->rcx;
+    sf->user_rsp    = frame->rsp;
+    sf->user_rflags = frame->r11;
+    sf->rax         = (uint64_t)syscall_ret;
+    sf->rbx         = frame->rbx;
+    sf->rbp         = frame->rbp;
+    sf->r12         = frame->r12;
+    sf->r13         = frame->r13;
+    sf->r14         = frame->r14;
+    sf->r15         = frame->r15;
+    sf->rdi         = 0;
+    sf->rsi         = 0;
+    sf->rdx         = 0;
+    sf->r8          = 0;
+    sf->r9          = 0;
+    sf->r10         = 0;
+    sf->signo       = (uint64_t)signo;
+    sf->ret_addr    = user_rsp;
+
+    frame->rcx = (uint64_t)handler;
+    frame->rsp = user_rsp;
+    frame->rbx = 0;
+    frame->rbp = 0;
+    frame->r12 = 0;
+    frame->r13 = 0;
+    frame->r14 = 0;
+    frame->r15 = 0;
+    sig_pending_arg = (uint64_t)signo;
+    return 0;
+}
+
 int64_t sig_maybe_deliver(SyscallFrame *frame, int64_t syscall_ret) {
     Process *p = proc_current();
     if (p == NULL) return syscall_ret;
 
     SigState *ss = &p->sig;
 
-    /* 1. If sigreturn is in progress, restore the saved context */
-    if (ss->restoring) {
-        ss->restoring = 0;
-        SignalFrame *sf = &ss->restore_frame;
-        frame->rcx = sf->user_rip;       /* RIP for SYSRET */
-        frame->r11 = sf->user_rflags;    /* RFLAGS for SYSRET */
-        frame->rsp = sf->user_rsp;
-        frame->rbx = sf->rbx;
-        frame->rbp = sf->rbp;
-        frame->r12 = sf->r12;
-        frame->r13 = sf->r13;
-        frame->r14 = sf->r14;
-        frame->r15 = sf->r15;
-        sig_pending_arg = 0;
-        return (int64_t)sf->rax;  /* restore original RAX */
-    }
-
-    /* 2. No pending signals? Return immediately */
+    if (ss->restoring) return sig_restore_context(ss, frame);
     if (ss->pending == 0) return syscall_ret;
 
-    /* 3. Deliver one signal (lowest numbered first) */
     for (int signo = 1; signo < NSIG; signo++) {
         if (!(ss->pending & (1u << signo))) continue;
-
-        /* Clear pending bit */
         ss->pending &= ~(1u << signo);
 
-        /* SIGKILL always terminates, regardless of handler */
         if (signo == SIGKILL) {
             sig_terminate(p, signo);
-            return syscall_ret;  /* unreachable after schedule */
+            return syscall_ret;
         }
 
         sig_handler_t handler = ss->handlers[signo];
-
-        if (handler == SIG_IGN) {
-            continue;  /* ignored — try next signal */
-        }
-
+        if (handler == SIG_IGN) continue;
         if (handler == SIG_DFL) {
-            if (default_action[signo] == 1) {
-                continue;  /* default is ignore (e.g. SIGCHLD) */
-            }
-            /* Default is terminate */
+            if (default_action[signo] == 1) continue;
             sig_terminate(p, signo);
             return syscall_ret;
         }
 
-        /* User handler — build SignalFrame on user stack */
-        uint64_t user_rsp = frame->rsp;
-        user_rsp -= sizeof(SignalFrame);
-        user_rsp &= ~0xFULL;  /* 16-byte align */
-
-        if (!user_ptr_valid((void *)user_rsp, sizeof(SignalFrame))) {
+        if (sig_setup_frame(frame, handler, signo, syscall_ret) < 0)
             sig_terminate(p, signo);
-            return syscall_ret;
-        }
-
-        SignalFrame *sf = (SignalFrame *)user_rsp;
-
-        /* Write trampoline */
-        memcpy(sf->trampoline, sigreturn_trampoline, 16);
-
-        /* Save interrupted context */
-        sf->user_rip    = frame->rcx;
-        sf->user_rsp    = frame->rsp;
-        sf->user_rflags = frame->r11;
-        sf->rax         = (uint64_t)syscall_ret;
-        sf->rbx         = frame->rbx;
-        sf->rbp         = frame->rbp;
-        sf->r12         = frame->r12;
-        sf->r13         = frame->r13;
-        sf->r14         = frame->r14;
-        sf->r15         = frame->r15;
-        sf->rdi         = 0;
-        sf->rsi         = 0;
-        sf->rdx         = 0;
-        sf->r8          = 0;
-        sf->r9          = 0;
-        sf->r10         = 0;
-        sf->signo       = (uint64_t)signo;
-        sf->ret_addr    = user_rsp;  /* points to trampoline at start of frame */
-
-        /* Redirect SYSRET to call handler(signo) */
-        frame->rcx = (uint64_t)handler;  /* RIP = handler */
-        frame->rsp = user_rsp;           /* RSP = signal frame */
-        frame->rbx = 0;
-        frame->rbp = 0;
-        frame->r12 = 0;
-        frame->r13 = 0;
-        frame->r14 = 0;
-        frame->r15 = 0;
-
-        /* RDI = signo, loaded by asm stub */
-        sig_pending_arg = (uint64_t)signo;
-
-        return syscall_ret;  /* RAX value (handler ignores it) */
+        return syscall_ret;
     }
 
     return syscall_ret;
