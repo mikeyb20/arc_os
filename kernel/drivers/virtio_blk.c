@@ -1,4 +1,5 @@
 #include "drivers/virtio_blk.h"
+#include "drivers/blkdev.h"
 #include "drivers/virtio.h"
 #include "drivers/pci.h"
 #include "arch/x86_64/io.h"
@@ -16,6 +17,8 @@
 static VirtioDevice blk_vdev;
 static uint64_t blk_capacity;  /* in 512-byte sectors */
 static int blk_initialized;
+
+static void virtio_blk_register_blkdev(void);
 
 /* Free 'count' contiguous physical pages starting at phys. */
 static void free_contiguous_pages(uint64_t phys, uint32_t count) {
@@ -59,6 +62,10 @@ int virtio_blk_init(void) {
 
     blk_initialized = 1;
     kprintf("[VIRTIO-BLK] Initialized successfully\n");
+
+    /* Register as a generic block device */
+    virtio_blk_register_blkdev();
+
     return 0;
 }
 
@@ -306,4 +313,30 @@ int virtio_blk_write(uint64_t sector, uint32_t count, const void *buf) {
 
 uint64_t virtio_blk_capacity(void) {
     return blk_capacity;
+}
+
+/* --- Block device registration --- */
+
+static int virtio_blk_dev_read(BlockDevice *dev, uint64_t sector, uint32_t count, void *buf) {
+    (void)dev;
+    return virtio_blk_read(sector, count, buf);
+}
+
+static int virtio_blk_dev_write(BlockDevice *dev, uint64_t sector, uint32_t count, const void *buf) {
+    (void)dev;
+    return virtio_blk_write(sector, count, buf);
+}
+
+static uint64_t virtio_blk_dev_capacity(BlockDevice *dev) {
+    (void)dev;
+    return virtio_blk_capacity();
+}
+
+static BlockDevice virtio_blk_blockdev;
+
+static void virtio_blk_register_blkdev(void) {
+    virtio_blk_blockdev.read = virtio_blk_dev_read;
+    virtio_blk_blockdev.write = virtio_blk_dev_write;
+    virtio_blk_blockdev.capacity = virtio_blk_dev_capacity;
+    blkdev_register(&virtio_blk_blockdev);
 }

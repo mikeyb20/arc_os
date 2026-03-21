@@ -1,5 +1,5 @@
 #include "fs/fat32.h"
-#include "drivers/virtio_blk.h"
+#include "drivers/blkdev.h"
 #include "mm/kmalloc.h"
 #include "lib/mem.h"
 #include "lib/string.h"
@@ -74,12 +74,12 @@ static uint32_t fat32_next_cluster(Fat32Volume *vol, uint32_t cluster) {
 
 static int fat32_read_cluster(Fat32Volume *vol, uint32_t cluster, void *buf) {
     uint32_t sector = cluster_to_sector(vol, cluster);
-    return virtio_blk_read(sector, vol->sectors_per_cluster, buf);
+    return vol->dev->read(vol->dev, sector, vol->sectors_per_cluster, buf);
 }
 
 static int fat32_write_cluster(Fat32Volume *vol, uint32_t cluster, const void *buf) {
     uint32_t sector = cluster_to_sector(vol, cluster);
-    return virtio_blk_write(sector, vol->sectors_per_cluster, buf);
+    return vol->dev->write(vol->dev, sector, vol->sectors_per_cluster, buf);
 }
 
 /* --- FAT manipulation --- */
@@ -728,7 +728,7 @@ int fat32_sync(void) {
     uint8_t sector_buf[SECTOR_SIZE];
     for (uint32_t s = 0; s < vol->fat_sectors; s++) {
         memcpy(sector_buf, (uint8_t *)vol->fat + s * SECTOR_SIZE, SECTOR_SIZE);
-        if (virtio_blk_write(vol->fat_start + s, 1, sector_buf) != 0) {
+        if (vol->dev->write(vol->dev, vol->fat_start + s, 1, sector_buf) != 0) {
             kprintf("[FAT32] Failed to sync FAT sector %u\n", s);
             return -EIO;
         }
@@ -740,10 +740,12 @@ int fat32_sync(void) {
 
 /* --- Mount --- */
 
-VfsNode *fat32_mount(void) {
+VfsNode *fat32_mount(BlockDevice *dev) {
+    if (dev == NULL) return NULL;
+
     /* Read boot sector */
     uint8_t sector_buf[SECTOR_SIZE];
-    if (virtio_blk_read(0, 1, sector_buf) != 0) {
+    if (dev->read(dev, 0, 1, sector_buf) != 0) {
         kprintf("[FAT32] Failed to read boot sector\n");
         return NULL;
     }
@@ -772,6 +774,7 @@ VfsNode *fat32_mount(void) {
     Fat32Volume *vol = kmalloc(sizeof(Fat32Volume), GFP_ZERO);
     if (!vol) return NULL;
 
+    vol->dev = dev;
     vol->sectors_per_cluster = bpb->sectors_per_cluster;
     vol->bytes_per_cluster = (uint32_t)bpb->sectors_per_cluster * SECTOR_SIZE;
     vol->fat_start = bpb->reserved_sectors;
@@ -801,8 +804,8 @@ VfsNode *fat32_mount(void) {
 
     /* Read FAT sectors one at a time */
     for (uint32_t s = 0; s < vol->fat_sectors; s++) {
-        if (virtio_blk_read(vol->fat_start + s, 1,
-                             (uint8_t *)vol->fat + s * SECTOR_SIZE) != 0) {
+        if (dev->read(dev, vol->fat_start + s, 1,
+                      (uint8_t *)vol->fat + s * SECTOR_SIZE) != 0) {
             kprintf("[FAT32] Failed to read FAT sector %u\n", s);
             kfree(vol->fat);
             kfree(vol);
