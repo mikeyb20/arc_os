@@ -1,7 +1,8 @@
 ; arc_os — Jump to user-mode via IRETQ
 ;
-; void jump_to_usermode(uint64_t entry_rip, uint64_t user_rsp)
-;   RDI = entry_rip, RSI = user_rsp
+; void jump_to_usermode(uint64_t entry_rip, uint64_t user_rsp,
+;                       uint64_t argc, uint64_t argv_ptr)
+;   RDI = entry_rip, RSI = user_rsp, RDX = argc, RCX = argv_ptr
 ;
 ; Builds an IRETQ frame on the stack:
 ;   [RSP+32] SS     = 0x1B (GDT_USER_DATA | RPL=3)
@@ -19,6 +20,10 @@ global jump_to_usermode
 %define RFLAGS_IF       0x202   ; RFLAGS with Interrupt Flag set
 
 jump_to_usermode:
+    ; Save argc/argv before building IRETQ frame clobbers RDX/RCX
+    mov r8, rdx             ; r8 = argc
+    mov r9, rcx             ; r9 = argv_ptr
+
     ; Build IRETQ frame
     push USER_DATA_RPL3     ; SS
     push rsi                ; RSP = user_rsp
@@ -26,13 +31,15 @@ jump_to_usermode:
     push USER_CODE_RPL3     ; CS
     push rdi                ; RIP = entry_rip
 
-    ; Zero all general-purpose registers for clean user entry
+    ; Set argc/argv in user-visible argument registers
+    mov rdi, r8             ; RDI = argc
+    mov rsi, r9             ; RSI = argv_ptr
+
+    ; Zero all other GPRs for clean user entry
     xor rax, rax
     xor rbx, rbx
     xor rcx, rcx
     xor rdx, rdx
-    xor rsi, rsi
-    xor rdi, rdi
     xor rbp, rbp
     xor r8, r8
     xor r9, r9

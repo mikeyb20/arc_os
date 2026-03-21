@@ -47,6 +47,7 @@
 #define ESPIPE      29
 #define EPIPE       32
 #define ENAMETOOLONG 36
+#define E2BIG        7
 
 /* Forward declarations */
 typedef struct VfsNode VfsNode;

@@ -5,9 +5,12 @@
 
 /* Jump to user-mode via IRETQ. Does not return.
  * entry_rip: user-space entry point (RIP)
- * user_rsp:  user-space stack pointer (RSP) */
+ * user_rsp:  user-space stack pointer (RSP)
+ * argc:      argument count (passed in RDI to user)
+ * argv_ptr:  pointer to argv array (passed in RSI to user) */
 __attribute__((noreturn))
-extern void jump_to_usermode(uint64_t entry_rip, uint64_t user_rsp);
+extern void jump_to_usermode(uint64_t entry_rip, uint64_t user_rsp,
+                             uint64_t argc, uint64_t argv_ptr);
 
 /* Forward declaration */
 struct ForkContext;

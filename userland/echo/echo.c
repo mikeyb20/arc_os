@@ -21,7 +21,8 @@ static void write_str(const char *s) {
     syscall3(1, 1, (uint64_t)s, len);  /* SYS_WRITE(fd=1) */
 }
 
-void _start(void) {
+void _start(uint64_t argc, char **argv) {
+    (void)argc; (void)argv;
     write_str("arc_os echo shell. Type something!\n");
 
     char buf[256];

@@ -60,8 +60,8 @@ static void init_thread_entry(void *arg) {
     kprintf("[INIT] Jumping to user mode: entry=0x%lx rsp=0x%lx\n",
             result.entry_point, USER_STACK_TOP);
 
-    /* Jump to user space — does not return */
-    jump_to_usermode(result.entry_point, USER_STACK_TOP);
+    /* Jump to user space — does not return (argc=0, argv=NULL) */
+    jump_to_usermode(result.entry_point, USER_STACK_TOP, 0, 0);
 }
 
 int init_launch(const BootInfo *info) {

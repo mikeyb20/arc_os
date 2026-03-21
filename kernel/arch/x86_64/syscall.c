@@ -45,6 +45,18 @@ extern uint64_t syscall_saved_user_r15;
 /* Maximum ELF binary size for sys_exec */
 #define MAX_ELF_SIZE  (16 * 1024 * 1024)  /* 16 MB */
 
+/* exec() argv limits */
+#define MAX_EXEC_ARGS     32
+#define MAX_EXEC_ARG_DATA 4096
+
+/* Kernel-side copy of exec argv data */
+typedef struct {
+    int    argc;
+    char  *ptrs[MAX_EXEC_ARGS + 1];  /* Pointers into data[] */
+    char   data[MAX_EXEC_ARG_DATA];  /* Packed NUL-terminated strings */
+    size_t data_used;
+} ExecArgv;
+
 /* Syscall handler table */
 static syscall_handler_t syscall_table[SYSCALL_MAX];
 
@@ -404,10 +416,85 @@ static int exec_read_elf(const char *path, void **out_buf, uint64_t *out_size) {
     return 0;
 }
 
+/* Copy argv strings from the current (old) user address space into a kernel buffer.
+ * Must be called BEFORE destroying the old PML4. */
+static int exec_copy_argv(uint64_t argv_addr, ExecArgv *args) {
+    args->argc = 0;
+    args->data_used = 0;
+
+    if (argv_addr == 0) return 0;
+
+    if (!user_ptr_valid((const void *)argv_addr, sizeof(uint64_t)))
+        return -EINVAL;
+
+    const char *const *user_argv = (const char *const *)argv_addr;
+
+    for (int i = 0; i < MAX_EXEC_ARGS; i++) {
+        const char *ustr = user_argv[i];
+        if (ustr == (void *)0) break;
+
+        if (!user_ptr_valid(ustr, 1)) return -EINVAL;
+
+        /* Copy string byte-by-byte into data[] */
+        args->ptrs[i] = &args->data[args->data_used];
+        size_t start = args->data_used;
+        while (1) {
+            if (args->data_used >= MAX_EXEC_ARG_DATA) return -E2BIG;
+            char c = ustr[args->data_used - start];
+            args->data[args->data_used++] = c;
+            if (c == '\0') break;
+        }
+        args->argc++;
+    }
+
+    /* If we hit MAX_EXEC_ARGS, check if there are more */
+    if (args->argc == MAX_EXEC_ARGS) {
+        if (user_argv[MAX_EXEC_ARGS] != (void *)0)
+            return -E2BIG;
+    }
+
+    args->ptrs[args->argc] = (void *)0;
+    return 0;
+}
+
+/* Write argv data onto the new user stack. Called AFTER paging_write_cr3(new_pml4)
+ * so kernel can write directly to user virtual addresses (no SMAP). */
+static void exec_setup_user_stack(const ExecArgv *args,
+                                  uint64_t *out_rsp, uint64_t *out_argv) {
+    uint64_t sp = USER_STACK_TOP;
+    uint64_t str_addrs[MAX_EXEC_ARGS];
+
+    /* 1. Copy strings to top of stack (high→low) */
+    for (int i = args->argc - 1; i >= 0; i--) {
+        size_t len = strlen(args->ptrs[i]) + 1;
+        sp -= len;
+        memcpy((void *)sp, args->ptrs[i], len);
+        str_addrs[i] = sp;
+    }
+
+    /* 2. Align to 8 bytes */
+    sp &= ~7ULL;
+
+    /* 3. NULL terminator for argv array */
+    sp -= 8;
+    *(uint64_t *)sp = 0;
+
+    /* 4. argv pointers (reverse order, growing down) */
+    for (int i = args->argc - 1; i >= 0; i--) {
+        sp -= 8;
+        *(uint64_t *)sp = str_addrs[i];
+    }
+    *out_argv = (args->argc > 0) ? sp : 0;
+
+    /* 5. Align RSP to 16 bytes (ABI) */
+    sp &= ~15ULL;
+    *out_rsp = sp;
+}
+
 /* SYS_EXEC: replace process image with new ELF binary */
-static int64_t sys_exec(uint64_t path_addr, uint64_t a1, uint64_t a2,
+static int64_t sys_exec(uint64_t path_addr, uint64_t argv_addr, uint64_t a2,
                         uint64_t a3, uint64_t a4, uint64_t a5) {
-    (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+    (void)a2; (void)a3; (void)a4; (void)a5;
     Process *p = proc_current();
     if (p == NULL) return -ENOSYS;
 
@@ -415,36 +502,46 @@ static int64_t sys_exec(uint64_t path_addr, uint64_t a1, uint64_t a2,
     int perr = resolve_user_path(path_addr, abs, PATH_MAX);
     if (perr != 0) return perr;
 
-    /* 1. Read ELF binary from VFS */
+    /* 1. Copy argv from OLD address space before destroying it */
+    ExecArgv args;
+    int argerr = exec_copy_argv(argv_addr, &args);
+    if (argerr != 0) return argerr;
+
+    /* 2. Read ELF binary from VFS */
     void *elf_buf;
     uint64_t file_size;
     int err = exec_read_elf(abs, &elf_buf, &file_size);
     if (err != 0) return err;
 
-    /* 2. Create fresh user address space */
+    /* 3. Create fresh user address space */
     uint64_t old_pml4 = p->page_table;
     uint64_t new_pml4 = vmm_create_user_pml4();
     if (new_pml4 == 0) { kfree(elf_buf); return -ENOMEM; }
 
-    /* 3. Load ELF segments */
+    /* 4. Load ELF segments */
     ElfLoadResult result;
     err = elf_load(elf_buf, file_size, new_pml4, &result);
     kfree(elf_buf);
     if (err != 0) { vmm_destroy_user_pml4(new_pml4); return err; }
 
-    /* 4. Map user stack */
+    /* 5. Map user stack */
     err = vmm_map_user_stack(new_pml4);
     if (err != 0) { vmm_free_user_pages(new_pml4); return err; }
 
-    /* 5. Switch to new address space */
+    /* 6. Switch to new address space */
     p->page_table = new_pml4;
     p->brk_start = result.brk_start;
     p->brk_current = result.brk_start;
     vmm_free_user_pages(old_pml4);
     paging_write_cr3(new_pml4);
 
-    kprintf("[EXEC] pid=%u loaded '%s' entry=0x%lx\n", p->pid, abs, result.entry_point);
-    jump_to_usermode(result.entry_point, USER_STACK_TOP);
+    /* 7. Write argv onto new user stack */
+    uint64_t user_rsp, argv_ptr;
+    exec_setup_user_stack(&args, &user_rsp, &argv_ptr);
+
+    kprintf("[EXEC] pid=%u loaded '%s' argc=%d entry=0x%lx\n",
+            p->pid, abs, args.argc, result.entry_point);
+    jump_to_usermode(result.entry_point, user_rsp, (uint64_t)args.argc, argv_ptr);
 }
 
 /* SYS_DUP2: duplicate a file descriptor */

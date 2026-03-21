@@ -15,9 +15,11 @@ static inline int64_t syscall3(uint64_t num, uint64_t a0, uint64_t a1, uint64_t 
     return ret;
 }
 
-void _start(void) {
+void _start(uint64_t argc, char **argv) {
+    (void)argc; (void)argv;
     /* Exec the shell — replaces this process image */
-    syscall3(17, (uint64_t)"/boot/shell", 0, 0);  /* SYS_EXEC */
+    const char *sh_argv[] = { "/boot/shell", (void *)0 };
+    syscall3(17, (uint64_t)"/boot/shell", (uint64_t)sh_argv, 0);  /* SYS_EXEC */
     syscall3(0, 1, 0, 0);  /* exit(1) if exec fails */
     for (;;) __asm__ volatile ("ud2");
 }

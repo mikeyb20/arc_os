@@ -72,6 +72,8 @@ extern TestCase procfs_tests[];
 extern int procfs_test_count;
 extern TestCase path_tests[];
 extern int path_test_count;
+extern TestCase exec_argv_tests[];
+extern int exec_argv_test_count;
 
 static void run_suite(const char *suite_name, TestCase *tests, int count) {
     printf("[%s] Running %d tests\n", suite_name, count);
@@ -127,6 +129,7 @@ int main(int argc, char **argv) {
         { "devfs",        devfs_tests,        &devfs_test_count },
         { "procfs",       procfs_tests,       &procfs_test_count },
         { "path",         path_tests,         &path_test_count },
+        { "exec_argv",    exec_argv_tests,    &exec_argv_test_count },
     };
     int suite_count = (int)(sizeof(suites) / sizeof(suites[0]));
 

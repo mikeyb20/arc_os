@@ -68,6 +68,7 @@ typedef struct {
 /* --- Parsing constants --- */
 
 #define MAX_ARGS 16
+#define MAX_ARGV (MAX_ARGS + 1)  /* +1 for NULL terminator */
 #define LINE_MAX 256
 
 /* --- String utilities (no libc available) --- */
@@ -142,7 +143,7 @@ static void refresh_cwd(void) {
 
 /* --- Line parsing --- */
 
-static int parse_line(char *line, char *argv[MAX_ARGS]) {
+static int parse_line(char *line, char *argv[MAX_ARGV]) {
     /* Strip trailing newline */
     for (int i = 0; line[i]; i++) {
         if (line[i] == '\n') { line[i] = '\0'; break; }
@@ -161,6 +162,7 @@ static int parse_line(char *line, char *argv[MAX_ARGS]) {
             in_token = 1;
         }
     }
+    argv[argc] = (void *)0;  /* NULL-terminate for exec */
     return argc;
 }
 
@@ -270,8 +272,8 @@ static void execute_with_redirect(int argc, char *argv[], const Redirect *r) {
             for (;;) __asm__ volatile ("ud2");
         }
         if (argc > 0) {
-            /* Try exec first */
-            int64_t er = syscall3(SYS_EXEC, (uint64_t)argv[0], 0, 0);
+            /* Try exec first (pass argv for argument passing) */
+            int64_t er = syscall3(SYS_EXEC, (uint64_t)argv[0], (uint64_t)argv, 0);
             (void)er;
             /* Exec failed — try as builtin */
             dispatch(argc, argv);
@@ -343,8 +345,18 @@ static void dispatch(int argc, char *argv[]) {
             return;
         }
     }
-    print("unknown command: ");
-    println(argv[0]);
+    /* Not a builtin — try fork + exec */
+    int64_t pid = syscall3(SYS_FORK, 0, 0, 0);
+    if (pid < 0) { print_error("fork", pid); return; }
+    if (pid == 0) {
+        int64_t er = syscall3(SYS_EXEC, (uint64_t)argv[0], (uint64_t)argv, 0);
+        (void)er;
+        print("unknown command: ");
+        println(argv[0]);
+        syscall3(SYS_EXIT, 127, 0, 0);
+        for (;;) __asm__ volatile ("ud2");
+    }
+    syscall3(SYS_WAIT, 0, 0, 0);
 }
 
 /* --- Command implementations --- */
@@ -520,8 +532,8 @@ static void cmd_run(int argc, char *argv[]) {
         return;
     }
     if (pid == 0) {
-        /* Child: exec the binary */
-        syscall3(SYS_EXEC, (uint64_t)argv[1], 0, 0);
+        /* Child: exec the binary (argv+1 so binary gets argv[0]=path) */
+        syscall3(SYS_EXEC, (uint64_t)argv[1], (uint64_t)(argv + 1), 0);
         /* If exec fails, exit */
         println("exec failed");
         syscall3(SYS_EXIT, 1, 0, 0);
@@ -608,14 +620,14 @@ static void execute_pipe(char *left, char *right) {
         syscall3(SYS_CLOSE, (uint64_t)pipefd[1], 0, 0);
 
         /* Parse and run left command (with optional redirects) */
-        char *argv[MAX_ARGS];
+        char *argv[MAX_ARGV];
         int argc = parse_line(left, argv);
         if (argc > 0) {
             Redirect redir = {0, 0, 0};
             if (parse_redirects(&argc, argv, &redir) == 0)
                 apply_redirects(&redir);
-            /* Try exec first */
-            int64_t r = syscall3(SYS_EXEC, (uint64_t)argv[0], 0, 0);
+            /* Try exec first (pass argv) */
+            int64_t r = syscall3(SYS_EXEC, (uint64_t)argv[0], (uint64_t)argv, 0);
             (void)r;
             /* Exec failed — try as builtin */
             dispatch(argc, argv);
@@ -641,13 +653,13 @@ static void execute_pipe(char *left, char *right) {
         syscall3(SYS_CLOSE, (uint64_t)pipefd[0], 0, 0);
 
         /* Parse and run right command (with optional redirects) */
-        char *argv[MAX_ARGS];
+        char *argv[MAX_ARGV];
         int argc = parse_line(right, argv);
         if (argc > 0) {
             Redirect redir = {0, 0, 0};
             if (parse_redirects(&argc, argv, &redir) == 0)
                 apply_redirects(&redir);
-            int64_t r = syscall3(SYS_EXEC, (uint64_t)argv[0], 0, 0);
+            int64_t r = syscall3(SYS_EXEC, (uint64_t)argv[0], (uint64_t)argv, 0);
             (void)r;
             dispatch(argc, argv);
         }
@@ -664,13 +676,14 @@ static void execute_pipe(char *left, char *right) {
 
 /* --- Entry point --- */
 
-void _start(void) {
+void _start(uint64_t argc, char **argv) {
+    (void)argc; (void)argv;
     println("arc_os shell v0.1");
     println("Type 'help' for available commands.");
     print("\n");
 
     char line[LINE_MAX];
-    char *argv[MAX_ARGS];
+    char *args[MAX_ARGV];
     refresh_cwd();
 
     for (;;) {
@@ -692,14 +705,14 @@ void _start(void) {
             *pipe_pos = '\0';
             execute_pipe(line, pipe_pos + 1);
         } else {
-            int argc = parse_line(line, argv);
+            int ac = parse_line(line, args);
             Redirect redir = {0, 0, 0};
-            int rr = parse_redirects(&argc, argv, &redir);
+            int rr = parse_redirects(&ac, args, &redir);
             if (rr < 0) continue;  /* parse error, already printed */
             if (redir.in_file || redir.out_file) {
-                execute_with_redirect(argc, argv, &redir);
+                execute_with_redirect(ac, args, &redir);
             } else {
-                dispatch(argc, argv);
+                dispatch(ac, args);
             }
         }
     }
