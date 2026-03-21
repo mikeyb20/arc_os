@@ -30,4 +30,14 @@ Items intentionally postponed from their original phase. Each entry notes the or
 ## Phase 6: File Systems
 
 - **Dentry cache** — Resolved path component caching for performance. Current flat path resolution is adequate for ramfs.
-- **Mount table** — Maps mount points to filesystem instances. Needed when multiple filesystems coexist.
+- ~~**Mount table**~~ **DONE** — Multi-mount VFS with 8 mount point slots. ramfs at /, devfs at /dev, procfs at /proc.
+- **FAT32 mounting** — FAT32 driver (fat32.c) exists and passes tests, but not yet mounted in VFS. Deferred until real disk I/O workloads need persistent storage.
+
+## Phase 7: IPC & Shell
+
+- **Signal masking (sigprocmask)** — Block/unblock signals per-process. Not needed until complex signal-handling applications require it.
+- **sigaction** — Extended signal handler registration with flags (SA_RESTART, SA_SIGINFO). Current signal() interface suffices for basic use.
+- **-EINTR for blocked syscalls** — Return EINTR from blocked read/write/wait when interrupted by a signal. Current signal delivery doesn't interrupt sleeping syscalls.
+- **sigaltstack** — Alternate signal stack for handling stack overflow signals. Not needed for current simple signal use cases.
+- **Process groups / killpg** — Group processes for job control. Not needed until job control (bg, fg, Ctrl+Z) is implemented.
+- **ISR return path signal check** — Check for pending signals when returning from interrupt (not just syscall). Current syscall-return-only delivery is sufficient.

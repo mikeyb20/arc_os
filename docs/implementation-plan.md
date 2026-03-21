@@ -205,16 +205,23 @@ Create directory structure and all build infrastructure.
 | 6.1 | VFS interface + data structures | 250 | DONE |
 | 6.2 | ramfs (in-memory filesystem) | 300 | DONE |
 | 6.3 | File syscalls (open/read/write/close/lseek/stat/mkdir/readdir/unlink) | 200 | DONE |
-| 6.4 | FAT32 read support | 300 | NOT STARTED |
+| 6.4 | FAT32 read support | 300 | DRIVER DONE (not mounted in VFS) |
+| 6.5 | devfs (/dev/null, /dev/zero, /dev/tty) | 200 | DONE |
+| 6.6 | procfs (/proc/meminfo, /proc/uptime, /proc/[pid]/status) | 250 | DONE |
+| 6.7 | Multi-mount VFS (8 mount points) + path normalization | 150 | DONE |
+| 6.8 | Block device abstraction layer (blkdev) | 100 | DONE |
 
 ### Phase 7: IPC & Shell
 | Chunk | Description | ~Lines | Status |
 |-------|-------------|--------|--------|
 | 7.1 | PS/2 keyboard driver | 140 | DONE |
 | 7.2 | TTY subsystem | 180 | DONE |
-| 7.3 | Interactive shell (14 builtins) | 350 | DONE |
+| 7.3 | Interactive shell (20 builtins) | 350 | DONE |
 | 7.4 | Pipes | 250 | DONE |
 | 7.5 | Signals | 330 | DONE |
+| 7.6 | exec() argv passing + shell auto-exec | 200 | DONE |
+| 7.7 | PATH lookup, quoting, shell variables, variable expansion | 300 | DONE |
+| 7.8 | cwd support (chdir/getcwd syscalls, cd/pwd builtins) | 100 | DONE |
 
 ---
 
@@ -225,12 +232,12 @@ Create directory structure and all build infrastructure.
 | 0 | 4 | 235 | Toolchain + build system + boots empty kernel |
 | 1 | 10 | 1,880 | Interactive kernel: serial, framebuffer, keyboard, timer |
 | 2 | 3 | 700 | Memory management: alloc pages, map virtual, kmalloc |
-| 3 | 4 | 610 | Preemptive multitasking with synchronization |
+| 3 | 5 | 790 | Preemptive multitasking with synchronization + wait queues |
 | 4 | 4 | 800 | VirtIO block device reads sectors |
 | 5 | 5 | 1,100 | User-space ELF binary runs, fork/exec/wait |
-| 6 | 4 | 1,050 | VFS + ramfs, file syscalls |
-| 7 | 5 | 1,220 | IPC, interactive shell with keyboard/TTY |
-| **Total** | **39 chunks** | **~7,595** | |
+| 6 | 8 | 1,750 | VFS + ramfs, file syscalls, devfs, procfs, multi-mount, blkdev |
+| 7 | 8 | 1,850 | IPC, interactive shell, signals, argv, PATH, cwd |
+| **Total** | **47 chunks** | **~9,105** | |
 
 ---
 
@@ -247,5 +254,6 @@ Items intentionally postponed from their original phase:
 - **Phase 4.1**: ACPI table parsing
 - **Phase 4**: Memory barrier HAL abstraction, VirtIO feature caching, DMA buffer pool
 - ~~**Phase 5**: fork/exec/wait (5.5), user pointer validation (copy_from_user/copy_to_user)~~ **DONE**
-- **Phase 6**: Dentry cache, mount table
+- **Phase 6**: Dentry cache
+- ~~**Phase 6**: Mount table~~ **DONE** — Multi-mount VFS with 8 slots (ramfs at /, devfs at /dev, procfs at /proc)
 - **Phase 7**: Signal masking (`sigprocmask`), `sigaction` with `sa_flags`, `-EINTR` for interrupted blocking syscalls, `sigaltstack`, process groups / `killpg`, ISR return path signal checking

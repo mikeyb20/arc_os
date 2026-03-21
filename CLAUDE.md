@@ -32,15 +32,15 @@ arc_os/
 │   ├── arch/x86_64/      # Arch-specific code (GDT, IDT, PIC, PIT, paging, context switch)
 │   ├── boot/             # Boot protocol parsing (BootInfo)
 │   ├── mm/               # Memory management (PMM, VMM, kmalloc)
-│   ├── proc/             # Process & thread management, scheduler
-│   ├── fs/               # VFS layer and ramfs
-│   ├── drivers/          # Device drivers (pci, virtio, virtio_blk)
+│   ├── proc/             # Process & thread management, scheduler, signals, wait queues, ELF loader
+│   ├── fs/               # VFS layer, ramfs, devfs, procfs, pipe, fat32, path utils
+│   ├── drivers/          # Device drivers (pci, virtio, virtio_blk, blkdev, tty, keyboard)
 │   ├── include/          # Freestanding C headers + limine.h
 │   ├── net/              # Network stack (empty — future)
 │   ├── ipc/              # IPC mechanisms (empty — future)
 │   ├── security/         # Permissions, capabilities (empty — future)
 │   └── lib/              # Kernel utility library (mem, string, kprintf)
-├── userland/             # User-space programs (scaffolded init)
+├── userland/             # User-space programs (init, shell, echo, hello)
 ├── tools/                # Build tools, image creation scripts
 ├── tests/                # Host-side unit tests
 ├── docs/                 # Implementation plan, deferred items

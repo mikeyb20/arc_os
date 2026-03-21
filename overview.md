@@ -16,13 +16,13 @@ A long-term project outline for building a custom operating system. Designed aro
 | 1 | MOSTLY COMPLETE | Serial, BootInfo, kprintf, GDT, IDT, PIC, PIT, PS/2 keyboard. Deferred: framebuffer console (1.4), HAL consolidation (1.10) |
 | 2 | COMPLETE | PMM bitmap allocator, VMM with own page tables, kmalloc free-list heap |
 | 3 | CORE COMPLETE | TCB, context switch, round-robin scheduler, preemptive multitasking, spinlock, wait queues. Deferred: mutexes/semaphores/condvars, TLS, work queues |
-| 4 | PARTIAL | PCI enumeration + VirtIO common + VirtIO-blk polling read. Deferred: ACPI (4.1) |
+| 4 | CORE COMPLETE | PCI enumeration, VirtIO common, VirtIO-blk polling read, block device abstraction. Deferred: ACPI (4.1) |
 | 5 | COMPLETE | SYSCALL/SYSRET, per-process address spaces, ELF64 loader, init process, FD table, fork/exec/wait, user pointer validation |
-| 6 | MOSTLY COMPLETE | VFS + ramfs (6.1-6.2), file syscalls exposed to user space (6.3). Deferred: FAT32 (6.4) |
-| 7 | MOSTLY COMPLETE | PS/2 keyboard, TTY, interactive shell (14 builtins), echo/hello binaries, pipes (`cmd1 \| cmd2`), POSIX signals (signal/kill/sigreturn, SIGINT/SIGCHLD/SIGPIPE, Ctrl+C), wait queues replace busy-waits (sys_wait, pipe, TTY). Deferred: signal masking, sigaction, -EINTR, process groups |
+| 6 | MOSTLY COMPLETE | VFS + ramfs (6.1-6.2), file syscalls (6.3), devfs (/dev/null, /dev/zero, /dev/tty), procfs (/proc/meminfo, /proc/uptime, /proc/[pid]/status), path normalization, multi-mount VFS (8 slots). Deferred: FAT32 mounting (6.4 — driver exists) |
+| 7 | MOSTLY COMPLETE | PS/2 keyboard, TTY, interactive shell (20 builtins), echo/hello binaries, pipes (`cmd1 \| cmd2`), POSIX signals (signal/kill/sigreturn, SIGINT/SIGCHLD/SIGPIPE, Ctrl+C), wait queues replace busy-waits, PATH lookup, quoting, shell variables, variable expansion, exec argv passing, cwd (chdir/getcwd), shell auto-exec of non-builtins. Deferred: signal masking, sigaction, -EINTR, process groups |
 | 8-13 | NOT STARTED | |
 
-**Test infrastructure**: 28 suites, 389 host-side tests — all passing.
+**Test infrastructure**: 33 suites, 521 host-side tests — all passing.
 
 ---
 
@@ -535,8 +535,16 @@ The following IPC and shell infrastructure is already working:
 
 - **PS/2 keyboard driver**: IRQ 1, scancode set 1, shift/ctrl/caps lock support
 - **TTY subsystem**: Ring buffer (256 bytes), line buffer (256 chars), canonical (line-buffered) mode, backspace handling
-- **Interactive shell**: 14 builtins — ls, cat, mkdir, rm, touch, write, stat, run, echo, pid, uname, help, clear, exit
-- **User binaries**: init (fork/exec orchestrator), shell, echo (stdin echo), hello (exec target)
+- **Interactive shell (v0.2)**: 20 builtins — ls, cat, mkdir, rm, touch, write, stat, run, echo, pid, uname, help, clear, exit, cd, pwd, ppid, export, env, unset
+  - PATH lookup (resolve_command walks $PATH dirs)
+  - Quote-aware tokenizer (single/double quotes, backslash escapes)
+  - Shell variables (32 slots, BSS storage, bare assignment NAME=VALUE)
+  - Variable expansion ($NAME, $$, \$, single-quote suppression, double-quote expansion)
+  - Auto-exec of non-builtin commands via fork+exec with PATH resolution
+  - I/O redirection (>, <) and piping (cmd1 | cmd2)
+- **User binaries**: init (fork/exec orchestrator), shell (interactive), echo (stdin echo), hello (exec/argv target)
+- **exec() argv passing**: ExecArgv struct copies args from old address space, writes to new stack
+- **Working directory**: chdir/getcwd syscalls, shell cd/pwd builtins
 - **Basic wait/exit**: Process exit status collection and zombie reaping (implemented in Phase 5.5)
 
 ### 7.2 Core IPC Mechanisms
