@@ -43,6 +43,15 @@ static const char *path_next_component(const char *path, char *comp, size_t comp
     return path;
 }
 
+/* Find a mount point by top-level name. Returns mount root or NULL. */
+static VfsNode *vfs_find_mount(const char *name) {
+    for (int i = 0; i < mount_count; i++) {
+        if (mount_table[i].root && strcmp(name, mount_table[i].name) == 0)
+            return mount_table[i].root;
+    }
+    return NULL;
+}
+
 /* Resolve parent directory and extract the final component name.
  * Returns the parent VfsNode, or NULL on error. Sets errno_out on failure. */
 static VfsNode *vfs_resolve_parent(const char *path, char *name_out, size_t name_size, int *errno_out) {
@@ -91,20 +100,12 @@ static VfsNode *vfs_resolve_parent(const char *path, char *name_out, size_t name
         }
 
         VfsNode *child = node->ops->lookup(node, comp);
+        if (child == NULL && node == vfs_root) {
+            child = vfs_find_mount(comp);
+        }
         if (child == NULL) {
-            /* Check mount points */
-            if (node == vfs_root) {
-                for (int i = 0; i < mount_count; i++) {
-                    if (mount_table[i].root && strcmp(comp, mount_table[i].name) == 0) {
-                        child = mount_table[i].root;
-                        break;
-                    }
-                }
-            }
-            if (child == NULL) {
-                *errno_out = ENOENT;
-                return NULL;
-            }
+            *errno_out = ENOENT;
+            return NULL;
         }
         node = child;
 
@@ -135,18 +136,10 @@ VfsNode *vfs_resolve(const char *path) {
         }
 
         VfsNode *child = node->ops->lookup(node, comp);
-        if (child == NULL) {
-            /* Check mount points: if at root and component matches a mount name */
-            if (node == vfs_root) {
-                for (int i = 0; i < mount_count; i++) {
-                    if (mount_table[i].root && strcmp(comp, mount_table[i].name) == 0) {
-                        child = mount_table[i].root;
-                        break;
-                    }
-                }
-            }
-            if (child == NULL) return NULL;
+        if (child == NULL && node == vfs_root) {
+            child = vfs_find_mount(comp);
         }
+        if (child == NULL) return NULL;
         node = child;
     }
 

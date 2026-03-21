@@ -15,6 +15,7 @@
 #define VIRTIO_BLK_S_OK      0
 #define VIRTIO_BLK_S_IOERR   1
 #define VIRTIO_BLK_S_UNSUPP  2
+#define VIRTIO_BLK_STATUS_INIT 0xFF   /* Sentinel — device overwrites on completion */
 
 /* VirtIO block feature bits */
 #define VIRTIO_BLK_F_SIZE_MAX   (1 << 1)

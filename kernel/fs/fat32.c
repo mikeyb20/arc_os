@@ -440,6 +440,16 @@ static int fat32_walk_dir(Fat32Volume *vol, uint32_t dir_cluster,
     return 0;
 }
 
+/* Filter special directory entries.
+ * Returns: -1 = end of directory, 1 = skip (free/LFN/volume), 0 = normal entry */
+static int fat32_entry_filter(const Fat32DirEntry *e) {
+    if (e->name[0] == FAT32_DIR_END) return -1;
+    if (e->name[0] == FAT32_DIR_FREE) return 1;
+    if (e->attr == FAT32_ATTR_LFN) return 1;
+    if (e->attr & FAT32_ATTR_VOLUME_ID) return 1;
+    return 0;
+}
+
 typedef struct {
     int slot;
 } FreeSlotCtx;
@@ -524,10 +534,9 @@ typedef struct {
 } LookupCtx;
 
 static int lookup_visitor(Fat32DirEntry *e, uint32_t idx, void *arg) {
-    if (e->name[0] == FAT32_DIR_END) return DIR_WALK_STOP;
-    if (e->name[0] == FAT32_DIR_FREE) return DIR_WALK_CONTINUE;
-    if (e->attr == FAT32_ATTR_LFN) return DIR_WALK_CONTINUE;
-    if (e->attr & FAT32_ATTR_VOLUME_ID) return DIR_WALK_CONTINUE;
+    int f = fat32_entry_filter(e);
+    if (f < 0) return DIR_WALK_STOP;
+    if (f > 0) return DIR_WALK_CONTINUE;
     if (e->name[0] == '.' && e->name[1] == ' ') return DIR_WALK_CONTINUE;
     if (e->name[0] == '.' && e->name[1] == '.' && e->name[2] == ' ') return DIR_WALK_CONTINUE;
 
@@ -610,10 +619,9 @@ typedef struct {
 } UnlinkCtx;
 
 static int unlink_visitor(Fat32DirEntry *e, uint32_t idx, void *arg) {
-    if (e->name[0] == FAT32_DIR_END) return DIR_WALK_STOP;
-    if (e->name[0] == FAT32_DIR_FREE) return DIR_WALK_CONTINUE;
-    if (e->attr == FAT32_ATTR_LFN) return DIR_WALK_CONTINUE;
-    if (e->attr & FAT32_ATTR_VOLUME_ID) return DIR_WALK_CONTINUE;
+    int f = fat32_entry_filter(e);
+    if (f < 0) return DIR_WALK_STOP;
+    if (f > 0) return DIR_WALK_CONTINUE;
 
     UnlinkCtx *ctx = (UnlinkCtx *)arg;
     if (fat32_name_match(e, ctx->name)) {
@@ -645,10 +653,9 @@ typedef struct {
 
 static int readdir_visitor(Fat32DirEntry *e, uint32_t idx, void *arg) {
     (void)idx;
-    if (e->name[0] == FAT32_DIR_END) return DIR_WALK_STOP;
-    if (e->name[0] == FAT32_DIR_FREE) return DIR_WALK_CONTINUE;
-    if (e->attr == FAT32_ATTR_LFN) return DIR_WALK_CONTINUE;
-    if (e->attr & FAT32_ATTR_VOLUME_ID) return DIR_WALK_CONTINUE;
+    int f = fat32_entry_filter(e);
+    if (f < 0) return DIR_WALK_STOP;
+    if (f > 0) return DIR_WALK_CONTINUE;
     if (e->name[0] == '.') return DIR_WALK_CONTINUE;
 
     ReaddirCtx *ctx = (ReaddirCtx *)arg;
