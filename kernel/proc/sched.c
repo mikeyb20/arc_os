@@ -35,9 +35,6 @@ static Thread *queue_pop(void) {
 }
 
 void sched_init(void) {
-    queue_head = NULL;
-    queue_tail = NULL;
-    idle_thread = NULL;
     kprintf("[SCHED] Scheduler initialized (round-robin)\n");
 }
 

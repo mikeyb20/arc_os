@@ -54,13 +54,15 @@ static volatile int caps_lock;
 #define SC_CTRL_PRESS     0x1D
 #define SC_CTRL_RELEASE   0x9D
 #define SC_CAPS_PRESS     0x3A
+#define SC_EXTENDED_PREFIX  0xE0
+#define SC_RELEASE_BIT      0x80
 
 static void keyboard_irq_handler(InterruptFrame *frame) {
     (void)frame;
     uint8_t scancode = inb(KB_DATA_PORT);
 
-    /* Ignore 0xE0 extended prefix for now */
-    if (scancode == 0xE0) return;
+    /* Ignore extended prefix for now */
+    if (scancode == SC_EXTENDED_PREFIX) return;
 
     /* Handle modifier key press/release */
     switch (scancode) {
@@ -84,7 +86,7 @@ static void keyboard_irq_handler(InterruptFrame *frame) {
     }
 
     /* Ignore key releases (bit 7 set) */
-    if (scancode & 0x80) return;
+    if (scancode & SC_RELEASE_BIT) return;
 
     /* Look up ASCII from scancode table */
     int shifted = shift_held ^ caps_lock;

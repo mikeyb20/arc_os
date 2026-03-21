@@ -33,10 +33,10 @@ const BootInfo *bootinfo_init(void) {
         count = BOOTINFO_MAX_MEMMAP_ENTRIES;
     }
     for (uint64_t i = 0; i < count; i++) {
-        struct limine_memmap_entry *e = mmap->entries[i];
-        g_boot_info.memory_map[i].base   = e->base;
-        g_boot_info.memory_map[i].length = e->length;
-        g_boot_info.memory_map[i].type   = (uint32_t)e->type;
+        struct limine_memmap_entry *entry = mmap->entries[i];
+        g_boot_info.memory_map[i].base   = entry->base;
+        g_boot_info.memory_map[i].length = entry->length;
+        g_boot_info.memory_map[i].type   = (uint32_t)entry->type;
     }
     g_boot_info.memory_map_count = count;
 
@@ -81,11 +81,11 @@ const BootInfo *bootinfo_init(void) {
             mod_count = BOOTINFO_MAX_MODULES;
         }
         for (uint64_t i = 0; i < mod_count; i++) {
-            struct limine_file *f = mod_resp->modules[i];
-            g_boot_info.modules[i].address = f->address;
-            g_boot_info.modules[i].size = f->size;
-            if (f->path != NULL) {
-                strncpy(g_boot_info.modules[i].path, f->path,
+            struct limine_file *module = mod_resp->modules[i];
+            g_boot_info.modules[i].address = module->address;
+            g_boot_info.modules[i].size = module->size;
+            if (module->path != NULL) {
+                strncpy(g_boot_info.modules[i].path, module->path,
                         sizeof(g_boot_info.modules[i].path) - 1);
                 g_boot_info.modules[i].path[sizeof(g_boot_info.modules[i].path) - 1] = '\0';
             }

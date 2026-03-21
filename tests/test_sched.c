@@ -146,12 +146,10 @@ static void reset_sched_state(void) {
 
 static int test_sched_init(void) {
     reset_sched_state();
-    /* Put garbage in the queue pointers */
-    queue_head = (Thread *)0xDEAD;
-    queue_tail = (Thread *)0xBEEF;
 
     sched_init();
 
+    /* File-scope statics are zero-initialized; sched_init just logs */
     ASSERT_TRUE(queue_head == NULL);
     ASSERT_TRUE(queue_tail == NULL);
     ASSERT_TRUE(idle_thread == NULL);

@@ -198,7 +198,7 @@ int proc_has_children(Process *parent) {
 }
 
 int proc_reap(Process *child, int32_t *status_out) {
-    if (child == NULL || child->state != PROC_ZOMBIE) return -22; /* -EINVAL */
+    if (child == NULL || child->state != PROC_ZOMBIE) return -EINVAL;
     if (status_out != NULL) {
         *status_out = child->exit_status;
     }
