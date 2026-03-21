@@ -23,4 +23,17 @@ void *krealloc(void *ptr, size_t new_size);
 /* Print heap statistics. */
 void kmalloc_dump_stats(void);
 
+/* Heap statistics structure */
+typedef struct {
+    size_t total_used;
+    size_t total_free;
+    size_t total_blocks;
+    size_t free_blocks;
+    size_t largest_free;
+    size_t heap_mapped;
+} HeapStats;
+
+/* Collect heap statistics into 'out'. */
+void kmalloc_get_stats(HeapStats *out);
+
 #endif /* ARCHOS_MM_KMALLOC_H */

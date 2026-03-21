@@ -30,6 +30,8 @@
 #define SYS_SIGNAL    20
 #define SYS_KILL      21
 #define SYS_SIGRETURN 22
+#define SYS_CHDIR     23
+#define SYS_GETCWD    24
 
 /* Syscall handler type: up to 6 arguments, returns int64_t */
 typedef int64_t (*syscall_handler_t)(uint64_t, uint64_t, uint64_t,

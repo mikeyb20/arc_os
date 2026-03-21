@@ -18,12 +18,14 @@
 #define ARCHOS_ARCH_X86_64_GDT_H
 #define ARCHOS_ARCH_X86_64_SYSCALL_H
 #define ARCHOS_ARCH_X86_64_PAGING_H
+#define ARCHOS_FS_PATH_H
 
 /* Stub kprintf */
 static inline void kprintf(const char *fmt, ...) { (void)fmt; }
 #define KERNEL_PANIC() do { } while(0)
 
 #define EINVAL 22
+#define PATH_MAX 512
 
 /* Reproduce types (headers are guarded out) */
 typedef uint32_t tid_t;
@@ -117,6 +119,7 @@ typedef struct Process {
     FdTable        *fd_table;
     uint64_t        brk_current;
     uint64_t        brk_start;
+    char            cwd[PATH_MAX];
     SigState        sig;
     WaitQueue       child_exit_wq;
     struct Process *parent;

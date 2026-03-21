@@ -51,6 +51,9 @@ set(KERNEL_C_SOURCES
     fs/ramfs.c
     fs/pipe.c
     fs/fat32.c
+    fs/devfs.c
+    fs/procfs.c
+    fs/path.c
 )
 
 set(KERNEL_SOURCES ${KERNEL_ASM_SOURCES} ${KERNEL_C_SOURCES})

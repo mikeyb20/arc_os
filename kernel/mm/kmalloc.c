@@ -282,3 +282,26 @@ void kmalloc_dump_stats(void) {
             HEAP_START, heap_current_end,
             (heap_current_end - HEAP_START) / 1024);
 }
+
+void kmalloc_get_stats(HeapStats *out) {
+    out->total_blocks = 0;
+    out->free_blocks = 0;
+    out->total_free = 0;
+    out->total_used = 0;
+    out->largest_free = 0;
+
+    BlockHeader *block = heap_start_block;
+    while (block != NULL) {
+        out->total_blocks++;
+        if (block->free) {
+            out->free_blocks++;
+            out->total_free += block->size;
+            if (block->size > out->largest_free) out->largest_free = block->size;
+        } else {
+            out->total_used += block->size;
+        }
+        block = block->next;
+    }
+
+    out->heap_mapped = heap_current_end - HEAP_START;
+}

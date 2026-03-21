@@ -22,6 +22,8 @@
 #include "fs/vfs.h"
 #include "fs/ramfs.h"
 #include "fs/fat32.h"
+#include "fs/devfs.h"
+#include "fs/procfs.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -143,6 +145,20 @@ static void vfs_setup(const BootInfo *info) {
             vfs_close(&hf);
             kprintf("[VFS] Created /etc/hostname\n");
         }
+    }
+
+    /* Mount devfs at /dev */
+    VfsNode *dev_root = devfs_init();
+    if (dev_root) {
+        vfs_mount("/dev", dev_root);
+        kprintf("[VFS] Mounted devfs at /dev\n");
+    }
+
+    /* Mount procfs at /proc */
+    VfsNode *proc_root_node = procfs_init();
+    if (proc_root_node) {
+        vfs_mount("/proc", proc_root_node);
+        kprintf("[VFS] Mounted procfs at /proc\n");
     }
 
     /* List root directory */

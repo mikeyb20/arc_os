@@ -31,6 +31,9 @@ add_executable(test_runner
     test_signal.c
     test_waitqueue.c
     test_fat32.c
+    test_devfs.c
+    test_procfs.c
+    test_path.c
 )
 
 # Include kernel source root for "lib/mem.h" etc, but NOT kernel/include
@@ -86,5 +89,8 @@ add_test(NAME test_pipe         COMMAND test_runner --suite pipe)
 add_test(NAME test_signal       COMMAND test_runner --suite signal)
 add_test(NAME test_waitqueue    COMMAND test_runner --suite waitqueue)
 add_test(NAME test_fat32        COMMAND test_runner --suite fat32)
+add_test(NAME test_devfs        COMMAND test_runner --suite devfs)
+add_test(NAME test_procfs       COMMAND test_runner --suite procfs)
+add_test(NAME test_path         COMMAND test_runner --suite path)
 set_tests_properties(test_fat32 PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 set_tests_properties(arc_os_tests PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")

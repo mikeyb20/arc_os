@@ -8,6 +8,7 @@
 #include "arch/x86_64/syscall.h"
 #include "arch/x86_64/paging.h"
 #include "lib/kprintf.h"
+#include "lib/string.h"
 
 static Process *proc_list = NULL;
 static pid_t next_pid = 0;
@@ -21,6 +22,7 @@ static Process *proc_table[MAX_PROCESSES];
 static void proc_setup(Process *p) {
     p->pid = next_pid++;
     p->state = PROC_ALIVE;
+    strncpy(p->cwd, "/", PATH_MAX);
     sig_init(&p->sig);
     wq_init(&p->child_exit_wq);
     p->next = proc_list;
@@ -154,6 +156,7 @@ Process *proc_fork(Process *parent, const ForkContext *user_ctx) {
     child->page_table = child_pml4;
     child->brk_start = parent->brk_start;
     child->brk_current = parent->brk_current;
+    strncpy(child->cwd, parent->cwd, PATH_MAX);
     child->parent = parent;
 
     /* 3. Duplicate FD table */
@@ -204,4 +207,15 @@ int proc_reap(Process *child, int32_t *status_out) {
     }
     child->state = PROC_TERMINATED;
     return (int)child->pid;
+}
+
+int proc_foreach(void (*cb)(Process *p, void *ctx), void *ctx) {
+    int count = 0;
+    for (Process *p = proc_list; p != NULL; p = p->next) {
+        if (p->state != PROC_TERMINATED) {
+            cb(p, ctx);
+            count++;
+        }
+    }
+    return count;
 }

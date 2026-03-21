@@ -29,10 +29,13 @@ static inline int64_t syscall3(uint64_t num, uint64_t a0, uint64_t a1, uint64_t 
 #define SYS_READDIR 10
 #define SYS_UNLINK  11
 #define SYS_DUP2    14
+#define SYS_GETPPID 15
 #define SYS_FORK    16
 #define SYS_EXEC    17
 #define SYS_WAIT    18
 #define SYS_PIPE    19
+#define SYS_CHDIR   23
+#define SYS_GETCWD  24
 
 /* --- Open flags (must match kernel/fs/vfs.h) --- */
 
@@ -127,6 +130,14 @@ static void print_error(const char *prefix, int64_t err) {
     print(": error ");
     print_num(-err);
     print("\n");
+}
+
+/* --- cwd tracking --- */
+
+static char shell_cwd[512];
+
+static void refresh_cwd(void) {
+    syscall3(SYS_GETCWD, (uint64_t)shell_cwd, 512, 0);
 }
 
 /* --- Line parsing --- */
@@ -289,6 +300,9 @@ static void cmd_clear(int argc, char *argv[]);
 static void cmd_exit(int argc, char *argv[]);
 static void cmd_run(int argc, char *argv[]);
 static void cmd_pid(int argc, char *argv[]);
+static void cmd_cd(int argc, char *argv[]);
+static void cmd_pwd(int argc, char *argv[]);
+static void cmd_ppid(int argc, char *argv[]);
 
 /* --- Dispatch table --- */
 
@@ -315,6 +329,9 @@ static const Builtin builtins[] = {
     { "exit",  cmd_exit,  "Exit shell [code]" },
     { "run",   cmd_run,   "Execute binary (fork/exec)" },
     { "pid",   cmd_pid,   "Print current PID" },
+    { "cd",    cmd_cd,    "Change directory [path]" },
+    { "pwd",   cmd_pwd,   "Print working directory" },
+    { "ppid",  cmd_ppid,  "Print parent PID" },
 };
 #define NUM_BUILTINS (sizeof(builtins) / sizeof(builtins[0]))
 
@@ -354,7 +371,7 @@ static void cmd_echo(int argc, char *argv[]) {
 }
 
 static void cmd_ls(int argc, char *argv[]) {
-    const char *path = argc >= 2 ? argv[1] : "/";
+    const char *path = argc >= 2 ? argv[1] : ".";
     DirEntry entries[16];
     int64_t count = syscall3(SYS_READDIR, (uint64_t)path, (uint64_t)entries, 16);
     if (count < 0) {
@@ -526,6 +543,27 @@ static void cmd_pid(int argc, char *argv[]) {
     print("\n");
 }
 
+static void cmd_cd(int argc, char *argv[]) {
+    const char *path = argc >= 2 ? argv[1] : "/";
+    int64_t r = syscall3(SYS_CHDIR, (uint64_t)path, 0, 0);
+    if (r < 0) print_error(path, r);
+    else refresh_cwd();
+}
+
+static void cmd_pwd(int argc, char *argv[]) {
+    (void)argc; (void)argv;
+    refresh_cwd();
+    println(shell_cwd);
+}
+
+static void cmd_ppid(int argc, char *argv[]) {
+    (void)argc; (void)argv;
+    int64_t p = syscall3(SYS_GETPPID, 0, 0, 0);
+    print("PPID: ");
+    print_num(p);
+    print("\n");
+}
+
 /* --- Pipe support --- */
 
 /* Find first unquoted '|' in line. Returns pointer to it, or NULL. */
@@ -633,9 +671,12 @@ void _start(void) {
 
     char line[LINE_MAX];
     char *argv[MAX_ARGS];
+    refresh_cwd();
 
     for (;;) {
-        print("shell> ");
+        print("[");
+        print(shell_cwd);
+        print("]$ ");
         int64_t n = syscall3(SYS_READ, 0, (uint64_t)line, LINE_MAX - 1);
         if (n <= 0) break;
         line[n] = '\0';

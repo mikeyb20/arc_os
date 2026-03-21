@@ -4,6 +4,7 @@
 #include "proc/thread.h"
 #include "proc/signal.h"
 #include "proc/waitqueue.h"
+#include "fs/path.h"
 #include <stdint.h>
 
 /* Process ID type */
@@ -40,6 +41,7 @@ typedef struct Process {
     FdTable        *fd_table;       /* Per-process file descriptor table */
     uint64_t        brk_current;    /* Current program break */
     uint64_t        brk_start;      /* Initial program break */
+    char            cwd[PATH_MAX];  /* Current working directory */
     SigState        sig;            /* Per-process signal state */
     WaitQueue       child_exit_wq;  /* Parents sleep here in sys_wait */
     struct Process *parent;
@@ -79,5 +81,8 @@ int proc_reap(Process *child, int32_t *status_out);
 
 /* Check if a process has any live (non-TERMINATED) children. */
 int proc_has_children(Process *parent);
+
+/* Iterate all non-TERMINATED processes, calling cb for each. Returns count. */
+int proc_foreach(void (*cb)(Process *p, void *ctx), void *ctx);
 
 #endif /* ARCHOS_PROC_PROCESS_H */

@@ -17,8 +17,10 @@
 #include "user_access.h"
 #include "drivers/tty.h"
 #include "fs/pipe.h"
+#include "fs/path.h"
 #include "proc/signal.h"
 #include "proc/waitqueue.h"
+#include "lib/string.h"
 
 /* Exported from syscall_entry.asm: user context saved during SYSCALL */
 extern uint64_t syscall_saved_user_rip;
@@ -48,6 +50,17 @@ static syscall_handler_t syscall_table[SYSCALL_MAX];
 
 /* Kernel RSP for SYSCALL entry — set by scheduler on context switch */
 uint64_t syscall_kernel_rsp;
+
+/* --- Path resolution helper --- */
+
+/* Resolve a user-space path to an absolute normalized path using the process cwd. */
+static int resolve_user_path(uint64_t path_addr, char *abs, size_t size) {
+    if (!user_ptr_valid((const void *)path_addr, 1)) return -EINVAL;
+    const char *path = (const char *)path_addr;
+    Process *p = proc_current();
+    const char *cwd = (p != NULL) ? p->cwd : "/";
+    return path_normalize(cwd, path, abs, size);
+}
 
 /* --- Built-in syscall handlers --- */
 
@@ -139,10 +152,11 @@ static int64_t sys_open(uint64_t path_addr, uint64_t flags, uint64_t mode,
     int fd = fd_alloc(p->fd_table);
     if (fd < 0) return -ENOMEM;
 
-    if (!user_ptr_valid((const void *)path_addr, 1)) return -EINVAL;
-    const char *path = (const char *)path_addr;
+    char abs[PATH_MAX];
+    int perr = resolve_user_path(path_addr, abs, PATH_MAX);
+    if (perr != 0) { fd_free(p->fd_table, fd); return perr; }
     VfsFile *file = fd_get(p->fd_table, fd);
-    int err = vfs_open(path, (uint32_t)flags, file);
+    int err = vfs_open(abs, (uint32_t)flags, file);
     if (err != 0) {
         fd_free(p->fd_table, fd);
         return err;
@@ -247,12 +261,14 @@ static int64_t sys_stat(uint64_t path_addr, uint64_t stat_addr, uint64_t a2,
                         uint64_t a3, uint64_t a4, uint64_t a5) {
     (void)a2; (void)a3; (void)a4; (void)a5;
 
-    if (!user_ptr_valid((const void *)path_addr, 1)) return -EINVAL;
     if (!user_ptr_valid((void *)stat_addr, sizeof(VfsStat))) return -EINVAL;
-    const char *path = (const char *)path_addr;
+
+    char abs[PATH_MAX];
+    int perr = resolve_user_path(path_addr, abs, PATH_MAX);
+    if (perr != 0) return perr;
     VfsStat *out = (VfsStat *)stat_addr;
 
-    return vfs_stat(path, out);
+    return vfs_stat(abs, out);
 }
 
 /* SYS_MKDIR: create a directory */
@@ -260,10 +276,11 @@ static int64_t sys_mkdir(uint64_t path_addr, uint64_t mode, uint64_t a2,
                          uint64_t a3, uint64_t a4, uint64_t a5) {
     (void)a2; (void)a3; (void)a4; (void)a5;
 
-    if (!user_ptr_valid((const void *)path_addr, 1)) return -EINVAL;
-    const char *path = (const char *)path_addr;
+    char abs[PATH_MAX];
+    int perr = resolve_user_path(path_addr, abs, PATH_MAX);
+    if (perr != 0) return perr;
 
-    return vfs_mkdir(path, (uint32_t)mode);
+    return vfs_mkdir(abs, (uint32_t)mode);
 }
 
 /* SYS_READDIR: list directory entries */
@@ -271,12 +288,14 @@ static int64_t sys_readdir(uint64_t path_addr, uint64_t entries_addr, uint64_t m
                            uint64_t a3, uint64_t a4, uint64_t a5) {
     (void)a3; (void)a4; (void)a5;
 
-    if (!user_ptr_valid((const void *)path_addr, 1)) return -EINVAL;
     if (max > 0 && !user_ptr_valid((void *)entries_addr, max * sizeof(VfsDirEntry))) return -EINVAL;
-    const char *path = (const char *)path_addr;
+
+    char abs[PATH_MAX];
+    int perr = resolve_user_path(path_addr, abs, PATH_MAX);
+    if (perr != 0) return perr;
     VfsDirEntry *entries = (VfsDirEntry *)entries_addr;
 
-    return vfs_readdir(path, entries, (uint32_t)max);
+    return vfs_readdir(abs, entries, (uint32_t)max);
 }
 
 /* SYS_UNLINK: delete a file */
@@ -284,10 +303,11 @@ static int64_t sys_unlink(uint64_t path_addr, uint64_t a1, uint64_t a2,
                           uint64_t a3, uint64_t a4, uint64_t a5) {
     (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
 
-    if (!user_ptr_valid((const void *)path_addr, 1)) return -EINVAL;
-    const char *path = (const char *)path_addr;
+    char abs[PATH_MAX];
+    int perr = resolve_user_path(path_addr, abs, PATH_MAX);
+    if (perr != 0) return perr;
 
-    return vfs_unlink(path);
+    return vfs_unlink(abs);
 }
 
 /* Reap a zombie child and optionally copy exit status to user space */
@@ -390,13 +410,15 @@ static int64_t sys_exec(uint64_t path_addr, uint64_t a1, uint64_t a2,
     (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
     Process *p = proc_current();
     if (p == NULL) return -ENOSYS;
-    if (!user_ptr_valid((const void *)path_addr, 1)) return -EINVAL;
-    const char *path = (const char *)path_addr;
+
+    char abs[PATH_MAX];
+    int perr = resolve_user_path(path_addr, abs, PATH_MAX);
+    if (perr != 0) return perr;
 
     /* 1. Read ELF binary from VFS */
     void *elf_buf;
     uint64_t file_size;
-    int err = exec_read_elf(path, &elf_buf, &file_size);
+    int err = exec_read_elf(abs, &elf_buf, &file_size);
     if (err != 0) return err;
 
     /* 2. Create fresh user address space */
@@ -421,7 +443,7 @@ static int64_t sys_exec(uint64_t path_addr, uint64_t a1, uint64_t a2,
     vmm_free_user_pages(old_pml4);
     paging_write_cr3(new_pml4);
 
-    kprintf("[EXEC] pid=%u loaded '%s' entry=0x%lx\n", p->pid, path, result.entry_point);
+    kprintf("[EXEC] pid=%u loaded '%s' entry=0x%lx\n", p->pid, abs, result.entry_point);
     jump_to_usermode(result.entry_point, USER_STACK_TOP);
 }
 
@@ -540,6 +562,93 @@ static int64_t sys_sigreturn(uint64_t a0, uint64_t a1, uint64_t a2,
     return 0;  /* dummy — sig_maybe_deliver will override RAX */
 }
 
+/* SYS_FSTAT: get file metadata by fd */
+static int64_t sys_fstat(uint64_t fd, uint64_t stat_addr, uint64_t a2,
+                         uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a2; (void)a3; (void)a4; (void)a5;
+    Process *p = proc_current();
+    if (p == NULL || p->fd_table == NULL) return -ENOSYS;
+    if (!user_ptr_valid((void *)stat_addr, sizeof(VfsStat))) return -EINVAL;
+
+    VfsFile *file = fd_get(p->fd_table, (int)fd);
+    if (file == NULL) return -EBADF;
+
+    VfsStat *out = (VfsStat *)stat_addr;
+    out->inode_num = file->node->inode_num;
+    out->type = file->node->type;
+    out->size = file->node->size;
+    out->mode = file->node->mode;
+    return 0;
+}
+
+/* SYS_DUP: duplicate a file descriptor to the lowest free fd */
+static int64_t sys_dup(uint64_t oldfd, uint64_t a1, uint64_t a2,
+                       uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+    Process *p = proc_current();
+    if (p == NULL || p->fd_table == NULL) return -ENOSYS;
+
+    VfsFile *src = fd_get(p->fd_table, (int)oldfd);
+    if (src == NULL) return -EBADF;
+
+    int newfd = fd_alloc(p->fd_table);
+    if (newfd < 0) return -ENOMEM;
+
+    FdEntry *dst_entry = &p->fd_table->entries[newfd];
+    dst_entry->file = *src;
+
+    if (dst_entry->file.node && dst_entry->file.node->type == VFS_PIPE) {
+        pipe_addref(dst_entry->file.node);
+    }
+
+    return (int64_t)newfd;
+}
+
+/* SYS_GETPPID: return parent process ID */
+static int64_t sys_getppid(uint64_t a0, uint64_t a1, uint64_t a2,
+                           uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a0; (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+    Process *p = proc_current();
+    if (p == NULL) return -ENOSYS;
+    return p->parent ? (int64_t)p->parent->pid : 0;
+}
+
+/* SYS_CHDIR: change working directory */
+static int64_t sys_chdir(uint64_t path_addr, uint64_t a1, uint64_t a2,
+                         uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+    Process *p = proc_current();
+    if (p == NULL) return -ENOSYS;
+
+    char abs[PATH_MAX];
+    int perr = resolve_user_path(path_addr, abs, PATH_MAX);
+    if (perr != 0) return perr;
+
+    /* Verify path is a directory */
+    VfsNode *node = vfs_resolve(abs);
+    if (node == NULL) return -ENOENT;
+    if (node->type != VFS_DIRECTORY) return -ENOTDIR;
+
+    strncpy(p->cwd, abs, PATH_MAX);
+    return 0;
+}
+
+/* SYS_GETCWD: get current working directory */
+static int64_t sys_getcwd(uint64_t buf_addr, uint64_t size, uint64_t a2,
+                          uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a2; (void)a3; (void)a4; (void)a5;
+    Process *p = proc_current();
+    if (p == NULL) return -ENOSYS;
+    if (!user_ptr_valid((void *)buf_addr, size)) return -EINVAL;
+
+    size_t cwd_len = strlen(p->cwd) + 1; /* include NUL */
+    if (cwd_len > size) return -EINVAL;
+
+    char *buf = (char *)buf_addr;
+    strncpy(buf, p->cwd, size);
+    return 0;
+}
+
 /* --- Dispatcher --- */
 
 int64_t syscall_dispatch(uint64_t num, uint64_t a0, uint64_t a1, uint64_t a2,
@@ -599,6 +708,11 @@ void syscall_init(void) {
     syscall_register(SYS_SIGNAL,    sys_signal);
     syscall_register(SYS_KILL,      sys_kill);
     syscall_register(SYS_SIGRETURN, sys_sigreturn);
+    syscall_register(SYS_FSTAT,     sys_fstat);
+    syscall_register(SYS_DUP,       sys_dup);
+    syscall_register(SYS_GETPPID,   sys_getppid);
+    syscall_register(SYS_CHDIR,     sys_chdir);
+    syscall_register(SYS_GETCWD,    sys_getcwd);
 
     kprintf("[SYSCALL] Initialized (LSTAR=0x%lx, STAR=0x%lx)\n",
             (uint64_t)syscall_entry, star);

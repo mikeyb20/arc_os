@@ -13,6 +13,15 @@
 #define PAGE_SIZE 4096
 #define GFP_KERNEL  0x00
 #define GFP_ZERO    0x01
+
+typedef struct {
+    size_t total_used;
+    size_t total_free;
+    size_t total_blocks;
+    size_t free_blocks;
+    size_t largest_free;
+    size_t heap_mapped;
+} HeapStats;
 #define VMM_FLAG_WRITABLE 1
 #define VMM_FLAG_NOEXEC   4
 
