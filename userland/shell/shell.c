@@ -1,5 +1,6 @@
-/* arc_os — Interactive shell
- * Built-in commands using direct syscalls. Freestanding, no libc. */
+/* arc_os — Interactive shell v0.2
+ * Built-in commands using direct syscalls. Freestanding, no libc.
+ * Features: PATH lookup, quoting, shell variables, variable expansion. */
 
 #include <stdint.h>
 
@@ -99,6 +100,37 @@ static int sh_atoi(const char *s) {
     return neg ? -val : val;
 }
 
+static uint64_t sh_strlcpy(char *dst, const char *src, uint64_t size) {
+    uint64_t slen = sh_strlen(src);
+    if (size > 0) {
+        uint64_t copy = slen < size - 1 ? slen : size - 1;
+        for (uint64_t i = 0; i < copy; i++) dst[i] = src[i];
+        dst[copy] = '\0';
+    }
+    return slen;
+}
+
+static char *sh_strchr(const char *s, int c) {
+    for (; *s; s++)
+        if (*s == (char)c) return (char *)s;
+    return (void *)0;
+}
+
+static int sh_strncmp(const char *a, const char *b, uint64_t n) __attribute__((unused));
+static int sh_strncmp(const char *a, const char *b, uint64_t n) {
+    for (uint64_t i = 0; i < n; i++) {
+        if (a[i] != b[i] || !a[i])
+            return (unsigned char)a[i] - (unsigned char)b[i];
+    }
+    return 0;
+}
+
+static void sh_memcpy(void *dst, const void *src, uint64_t n) {
+    uint8_t *d = (uint8_t *)dst;
+    const uint8_t *s = (const uint8_t *)src;
+    for (uint64_t i = 0; i < n; i++) d[i] = s[i];
+}
+
 /* --- I/O helpers --- */
 
 static void print(const char *s) {
@@ -141,7 +173,168 @@ static void refresh_cwd(void) {
     syscall3(SYS_GETCWD, (uint64_t)shell_cwd, 512, 0);
 }
 
-/* --- Line parsing --- */
+/* --- Shell variables --- */
+
+#define MAX_VARS      32
+#define VAR_NAME_MAX  32
+#define VAR_VALUE_MAX 128
+
+static char var_names[MAX_VARS][VAR_NAME_MAX];
+static char var_values[MAX_VARS][VAR_VALUE_MAX];
+static int  var_count = 0;
+
+static int shell_findvar(const char *name) {
+    for (int i = 0; i < var_count; i++)
+        if (sh_strcmp(var_names[i], name) == 0) return i;
+    return -1;
+}
+
+static const char *shell_getvar(const char *name) {
+    int i = shell_findvar(name);
+    return i >= 0 ? var_values[i] : (void *)0;
+}
+
+static int shell_setvar(const char *name, const char *value) {
+    if (sh_strlen(name) >= VAR_NAME_MAX || sh_strlen(value) >= VAR_VALUE_MAX)
+        return -1;
+    int i = shell_findvar(name);
+    if (i >= 0) {
+        sh_strlcpy(var_values[i], value, VAR_VALUE_MAX);
+        return 0;
+    }
+    if (var_count >= MAX_VARS) return -1;
+    sh_strlcpy(var_names[var_count], name, VAR_NAME_MAX);
+    sh_strlcpy(var_values[var_count], value, VAR_VALUE_MAX);
+    var_count++;
+    return 0;
+}
+
+static int shell_unsetvar(const char *name) {
+    int i = shell_findvar(name);
+    if (i < 0) return -1;
+    var_count--;
+    if (i < var_count) {
+        sh_memcpy(var_names[i], var_names[var_count], VAR_NAME_MAX);
+        sh_memcpy(var_values[i], var_values[var_count], VAR_VALUE_MAX);
+    }
+    return 0;
+}
+
+/* --- Variable expansion --- */
+
+static int is_var_start(char c) {
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_';
+}
+
+static int is_var_char(char c) {
+    return is_var_start(c) || (c >= '0' && c <= '9');
+}
+
+/* Expand $NAME references in input, write result to output.
+ * Quotes are passed through for parse_line to strip.
+ * Returns 0 on success, -1 if output overflows. */
+static int expand_variables(const char *input, char *output, uint64_t output_size) {
+    uint64_t wi = 0;
+    int in_single = 0, in_double = 0;
+
+    for (uint64_t ri = 0; input[ri]; ri++) {
+        char ch = input[ri];
+
+        /* Single quote toggle (not inside double quotes) */
+        if (ch == '\'' && !in_double) {
+            in_single = !in_single;
+            if (wi >= output_size - 1) return -1;
+            output[wi++] = ch;
+            continue;
+        }
+
+        /* Double quote toggle (not inside single quotes) */
+        if (ch == '"' && !in_single) {
+            in_double = !in_double;
+            if (wi >= output_size - 1) return -1;
+            output[wi++] = ch;
+            continue;
+        }
+
+        /* Inside single quotes — no expansion, pass through verbatim */
+        if (in_single) {
+            if (wi >= output_size - 1) return -1;
+            output[wi++] = ch;
+            continue;
+        }
+
+        /* Backslash handling (outside single quotes) */
+        if (ch == '\\') {
+            if (in_double) {
+                /* Inside double quotes: only escape $, ", \ */
+                char next = input[ri + 1];
+                if (next == '$' || next == '"' || next == '\\') {
+                    if (wi >= output_size - 1) return -1;
+                    output[wi++] = next;
+                    ri++;
+                    continue;
+                }
+            } else {
+                /* Outside quotes: \$ → literal $ */
+                if (input[ri + 1] == '$') {
+                    if (wi >= output_size - 1) return -1;
+                    output[wi++] = '$';
+                    ri++;
+                    continue;
+                }
+            }
+            /* Other backslash: pass through */
+            if (wi >= output_size - 1) return -1;
+            output[wi++] = ch;
+            continue;
+        }
+
+        /* Dollar expansion */
+        if (ch == '$') {
+            /* $$ → literal $ */
+            if (input[ri + 1] == '$') {
+                if (wi >= output_size - 1) return -1;
+                output[wi++] = '$';
+                ri++;
+                continue;
+            }
+            /* $NAME */
+            if (is_var_start(input[ri + 1])) {
+                uint64_t start = ri + 1;
+                uint64_t end = start;
+                while (is_var_char(input[end])) end++;
+
+                char name[VAR_NAME_MAX];
+                uint64_t nlen = end - start;
+                if (nlen >= VAR_NAME_MAX) nlen = VAR_NAME_MAX - 1;
+                for (uint64_t j = 0; j < nlen; j++) name[j] = input[start + j];
+                name[nlen] = '\0';
+
+                const char *val = shell_getvar(name);
+                if (val) {
+                    uint64_t vlen = sh_strlen(val);
+                    if (wi + vlen >= output_size) return -1;
+                    for (uint64_t j = 0; j < vlen; j++) output[wi++] = val[j];
+                }
+                ri = end - 1; /* for loop will ri++ */
+                continue;
+            }
+            /* Bare $ at end or before non-name char → literal */
+            if (wi >= output_size - 1) return -1;
+            output[wi++] = '$';
+            continue;
+        }
+
+        /* Normal character */
+        if (wi >= output_size - 1) return -1;
+        output[wi++] = ch;
+    }
+
+    output[wi] = '\0';
+    return 0;
+}
+
+/* --- Line parsing (quote-aware) --- */
 
 static int parse_line(char *line, char *argv[MAX_ARGV]) {
     /* Strip trailing newline */
@@ -151,18 +344,70 @@ static int parse_line(char *line, char *argv[MAX_ARGV]) {
 
     int argc = 0;
     int in_token = 0;
+    int wi = 0; /* write index (always <= ri) */
 
-    for (int i = 0; line[i]; i++) {
-        if (line[i] == ' ') {
-            line[i] = '\0';
-            in_token = 0;
-        } else if (!in_token) {
+    for (int ri = 0; line[ri]; ri++) {
+        char ch = line[ri];
+
+        if (!in_token) {
+            if (ch == ' ') continue;
+            /* Start new token */
             if (argc >= MAX_ARGS) break;
-            argv[argc++] = &line[i];
+            argv[argc++] = &line[wi];
             in_token = 1;
         }
+
+        /* Inside a token */
+        if (ch == ' ') {
+            line[wi++] = '\0';
+            in_token = 0;
+            continue;
+        }
+
+        if (ch == '\'') {
+            /* Single quote — copy verbatim until closing quote */
+            ri++;
+            while (line[ri] && line[ri] != '\'') {
+                line[wi++] = line[ri++];
+            }
+            if (!line[ri]) ri--; /* compensate for loop ri++ */
+            continue;
+        }
+
+        if (ch == '"') {
+            /* Double quote — copy until closing, backslash escapes ", \, $ */
+            ri++;
+            while (line[ri] && line[ri] != '"') {
+                if (line[ri] == '\\' && line[ri + 1]) {
+                    char next = line[ri + 1];
+                    if (next == '"' || next == '\\' || next == '$') {
+                        line[wi++] = next;
+                        ri += 2;
+                        continue;
+                    }
+                }
+                line[wi++] = line[ri++];
+            }
+            if (!line[ri]) ri--; /* compensate for loop ri++ */
+            continue;
+        }
+
+        if (ch == '\\' && line[ri + 1]) {
+            /* Backslash escape — emit next char literally */
+            ri++;
+            line[wi++] = line[ri];
+            continue;
+        }
+
+        /* Normal character */
+        line[wi++] = ch;
     }
-    argv[argc] = (void *)0;  /* NULL-terminate for exec */
+
+    if (in_token) {
+        line[wi] = '\0';
+    }
+
+    argv[argc] = (void *)0; /* NULL-terminate for exec */
     return argc;
 }
 
@@ -258,6 +503,52 @@ static int apply_redirects(const Redirect *r) {
     return 0;
 }
 
+/* --- PATH resolution --- */
+
+/* Search PATH for cmd; write full path to resolved. Returns 1 if found, 0 if not. */
+static int resolve_command(const char *cmd, char *resolved, uint64_t buf_size) {
+    /* If cmd contains '/', use as-is */
+    if (sh_strchr(cmd, '/')) {
+        sh_strlcpy(resolved, cmd, buf_size);
+        return 1;
+    }
+
+    const char *path = shell_getvar("PATH");
+    if (!path) return 0;
+
+    /* Walk PATH entries separated by ':' */
+    while (*path) {
+        const char *sep = sh_strchr(path, ':');
+        uint64_t dlen = sep ? (uint64_t)(sep - path) : sh_strlen(path);
+        uint64_t clen = sh_strlen(cmd);
+
+        if (dlen + 1 + clen < buf_size) {
+            for (uint64_t i = 0; i < dlen; i++) resolved[i] = path[i];
+            resolved[dlen] = '/';
+            for (uint64_t i = 0; i < clen; i++) resolved[dlen + 1 + i] = cmd[i];
+            resolved[dlen + 1 + clen] = '\0';
+
+            StatInfo st;
+            sh_memset(&st, 0, sizeof(st));
+            int64_t r = syscall3(SYS_STAT, (uint64_t)resolved, (uint64_t)&st, 0);
+            if (r == 0 && st.type == VFS_FILE) return 1;
+        }
+
+        if (!sep) break;
+        path = sep + 1;
+    }
+
+    return 0;
+}
+
+/* Try resolve_command, then exec. Falls back to raw argv[0] if not found. */
+static int64_t exec_resolved(char *argv[]) {
+    char resolved[256];
+    if (resolve_command(argv[0], resolved, 256))
+        return syscall3(SYS_EXEC, (uint64_t)resolved, (uint64_t)argv, 0);
+    return syscall3(SYS_EXEC, (uint64_t)argv[0], (uint64_t)argv, 0);
+}
+
 /* Fork, apply redirects in child, dispatch or exec, parent waits. */
 static void execute_with_redirect(int argc, char *argv[], const Redirect *r) {
     int64_t pid = syscall3(SYS_FORK, 0, 0, 0);
@@ -273,7 +564,7 @@ static void execute_with_redirect(int argc, char *argv[], const Redirect *r) {
         }
         if (argc > 0) {
             /* Try exec first (pass argv for argument passing) */
-            int64_t er = syscall3(SYS_EXEC, (uint64_t)argv[0], (uint64_t)argv, 0);
+            int64_t er = exec_resolved(argv);
             (void)er;
             /* Exec failed — try as builtin */
             dispatch(argc, argv);
@@ -305,6 +596,9 @@ static void cmd_pid(int argc, char *argv[]);
 static void cmd_cd(int argc, char *argv[]);
 static void cmd_pwd(int argc, char *argv[]);
 static void cmd_ppid(int argc, char *argv[]);
+static void cmd_export(int argc, char *argv[]);
+static void cmd_env(int argc, char *argv[]);
+static void cmd_unset(int argc, char *argv[]);
 
 /* --- Dispatch table --- */
 
@@ -317,28 +611,52 @@ typedef struct {
 } Builtin;
 
 static const Builtin builtins[] = {
-    { "help",  cmd_help,  "List available commands" },
-    { "echo",  cmd_echo,  "Print arguments" },
-    { "ls",    cmd_ls,    "List directory [path]" },
-    { "cat",   cmd_cat,   "Display file contents" },
-    { "stat",  cmd_stat,  "Show file metadata" },
-    { "mkdir", cmd_mkdir, "Create directory" },
-    { "rm",    cmd_rm,    "Delete file" },
-    { "touch", cmd_touch, "Create empty file" },
-    { "write", cmd_write, "Write text to file" },
-    { "uname", cmd_uname, "Print OS name" },
-    { "clear", cmd_clear, "Clear screen" },
-    { "exit",  cmd_exit,  "Exit shell [code]" },
-    { "run",   cmd_run,   "Execute binary (fork/exec)" },
-    { "pid",   cmd_pid,   "Print current PID" },
-    { "cd",    cmd_cd,    "Change directory [path]" },
-    { "pwd",   cmd_pwd,   "Print working directory" },
-    { "ppid",  cmd_ppid,  "Print parent PID" },
+    { "help",   cmd_help,   "List available commands" },
+    { "echo",   cmd_echo,   "Print arguments" },
+    { "ls",     cmd_ls,     "List directory [path]" },
+    { "cat",    cmd_cat,    "Display file contents" },
+    { "stat",   cmd_stat,   "Show file metadata" },
+    { "mkdir",  cmd_mkdir,  "Create directory" },
+    { "rm",     cmd_rm,     "Delete file" },
+    { "touch",  cmd_touch,  "Create empty file" },
+    { "write",  cmd_write,  "Write text to file" },
+    { "uname",  cmd_uname,  "Print OS name" },
+    { "clear",  cmd_clear,  "Clear screen" },
+    { "exit",   cmd_exit,   "Exit shell [code]" },
+    { "run",    cmd_run,    "Execute binary (fork/exec)" },
+    { "pid",    cmd_pid,    "Print current PID" },
+    { "cd",     cmd_cd,     "Change directory [path]" },
+    { "pwd",    cmd_pwd,    "Print working directory" },
+    { "ppid",   cmd_ppid,   "Print parent PID" },
+    { "export", cmd_export, "Set variable (export NAME=VALUE)" },
+    { "env",    cmd_env,    "List all variables" },
+    { "unset",  cmd_unset,  "Remove variable(s)" },
 };
 #define NUM_BUILTINS (sizeof(builtins) / sizeof(builtins[0]))
 
+/* Check if arg matches NAME=VALUE pattern */
+static int try_assignment(const char *arg) {
+    if (!is_var_start(arg[0])) return 0;
+    int i = 1;
+    while (is_var_char(arg[i])) i++;
+    return arg[i] == '=';
+}
+
 static void dispatch(int argc, char *argv[]) {
     if (argc == 0) return;
+
+    /* Bare assignment: NAME=VALUE */
+    if (argc == 1 && try_assignment(argv[0])) {
+        char name[VAR_NAME_MAX];
+        const char *eq = sh_strchr(argv[0], '=');
+        uint64_t nlen = (uint64_t)(eq - argv[0]);
+        if (nlen >= VAR_NAME_MAX) { print("name too long\n"); return; }
+        for (uint64_t j = 0; j < nlen; j++) name[j] = argv[0][j];
+        name[nlen] = '\0';
+        shell_setvar(name, eq + 1);
+        return;
+    }
+
     for (int i = 0; i < (int)NUM_BUILTINS; i++) {
         if (sh_strcmp(argv[0], builtins[i].name) == 0) {
             builtins[i].fn(argc, argv);
@@ -349,10 +667,10 @@ static void dispatch(int argc, char *argv[]) {
     int64_t pid = syscall3(SYS_FORK, 0, 0, 0);
     if (pid < 0) { print_error("fork", pid); return; }
     if (pid == 0) {
-        int64_t er = syscall3(SYS_EXEC, (uint64_t)argv[0], (uint64_t)argv, 0);
+        int64_t er = exec_resolved(argv);
         (void)er;
-        print("unknown command: ");
-        println(argv[0]);
+        print(argv[0]);
+        println(": command not found");
         syscall3(SYS_EXIT, 127, 0, 0);
         for (;;) __asm__ volatile ("ud2");
     }
@@ -526,6 +844,11 @@ static void cmd_exit(int argc, char *argv[]) {
 
 static void cmd_run(int argc, char *argv[]) {
     if (argc < 2) { println("usage: run <path>"); return; }
+    /* Resolve before fork so child doesn't need SYS_STAT */
+    char resolved[256];
+    const char *exec_path = argv[1];
+    if (resolve_command(argv[1], resolved, 256))
+        exec_path = resolved;
     int64_t pid = syscall3(SYS_FORK, 0, 0, 0);
     if (pid < 0) {
         print_error("fork", pid);
@@ -533,7 +856,7 @@ static void cmd_run(int argc, char *argv[]) {
     }
     if (pid == 0) {
         /* Child: exec the binary (argv+1 so binary gets argv[0]=path) */
-        syscall3(SYS_EXEC, (uint64_t)argv[1], (uint64_t)(argv + 1), 0);
+        syscall3(SYS_EXEC, (uint64_t)exec_path, (uint64_t)(argv + 1), 0);
         /* If exec fails, exit */
         println("exec failed");
         syscall3(SYS_EXIT, 1, 0, 0);
@@ -576,12 +899,57 @@ static void cmd_ppid(int argc, char *argv[]) {
     print("\n");
 }
 
+static void cmd_export(int argc, char *argv[]) {
+    if (argc < 2) {
+        /* List all variables */
+        for (int i = 0; i < var_count; i++) {
+            print(var_names[i]);
+            print("=");
+            println(var_values[i]);
+        }
+        return;
+    }
+    for (int i = 1; i < argc; i++) {
+        if (try_assignment(argv[i])) {
+            char name[VAR_NAME_MAX];
+            const char *eq = sh_strchr(argv[i], '=');
+            uint64_t nlen = (uint64_t)(eq - argv[i]);
+            if (nlen >= VAR_NAME_MAX) { print("name too long\n"); continue; }
+            for (uint64_t j = 0; j < nlen; j++) name[j] = argv[i][j];
+            name[nlen] = '\0';
+            shell_setvar(name, eq + 1);
+        }
+        /* export NAME with no '=' — no-op */
+    }
+}
+
+static void cmd_env(int argc, char *argv[]) {
+    (void)argc; (void)argv;
+    for (int i = 0; i < var_count; i++) {
+        print(var_names[i]);
+        print("=");
+        println(var_values[i]);
+    }
+}
+
+static void cmd_unset(int argc, char *argv[]) {
+    if (argc < 2) { println("usage: unset NAME [...]"); return; }
+    for (int i = 1; i < argc; i++) {
+        shell_unsetvar(argv[i]);
+    }
+}
+
 /* --- Pipe support --- */
 
 /* Find first unquoted '|' in line. Returns pointer to it, or NULL. */
 static char *find_pipe(char *line) {
+    int in_single = 0, in_double = 0;
     for (int i = 0; line[i]; i++) {
-        if (line[i] == '|') return &line[i];
+        char ch = line[i];
+        if (ch == '\\' && line[i + 1] && !in_single) { i++; continue; }
+        if (ch == '\'' && !in_double) { in_single = !in_single; continue; }
+        if (ch == '"' && !in_single) { in_double = !in_double; continue; }
+        if (ch == '|' && !in_single && !in_double) return &line[i];
     }
     return (void *)0;
 }
@@ -627,7 +995,7 @@ static void execute_pipe(char *left, char *right) {
             if (parse_redirects(&argc, argv, &redir) == 0)
                 apply_redirects(&redir);
             /* Try exec first (pass argv) */
-            int64_t r = syscall3(SYS_EXEC, (uint64_t)argv[0], (uint64_t)argv, 0);
+            int64_t r = exec_resolved(argv);
             (void)r;
             /* Exec failed — try as builtin */
             dispatch(argc, argv);
@@ -659,7 +1027,7 @@ static void execute_pipe(char *left, char *right) {
             Redirect redir = {0, 0, 0};
             if (parse_redirects(&argc, argv, &redir) == 0)
                 apply_redirects(&redir);
-            int64_t r = syscall3(SYS_EXEC, (uint64_t)argv[0], (uint64_t)argv, 0);
+            int64_t r = exec_resolved(argv);
             (void)r;
             dispatch(argc, argv);
         }
@@ -678,11 +1046,17 @@ static void execute_pipe(char *left, char *right) {
 
 void _start(uint64_t argc, char **argv) {
     (void)argc; (void)argv;
-    println("arc_os shell v0.1");
+
+    /* Initialize default variables */
+    shell_setvar("PATH", "/boot");
+    shell_setvar("HOME", "/");
+
+    println("arc_os shell v0.2");
     println("Type 'help' for available commands.");
     print("\n");
 
     char line[LINE_MAX];
+    char expanded[LINE_MAX * 2];
     char *args[MAX_ARGV];
     refresh_cwd();
 
@@ -694,18 +1068,24 @@ void _start(uint64_t argc, char **argv) {
         if (n <= 0) break;
         line[n] = '\0';
 
-        /* Strip trailing newline for pipe detection */
+        /* Strip trailing newline */
         for (int i = 0; line[i]; i++) {
             if (line[i] == '\n') { line[i] = '\0'; break; }
         }
 
-        /* Check for pipe */
-        char *pipe_pos = find_pipe(line);
+        /* Expand variables */
+        if (expand_variables(line, expanded, sizeof(expanded)) < 0) {
+            println("expansion error: line too long");
+            continue;
+        }
+
+        /* Check for pipe (quote-aware) */
+        char *pipe_pos = find_pipe(expanded);
         if (pipe_pos != (void *)0) {
             *pipe_pos = '\0';
-            execute_pipe(line, pipe_pos + 1);
+            execute_pipe(expanded, pipe_pos + 1);
         } else {
-            int ac = parse_line(line, args);
+            int ac = parse_line(expanded, args);
             Redirect redir = {0, 0, 0};
             int rr = parse_redirects(&ac, args, &redir);
             if (rr < 0) continue;  /* parse error, already printed */
