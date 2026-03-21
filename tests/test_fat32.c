@@ -8,7 +8,9 @@
 #define ARCHOS_MM_KMALLOC_H
 #define ARCHOS_LIB_MEM_H
 #define ARCHOS_LIB_STRING_H
-#define ARCHOS_DRIVERS_VIRTIO_BLK_H
+
+/* Need BlockDevice type before stubs */
+#include "../kernel/drivers/blkdev.h"
 
 /* Stub kprintf */
 static inline void kprintf(const char *fmt, ...) { (void)fmt; }
@@ -26,22 +28,31 @@ static void *kmalloc(size_t size, uint32_t flags) {
 static void kfree(void *ptr) { free(ptr); }
 static void *krealloc(void *ptr, size_t new_size) { return realloc(ptr, new_size); }
 
-/* VirtIO-blk stub: reads/writes from a file on disk */
+/* File-backed block device for tests */
 static FILE *disk_file;
 
-static int virtio_blk_read(uint64_t sector, uint32_t count, void *buf) {
+static int disk_blk_read(BlockDevice *dev, uint64_t sector, uint32_t count, void *buf) {
+    (void)dev;
     if (!disk_file) return -1;
     if (fseek(disk_file, (long)(sector * 512), SEEK_SET) != 0) return -1;
     return (fread(buf, 512, count, disk_file) == count) ? 0 : -1;
 }
 
-static int virtio_blk_write(uint64_t sector, uint32_t count, const void *buf) {
+static int disk_blk_write(BlockDevice *dev, uint64_t sector, uint32_t count, const void *buf) {
+    (void)dev;
     if (!disk_file) return -1;
     if (fseek(disk_file, (long)(sector * 512), SEEK_SET) != 0) return -1;
     if (fwrite(buf, 512, count, disk_file) != count) return -1;
     fflush(disk_file);
     return 0;
 }
+
+static BlockDevice test_blkdev = {
+    .read = disk_blk_read,
+    .write = disk_blk_write,
+    .capacity = NULL,
+    .private_data = NULL,
+};
 
 /* Include FAT32 implementation only (vfs.c already compiled in test_vfs.c) */
 #include "../kernel/fs/fat32.c"
@@ -62,7 +73,7 @@ static VfsNode *mount_test_disk(void) {
     node_cache_count = 0;
     next_fat_inode = 0x10000;
 
-    return fat32_mount();
+    return fat32_mount(&test_blkdev);
 }
 
 static void unmount_test_disk(void) {
@@ -95,7 +106,7 @@ static VfsNode *mount_writable_copy(void) {
     node_cache_count = 0;
     next_fat_inode = 0x10000;
 
-    return fat32_mount();
+    return fat32_mount(&test_blkdev);
 }
 
 /* === Read-path tests === */
@@ -120,7 +131,7 @@ static int test_bpb_reject_bad_sector_size(void) {
     rewind(disk_file);
 
     node_cache_count = 0;
-    VfsNode *root = fat32_mount();
+    VfsNode *root = fat32_mount(&test_blkdev);
     ASSERT_TRUE(root == NULL);
     fclose(disk_file);
     disk_file = NULL;

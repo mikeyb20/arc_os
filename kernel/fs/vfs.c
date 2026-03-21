@@ -3,9 +3,13 @@
 
 static VfsNode *vfs_root;
 
-/* Single mount point */
-static char mount_name[VFS_NAME_MAX];  /* Component name (no leading slash) */
-static VfsNode *mount_root;
+/* Mount table — supports up to 8 mount points */
+#define VFS_MAX_MOUNTS 8
+static struct {
+    char name[VFS_NAME_MAX];
+    VfsNode *root;
+} mount_table[VFS_MAX_MOUNTS];
+static int mount_count;
 
 void vfs_init(void) {
     vfs_root = NULL;
@@ -88,10 +92,16 @@ static VfsNode *vfs_resolve_parent(const char *path, char *name_out, size_t name
 
         VfsNode *child = node->ops->lookup(node, comp);
         if (child == NULL) {
-            /* Check mount point */
-            if (node == vfs_root && mount_root && strcmp(comp, mount_name) == 0) {
-                child = mount_root;
-            } else {
+            /* Check mount points */
+            if (node == vfs_root) {
+                for (int i = 0; i < mount_count; i++) {
+                    if (mount_table[i].root && strcmp(comp, mount_table[i].name) == 0) {
+                        child = mount_table[i].root;
+                        break;
+                    }
+                }
+            }
+            if (child == NULL) {
                 *errno_out = ENOENT;
                 return NULL;
             }
@@ -126,12 +136,16 @@ VfsNode *vfs_resolve(const char *path) {
 
         VfsNode *child = node->ops->lookup(node, comp);
         if (child == NULL) {
-            /* Check mount point: if at root and component matches mount name */
-            if (node == vfs_root && mount_root && strcmp(comp, mount_name) == 0) {
-                child = mount_root;
-            } else {
-                return NULL;
+            /* Check mount points: if at root and component matches a mount name */
+            if (node == vfs_root) {
+                for (int i = 0; i < mount_count; i++) {
+                    if (mount_table[i].root && strcmp(comp, mount_table[i].name) == 0) {
+                        child = mount_table[i].root;
+                        break;
+                    }
+                }
             }
+            if (child == NULL) return NULL;
         }
         node = child;
     }
@@ -291,13 +305,17 @@ int vfs_readdir(const char *path, VfsDirEntry *entries, uint32_t max) {
 
     int count = node->ops->readdir(node, entries, max);
 
-    /* If listing root and a mount point exists, add it to the listing */
-    if (node == vfs_root && mount_root && count >= 0 && (uint32_t)count < max) {
-        strncpy(entries[count].name, mount_name, VFS_NAME_MAX - 1);
-        entries[count].name[VFS_NAME_MAX - 1] = '\0';
-        entries[count].inode_num = mount_root->inode_num;
-        entries[count].type = mount_root->type;
-        count++;
+    /* If listing root, append all mount entries */
+    if (node == vfs_root && count >= 0) {
+        for (int i = 0; i < mount_count && (uint32_t)count < max; i++) {
+            if (mount_table[i].root) {
+                strncpy(entries[count].name, mount_table[i].name, VFS_NAME_MAX - 1);
+                entries[count].name[VFS_NAME_MAX - 1] = '\0';
+                entries[count].inode_num = mount_table[i].root->inode_num;
+                entries[count].type = mount_table[i].root->type;
+                count++;
+            }
+        }
     }
 
     return count;
@@ -326,9 +344,19 @@ int vfs_mount(const char *path, VfsNode *fs_root) {
     const char *name = path + 1;
     if (*name == '\0' || strchr(name, '/') != NULL) return -EINVAL;
 
-    strncpy(mount_name, name, VFS_NAME_MAX - 1);
-    mount_name[VFS_NAME_MAX - 1] = '\0';
-    mount_root = fs_root;
+    /* Check for duplicate */
+    for (int i = 0; i < mount_count; i++) {
+        if (mount_table[i].root && strcmp(mount_table[i].name, name) == 0) {
+            return -EEXIST;
+        }
+    }
+
+    if (mount_count >= VFS_MAX_MOUNTS) return -ENOMEM;
+
+    strncpy(mount_table[mount_count].name, name, VFS_NAME_MAX - 1);
+    mount_table[mount_count].name[VFS_NAME_MAX - 1] = '\0';
+    mount_table[mount_count].root = fs_root;
+    mount_count++;
 
     return VFS_OK;
 }

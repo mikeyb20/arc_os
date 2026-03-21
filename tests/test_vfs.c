@@ -47,6 +47,8 @@ static void *krealloc(void *ptr, size_t new_size) {
 /* Helper: reset VFS + ramfs state for each test */
 static void reset_vfs(void) {
     vfs_root = NULL;
+    mount_count = 0;
+    memset(mount_table, 0, sizeof(mount_table));
     next_inode = 1;
     kmalloc_fail_after = 0;
     kmalloc_call_seq = 0;
@@ -531,6 +533,57 @@ static int test_stat_directory_size_zero(void) {
     return 0;
 }
 
+/* --- Multi-mount tests --- */
+
+static int test_mount_multiple(void) {
+    setup_vfs();
+
+    /* Create two dummy mount roots */
+    VfsNode *dev_root = kmalloc(sizeof(VfsNode), GFP_ZERO);
+    dev_root->type = VFS_DIRECTORY;
+    dev_root->inode_num = 9001;
+
+    VfsNode *proc_root = kmalloc(sizeof(VfsNode), GFP_ZERO);
+    proc_root->type = VFS_DIRECTORY;
+    proc_root->inode_num = 9002;
+
+    ASSERT_EQ(vfs_mount("/dev", dev_root), 0);
+    ASSERT_EQ(vfs_mount("/proc", proc_root), 0);
+
+    /* Both should be resolvable */
+    ASSERT_TRUE(vfs_resolve("/dev") == dev_root);
+    ASSERT_TRUE(vfs_resolve("/proc") == proc_root);
+
+    /* Root listing should include both */
+    VfsDirEntry entries[16];
+    int count = vfs_readdir("/", entries, 16);
+    int found_dev = 0, found_proc = 0;
+    for (int i = 0; i < count; i++) {
+        if (strcmp(entries[i].name, "dev") == 0) found_dev = 1;
+        if (strcmp(entries[i].name, "proc") == 0) found_proc = 1;
+    }
+    ASSERT_TRUE(found_dev);
+    ASSERT_TRUE(found_proc);
+
+    kfree(dev_root);
+    kfree(proc_root);
+    return 0;
+}
+
+static int test_mount_duplicate_rejected(void) {
+    setup_vfs();
+
+    VfsNode *dev_root = kmalloc(sizeof(VfsNode), GFP_ZERO);
+    dev_root->type = VFS_DIRECTORY;
+    dev_root->inode_num = 9001;
+
+    ASSERT_EQ(vfs_mount("/dev", dev_root), 0);
+    ASSERT_EQ(vfs_mount("/dev", dev_root), -EEXIST);
+
+    kfree(dev_root);
+    return 0;
+}
+
 /* --- Test suite export --- */
 
 TestCase vfs_tests[] = {
@@ -569,6 +622,8 @@ TestCase vfs_tests[] = {
     { "read_wronly_fails",             test_read_wronly_fails },
     { "readdir_max_limits_output",     test_readdir_max_limits_output },
     { "stat_directory_size_zero",      test_stat_directory_size_zero },
+    { "mount_multiple",                test_mount_multiple },
+    { "mount_duplicate_rejected",      test_mount_duplicate_rejected },
 };
 
 int vfs_test_count = sizeof(vfs_tests) / sizeof(vfs_tests[0]);

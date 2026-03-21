@@ -4,6 +4,9 @@
 #include <stdint.h>
 #include "fs/vfs.h"
 
+/* Forward declaration */
+typedef struct BlockDevice BlockDevice;
+
 /* FAT32 directory entry attributes */
 #define FAT32_ATTR_READ_ONLY  0x01
 #define FAT32_ATTR_HIDDEN     0x02
@@ -73,6 +76,7 @@ typedef struct {
 
 /* Runtime volume context */
 typedef struct {
+    BlockDevice *dev;               /* Underlying block device */
     uint8_t   sectors_per_cluster;
     uint32_t  bytes_per_cluster;
     uint32_t  fat_start;            /* First sector of FAT */
@@ -93,9 +97,9 @@ typedef struct {
     uint32_t     dir_entry_idx;     /* Index within parent directory */
 } Fat32NodeInfo;
 
-/* Mount a FAT32 volume from the VirtIO block device.
+/* Mount a FAT32 volume from the given block device.
  * Returns the root VfsNode, or NULL on failure. */
-VfsNode *fat32_mount(void);
+VfsNode *fat32_mount(BlockDevice *dev);
 
 /* Flush dirty FAT sectors back to disk. Returns 0 on success. */
 int fat32_sync(void);

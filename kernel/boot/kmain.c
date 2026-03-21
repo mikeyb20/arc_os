@@ -14,6 +14,7 @@
 #include "proc/init.h"
 #include "drivers/pci.h"
 #include "drivers/virtio_blk.h"
+#include "drivers/blkdev.h"
 #include "drivers/tty.h"
 #include "drivers/keyboard.h"
 #include "lib/kprintf.h"
@@ -160,7 +161,13 @@ static void vfs_setup(const BootInfo *info) {
 static void virtio_blk_setup(void) {
     if (virtio_blk_init() != 0) return;
 
-    VfsNode *fat_root = fat32_mount();
+    BlockDevice *disk = blkdev_get(0);
+    if (!disk) {
+        kprintf("[VIRTIO-BLK] No block device registered\n");
+        return;
+    }
+
+    VfsNode *fat_root = fat32_mount(disk);
     if (fat_root) {
         vfs_mount("/disk", fat_root);
         kprintf("[FAT32] Mounted at /disk\n");
@@ -181,15 +188,24 @@ void kmain(void) {
 
     boot_log_info(info);
 
+    serial_puts("[BOOT] stage: GDT\n");
     gdt_init();
+    serial_puts("[BOOT] stage: IDT\n");
     idt_init();
+    serial_puts("[BOOT] stage: PIC\n");
     pic_init();
+    serial_puts("[BOOT] stage: PMM\n");
     pmm_init(info);
+    serial_puts("[BOOT] stage: VMM\n");
     vmm_init(info);
+    serial_puts("[BOOT] stage: heap\n");
     kmalloc_init();
     heap_self_test();
+    serial_puts("[BOOT] stage: VFS\n");
     vfs_setup(info);
+    serial_puts("[BOOT] stage: PCI\n");
     pci_init();
+    serial_puts("[BOOT] stage: VirtIO-blk\n");
     virtio_blk_setup();
 
     /* Initialize threading — converts boot context to thread 0 */

@@ -44,8 +44,8 @@ static inline int64_t syscall3(uint64_t num, uint64_t a0, uint64_t a1, uint64_t 
 
 /* --- VFS types (must match kernel/fs/vfs.h) --- */
 
-#define VFS_FILE      1
-#define VFS_DIRECTORY 2
+#define VFS_FILE      0
+#define VFS_DIRECTORY 1
 
 /* --- Userland struct declarations (must match kernel layout exactly) --- */
 
