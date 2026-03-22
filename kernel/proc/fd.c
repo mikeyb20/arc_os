@@ -2,6 +2,7 @@
 #include "lib/mem.h"
 #include "mm/kmalloc.h"
 #include "fs/pipe.h"
+#include "net/socket.h"
 
 void fd_table_init(FdTable *table) {
     memset(table, 0, sizeof(FdTable));
@@ -42,6 +43,11 @@ FdTable *fd_table_dup(const FdTable *src) {
             dst->entries[i].file.node &&
             dst->entries[i].file.node->type == VFS_PIPE) {
             pipe_addref(dst->entries[i].file.node);
+        }
+        if (dst->entries[i].in_use &&
+            dst->entries[i].file.node &&
+            dst->entries[i].file.node->type == VFS_SOCKET) {
+            socket_addref(socket_from_vnode(dst->entries[i].file.node));
         }
     }
     return dst;

@@ -227,9 +227,8 @@ void kmain(void) {
     virtio_blk_setup();
 
     serial_puts("[BOOT] stage: VirtIO-net\n");
-    if (virtio_net_init() == 0) {
-        net_init();
-    }
+    virtio_net_init();
+    net_init();
 
     /* Initialize threading — converts boot context to thread 0 */
     thread_init();

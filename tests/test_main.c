@@ -86,6 +86,12 @@ extern TestCase icmp_tests[];
 extern int icmp_test_count;
 extern TestCase cred_tests[];
 extern int cred_test_count;
+extern TestCase udp_tests[];
+extern int udp_test_count;
+extern TestCase socket_tests[];
+extern int socket_test_count;
+extern TestCase loopback_tests[];
+extern int loopback_test_count;
 
 static void run_suite(const char *suite_name, TestCase *tests, int count) {
     printf("[%s] Running %d tests\n", suite_name, count);
@@ -148,6 +154,9 @@ int main(int argc, char **argv) {
         { "ipv4",         ipv4_tests,         &ipv4_test_count },
         { "icmp",         icmp_tests,         &icmp_test_count },
         { "cred",         cred_tests,         &cred_test_count },
+        { "udp",          udp_tests,          &udp_test_count },
+        { "socket",       socket_tests,       &socket_test_count },
+        { "loopback",     loopback_tests,     &loopback_test_count },
     };
     int suite_count = (int)(sizeof(suites) / sizeof(suites[0]));
 

@@ -10,6 +10,12 @@ typedef struct {
 
 #define SPINLOCK_INIT { .locked = 0, .saved_flags = 0 }
 
+/* Initialize a spinlock at runtime. */
+static inline void spinlock_init(Spinlock *lock) {
+    lock->locked = 0;
+    lock->saved_flags = 0;
+}
+
 /* Acquire spinlock: save flags, disable interrupts, spin until acquired. */
 static inline void spinlock_acquire(Spinlock *lock) {
     uint64_t flags;

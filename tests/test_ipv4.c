@@ -20,6 +20,7 @@
 #define ETH_TYPE_IPV4   0x0800
 #define IPV4_HEADER_SIZE 20
 #define IPV4_PROTO_ICMP  1
+#define IPV4_PROTO_UDP   17
 #define IPV4_DEFAULT_TTL 64
 
 static inline uint16_t htons(uint16_t h) {
@@ -85,6 +86,18 @@ static void icmp_rx(struct NetIf *nif, uint32_t src_ip, const void *data, uint32
     icmp_rx_len = len;
 }
 
+/* UDP stub */
+static int udp_rx_called;
+static uint32_t udp_rx_src_ip, udp_rx_dst_ip;
+
+static void udp_rx(struct NetIf *nif, uint32_t src_ip, uint32_t dst_ip,
+                   const void *data, uint32_t len) {
+    (void)nif; (void)data; (void)len;
+    udp_rx_called++;
+    udp_rx_src_ip = src_ip;
+    udp_rx_dst_ip = dst_ip;
+}
+
 /* ARP stub */
 static const uint8_t *arp_lookup_result;
 static const uint8_t *arp_lookup(uint32_t ip) {
@@ -135,6 +148,9 @@ static void reset(void) {
     icmp_rx_called = 0;
     icmp_rx_src_ip = 0;
     icmp_rx_len = 0;
+    udp_rx_called = 0;
+    udp_rx_src_ip = 0;
+    udp_rx_dst_ip = 0;
     eth_send_called = 0;
     eth_send_len = 0;
     arp_lookup_result = NULL;
@@ -251,8 +267,25 @@ TEST(rx_unknown_protocol_ignored) {
     nif.ip_addr = IP4(10, 0, 2, 15);
     nif.netmask = IP4(255, 255, 255, 0);
     uint8_t pkt[IPV4_HEADER_SIZE];
-    build_ipv4(pkt, IP4(10, 0, 2, 2), nif.ip_addr, 17 /* UDP */, NULL, 0);
+    build_ipv4(pkt, IP4(10, 0, 2, 2), nif.ip_addr, 99 /* unknown */, NULL, 0);
     ipv4_rx(&nif, pkt, IPV4_HEADER_SIZE);
+    ASSERT_EQ(icmp_rx_called, 0);
+    ASSERT_EQ(udp_rx_called, 0);
+    return 0;
+}
+
+TEST(rx_udp_dispatched) {
+    reset();
+    NetIf nif = {0};
+    nif.ip_addr = IP4(10, 0, 2, 15);
+    nif.netmask = IP4(255, 255, 255, 0);
+    uint8_t payload[8] = {0};
+    uint8_t pkt[IPV4_HEADER_SIZE + 8];
+    build_ipv4(pkt, IP4(10, 0, 2, 2), nif.ip_addr, IPV4_PROTO_UDP, payload, 8);
+    ipv4_rx(&nif, pkt, IPV4_HEADER_SIZE + 8);
+    ASSERT_EQ(udp_rx_called, 1);
+    ASSERT_EQ(udp_rx_src_ip, IP4(10, 0, 2, 2));
+    ASSERT_EQ(udp_rx_dst_ip, nif.ip_addr);
     ASSERT_EQ(icmp_rx_called, 0);
     return 0;
 }
@@ -370,5 +403,6 @@ TestCase ipv4_tests[] = {
     TEST_ENTRY(send_oversized_rejected),
     TEST_ENTRY(send_increments_id),
     TEST_ENTRY(send_payload_appended),
+    TEST_ENTRY(rx_udp_dispatched),
 };
 int ipv4_test_count = sizeof(ipv4_tests) / sizeof(ipv4_tests[0]);

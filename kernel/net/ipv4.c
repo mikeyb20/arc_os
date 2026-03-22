@@ -4,6 +4,7 @@
 #include "net/ethernet.h"
 #include "net/arp.h"
 #include "net/icmp.h"
+#include "net/udp.h"
 #include "lib/mem.h"
 #include "lib/kprintf.h"
 
@@ -37,6 +38,9 @@ void ipv4_rx(struct NetIf *nif, const void *data, uint32_t len) {
     switch (hdr->protocol) {
     case IPV4_PROTO_ICMP:
         icmp_rx(nif, hdr->src_ip, payload, payload_len);
+        break;
+    case IPV4_PROTO_UDP:
+        udp_rx(nif, hdr->src_ip, hdr->dst_ip, payload, payload_len);
         break;
     default:
         break;

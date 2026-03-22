@@ -61,6 +61,9 @@ set(KERNEL_C_SOURCES
     net/ipv4.c
     net/icmp.c
     net/net.c
+    net/udp.c
+    net/socket.c
+    net/loopback.c
     drivers/virtio_net.c
 )
 

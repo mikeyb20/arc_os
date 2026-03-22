@@ -17,6 +17,21 @@ static inline int64_t syscall3(uint64_t num, uint64_t a0, uint64_t a1, uint64_t 
     return ret;
 }
 
+static inline int64_t syscall6(uint64_t num, uint64_t a0, uint64_t a1, uint64_t a2,
+                                uint64_t a3, uint64_t a4, uint64_t a5) {
+    int64_t ret;
+    register uint64_t r10 __asm__("r10") = a3;
+    register uint64_t r8  __asm__("r8")  = a4;
+    register uint64_t r9  __asm__("r9")  = a5;
+    __asm__ volatile (
+        "syscall"
+        : "=a"(ret)
+        : "a"(num), "D"(a0), "S"(a1), "d"(a2), "r"(r10), "r"(r8), "r"(r9)
+        : "rcx", "r11", "memory"
+    );
+    return ret;
+}
+
 /* --- Syscall numbers --- */
 
 #define SYS_EXIT    0
@@ -47,6 +62,10 @@ static inline int64_t syscall3(uint64_t num, uint64_t a0, uint64_t a1, uint64_t 
 #define SYS_GETPGID   32
 #define SYS_TCSETPGRP 33
 #define SYS_GETMOUNTS 34
+#define SYS_SOCKET    35
+#define SYS_BIND      36
+#define SYS_SENDTO    37
+#define SYS_RECVFROM  38
 
 #define SYS_SIGNAL    20
 #define SYS_KILL      21
@@ -88,6 +107,26 @@ typedef struct {
     uint32_t uid;
     uint32_t gid;
 } StatInfo;
+
+/* --- Socket constants (must match kernel/net/socket.h) --- */
+
+#define AF_INET    2
+#define SOCK_DGRAM 2
+
+typedef struct {
+    uint16_t sin_family;
+    uint16_t sin_port;
+    uint32_t sin_addr;
+    uint8_t  sin_zero[8];
+} sockaddr_in;
+
+static inline uint16_t sh_htons(uint16_t h) {
+    return (uint16_t)((h >> 8) | (h << 8));
+}
+
+static inline uint32_t sh_ip4(uint8_t a, uint8_t b, uint8_t c, uint8_t d) {
+    return (uint32_t)a | ((uint32_t)b << 8) | ((uint32_t)c << 16) | ((uint32_t)d << 24);
+}
 
 typedef struct {
     char name[256];
@@ -743,6 +782,7 @@ static void cmd_jobs(int argc, char *argv[]);
 static void cmd_fg(int argc, char *argv[]);
 static void cmd_bg(int argc, char *argv[]);
 static void cmd_mount(int argc, char *argv[]);
+static void cmd_udptest(int argc, char *argv[]);
 
 /* --- Dispatch table --- */
 
@@ -783,6 +823,7 @@ static const Builtin builtins[] = {
     { "fg",     cmd_fg,     "Resume job in foreground" },
     { "bg",     cmd_bg,     "Resume job in background" },
     { "mount",  cmd_mount,  "List mounted filesystems" },
+    { "udptest", cmd_udptest, "Test UDP loopback socket" },
 };
 #define NUM_BUILTINS (sizeof(builtins) / sizeof(builtins[0]))
 
@@ -1255,6 +1296,78 @@ static void cmd_mount(int argc, char *argv[]) {
         else
             println(" on unknown");
     }
+}
+
+static void cmd_udptest(int argc, char *argv[]) {
+    (void)argc; (void)argv;
+
+    /* 1. Create UDP socket */
+    int64_t fd = syscall3(SYS_SOCKET, AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) {
+        print("udptest: socket failed (");
+        print_num(fd);
+        println(")");
+        return;
+    }
+
+    /* 2. Bind to 127.0.0.1:9999 */
+    sockaddr_in addr;
+    for (int i = 0; i < 16; i++) ((uint8_t *)&addr)[i] = 0;
+    addr.sin_family = AF_INET;
+    addr.sin_port = sh_htons(9999);
+    addr.sin_addr = sh_ip4(127, 0, 0, 1);
+
+    int64_t ret = syscall3(SYS_BIND, (uint64_t)fd, (uint64_t)&addr, sizeof(sockaddr_in));
+    if (ret < 0) {
+        print("udptest: bind failed (");
+        print_num(ret);
+        println(")");
+        syscall3(SYS_CLOSE, (uint64_t)fd, 0, 0);
+        return;
+    }
+
+    /* 3. Send "hello" to self via loopback */
+    sockaddr_in dest;
+    for (int i = 0; i < 16; i++) ((uint8_t *)&dest)[i] = 0;
+    dest.sin_family = AF_INET;
+    dest.sin_port = sh_htons(9999);
+    dest.sin_addr = sh_ip4(127, 0, 0, 1);
+
+    const char *msg = "hello";
+    ret = syscall6(SYS_SENDTO, (uint64_t)fd, (uint64_t)msg, 5,
+                   0, (uint64_t)&dest, sizeof(sockaddr_in));
+    if (ret < 0) {
+        print("udptest: sendto failed (");
+        print_num(ret);
+        println(")");
+        syscall3(SYS_CLOSE, (uint64_t)fd, 0, 0);
+        return;
+    }
+
+    /* 4. Receive datagram back */
+    char buf[64];
+    sockaddr_in src;
+    ret = syscall6(SYS_RECVFROM, (uint64_t)fd, (uint64_t)buf, 64,
+                   0, (uint64_t)&src, sizeof(sockaddr_in));
+    if (ret < 0) {
+        print("udptest: recvfrom failed (");
+        print_num(ret);
+        println(")");
+        syscall3(SYS_CLOSE, (uint64_t)fd, 0, 0);
+        return;
+    }
+
+    /* 5. Report result */
+    buf[ret] = '\0';
+    print("UDP loopback test: sent 'hello', received '");
+    print(buf);
+    if (ret == 5 && buf[0] == 'h' && buf[1] == 'e' && buf[2] == 'l'
+        && buf[3] == 'l' && buf[4] == 'o')
+        println("' -- PASS");
+    else
+        println("' -- FAIL");
+
+    syscall3(SYS_CLOSE, (uint64_t)fd, 0, 0);
 }
 
 /* --- Background execution --- */

@@ -41,6 +41,9 @@ add_executable(test_runner
     test_ipv4.c
     test_icmp.c
     test_cred.c
+    test_udp.c
+    test_socket.c
+    test_loopback.c
 )
 
 # Include kernel source root for "lib/mem.h" etc, but NOT kernel/include
@@ -106,5 +109,8 @@ add_test(NAME test_arp         COMMAND test_runner --suite arp)
 add_test(NAME test_ipv4        COMMAND test_runner --suite ipv4)
 add_test(NAME test_icmp        COMMAND test_runner --suite icmp)
 add_test(NAME test_cred        COMMAND test_runner --suite cred)
+add_test(NAME test_udp         COMMAND test_runner --suite udp)
+add_test(NAME test_socket      COMMAND test_runner --suite socket)
+add_test(NAME test_loopback    COMMAND test_runner --suite loopback)
 set_tests_properties(test_fat32 PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 set_tests_properties(arc_os_tests PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")

@@ -21,6 +21,7 @@
 #include "proc/signal.h"
 #include "proc/waitqueue.h"
 #include "lib/string.h"
+#include "net/socket.h"
 
 /* Exported from syscall_entry.asm: user context saved during SYSCALL */
 extern uint64_t syscall_saved_user_rip;
@@ -90,6 +91,9 @@ static int64_t sys_exit(uint64_t status, uint64_t a1, uint64_t a2,
                 VfsFile *f = &p->fd_table->entries[i].file;
                 if (f->node && f->node->type == VFS_PIPE) {
                     pipe_close(f->node);
+                }
+                if (f->node && f->node->type == VFS_SOCKET) {
+                    socket_close(socket_from_vnode(f->node));
                 }
                 p->fd_table->entries[i].in_use = 0;
             }
@@ -218,6 +222,9 @@ static int64_t sys_close(uint64_t fd, uint64_t a1, uint64_t a2,
     if (file->node && file->node->type == VFS_PIPE) {
         pipe_close(file->node);
     }
+    if (file->node && file->node->type == VFS_SOCKET) {
+        socket_close(socket_from_vnode(file->node));
+    }
     vfs_close(file);
     fd_free(p->fd_table, (int)fd);
     return 0;
@@ -263,7 +270,8 @@ static int64_t sys_lseek(uint64_t fd, uint64_t offset, uint64_t whence,
     VfsFile *file = fd_get(p->fd_table, (int)fd);
     if (file == NULL) return -EBADF;
 
-    if (file->node && file->node->type == VFS_PIPE) return -ESPIPE;
+    if (file->node && (file->node->type == VFS_PIPE || file->node->type == VFS_SOCKET))
+        return -ESPIPE;
 
     return vfs_seek(file, (int64_t)offset, (int)whence);
 }
@@ -586,6 +594,9 @@ static int64_t sys_dup2(uint64_t oldfd, uint64_t newfd, uint64_t a2,
         if (dst_entry->file.node && dst_entry->file.node->type == VFS_PIPE) {
             pipe_close(dst_entry->file.node);
         }
+        if (dst_entry->file.node && dst_entry->file.node->type == VFS_SOCKET) {
+            socket_close(socket_from_vnode(dst_entry->file.node));
+        }
         dst_entry->in_use = 0;
     }
 
@@ -596,6 +607,9 @@ static int64_t sys_dup2(uint64_t oldfd, uint64_t newfd, uint64_t a2,
     /* If it's a pipe, bump the ref count */
     if (dst_entry->file.node && dst_entry->file.node->type == VFS_PIPE) {
         pipe_addref(dst_entry->file.node);
+    }
+    if (dst_entry->file.node && dst_entry->file.node->type == VFS_SOCKET) {
+        socket_addref(socket_from_vnode(dst_entry->file.node));
     }
 
     return (int64_t)newfd;
@@ -733,6 +747,9 @@ static int64_t sys_dup(uint64_t oldfd, uint64_t a1, uint64_t a2,
 
     if (dst_entry->file.node && dst_entry->file.node->type == VFS_PIPE) {
         pipe_addref(dst_entry->file.node);
+    }
+    if (dst_entry->file.node && dst_entry->file.node->type == VFS_SOCKET) {
+        socket_addref(socket_from_vnode(dst_entry->file.node));
     }
 
     return (int64_t)newfd;
@@ -910,6 +927,99 @@ static int64_t sys_tcsetpgrp(uint64_t pgid_arg, uint64_t a1, uint64_t a2,
     return 0;
 }
 
+/* SYS_SOCKET: create a network socket */
+static int64_t sys_socket(uint64_t domain, uint64_t type, uint64_t protocol,
+                           uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a3; (void)a4; (void)a5;
+    Process *p = proc_current();
+    if (p == NULL || p->fd_table == NULL) return -ENOSYS;
+
+    Socket *sock = socket_create((int)domain, (int)type, (int)protocol);
+    if (sock == NULL) return -EINVAL;
+
+    int fd = fd_alloc(p->fd_table);
+    if (fd < 0) { socket_close(sock); return -ENOMEM; }
+
+    VfsFile *f = fd_get(p->fd_table, fd);
+    f->node = &sock->vnode;
+    f->offset = 0;
+    f->flags = O_RDWR;
+    return fd;
+}
+
+/* SYS_BIND: bind socket to local address */
+static int64_t sys_bind(uint64_t fd, uint64_t addr_arg, uint64_t addrlen,
+                         uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a3; (void)a4; (void)a5;
+    if (addrlen < sizeof(sockaddr_in)) return -EINVAL;
+    if (!user_ptr_valid((void *)addr_arg, sizeof(sockaddr_in))) return -EINVAL;
+
+    Process *p = proc_current();
+    if (p == NULL || p->fd_table == NULL) return -ENOSYS;
+    VfsFile *file = fd_get(p->fd_table, (int)fd);
+    if (!file || !file->node || file->node->type != VFS_SOCKET) return -EBADF;
+
+    Socket *sock = socket_from_vnode(file->node);
+    sockaddr_in addr;
+    memcpy(&addr, (void *)addr_arg, sizeof(sockaddr_in));
+    return socket_bind(sock, &addr);
+}
+
+/* SYS_SENDTO: send a datagram */
+static int64_t sys_sendto(uint64_t fd, uint64_t buf_addr, uint64_t len,
+                           uint64_t flags, uint64_t dest_addr, uint64_t addrlen) {
+    (void)flags;
+    if (!user_ptr_valid((void *)buf_addr, len)) return -EINVAL;
+
+    Process *p = proc_current();
+    if (p == NULL || p->fd_table == NULL) return -ENOSYS;
+    VfsFile *file = fd_get(p->fd_table, (int)fd);
+    if (!file || !file->node || file->node->type != VFS_SOCKET) return -EBADF;
+
+    Socket *sock = socket_from_vnode(file->node);
+
+    sockaddr_in dest;
+    if (dest_addr != 0) {
+        if (addrlen < sizeof(sockaddr_in)) return -EINVAL;
+        if (!user_ptr_valid((void *)dest_addr, sizeof(sockaddr_in))) return -EINVAL;
+        memcpy(&dest, (void *)dest_addr, sizeof(sockaddr_in));
+    } else {
+        if (sock->remote_port == 0) return -ENOTCONN;
+        dest.sin_family = AF_INET;
+        dest.sin_addr = sock->remote_ip;
+        dest.sin_port = sock->remote_port;
+    }
+
+    int ret = socket_sendto(sock, (const void *)buf_addr, (uint32_t)len, &dest);
+    return (ret == 0) ? (int64_t)len : ret;
+}
+
+/* SYS_RECVFROM: receive a datagram */
+static int64_t sys_recvfrom(uint64_t fd, uint64_t buf_addr, uint64_t len,
+                             uint64_t flags, uint64_t src_addr_arg, uint64_t addrlen_arg) {
+    (void)flags;
+    if (!user_ptr_valid((void *)buf_addr, len)) return -EINVAL;
+
+    Process *p = proc_current();
+    if (p == NULL || p->fd_table == NULL) return -ENOSYS;
+    VfsFile *file = fd_get(p->fd_table, (int)fd);
+    if (!file || !file->node || file->node->type != VFS_SOCKET) return -EBADF;
+
+    Socket *sock = socket_from_vnode(file->node);
+
+    sockaddr_in src;
+    int ret = socket_recvfrom(sock, (void *)buf_addr, (uint32_t)len, &src);
+    if (ret < 0) return ret;
+
+    if (src_addr_arg != 0) {
+        if (addrlen_arg < sizeof(sockaddr_in)) return -EINVAL;
+        if (!user_ptr_valid((void *)src_addr_arg, sizeof(sockaddr_in)))
+            return -EINVAL;
+        memcpy((void *)src_addr_arg, &src, sizeof(sockaddr_in));
+    }
+    return ret;
+}
+
 /* --- Dispatcher --- */
 
 int64_t syscall_dispatch(uint64_t num, uint64_t a0, uint64_t a1, uint64_t a2,
@@ -984,6 +1094,10 @@ void syscall_init(void) {
     syscall_register(SYS_GETPGID,   sys_getpgid);
     syscall_register(SYS_TCSETPGRP, sys_tcsetpgrp);
     syscall_register(SYS_GETMOUNTS, sys_getmounts);
+    syscall_register(SYS_SOCKET,   sys_socket);
+    syscall_register(SYS_BIND,     sys_bind);
+    syscall_register(SYS_SENDTO,   sys_sendto);
+    syscall_register(SYS_RECVFROM, sys_recvfrom);
 
     kprintf("[SYSCALL] Initialized (LSTAR=0x%lx, STAR=0x%lx)\n",
             (uint64_t)syscall_entry, star);
