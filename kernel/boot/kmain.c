@@ -187,8 +187,8 @@ static void virtio_blk_setup(void) {
 
     VfsNode *fat_root = fat32_mount(disk);
     if (fat_root) {
-        vfs_mount("/disk", fat_root);
-        kprintf("[FAT32] Mounted at /disk\n");
+        vfs_mount("/mnt", fat_root);
+        kprintf("[FAT32] Mounted at /mnt\n");
     } else {
         kprintf("[VIRTIO-BLK] No FAT32 filesystem found on disk\n");
     }

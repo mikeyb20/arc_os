@@ -149,8 +149,17 @@ int vfs_mkdir(const char *path, uint32_t mode);
 int vfs_readdir(const char *path, VfsDirEntry *entries, uint32_t max);
 int vfs_unlink(const char *path);
 
-/* Mount a filesystem root at a mount point (e.g., "/disk").
+/* Mount a filesystem root at a mount point (e.g., "/mnt").
  * Up to 8 mount points supported. Path must be "/<name>". */
 int vfs_mount(const char *path, VfsNode *fs_root);
+
+/* Mount info entry (for querying active mounts) */
+typedef struct {
+    char name[VFS_NAME_MAX];  /* mount point name (without leading /) */
+} VfsMountInfo;
+
+/* Get list of active mount points. Fills 'out' with up to 'max' entries.
+ * Returns the number of entries written. */
+int vfs_get_mounts(VfsMountInfo *out, int max);
 
 #endif /* ARCHOS_FS_VFS_H */

@@ -41,6 +41,7 @@
 #define SYS_SETPGID   31
 #define SYS_GETPGID   32
 #define SYS_TCSETPGRP 33
+#define SYS_GETMOUNTS 34
 
 /* Syscall handler type: up to 6 arguments, returns int64_t */
 typedef int64_t (*syscall_handler_t)(uint64_t, uint64_t, uint64_t,

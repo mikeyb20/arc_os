@@ -46,6 +46,7 @@ static inline int64_t syscall3(uint64_t num, uint64_t a0, uint64_t a1, uint64_t 
 #define SYS_SETPGID   31
 #define SYS_GETPGID   32
 #define SYS_TCSETPGRP 33
+#define SYS_GETMOUNTS 34
 
 #define SYS_SIGNAL    20
 #define SYS_KILL      21
@@ -87,6 +88,10 @@ typedef struct {
     uint32_t uid;
     uint32_t gid;
 } StatInfo;
+
+typedef struct {
+    char name[256];
+} MountInfo;
 
 /* --- Parsing constants --- */
 
@@ -737,6 +742,7 @@ static void cmd_chown(int argc, char *argv[]);
 static void cmd_jobs(int argc, char *argv[]);
 static void cmd_fg(int argc, char *argv[]);
 static void cmd_bg(int argc, char *argv[]);
+static void cmd_mount(int argc, char *argv[]);
 
 /* --- Dispatch table --- */
 
@@ -776,6 +782,7 @@ static const Builtin builtins[] = {
     { "jobs",   cmd_jobs,   "List background jobs" },
     { "fg",     cmd_fg,     "Resume job in foreground" },
     { "bg",     cmd_bg,     "Resume job in background" },
+    { "mount",  cmd_mount,  "List mounted filesystems" },
 };
 #define NUM_BUILTINS (sizeof(builtins) / sizeof(builtins[0]))
 
@@ -1224,6 +1231,30 @@ static void cmd_bg(int argc, char *argv[]) {
     print_num(j->job_id);
     print("] ");
     println(j->cmd);
+}
+
+static void cmd_mount(int argc, char *argv[]) {
+    (void)argc; (void)argv;
+    println("/ on ramfs");
+
+    MountInfo mounts[8];
+    int64_t count = syscall3(SYS_GETMOUNTS, (uint64_t)mounts, 8, 0);
+    if (count < 0) {
+        print_error("getmounts", count);
+        return;
+    }
+    for (int64_t i = 0; i < count; i++) {
+        print("/");
+        print(mounts[i].name);
+        if (sh_strcmp(mounts[i].name, "dev") == 0)
+            println(" on devfs");
+        else if (sh_strcmp(mounts[i].name, "proc") == 0)
+            println(" on procfs");
+        else if (sh_strcmp(mounts[i].name, "mnt") == 0)
+            println(" on fat32");
+        else
+            println(" on unknown");
+    }
 }
 
 /* --- Background execution --- */

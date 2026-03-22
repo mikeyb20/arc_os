@@ -675,6 +675,61 @@ static int test_create_sets_ownership(void) {
     return 0;
 }
 
+/* --- vfs_get_mounts tests --- */
+
+static int test_get_mounts_none(void) {
+    setup_vfs();
+    VfsMountInfo info[4];
+    ASSERT_EQ(vfs_get_mounts(info, 4), 0);
+    return 0;
+}
+
+static int test_get_mounts_returns_entries(void) {
+    setup_vfs();
+    VfsNode *dev = kmalloc(sizeof(VfsNode), GFP_ZERO);
+    dev->type = VFS_DIRECTORY;
+    dev->inode_num = 9001;
+    vfs_mount("/dev", dev);
+
+    VfsNode *proc = kmalloc(sizeof(VfsNode), GFP_ZERO);
+    proc->type = VFS_DIRECTORY;
+    proc->inode_num = 9002;
+    vfs_mount("/proc", proc);
+
+    VfsMountInfo info[8];
+    int count = vfs_get_mounts(info, 8);
+    ASSERT_EQ(count, 2);
+    ASSERT_STR_EQ(info[0].name, "dev");
+    ASSERT_STR_EQ(info[1].name, "proc");
+
+    kfree(dev);
+    kfree(proc);
+    return 0;
+}
+
+static int test_get_mounts_max_limits(void) {
+    setup_vfs();
+    VfsNode *a = kmalloc(sizeof(VfsNode), GFP_ZERO);
+    a->type = VFS_DIRECTORY;
+    vfs_mount("/aaa", a);
+    VfsNode *b = kmalloc(sizeof(VfsNode), GFP_ZERO);
+    b->type = VFS_DIRECTORY;
+    vfs_mount("/bbb", b);
+
+    VfsMountInfo info[1];
+    ASSERT_EQ(vfs_get_mounts(info, 1), 1);
+    ASSERT_STR_EQ(info[0].name, "aaa");
+
+    kfree(a);
+    kfree(b);
+    return 0;
+}
+
+static int test_get_mounts_null_safe(void) {
+    ASSERT_EQ(vfs_get_mounts(NULL, 5), 0);
+    return 0;
+}
+
 /* --- Test suite export --- */
 
 TestCase vfs_tests[] = {
@@ -720,6 +775,10 @@ TestCase vfs_tests[] = {
     { "open_writable_checks_write",    test_open_writable_checks_write },
     { "mkdir_checks_parent_wx",        test_mkdir_checks_parent_wx },
     { "create_sets_ownership",         test_create_sets_ownership },
+    { "get_mounts_none",               test_get_mounts_none },
+    { "get_mounts_returns_entries",    test_get_mounts_returns_entries },
+    { "get_mounts_max_limits",         test_get_mounts_max_limits },
+    { "get_mounts_null_safe",          test_get_mounts_null_safe },
 };
 
 int vfs_test_count = sizeof(vfs_tests) / sizeof(vfs_tests[0]);

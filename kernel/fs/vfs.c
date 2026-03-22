@@ -421,3 +421,16 @@ int vfs_mount(const char *path, VfsNode *fs_root) {
 
     return VFS_OK;
 }
+
+int vfs_get_mounts(VfsMountInfo *out, int max) {
+    if (out == NULL || max <= 0) return 0;
+    int count = 0;
+    for (int i = 0; i < mount_count && count < max; i++) {
+        if (mount_table[i].root) {
+            strncpy(out[count].name, mount_table[i].name, VFS_NAME_MAX - 1);
+            out[count].name[VFS_NAME_MAX - 1] = '\0';
+            count++;
+        }
+    }
+    return count;
+}

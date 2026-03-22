@@ -891,6 +891,17 @@ static int64_t sys_getpgid(uint64_t pid_arg, uint64_t a1, uint64_t a2,
     return (int64_t)target->pgid;
 }
 
+/* SYS_GETMOUNTS: list active mount points */
+static int64_t sys_getmounts(uint64_t buf_addr, uint64_t max, uint64_t a2,
+                              uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a2; (void)a3; (void)a4; (void)a5;
+    if (max == 0) return 0;
+    if (!user_ptr_valid((void *)buf_addr, max * sizeof(VfsMountInfo)))
+        return -EINVAL;
+    VfsMountInfo *out = (VfsMountInfo *)buf_addr;
+    return vfs_get_mounts(out, (int)max);
+}
+
 /* SYS_TCSETPGRP: set terminal foreground process group */
 static int64_t sys_tcsetpgrp(uint64_t pgid_arg, uint64_t a1, uint64_t a2,
                               uint64_t a3, uint64_t a4, uint64_t a5) {
@@ -972,6 +983,7 @@ void syscall_init(void) {
     syscall_register(SYS_SETPGID,   sys_setpgid);
     syscall_register(SYS_GETPGID,   sys_getpgid);
     syscall_register(SYS_TCSETPGRP, sys_tcsetpgrp);
+    syscall_register(SYS_GETMOUNTS, sys_getmounts);
 
     kprintf("[SYSCALL] Initialized (LSTAR=0x%lx, STAR=0x%lx)\n",
             (uint64_t)syscall_entry, star);
