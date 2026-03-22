@@ -35,6 +35,11 @@ add_executable(test_runner
     test_procfs.c
     test_path.c
     test_exec_argv.c
+    test_net_util.c
+    test_ethernet.c
+    test_arp.c
+    test_ipv4.c
+    test_icmp.c
 )
 
 # Include kernel source root for "lib/mem.h" etc, but NOT kernel/include
@@ -94,5 +99,10 @@ add_test(NAME test_devfs        COMMAND test_runner --suite devfs)
 add_test(NAME test_procfs       COMMAND test_runner --suite procfs)
 add_test(NAME test_path         COMMAND test_runner --suite path)
 add_test(NAME test_exec_argv   COMMAND test_runner --suite exec_argv)
+add_test(NAME test_net_util    COMMAND test_runner --suite net_util)
+add_test(NAME test_ethernet    COMMAND test_runner --suite ethernet)
+add_test(NAME test_arp         COMMAND test_runner --suite arp)
+add_test(NAME test_ipv4        COMMAND test_runner --suite ipv4)
+add_test(NAME test_icmp        COMMAND test_runner --suite icmp)
 set_tests_properties(test_fat32 PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 set_tests_properties(arc_os_tests PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")

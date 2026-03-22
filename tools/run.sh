@@ -27,4 +27,6 @@ qemu-system-x86_64 \
     -no-shutdown \
     -boot d \
     -drive file="$TEST_DISK",format=raw,if=none,id=disk0 \
-    -device virtio-blk-pci,drive=disk0
+    -device virtio-blk-pci,drive=disk0 \
+    -netdev user,id=net0 \
+    -device virtio-net-pci,netdev=net0

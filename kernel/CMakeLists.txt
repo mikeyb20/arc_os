@@ -54,6 +54,14 @@ set(KERNEL_C_SOURCES
     fs/devfs.c
     fs/procfs.c
     fs/path.c
+    net/net_util.c
+    net/netif.c
+    net/ethernet.c
+    net/arp.c
+    net/ipv4.c
+    net/icmp.c
+    net/net.c
+    drivers/virtio_net.c
 )
 
 set(KERNEL_SOURCES ${KERNEL_ASM_SOURCES} ${KERNEL_C_SOURCES})

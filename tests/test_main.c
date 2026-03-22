@@ -74,6 +74,16 @@ extern TestCase path_tests[];
 extern int path_test_count;
 extern TestCase exec_argv_tests[];
 extern int exec_argv_test_count;
+extern TestCase net_util_tests[];
+extern int net_util_test_count;
+extern TestCase ethernet_tests[];
+extern int ethernet_test_count;
+extern TestCase arp_tests[];
+extern int arp_test_count;
+extern TestCase ipv4_tests[];
+extern int ipv4_test_count;
+extern TestCase icmp_tests[];
+extern int icmp_test_count;
 
 static void run_suite(const char *suite_name, TestCase *tests, int count) {
     printf("[%s] Running %d tests\n", suite_name, count);
@@ -130,6 +140,11 @@ int main(int argc, char **argv) {
         { "procfs",       procfs_tests,       &procfs_test_count },
         { "path",         path_tests,         &path_test_count },
         { "exec_argv",    exec_argv_tests,    &exec_argv_test_count },
+        { "net_util",     net_util_tests,     &net_util_test_count },
+        { "ethernet",     ethernet_tests,     &ethernet_test_count },
+        { "arp",          arp_tests,          &arp_test_count },
+        { "ipv4",         ipv4_tests,         &ipv4_test_count },
+        { "icmp",         icmp_tests,         &icmp_test_count },
     };
     int suite_count = (int)(sizeof(suites) / sizeof(suites[0]));
 

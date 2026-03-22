@@ -17,6 +17,8 @@
 #include "drivers/blkdev.h"
 #include "drivers/tty.h"
 #include "drivers/keyboard.h"
+#include "drivers/virtio_net.h"
+#include "net/net.h"
 #include "lib/kprintf.h"
 #include "lib/mem.h"
 #include "fs/vfs.h"
@@ -223,6 +225,11 @@ void kmain(void) {
     pci_init();
     serial_puts("[BOOT] stage: VirtIO-blk\n");
     virtio_blk_setup();
+
+    serial_puts("[BOOT] stage: VirtIO-net\n");
+    if (virtio_net_init() == 0) {
+        net_init();
+    }
 
     /* Initialize threading — converts boot context to thread 0 */
     thread_init();
