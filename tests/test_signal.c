@@ -26,7 +26,9 @@ typedef struct Thread {
     uint8_t state;
 } Thread;
 
-#define THREAD_DEAD 4
+#define THREAD_READY    1
+#define THREAD_DEAD     4
+#define THREAD_STOPPED  5
 
 /* Signal header — include it before Process to get SigState */
 #define ARCHOS_PROC_SIGNAL_H  /* prevent double include */
@@ -43,6 +45,9 @@ typedef struct Thread {
 #define SIGALRM  14
 #define SIGTERM  15
 #define SIGCHLD  17
+#define SIGCONT  18
+#define SIGSTOP  19
+#define SIGTSTP  20
 #define NSIG     32
 
 typedef void (*sig_handler_t)(int);
@@ -114,14 +119,18 @@ extern uint64_t sig_pending_arg;
 typedef struct { volatile uint32_t locked; uint64_t saved_flags; } Spinlock;
 #define SPINLOCK_INIT { .locked = 0, .saved_flags = 0 }
 typedef struct WaitQueue { Spinlock lock; struct Thread *head; struct Thread *tail; } WaitQueue;
+#define WAITQUEUE_INIT { .lock = SPINLOCK_INIT, .head = NULL, .tail = NULL }
+static void wq_wake(WaitQueue *wq) { (void)wq; }
 
 /* Process stub */
 #define PROC_ALIVE       0
 #define PROC_ZOMBIE      1
 #define PROC_TERMINATED  2
+#define PROC_STOPPED     3
 
 typedef struct Process {
     pid_t           pid;
+    pid_t           pgid;
     uint8_t         state;
     int32_t         exit_status;
     Thread         *main_thread;
@@ -168,19 +177,40 @@ static void sched_schedule(void) {
     sched_schedule_called = 1;
 }
 
+static int proc_foreach(void (*cb)(Process *p, void *ctx), void *ctx) {
+    int count = 0;
+    for (int i = 0; i < MAX_TEST_PROCS; i++) {
+        if (test_procs[i].state != PROC_TERMINATED) {
+            cb(&test_procs[i], ctx);
+            count++;
+        }
+    }
+    return count;
+}
+
+static int sched_remove_called = 0;
+static void sched_remove_thread(Thread *t) { (void)t; sched_remove_called = 1; }
+static int sched_add_called = 0;
+static void sched_add_thread(Thread *t) { (void)t; t->state = THREAD_READY; sched_add_called = 1; }
+
 /* Reset test state */
 static void test_reset(void) {
     memset(test_procs, 0, sizeof(test_procs));
     memset(test_threads, 0, sizeof(test_threads));
     for (int i = 0; i < MAX_TEST_PROCS; i++) {
         test_procs[i].pid = (uint32_t)i;
+        test_procs[i].pgid = (uint32_t)i;
         test_procs[i].state = PROC_ALIVE;
+        test_procs[i].exit_status = 0;
         test_procs[i].main_thread = &test_threads[i];
         test_threads[i].tid = (uint32_t)i;
+        test_threads[i].state = THREAD_READY;
         sig_init(&test_procs[i].sig);
     }
     test_current_idx = 0;
     sched_schedule_called = 0;
+    sched_remove_called = 0;
+    sched_add_called = 0;
     sig_pending_arg = 0;
 }
 
@@ -408,6 +438,77 @@ TEST(user_handler_modifies_frame) {
     return 0;
 }
 
+TEST(sigtstp_default_stops) {
+    test_reset();
+    test_procs[0].sig.pending = (1u << SIGTSTP);
+    SyscallFrame frame = {0};
+    frame.rsp = 0x7FFFFFFFE000ULL;
+    sig_maybe_deliver(&frame, 0);
+    ASSERT_EQ(test_procs[0].state, PROC_STOPPED);
+    ASSERT_EQ(test_threads[0].state, THREAD_STOPPED);
+    ASSERT_TRUE(sched_schedule_called);
+    ASSERT_TRUE(sched_remove_called);
+    return 0;
+}
+
+TEST(sigstop_uncatchable) {
+    test_reset();
+    test_procs[0].sig.handlers[SIGSTOP] = SIG_IGN;
+    test_procs[0].sig.pending = (1u << SIGSTOP);
+    SyscallFrame frame = {0};
+    frame.rsp = 0x7FFFFFFFE000ULL;
+    sig_maybe_deliver(&frame, 0);
+    ASSERT_EQ(test_procs[0].state, PROC_STOPPED);
+    return 0;
+}
+
+TEST(set_handler_rejects_sigstop) {
+    test_reset();
+    SigState *ss = &test_procs[0].sig;
+    sig_set_handler(ss, SIGSTOP, SIG_IGN);
+    ASSERT_EQ((uint64_t)ss->handlers[SIGSTOP], (uint64_t)SIG_DFL);
+    return 0;
+}
+
+TEST(sigcont_resumes_stopped) {
+    test_reset();
+    test_procs[1].state = PROC_STOPPED;
+    test_threads[1].state = THREAD_STOPPED;
+    sig_send(1, SIGCONT);
+    ASSERT_EQ(test_procs[1].state, PROC_ALIVE);
+    ASSERT_TRUE(sched_add_called);
+    return 0;
+}
+
+TEST(sigcont_noop_if_not_stopped) {
+    test_reset();
+    sched_add_called = 0;
+    sig_send(0, SIGCONT);
+    ASSERT_EQ(test_procs[0].state, PROC_ALIVE);
+    ASSERT_FALSE(sched_add_called);
+    return 0;
+}
+
+TEST(send_group_delivers_to_matching) {
+    test_reset();
+    test_procs[0].pgid = 10;
+    test_procs[1].pgid = 10;
+    test_procs[2].pgid = 20;
+    int ret = sig_send_group(10, SIGTERM);
+    ASSERT_EQ(ret, 0);
+    ASSERT_TRUE(test_procs[0].sig.pending & (1u << SIGTERM));
+    ASSERT_TRUE(test_procs[1].sig.pending & (1u << SIGTERM));
+    ASSERT_FALSE(test_procs[2].sig.pending & (1u << SIGTERM));
+    return 0;
+}
+
+TEST(send_group_empty_returns_esrch) {
+    test_reset();
+    int ret = sig_send_group(999, SIGTERM);
+    ASSERT_EQ(ret, -ESRCH);
+    return 0;
+}
+
 /* --- Suite --- */
 
 TestCase signal_tests[] = {
@@ -426,5 +527,12 @@ TestCase signal_tests[] = {
     TEST_ENTRY(no_pending_returns_immediately),
     TEST_ENTRY(sigreturn_restores_context),
     TEST_ENTRY(user_handler_modifies_frame),
+    TEST_ENTRY(sigtstp_default_stops),
+    TEST_ENTRY(sigstop_uncatchable),
+    TEST_ENTRY(set_handler_rejects_sigstop),
+    TEST_ENTRY(sigcont_resumes_stopped),
+    TEST_ENTRY(sigcont_noop_if_not_stopped),
+    TEST_ENTRY(send_group_delivers_to_matching),
+    TEST_ENTRY(send_group_empty_returns_esrch),
 };
 int signal_test_count = sizeof(signal_tests) / sizeof(signal_tests[0]);

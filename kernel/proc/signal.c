@@ -12,7 +12,7 @@
  * sig_maybe_deliver, loaded by syscall_entry.asm before SYSRET. */
 uint64_t sig_pending_arg;
 
-/* Default actions: 0 = terminate, 1 = ignore */
+/* Default actions: 0 = terminate, 1 = ignore, 2 = continue, 3 = stop */
 static const uint8_t default_action[NSIG] = {
     [0]       = 0,
     [SIGHUP]  = 0,  /* terminate */
@@ -26,6 +26,9 @@ static const uint8_t default_action[NSIG] = {
     [SIGALRM] = 0,  /* terminate */
     [SIGTERM] = 0,  /* terminate */
     [SIGCHLD] = 1,  /* ignore */
+    [SIGCONT] = 2,  /* continue (special) */
+    [SIGSTOP] = 3,  /* stop (uncatchable) */
+    [SIGTSTP] = 3,  /* stop (catchable) */
 };
 
 /* Sigreturn trampoline: machine code written onto user stack.
@@ -48,6 +51,10 @@ void sig_init(SigState *ss) {
     }
 }
 
+/* Forward declarations */
+static void sig_continue(Process *p);
+static void sig_stop(Process *p, int signo);
+
 int sig_send(uint32_t pid, int signo) {
     if (signo < 1 || signo >= NSIG) return -EINVAL;
 
@@ -55,15 +62,44 @@ int sig_send(uint32_t pid, int signo) {
     if (p == NULL) return -ESRCH;
 
     p->sig.pending |= (1u << signo);
+
+    /* SIGCONT immediately resumes stopped processes */
+    if (signo == SIGCONT && p->state == PROC_STOPPED) {
+        sig_continue(p);
+    }
+
     return 0;
 }
 
 sig_handler_t sig_set_handler(SigState *ss, int signo, sig_handler_t handler) {
-    if (signo < 1 || signo >= NSIG || signo == SIGKILL) return SIG_DFL;
+    if (signo < 1 || signo >= NSIG || signo == SIGKILL || signo == SIGSTOP)
+        return SIG_DFL;
 
     sig_handler_t old = ss->handlers[signo];
     ss->handlers[signo] = handler;
     return old;
+}
+
+/* Stop a process due to a signal */
+static void sig_stop(Process *p, int signo) {
+    p->state = PROC_STOPPED;
+    p->exit_status = signo;  /* Remember stop signal (non-zero = unreported) */
+    p->main_thread->state = THREAD_STOPPED;
+    sched_remove_thread(p->main_thread);
+    /* Notify parent */
+    if (p->parent != NULL) {
+        wq_wake(&p->parent->child_exit_wq);
+        sig_send(p->parent->pid, SIGCHLD);
+    }
+    sched_schedule();
+}
+
+/* Resume a stopped process */
+static void sig_continue(Process *p) {
+    if (p->state != PROC_STOPPED) return;
+    p->state = PROC_ALIVE;
+    p->main_thread->state = THREAD_READY;
+    sched_add_thread(p->main_thread);
 }
 
 /* Terminate a process due to a signal */
@@ -152,11 +188,21 @@ int64_t sig_maybe_deliver(SyscallFrame *frame, int64_t syscall_ret) {
             sig_terminate(p, signo);
             return syscall_ret;
         }
+        if (signo == SIGSTOP) {
+            sig_stop(p, signo);
+            return syscall_ret;
+        }
 
         sig_handler_t handler = ss->handlers[signo];
         if (handler == SIG_IGN) continue;
         if (handler == SIG_DFL) {
-            if (default_action[signo] == 1) continue;
+            uint8_t action = default_action[signo];
+            if (action == 1) continue;           /* ignore */
+            if (action == 2) continue;           /* continue: no-op here */
+            if (action == 3) {                   /* stop */
+                sig_stop(p, signo);
+                return syscall_ret;
+            }
             sig_terminate(p, signo);
             return syscall_ret;
         }
@@ -167,4 +213,32 @@ int64_t sig_maybe_deliver(SyscallFrame *frame, int64_t syscall_ret) {
     }
 
     return syscall_ret;
+}
+
+/* --- Process group signal delivery --- */
+
+typedef struct {
+    pid_t pgid;
+    int   signo;
+    int   count;
+} SigGroupCtx;
+
+static void sig_group_cb(Process *p, void *ctx) {
+    SigGroupCtx *sg = (SigGroupCtx *)ctx;
+    if (p->pgid == sg->pgid) {
+        p->sig.pending |= (1u << sg->signo);
+        if (sg->signo == SIGCONT && p->state == PROC_STOPPED) {
+            sig_continue(p);
+        }
+        sg->count++;
+    }
+}
+
+int sig_send_group(uint32_t pgid, int signo) {
+    if (signo < 1 || signo >= NSIG) return -EINVAL;
+
+    SigGroupCtx ctx = { .pgid = pgid, .signo = signo, .count = 0 };
+    proc_foreach(sig_group_cb, &ctx);
+
+    return ctx.count > 0 ? 0 : -ESRCH;
 }

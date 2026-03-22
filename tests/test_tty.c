@@ -42,6 +42,17 @@ static void wq_sleep(WaitQueue *wq, Spinlock *lock) { (void)wq; lock->locked = 0
 static int wq_wake(WaitQueue *wq) { (void)wq; return 0; }
 static int wq_wake_all(WaitQueue *wq) { (void)wq; return 0; }
 
+/* Stubs for signal functions called by tty.c */
+static int sig_send_group_called = 0;
+static uint32_t sig_send_group_pgid = 0;
+static int sig_send_group_signo = 0;
+static int sig_send_group(uint32_t pgid, int signo) {
+    sig_send_group_called = 1;
+    sig_send_group_pgid = pgid;
+    sig_send_group_signo = signo;
+    return 0;
+}
+
 /* Include the real TTY implementation */
 #include "../kernel/drivers/tty.c"
 

@@ -42,7 +42,21 @@ static inline int64_t syscall3(uint64_t num, uint64_t a0, uint64_t a1, uint64_t 
 #define SYS_SETUID  27
 #define SYS_SETGID  28
 #define SYS_CHMOD   29
-#define SYS_CHOWN   30
+#define SYS_CHOWN     30
+#define SYS_SETPGID   31
+#define SYS_GETPGID   32
+#define SYS_TCSETPGRP 33
+
+#define SYS_SIGNAL    20
+#define SYS_KILL      21
+
+/* POSIX wait status decoding */
+#define WIFEXITED(s)    (((s) & 0x7F) == 0)
+#define WEXITSTATUS(s)  (((s) >> 8) & 0xFF)
+#define WIFSTOPPED(s)   (((s) & 0xFF) == 0x7F)
+#define WSTOPSIG(s)     (((s) >> 8) & 0xFF)
+
+#define WNOHANG 1
 
 /* --- Open flags (must match kernel/fs/vfs.h) --- */
 
@@ -260,6 +274,81 @@ static int shell_unsetvar(const char *name) {
         sh_memcpy(var_values[i], var_values[var_count], VAR_VALUE_MAX);
     }
     return 0;
+}
+
+/* --- Job control --- */
+
+#define MAX_JOBS 8
+
+typedef struct {
+    int      in_use;
+    int      job_id;     /* 1-based job number */
+    int32_t  pid;        /* Lead process PID */
+    int32_t  pgid;       /* Process group ID */
+    int      stopped;    /* 1 if stopped, 0 if running */
+    char     cmd[128];   /* Command string for display */
+} Job;
+
+static Job job_table[MAX_JOBS];
+static int next_job_id = 1;
+static int32_t shell_pgid;
+
+static Job *job_alloc(int32_t pid, int32_t pgid, const char *cmd) {
+    for (int i = 0; i < MAX_JOBS; i++) {
+        if (!job_table[i].in_use) {
+            job_table[i].in_use = 1;
+            job_table[i].job_id = next_job_id++;
+            job_table[i].pid = pid;
+            job_table[i].pgid = pgid;
+            job_table[i].stopped = 0;
+            sh_strlcpy(job_table[i].cmd, cmd, 128);
+            return &job_table[i];
+        }
+    }
+    return (void *)0;
+}
+
+static Job *job_find_by_id(int id) {
+    for (int i = 0; i < MAX_JOBS; i++) {
+        if (job_table[i].in_use && job_table[i].job_id == id)
+            return &job_table[i];
+    }
+    return (void *)0;
+}
+
+static void job_free(Job *j) {
+    j->in_use = 0;
+}
+
+static void job_print(Job *j) {
+    print("[");
+    print_num(j->job_id);
+    print("] ");
+    print(j->stopped ? "Stopped    " : "Running    ");
+    println(j->cmd);
+}
+
+/* Reap any completed background jobs (non-blocking) */
+static void reap_background_jobs(void) {
+    int32_t status = 0;
+    int64_t w;
+    while ((w = syscall3(SYS_WAIT, (uint64_t)&status, WNOHANG, 0)) > 0) {
+        /* Find the job by PID */
+        for (int i = 0; i < MAX_JOBS; i++) {
+            if (job_table[i].in_use && job_table[i].pid == (int32_t)w) {
+                if (WIFSTOPPED(status)) {
+                    job_table[i].stopped = 1;
+                } else {
+                    print("[");
+                    print_num(job_table[i].job_id);
+                    print("] Done       ");
+                    println(job_table[i].cmd);
+                    job_free(&job_table[i]);
+                }
+                break;
+            }
+        }
+    }
 }
 
 /* --- Variable expansion --- */
@@ -645,6 +734,9 @@ static void cmd_whoami(int argc, char *argv[]);
 static void cmd_id(int argc, char *argv[]);
 static void cmd_chmod(int argc, char *argv[]);
 static void cmd_chown(int argc, char *argv[]);
+static void cmd_jobs(int argc, char *argv[]);
+static void cmd_fg(int argc, char *argv[]);
+static void cmd_bg(int argc, char *argv[]);
 
 /* --- Dispatch table --- */
 
@@ -681,6 +773,9 @@ static const Builtin builtins[] = {
     { "id",     cmd_id,     "Print uid/gid" },
     { "chmod",  cmd_chmod,  "Change permissions (octal)" },
     { "chown",  cmd_chown,  "Change owner (uid[:gid])" },
+    { "jobs",   cmd_jobs,   "List background jobs" },
+    { "fg",     cmd_fg,     "Resume job in foreground" },
+    { "bg",     cmd_bg,     "Resume job in background" },
 };
 #define NUM_BUILTINS (sizeof(builtins) / sizeof(builtins[0]))
 
@@ -717,6 +812,8 @@ static void dispatch(int argc, char *argv[]) {
     int64_t pid = syscall3(SYS_FORK, 0, 0, 0);
     if (pid < 0) { print_error("fork", pid); return; }
     if (pid == 0) {
+        /* Child: create own process group */
+        syscall3(SYS_SETPGID, 0, 0, 0);
         int64_t er = exec_resolved(argv);
         (void)er;
         print(argv[0]);
@@ -724,7 +821,22 @@ static void dispatch(int argc, char *argv[]) {
         syscall3(SYS_EXIT, 127, 0, 0);
         for (;;) __asm__ volatile ("ud2");
     }
-    syscall3(SYS_WAIT, 0, 0, 0);
+    /* Parent: set child pgid, give foreground, wait */
+    syscall3(SYS_SETPGID, (uint64_t)pid, (uint64_t)pid, 0);
+    syscall3(SYS_TCSETPGRP, (uint64_t)pid, 0, 0);
+    int32_t status = 0;
+    syscall3(SYS_WAIT, (uint64_t)&status, 0, 0);
+    syscall3(SYS_TCSETPGRP, (uint64_t)shell_pgid, 0, 0);
+    if (WIFSTOPPED(status)) {
+        Job *j = job_alloc((int32_t)pid, (int32_t)pid, argv[0]);
+        if (j) {
+            j->stopped = 1;
+            print("\n[");
+            print_num(j->job_id);
+            print("] Stopped    ");
+            println(argv[0]);
+        }
+    }
 }
 
 /* --- Command implementations --- */
@@ -929,7 +1041,10 @@ static void cmd_run(int argc, char *argv[]) {
     int32_t status = -1;
     syscall3(SYS_WAIT, (uint64_t)&status, 0, 0);
     print("exited with status ");
-    print_num((int64_t)status);
+    if (WIFEXITED(status))
+        print_num((int64_t)WEXITSTATUS(status));
+    else
+        print_num((int64_t)status);
     print("\n");
 }
 
@@ -1036,6 +1151,114 @@ static void cmd_chown(int argc, char *argv[]) {
     }
     int64_t r = syscall3(SYS_CHOWN, (uint64_t)argv[2], (uint64_t)uid, (uint64_t)gid);
     if (r < 0) print_error(argv[2], r);
+}
+
+/* --- Job control builtins --- */
+
+static void cmd_jobs(int argc, char *argv[]) {
+    (void)argc; (void)argv;
+    for (int i = 0; i < MAX_JOBS; i++) {
+        if (job_table[i].in_use)
+            job_print(&job_table[i]);
+    }
+}
+
+static void cmd_fg(int argc, char *argv[]) {
+    Job *j = (void *)0;
+    if (argc >= 2) {
+        j = job_find_by_id(sh_atoi(argv[1]));
+    } else {
+        /* Most recent job */
+        for (int i = MAX_JOBS - 1; i >= 0; i--) {
+            if (job_table[i].in_use) { j = &job_table[i]; break; }
+        }
+    }
+    if (!j) { println("fg: no such job"); return; }
+
+    println(j->cmd);
+
+    /* Give job the foreground */
+    syscall3(SYS_TCSETPGRP, (uint64_t)j->pgid, 0, 0);
+
+    /* If stopped, send SIGCONT */
+    if (j->stopped) {
+        syscall3(SYS_KILL, (uint64_t)(-(int64_t)j->pgid), 18 /* SIGCONT */, 0);
+        j->stopped = 0;
+    }
+
+    /* Wait for it */
+    int32_t status = 0;
+    syscall3(SYS_WAIT, (uint64_t)&status, 0, 0);
+
+    /* Reclaim foreground */
+    syscall3(SYS_TCSETPGRP, (uint64_t)shell_pgid, 0, 0);
+
+    if (WIFSTOPPED(status)) {
+        j->stopped = 1;
+        print("\n[");
+        print_num(j->job_id);
+        print("] Stopped    ");
+        println(j->cmd);
+    } else {
+        job_free(j);
+    }
+}
+
+static void cmd_bg(int argc, char *argv[]) {
+    Job *j = (void *)0;
+    if (argc >= 2) {
+        j = job_find_by_id(sh_atoi(argv[1]));
+    } else {
+        for (int i = MAX_JOBS - 1; i >= 0; i--) {
+            if (job_table[i].in_use && job_table[i].stopped) {
+                j = &job_table[i]; break;
+            }
+        }
+    }
+    if (!j) { println("bg: no such job"); return; }
+    if (!j->stopped) { println("bg: job not stopped"); return; }
+
+    j->stopped = 0;
+    syscall3(SYS_KILL, (uint64_t)(-(int64_t)j->pgid), 18 /* SIGCONT */, 0);
+    print("[");
+    print_num(j->job_id);
+    print("] ");
+    println(j->cmd);
+}
+
+/* --- Background execution --- */
+
+static void execute_background(char *line) {
+    char *argv[MAX_ARGV];
+    int argc = parse_line(line, argv);
+    if (argc == 0) return;
+
+    Redirect redir = {0, 0, 0};
+    if (parse_redirects(&argc, argv, &redir) < 0) return;
+
+    int64_t pid = syscall3(SYS_FORK, 0, 0, 0);
+    if (pid < 0) { print_error("fork", pid); return; }
+    if (pid == 0) {
+        /* Child: create own process group */
+        syscall3(SYS_SETPGID, 0, 0, 0);
+        if (redir.in_file || redir.out_file)
+            apply_redirects(&redir);
+        int64_t er = exec_resolved(argv);
+        (void)er;
+        dispatch(argc, argv);
+        syscall3(SYS_EXIT, 0, 0, 0);
+        for (;;) __asm__ volatile ("ud2");
+    }
+    /* Parent: set child's pgid, add to job table, do NOT wait */
+    syscall3(SYS_SETPGID, (uint64_t)pid, (uint64_t)pid, 0);
+    Job *j = job_alloc((int32_t)pid, (int32_t)pid, argv[0]);
+    if (j) {
+        print("[");
+        print_num(j->job_id);
+        print("] ");
+        print_num(pid);
+        print("\n");
+    }
 }
 
 /* --- Pipe support --- */
@@ -1150,6 +1373,13 @@ void _start(uint64_t argc, char **argv) {
     shell_setvar("PATH", "/boot");
     shell_setvar("HOME", "/");
 
+    /* Set shell as its own process group and take foreground */
+    syscall3(SYS_SETPGID, 0, 0, 0);
+    shell_pgid = (int32_t)syscall3(SYS_GETPID, 0, 0, 0);
+    syscall3(SYS_TCSETPGRP, (uint64_t)shell_pgid, 0, 0);
+    /* Ignore SIGTSTP so shell can't be stopped */
+    syscall3(SYS_SIGNAL, 20 /* SIGTSTP */, 1 /* SIG_IGN */, 0);
+
     println("arc_os shell v0.2");
     println("Type 'help' for available commands.");
     print("\n");
@@ -1178,20 +1408,39 @@ void _start(uint64_t argc, char **argv) {
             continue;
         }
 
-        /* Check for pipe (quote-aware) */
-        char *pipe_pos = find_pipe(expanded);
-        if (pipe_pos != (void *)0) {
-            *pipe_pos = '\0';
-            execute_pipe(expanded, pipe_pos + 1);
+        /* Reap completed background jobs */
+        reap_background_jobs();
+
+        /* Check for trailing & (background execution) */
+        int background = 0;
+        {
+            int len = 0;
+            while (expanded[len]) len++;
+            while (len > 0 && expanded[len - 1] == ' ') len--;
+            if (len > 0 && expanded[len - 1] == '&') {
+                expanded[len - 1] = '\0';
+                background = 1;
+            }
+        }
+
+        if (background) {
+            execute_background(expanded);
         } else {
-            int ac = parse_line(expanded, args);
-            Redirect redir = {0, 0, 0};
-            int rr = parse_redirects(&ac, args, &redir);
-            if (rr < 0) continue;  /* parse error, already printed */
-            if (redir.in_file || redir.out_file) {
-                execute_with_redirect(ac, args, &redir);
+            /* Check for pipe (quote-aware) */
+            char *pipe_pos = find_pipe(expanded);
+            if (pipe_pos != (void *)0) {
+                *pipe_pos = '\0';
+                execute_pipe(expanded, pipe_pos + 1);
             } else {
-                dispatch(ac, args);
+                int ac = parse_line(expanded, args);
+                Redirect redir = {0, 0, 0};
+                int rr = parse_redirects(&ac, args, &redir);
+                if (rr < 0) continue;
+                if (redir.in_file || redir.out_file) {
+                    execute_with_redirect(ac, args, &redir);
+                } else {
+                    dispatch(ac, args);
+                }
             }
         }
     }

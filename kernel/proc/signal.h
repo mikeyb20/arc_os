@@ -15,6 +15,9 @@
 #define SIGALRM  14
 #define SIGTERM  15
 #define SIGCHLD  17
+#define SIGCONT  18
+#define SIGSTOP  19
+#define SIGTSTP  20
 #define NSIG     32
 
 /* Signal handler type */
@@ -83,6 +86,9 @@ sig_handler_t sig_set_handler(SigState *ss, int signo, sig_handler_t handler);
  * May modify the SyscallFrame to redirect to a signal handler.
  * Returns the value to place in RAX on return to user space. */
 int64_t sig_maybe_deliver(SyscallFrame *frame, int64_t syscall_ret);
+
+/* Send a signal to all processes in a process group. Returns 0 or -ESRCH. */
+int sig_send_group(uint32_t pgid, int signo);
 
 /* RDI value for signal handler — set by sig_maybe_deliver, loaded by asm. */
 extern uint64_t sig_pending_arg;

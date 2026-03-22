@@ -46,6 +46,7 @@ typedef uint32_t uid_t;
 typedef uint32_t gid_t;
 typedef struct Process {
     uint32_t pid;
+    uint32_t pgid;
     uid_t uid;
     gid_t gid;
     uid_t euid;

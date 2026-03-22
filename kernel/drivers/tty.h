@@ -21,4 +21,7 @@ int tty_write(const void *buf, uint32_t count);
 /* Set the foreground process PID for Ctrl+C delivery */
 void tty_set_fg_pid(uint32_t pid);
 
+/* Set the foreground process group for signal delivery */
+void tty_set_fg_pgid(uint32_t pgid);
+
 #endif /* ARCHOS_DRIVERS_TTY_H */

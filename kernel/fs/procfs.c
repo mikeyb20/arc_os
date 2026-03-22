@@ -100,12 +100,15 @@ static int gen_pid_status(char *buf, int bufsz, void *ctx) {
     case PROC_ALIVE:      state_str = "running"; break;
     case PROC_ZOMBIE:     state_str = "zombie"; break;
     case PROC_TERMINATED: state_str = "terminated"; break;
+    case PROC_STOPPED:    state_str = "stopped"; break;
     default:              state_str = "unknown"; break;
     }
     pos = procfs_append_str(buf, pos, bufsz, state_str);
 
     pos = procfs_append_str(buf, pos, bufsz, "\nPPid: ");
     pos = procfs_append_u64(buf, pos, bufsz, p->parent ? p->parent->pid : 0);
+    pos = procfs_append_str(buf, pos, bufsz, "\nPgid: ");
+    pos = procfs_append_u64(buf, pos, bufsz, p->pgid);
     pos = procfs_append_str(buf, pos, bufsz, "\nUid: ");
     pos = procfs_append_u64(buf, pos, bufsz, p->uid);
     pos = procfs_append_str(buf, pos, bufsz, "\nGid: ");

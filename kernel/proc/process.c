@@ -21,6 +21,7 @@ static Process *proc_table[MAX_PROCESSES];
 /* Common PCB setup: assign PID, set state, init signals, link into process list. */
 static void proc_setup(Process *p) {
     p->pid = next_pid++;
+    p->pgid = p->pid;  /* Each process starts as its own group leader */
     p->state = PROC_ALIVE;
     strncpy(p->cwd, "/", PATH_MAX);
     sig_init(&p->sig);
@@ -161,6 +162,7 @@ Process *proc_fork(Process *parent, const ForkContext *user_ctx) {
     child->gid  = parent->gid;
     child->euid = parent->euid;
     child->egid = parent->egid;
+    child->pgid = parent->pgid;
     child->parent = parent;
 
     /* 3. Duplicate FD table */
@@ -211,6 +213,16 @@ int proc_reap(Process *child, int32_t *status_out) {
     }
     child->state = PROC_TERMINATED;
     return (int)child->pid;
+}
+
+Process *proc_find_stopped_child(Process *parent) {
+    for (Process *p = proc_list; p != NULL; p = p->next) {
+        if (p->parent == parent && p->state == PROC_STOPPED
+            && p->exit_status != 0) {
+            return p;
+        }
+    }
+    return NULL;
 }
 
 int proc_foreach(void (*cb)(Process *p, void *ctx), void *ctx) {

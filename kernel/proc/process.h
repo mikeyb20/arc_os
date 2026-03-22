@@ -16,6 +16,7 @@ typedef uint32_t gid_t;
 #define PROC_ALIVE       0
 #define PROC_ZOMBIE      1
 #define PROC_TERMINATED  2
+#define PROC_STOPPED     3
 
 /* Saved user context for fork (captured from SYSCALL frame) */
 typedef struct ForkContext {
@@ -36,6 +37,7 @@ typedef struct FdTable FdTable;
 /* Process Control Block */
 typedef struct Process {
     pid_t           pid;
+    pid_t           pgid;           /* Process group ID */
     uint8_t         state;
     int32_t         exit_status;    /* Exit status for wait() */
     Thread         *main_thread;
@@ -90,5 +92,8 @@ int proc_has_children(Process *parent);
 
 /* Iterate all non-TERMINATED processes, calling cb for each. Returns count. */
 int proc_foreach(void (*cb)(Process *p, void *ctx), void *ctx);
+
+/* Find a stopped (unreported) child of the given parent. Returns NULL if none. */
+Process *proc_find_stopped_child(Process *parent);
 
 #endif /* ARCHOS_PROC_PROCESS_H */

@@ -87,6 +87,7 @@ typedef struct FdTable FdTable;
 typedef struct WaitQueue { int dummy; } WaitQueue;
 typedef struct Process {
     pid_t pid;
+    pid_t pgid;
     uint8_t state;
     Thread *main_thread;
     uint64_t page_table;

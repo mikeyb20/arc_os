@@ -71,10 +71,12 @@ typedef struct {
 #define PROC_ALIVE       0
 #define PROC_ZOMBIE      1
 #define PROC_TERMINATED  2
+#define PROC_STOPPED     3
 
 /* Minimal Process struct — only fields procfs accesses */
 typedef struct Process {
     uint32_t        pid;
+    uint32_t        pgid;
     uint8_t         state;
     uint32_t        uid;
     uint32_t        gid;
@@ -103,18 +105,22 @@ static int test_proc_count = 0;
 static void setup_test_procs(void) {
     memset(test_procs, 0, sizeof(test_procs));
     test_procs[0].pid = 0;
+    test_procs[0].pgid = 0;
     test_procs[0].state = PROC_ALIVE;
     test_procs[0].parent = NULL;
 
     test_procs[1].pid = 1;
+    test_procs[1].pgid = 1;
     test_procs[1].state = PROC_ALIVE;
     test_procs[1].parent = &test_procs[0];
 
     test_procs[2].pid = 2;
+    test_procs[2].pgid = 2;
     test_procs[2].state = PROC_ZOMBIE;
     test_procs[2].parent = &test_procs[0];
 
     test_procs[3].pid = 99;
+    test_procs[3].pgid = 99;
     test_procs[3].state = PROC_TERMINATED;
     test_procs[3].parent = NULL;
 
@@ -267,6 +273,7 @@ TEST(pid_status_content) {
     ASSERT_TRUE(strstr(buf, "Pid: 1") != NULL);
     ASSERT_TRUE(strstr(buf, "State: running") != NULL);
     ASSERT_TRUE(strstr(buf, "PPid: 0") != NULL);
+    ASSERT_TRUE(strstr(buf, "Pgid: 1") != NULL);
     ASSERT_TRUE(strstr(buf, "Uid: 0") != NULL);
     ASSERT_TRUE(strstr(buf, "Gid: 0") != NULL);
     return 0;

@@ -13,6 +13,7 @@ typedef uint32_t tid_t;
 #define THREAD_RUNNING  2
 #define THREAD_BLOCKED  3
 #define THREAD_DEAD     4
+#define THREAD_STOPPED  5
 
 /* Default kernel stack size: 16 KB */
 #define THREAD_STACK_SIZE  (16 * 1024)

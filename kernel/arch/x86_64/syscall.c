@@ -322,22 +322,22 @@ static int64_t sys_unlink(uint64_t path_addr, uint64_t a1, uint64_t a2,
     return vfs_unlink(abs);
 }
 
-/* Reap a zombie child and optionally copy exit status to user space */
-static int reap_zombie(Process *zombie, uint64_t status_addr) {
-    int32_t status = 0;
-    int pid = proc_reap(zombie, &status);
-    if (status_addr != 0) {
-        *(int32_t *)status_addr = status;
-    }
-    return pid;
+/* POSIX wait status encoding helpers */
+static int32_t wait_encode_exit(int32_t raw_status) {
+    return (raw_status & 0xFF) << 8;
+}
+static int32_t wait_encode_stopped(int signo) {
+    return (signo << 8) | 0x7F;
 }
 
-/* SYS_WAIT: wait for a child to exit, return child PID */
+#define WNOHANG 1
+
+/* SYS_WAIT: wait for a child to exit or stop, return child PID */
 static Spinlock wait_lock = SPINLOCK_INIT;
 
-static int64_t sys_wait(uint64_t status_addr, uint64_t a1, uint64_t a2,
+static int64_t sys_wait(uint64_t status_addr, uint64_t flags, uint64_t a2,
                         uint64_t a3, uint64_t a4, uint64_t a5) {
-    (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+    (void)a2; (void)a3; (void)a4; (void)a5;
     Process *p = proc_current();
     if (p == NULL) return -ENOSYS;
 
@@ -346,15 +346,39 @@ static int64_t sys_wait(uint64_t status_addr, uint64_t a1, uint64_t a2,
 
     spinlock_acquire(&wait_lock);
     while (1) {
+        /* Check for zombie children first */
         Process *zombie = proc_find_zombie_child(p);
         if (zombie != NULL) {
+            int32_t encoded = wait_encode_exit(zombie->exit_status);
+            int pid = proc_reap(zombie, NULL);
             spinlock_release(&wait_lock);
-            return reap_zombie(zombie, status_addr);
+            if (status_addr != 0)
+                *(int32_t *)status_addr = encoded;
+            return pid;
         }
+
+        /* Check for stopped children (unreported) */
+        Process *stopped = proc_find_stopped_child(p);
+        if (stopped != NULL) {
+            int32_t encoded = wait_encode_stopped(stopped->exit_status);
+            pid_t child_pid = stopped->pid;
+            stopped->exit_status = 0;  /* Mark as reported */
+            spinlock_release(&wait_lock);
+            if (status_addr != 0)
+                *(int32_t *)status_addr = encoded;
+            return (int64_t)child_pid;
+        }
+
         if (!proc_has_children(p)) {
             spinlock_release(&wait_lock);
             return -ECHILD;
         }
+
+        if (flags & WNOHANG) {
+            spinlock_release(&wait_lock);
+            return 0;  /* No child ready, don't block */
+        }
+
         wq_sleep(&p->child_exit_wq, &wait_lock);
         spinlock_acquire(&wait_lock);
     }
@@ -635,10 +659,21 @@ static int64_t sys_signal(uint64_t signo, uint64_t handler_addr, uint64_t a2,
     return (int64_t)(uint64_t)old;
 }
 
-/* SYS_KILL: send signal to a process */
-static int64_t sys_kill(uint64_t pid, uint64_t signo, uint64_t a2,
+/* SYS_KILL: send signal to a process or process group */
+static int64_t sys_kill(uint64_t pid_arg, uint64_t signo, uint64_t a2,
                          uint64_t a3, uint64_t a4, uint64_t a5) {
     (void)a2; (void)a3; (void)a4; (void)a5;
+    int64_t pid = (int64_t)pid_arg;
+    if (pid < 0) {
+        /* Negative PID: send to process group abs(pid) */
+        return sig_send_group((pid_t)(-pid), (int)signo);
+    }
+    if (pid == 0) {
+        /* pid=0: send to caller's own process group */
+        Process *p = proc_current();
+        if (p == NULL) return -ENOSYS;
+        return sig_send_group(p->pgid, (int)signo);
+    }
     return sig_send((uint32_t)pid, (int)signo);
 }
 
@@ -827,6 +862,43 @@ static int64_t sys_chown(uint64_t path_addr, uint64_t new_uid, uint64_t new_gid,
     return 0;
 }
 
+/* SYS_SETPGID: set process group ID */
+static int64_t sys_setpgid(uint64_t pid_arg, uint64_t pgid_arg, uint64_t a2,
+                            uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a2; (void)a3; (void)a4; (void)a5;
+    Process *cur = proc_current();
+    if (cur == NULL) return -ENOSYS;
+
+    Process *target = (pid_arg == 0) ? cur : proc_get_by_pid((uint32_t)pid_arg);
+    if (target == NULL) return -ESRCH;
+
+    pid_t new_pgid = (pgid_arg == 0) ? target->pid : (pid_t)pgid_arg;
+    target->pgid = new_pgid;
+    return 0;
+}
+
+/* SYS_GETPGID: get process group ID */
+static int64_t sys_getpgid(uint64_t pid_arg, uint64_t a1, uint64_t a2,
+                            uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+    Process *cur = proc_current();
+    if (cur == NULL) return -ENOSYS;
+
+    if (pid_arg == 0) return (int64_t)cur->pgid;
+
+    Process *target = proc_get_by_pid((uint32_t)pid_arg);
+    if (target == NULL) return -ESRCH;
+    return (int64_t)target->pgid;
+}
+
+/* SYS_TCSETPGRP: set terminal foreground process group */
+static int64_t sys_tcsetpgrp(uint64_t pgid_arg, uint64_t a1, uint64_t a2,
+                              uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+    tty_set_fg_pgid((uint32_t)pgid_arg);
+    return 0;
+}
+
 /* --- Dispatcher --- */
 
 int64_t syscall_dispatch(uint64_t num, uint64_t a0, uint64_t a1, uint64_t a2,
@@ -897,6 +969,9 @@ void syscall_init(void) {
     syscall_register(SYS_SETGID,    sys_setgid);
     syscall_register(SYS_CHMOD,     sys_chmod);
     syscall_register(SYS_CHOWN,     sys_chown);
+    syscall_register(SYS_SETPGID,   sys_setpgid);
+    syscall_register(SYS_GETPGID,   sys_getpgid);
+    syscall_register(SYS_TCSETPGRP, sys_tcsetpgrp);
 
     kprintf("[SYSCALL] Initialized (LSTAR=0x%lx, STAR=0x%lx)\n",
             (uint64_t)syscall_entry, star);

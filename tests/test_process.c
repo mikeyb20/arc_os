@@ -60,6 +60,7 @@ typedef struct Thread {
 #define PROC_ALIVE       0
 #define PROC_ZOMBIE      1
 #define PROC_TERMINATED  2
+#define PROC_STOPPED     3
 
 typedef struct FdTable FdTable;
 
@@ -112,6 +113,7 @@ typedef struct ForkContext {
 
 typedef struct Process {
     pid_t           pid;
+    pid_t           pgid;
     uint8_t         state;
     int32_t         exit_status;
     Thread         *main_thread;
