@@ -8,6 +8,7 @@
 #define ARCHOS_MM_KMALLOC_H
 #define ARCHOS_LIB_MEM_H        /* Use libc memcpy/memset */
 #define ARCHOS_LIB_STRING_H     /* Use libc string functions */
+#define ARCHOS_PROC_PROCESS_H   /* We define our own minimal Process */
 
 /* Stub kprintf */
 static inline void kprintf(const char *fmt, ...) { (void)fmt; }
@@ -40,6 +41,19 @@ static void *krealloc(void *ptr, size_t new_size) {
     return realloc(ptr, new_size);
 }
 
+/* proc_current stub — controllable for permission tests */
+typedef uint32_t uid_t;
+typedef uint32_t gid_t;
+typedef struct Process {
+    uint32_t pid;
+    uid_t uid;
+    gid_t gid;
+    uid_t euid;
+    gid_t egid;
+} Process;
+static Process *vfs_test_proc_ptr = NULL;
+static Process *proc_current(void) { return vfs_test_proc_ptr; }
+
 /* Include the implementations directly */
 #include "../kernel/fs/vfs.c"
 #include "../kernel/fs/ramfs.c"
@@ -52,6 +66,7 @@ static void reset_vfs(void) {
     next_inode = 1;
     kmalloc_fail_after = 0;
     kmalloc_call_seq = 0;
+    vfs_test_proc_ptr = NULL;
 }
 
 static void setup_vfs(void) {
@@ -584,6 +599,81 @@ static int test_mount_duplicate_rejected(void) {
     return 0;
 }
 
+/* --- Permission integration tests --- */
+
+static int test_kernel_context_skips_checks(void) {
+    setup_vfs();
+    vfs_test_proc_ptr = NULL;
+    int r = vfs_mkdir("/testdir", 0000);
+    ASSERT_EQ(r, 0);
+    return 0;
+}
+
+static int test_open_readonly_checks_read(void) {
+    setup_vfs();
+    vfs_test_proc_ptr = NULL;
+    VfsFile f;
+    vfs_open("/testfile", O_CREAT | O_WRONLY, &f);
+    vfs_close(&f);
+    VfsNode *node = vfs_resolve("/testfile");
+    node->mode = 0000;
+    node->uid = 10;
+    node->gid = 10;
+    Process user_proc = { .euid = 99, .egid = 99 };
+    vfs_test_proc_ptr = &user_proc;
+    int r = vfs_open("/testfile", O_RDONLY, &f);
+    ASSERT_EQ(r, -EACCES);
+    return 0;
+}
+
+static int test_open_writable_checks_write(void) {
+    setup_vfs();
+    vfs_test_proc_ptr = NULL;
+    VfsFile f;
+    vfs_open("/testfile2", O_CREAT | O_WRONLY, &f);
+    vfs_close(&f);
+    VfsNode *node = vfs_resolve("/testfile2");
+    node->mode = 0444;
+    node->uid = 10;
+    node->gid = 10;
+    Process user_proc = { .euid = 99, .egid = 99 };
+    vfs_test_proc_ptr = &user_proc;
+    int r = vfs_open("/testfile2", O_WRONLY, &f);
+    ASSERT_EQ(r, -EACCES);
+    return 0;
+}
+
+static int test_mkdir_checks_parent_wx(void) {
+    setup_vfs();
+    vfs_test_proc_ptr = NULL;
+    vfs_mkdir("/restricted", 0555);
+    VfsNode *node = vfs_resolve("/restricted");
+    node->uid = 10;
+    node->gid = 10;
+    Process user_proc = { .euid = 99, .egid = 99 };
+    vfs_test_proc_ptr = &user_proc;
+    int r = vfs_mkdir("/restricted/sub", 0755);
+    ASSERT_EQ(r, -EACCES);
+    return 0;
+}
+
+static int test_create_sets_ownership(void) {
+    setup_vfs();
+    Process user_proc = { .euid = 42, .egid = 7 };
+    vfs_test_proc_ptr = &user_proc;
+    VfsNode *root = vfs_get_root();
+    root->mode = 0777;
+    VfsFile f;
+    int r = vfs_open("/owned_file", O_CREAT | O_WRONLY, &f);
+    ASSERT_EQ(r, 0);
+    vfs_close(&f);
+    VfsNode *node = vfs_resolve("/owned_file");
+    ASSERT_TRUE(node != NULL);
+    ASSERT_EQ(node->uid, 42);
+    ASSERT_EQ(node->gid, 7);
+    return 0;
+}
+
 /* --- Test suite export --- */
 
 TestCase vfs_tests[] = {
@@ -624,6 +714,11 @@ TestCase vfs_tests[] = {
     { "stat_directory_size_zero",      test_stat_directory_size_zero },
     { "mount_multiple",                test_mount_multiple },
     { "mount_duplicate_rejected",      test_mount_duplicate_rejected },
+    { "kernel_context_skips_checks",   test_kernel_context_skips_checks },
+    { "open_readonly_checks_read",     test_open_readonly_checks_read },
+    { "open_writable_checks_write",    test_open_writable_checks_write },
+    { "mkdir_checks_parent_wx",        test_mkdir_checks_parent_wx },
+    { "create_sets_ownership",         test_create_sets_ownership },
 };
 
 int vfs_test_count = sizeof(vfs_tests) / sizeof(vfs_tests[0]);

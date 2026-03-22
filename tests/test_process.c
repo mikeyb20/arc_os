@@ -120,6 +120,10 @@ typedef struct Process {
     uint64_t        brk_current;
     uint64_t        brk_start;
     char            cwd[PATH_MAX];
+    uint32_t        uid;
+    uint32_t        gid;
+    uint32_t        euid;
+    uint32_t        egid;
     SigState        sig;
     WaitQueue       child_exit_wq;
     struct Process *parent;

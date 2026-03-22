@@ -32,6 +32,12 @@
 #define SYS_SIGRETURN 22
 #define SYS_CHDIR     23
 #define SYS_GETCWD    24
+#define SYS_GETUID    25
+#define SYS_GETGID    26
+#define SYS_SETUID    27
+#define SYS_SETGID    28
+#define SYS_CHMOD     29
+#define SYS_CHOWN     30
 
 /* Syscall handler type: up to 6 arguments, returns int64_t */
 typedef int64_t (*syscall_handler_t)(uint64_t, uint64_t, uint64_t,

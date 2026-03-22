@@ -9,6 +9,8 @@
 
 /* Process ID type */
 typedef uint32_t pid_t;
+typedef uint32_t uid_t;
+typedef uint32_t gid_t;
 
 /* Process states */
 #define PROC_ALIVE       0
@@ -42,6 +44,10 @@ typedef struct Process {
     uint64_t        brk_current;    /* Current program break */
     uint64_t        brk_start;      /* Initial program break */
     char            cwd[PATH_MAX];  /* Current working directory */
+    uid_t           uid;            /* Real user ID */
+    gid_t           gid;            /* Real group ID */
+    uid_t           euid;           /* Effective user ID */
+    gid_t           egid;           /* Effective group ID */
     SigState        sig;            /* Per-process signal state */
     WaitQueue       child_exit_wq;  /* Parents sleep here in sys_wait */
     struct Process *parent;

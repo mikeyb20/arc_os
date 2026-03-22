@@ -157,6 +157,10 @@ Process *proc_fork(Process *parent, const ForkContext *user_ctx) {
     child->brk_start = parent->brk_start;
     child->brk_current = parent->brk_current;
     strncpy(child->cwd, parent->cwd, PATH_MAX);
+    child->uid  = parent->uid;
+    child->gid  = parent->gid;
+    child->euid = parent->euid;
+    child->egid = parent->egid;
     child->parent = parent;
 
     /* 3. Duplicate FD table */

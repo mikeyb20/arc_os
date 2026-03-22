@@ -106,6 +106,10 @@ static int gen_pid_status(char *buf, int bufsz, void *ctx) {
 
     pos = procfs_append_str(buf, pos, bufsz, "\nPPid: ");
     pos = procfs_append_u64(buf, pos, bufsz, p->parent ? p->parent->pid : 0);
+    pos = procfs_append_str(buf, pos, bufsz, "\nUid: ");
+    pos = procfs_append_u64(buf, pos, bufsz, p->uid);
+    pos = procfs_append_str(buf, pos, bufsz, "\nGid: ");
+    pos = procfs_append_u64(buf, pos, bufsz, p->gid);
     pos = procfs_append_str(buf, pos, bufsz, "\n");
 
     return pos;

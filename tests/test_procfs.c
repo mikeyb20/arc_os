@@ -42,6 +42,8 @@ struct VfsNode {
     uint8_t        type;
     uint64_t       size;
     uint32_t       mode;
+    uint32_t       uid;
+    uint32_t       gid;
     const VfsOps  *ops;
     void          *private_data;
 };
@@ -74,6 +76,8 @@ typedef struct {
 typedef struct Process {
     uint32_t        pid;
     uint8_t         state;
+    uint32_t        uid;
+    uint32_t        gid;
     struct Process *parent;
     struct Process *next;
 } Process;
@@ -263,6 +267,8 @@ TEST(pid_status_content) {
     ASSERT_TRUE(strstr(buf, "Pid: 1") != NULL);
     ASSERT_TRUE(strstr(buf, "State: running") != NULL);
     ASSERT_TRUE(strstr(buf, "PPid: 0") != NULL);
+    ASSERT_TRUE(strstr(buf, "Uid: 0") != NULL);
+    ASSERT_TRUE(strstr(buf, "Gid: 0") != NULL);
     return 0;
 }
 

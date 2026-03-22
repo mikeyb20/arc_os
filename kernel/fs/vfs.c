@@ -1,5 +1,6 @@
 #include "fs/vfs.h"
 #include "lib/string.h"
+#include "proc/process.h"
 
 static VfsNode *vfs_root;
 
@@ -10,6 +11,25 @@ static struct {
     VfsNode *root;
 } mount_table[VFS_MAX_MOUNTS];
 static int mount_count;
+
+int vfs_check_perm(const VfsNode *node, uint32_t uid, uint32_t gid, int want) {
+    /* Root bypasses all permission checks */
+    if (uid == 0) return 0;
+
+    uint32_t mode = node->mode;
+    uint32_t perm;
+
+    if (uid == node->uid) {
+        perm = (mode >> 6) & 7;   /* Owner bits */
+    } else if (gid == node->gid) {
+        perm = (mode >> 3) & 7;   /* Group bits */
+    } else {
+        perm = mode & 7;          /* Other bits */
+    }
+
+    if ((perm & (uint32_t)want) == (uint32_t)want) return 0;
+    return -EACCES;
+}
 
 void vfs_init(void) {
     vfs_root = NULL;
@@ -151,6 +171,21 @@ int vfs_open(const char *path, uint32_t flags, VfsFile *out) {
 
     VfsNode *node = vfs_resolve(path);
 
+    if (node != NULL) {
+        /* Permission check on existing file */
+        Process *p = proc_current();
+        if (p != NULL) {
+            int want = 0;
+            uint32_t acc = flags & O_ACCMODE;
+            if (acc == O_RDONLY || acc == O_RDWR) want |= R_OK;
+            if (acc == O_WRONLY || acc == O_RDWR) want |= W_OK;
+            if (want != 0) {
+                int perr = vfs_check_perm(node, p->euid, p->egid, want);
+                if (perr != 0) return perr;
+            }
+        }
+    }
+
     if (node == NULL) {
         if (!(flags & O_CREAT)) {
             return -ENOENT;
@@ -162,12 +197,25 @@ int vfs_open(const char *path, uint32_t flags, VfsFile *out) {
         VfsNode *parent = vfs_resolve_parent(path, name, sizeof(name), &err);
         if (parent == NULL) return -err;
 
+        /* Permission check: need write+exec on parent */
+        Process *p = proc_current();
+        if (p != NULL) {
+            int perr = vfs_check_perm(parent, p->euid, p->egid, W_OK | X_OK);
+            if (perr != 0) return perr;
+        }
+
         if (parent->ops == NULL || parent->ops->create == NULL) {
             return -EINVAL;
         }
 
         node = parent->ops->create(parent, name, VFS_FILE);
         if (node == NULL) return -ENOMEM;
+
+        /* Set ownership on new file */
+        if (p != NULL) {
+            node->uid = p->euid;
+            node->gid = p->egid;
+        }
     }
 
     if (node->type == VFS_DIRECTORY) {
@@ -261,6 +309,8 @@ int vfs_stat(const char *path, VfsStat *out) {
     out->type = node->type;
     out->size = node->size;
     out->mode = node->mode;
+    out->uid = node->uid;
+    out->gid = node->gid;
     return VFS_OK;
 }
 
@@ -277,6 +327,13 @@ int vfs_mkdir(const char *path, uint32_t mode) {
     VfsNode *parent = vfs_resolve_parent(path, name, sizeof(name), &err);
     if (parent == NULL) return -err;
 
+    /* Permission check: need write+exec on parent */
+    Process *p = proc_current();
+    if (p != NULL) {
+        int perr = vfs_check_perm(parent, p->euid, p->egid, W_OK | X_OK);
+        if (perr != 0) return perr;
+    }
+
     if (parent->ops == NULL || parent->ops->create == NULL) {
         return -EINVAL;
     }
@@ -285,6 +342,10 @@ int vfs_mkdir(const char *path, uint32_t mode) {
     if (dir == NULL) return -ENOMEM;
 
     dir->mode = mode;
+    if (p != NULL) {
+        dir->uid = p->euid;
+        dir->gid = p->egid;
+    }
     return VFS_OK;
 }
 
@@ -321,6 +382,13 @@ int vfs_unlink(const char *path) {
     char name[VFS_NAME_MAX];
     VfsNode *parent = vfs_resolve_parent(path, name, sizeof(name), &err);
     if (parent == NULL) return -err;
+
+    /* Permission check: need write+exec on parent */
+    Process *p = proc_current();
+    if (p != NULL) {
+        int perr = vfs_check_perm(parent, p->euid, p->egid, W_OK | X_OK);
+        if (perr != 0) return perr;
+    }
 
     if (parent->ops == NULL || parent->ops->unlink == NULL) {
         return -EINVAL;

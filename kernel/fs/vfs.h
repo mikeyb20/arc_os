@@ -48,6 +48,8 @@
 #define EPIPE       32
 #define ENAMETOOLONG 36
 #define E2BIG        7
+#define EACCES      13
+#define EPERM        1
 
 /* Forward declarations */
 typedef struct VfsNode VfsNode;
@@ -83,6 +85,8 @@ struct VfsNode {
     uint8_t        type;          /* VFS_FILE or VFS_DIRECTORY */
     uint64_t       size;
     uint32_t       mode;
+    uint32_t       uid;
+    uint32_t       gid;
     const VfsOps  *ops;
     void          *private_data;  /* fs-specific (RamfsNode* etc.) */
 };
@@ -107,7 +111,18 @@ typedef struct {
     uint8_t  type;
     uint64_t size;
     uint32_t mode;
+    uint32_t uid;
+    uint32_t gid;
 } VfsStat;
+
+/* Access check flags */
+#define R_OK  4
+#define W_OK  2
+#define X_OK  1
+
+/* Check whether uid/gid has the requested access to node.
+ * Returns 0 if access is granted, -EACCES if denied. */
+int vfs_check_perm(const VfsNode *node, uint32_t uid, uint32_t gid, int want);
 
 /* Initialize the VFS layer */
 void vfs_init(void);

@@ -37,6 +37,12 @@ static inline int64_t syscall3(uint64_t num, uint64_t a0, uint64_t a1, uint64_t 
 #define SYS_PIPE    19
 #define SYS_CHDIR   23
 #define SYS_GETCWD  24
+#define SYS_GETUID  25
+#define SYS_GETGID  26
+#define SYS_SETUID  27
+#define SYS_SETGID  28
+#define SYS_CHMOD   29
+#define SYS_CHOWN   30
 
 /* --- Open flags (must match kernel/fs/vfs.h) --- */
 
@@ -64,6 +70,8 @@ typedef struct {
     uint8_t  type;
     uint64_t size;
     uint32_t mode;
+    uint32_t uid;
+    uint32_t gid;
 } StatInfo;
 
 /* --- Parsing constants --- */
@@ -156,6 +164,40 @@ static void print_num(int64_t n) {
     }
     if (neg) buf[--pos] = '-';
     print(&buf[pos]);
+}
+
+static void print_octal(uint32_t n) {
+    char buf[12];
+    int pos = 11;
+    buf[pos] = '\0';
+    if (n == 0) { buf[--pos] = '0'; }
+    while (n > 0) {
+        buf[--pos] = '0' + (char)(n & 7);
+        n >>= 3;
+    }
+    print(&buf[pos]);
+}
+
+static void mode_to_rwx(uint32_t mode, char *buf) {
+    buf[0] = (mode & 0400) ? 'r' : '-';
+    buf[1] = (mode & 0200) ? 'w' : '-';
+    buf[2] = (mode & 0100) ? 'x' : '-';
+    buf[3] = (mode & 0040) ? 'r' : '-';
+    buf[4] = (mode & 0020) ? 'w' : '-';
+    buf[5] = (mode & 0010) ? 'x' : '-';
+    buf[6] = (mode & 0004) ? 'r' : '-';
+    buf[7] = (mode & 0002) ? 'w' : '-';
+    buf[8] = (mode & 0001) ? 'x' : '-';
+    buf[9] = '\0';
+}
+
+static uint32_t sh_parse_octal(const char *s) {
+    uint32_t val = 0;
+    while (*s >= '0' && *s <= '7') {
+        val = val * 8 + (uint32_t)(*s - '0');
+        s++;
+    }
+    return val;
 }
 
 static void print_error(const char *prefix, int64_t err) {
@@ -599,6 +641,10 @@ static void cmd_ppid(int argc, char *argv[]);
 static void cmd_export(int argc, char *argv[]);
 static void cmd_env(int argc, char *argv[]);
 static void cmd_unset(int argc, char *argv[]);
+static void cmd_whoami(int argc, char *argv[]);
+static void cmd_id(int argc, char *argv[]);
+static void cmd_chmod(int argc, char *argv[]);
+static void cmd_chown(int argc, char *argv[]);
 
 /* --- Dispatch table --- */
 
@@ -631,6 +677,10 @@ static const Builtin builtins[] = {
     { "export", cmd_export, "Set variable (export NAME=VALUE)" },
     { "env",    cmd_env,    "List all variables" },
     { "unset",  cmd_unset,  "Remove variable(s)" },
+    { "whoami", cmd_whoami, "Print current user" },
+    { "id",     cmd_id,     "Print uid/gid" },
+    { "chmod",  cmd_chmod,  "Change permissions (octal)" },
+    { "chown",  cmd_chown,  "Change owner (uid[:gid])" },
 };
 #define NUM_BUILTINS (sizeof(builtins) / sizeof(builtins[0]))
 
@@ -709,9 +759,6 @@ static void cmd_ls(int argc, char *argv[]) {
         return;
     }
     for (int64_t i = 0; i < count; i++) {
-        /* Show type prefix */
-        print(entries[i].type == VFS_DIRECTORY ? "d " : "- ");
-
         /* Build full path for stat: path + "/" + name */
         char fullpath[512];
         uint64_t plen = sh_strlen(path);
@@ -730,6 +777,17 @@ static void cmd_ls(int argc, char *argv[]) {
         StatInfo st;
         sh_memset(&st, 0, sizeof(st));
         int64_t sr = syscall3(SYS_STAT, (uint64_t)fullpath, (uint64_t)&st, 0);
+
+        /* Type + permissions */
+        print(entries[i].type == VFS_DIRECTORY ? "d" : "-");
+        if (sr == 0) {
+            char rwx[10];
+            mode_to_rwx(st.mode, rwx);
+            print(rwx);
+        } else {
+            print("---------");
+        }
+        print(" ");
 
         if (sr == 0 && entries[i].type == VFS_FILE) {
             /* Right-align size in 8 chars */
@@ -790,7 +848,12 @@ static void cmd_stat(int argc, char *argv[]) {
     print("  Type: "); println(st.type == VFS_DIRECTORY ? "directory" : "file");
     print(" Inode: "); print_num((int64_t)st.inode_num); print("\n");
     print("  Size: "); print_num((int64_t)st.size); print("\n");
-    print("  Mode: 0"); print_num((int64_t)st.mode); print("\n");
+    print("  Mode: 0"); print_octal(st.mode); print("\n");
+    char rwx[10];
+    mode_to_rwx(st.mode, rwx);
+    print(" Perms: "); println(rwx);
+    print(" Owner: "); print_num((int64_t)st.uid); print("\n");
+    print(" Group: "); print_num((int64_t)st.gid); print("\n");
 }
 
 static void cmd_mkdir(int argc, char *argv[]) {
@@ -937,6 +1000,42 @@ static void cmd_unset(int argc, char *argv[]) {
     for (int i = 1; i < argc; i++) {
         shell_unsetvar(argv[i]);
     }
+}
+
+static void cmd_whoami(int argc, char *argv[]) {
+    (void)argc; (void)argv;
+    int64_t uid = syscall3(SYS_GETUID, 0, 0, 0);
+    if (uid == 0) println("root");
+    else { print("user"); print_num(uid); print("\n"); }
+}
+
+static void cmd_id(int argc, char *argv[]) {
+    (void)argc; (void)argv;
+    int64_t uid = syscall3(SYS_GETUID, 0, 0, 0);
+    int64_t gid = syscall3(SYS_GETGID, 0, 0, 0);
+    print("uid="); print_num(uid);
+    print(" gid="); print_num(gid);
+    print("\n");
+}
+
+static void cmd_chmod(int argc, char *argv[]) {
+    if (argc < 3) { println("usage: chmod <mode> <path>"); return; }
+    uint32_t mode = sh_parse_octal(argv[1]);
+    int64_t r = syscall3(SYS_CHMOD, (uint64_t)argv[2], (uint64_t)mode, 0);
+    if (r < 0) print_error(argv[2], r);
+}
+
+static void cmd_chown(int argc, char *argv[]) {
+    if (argc < 3) { println("usage: chown <uid[:gid]> <path>"); return; }
+    uint32_t uid = 0, gid = (uint32_t)-1;
+    const char *s = argv[1];
+    while (*s >= '0' && *s <= '9') { uid = uid * 10 + (uint32_t)(*s - '0'); s++; }
+    if (*s == ':') {
+        s++; gid = 0;
+        while (*s >= '0' && *s <= '9') { gid = gid * 10 + (uint32_t)(*s - '0'); s++; }
+    }
+    int64_t r = syscall3(SYS_CHOWN, (uint64_t)argv[2], (uint64_t)uid, (uint64_t)gid);
+    if (r < 0) print_error(argv[2], r);
 }
 
 /* --- Pipe support --- */

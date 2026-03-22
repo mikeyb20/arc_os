@@ -675,6 +675,8 @@ static int64_t sys_fstat(uint64_t fd, uint64_t stat_addr, uint64_t a2,
     out->type = file->node->type;
     out->size = file->node->size;
     out->mode = file->node->mode;
+    out->uid = file->node->uid;
+    out->gid = file->node->gid;
     return 0;
 }
 
@@ -746,6 +748,85 @@ static int64_t sys_getcwd(uint64_t buf_addr, uint64_t size, uint64_t a2,
     return 0;
 }
 
+/* SYS_GETUID: return effective user ID */
+static int64_t sys_getuid(uint64_t a0, uint64_t a1, uint64_t a2,
+                           uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a0; (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+    Process *p = proc_current();
+    return p ? (int64_t)p->euid : 0;
+}
+
+/* SYS_GETGID: return effective group ID */
+static int64_t sys_getgid(uint64_t a0, uint64_t a1, uint64_t a2,
+                           uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a0; (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+    Process *p = proc_current();
+    return p ? (int64_t)p->egid : 0;
+}
+
+/* SYS_SETUID: set user ID (root only) */
+static int64_t sys_setuid(uint64_t new_uid, uint64_t a1, uint64_t a2,
+                           uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+    Process *p = proc_current();
+    if (p == NULL) return -ENOSYS;
+    if (p->euid != 0) return -EPERM;
+    p->uid = (uint32_t)new_uid;
+    p->euid = (uint32_t)new_uid;
+    return 0;
+}
+
+/* SYS_SETGID: set group ID (root only) */
+static int64_t sys_setgid(uint64_t new_gid, uint64_t a1, uint64_t a2,
+                           uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+    Process *p = proc_current();
+    if (p == NULL) return -ENOSYS;
+    if (p->euid != 0) return -EPERM;
+    p->gid = (uint32_t)new_gid;
+    p->egid = (uint32_t)new_gid;
+    return 0;
+}
+
+/* SYS_CHMOD: change file mode bits */
+static int64_t sys_chmod(uint64_t path_addr, uint64_t mode, uint64_t a2,
+                          uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a2; (void)a3; (void)a4; (void)a5;
+    char abs[PATH_MAX];
+    int perr = resolve_user_path(path_addr, abs, PATH_MAX);
+    if (perr != 0) return perr;
+
+    VfsNode *node = vfs_resolve(abs);
+    if (node == NULL) return -ENOENT;
+
+    Process *p = proc_current();
+    if (p == NULL) return -ENOSYS;
+    if (p->euid != 0 && p->euid != node->uid) return -EPERM;
+
+    node->mode = (uint32_t)mode & 07777;
+    return 0;
+}
+
+/* SYS_CHOWN: change file owner/group (root only) */
+static int64_t sys_chown(uint64_t path_addr, uint64_t new_uid, uint64_t new_gid,
+                          uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a3; (void)a4; (void)a5;
+    char abs[PATH_MAX];
+    int perr = resolve_user_path(path_addr, abs, PATH_MAX);
+    if (perr != 0) return perr;
+
+    VfsNode *node = vfs_resolve(abs);
+    if (node == NULL) return -ENOENT;
+
+    Process *p = proc_current();
+    if (p == NULL) return -ENOSYS;
+    if (p->euid != 0) return -EPERM;
+
+    if ((uint32_t)new_uid != (uint32_t)-1) node->uid = (uint32_t)new_uid;
+    if ((uint32_t)new_gid != (uint32_t)-1) node->gid = (uint32_t)new_gid;
+    return 0;
+}
+
 /* --- Dispatcher --- */
 
 int64_t syscall_dispatch(uint64_t num, uint64_t a0, uint64_t a1, uint64_t a2,
@@ -810,6 +891,12 @@ void syscall_init(void) {
     syscall_register(SYS_GETPPID,   sys_getppid);
     syscall_register(SYS_CHDIR,     sys_chdir);
     syscall_register(SYS_GETCWD,    sys_getcwd);
+    syscall_register(SYS_GETUID,    sys_getuid);
+    syscall_register(SYS_GETGID,    sys_getgid);
+    syscall_register(SYS_SETUID,    sys_setuid);
+    syscall_register(SYS_SETGID,    sys_setgid);
+    syscall_register(SYS_CHMOD,     sys_chmod);
+    syscall_register(SYS_CHOWN,     sys_chown);
 
     kprintf("[SYSCALL] Initialized (LSTAR=0x%lx, STAR=0x%lx)\n",
             (uint64_t)syscall_entry, star);

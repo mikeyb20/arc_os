@@ -34,6 +34,8 @@ struct VfsNode {
     uint8_t        type;
     uint64_t       size;
     uint32_t       mode;
+    uint32_t       uid;
+    uint32_t       gid;
     const VfsOps  *ops;
     void          *private_data;
 };
