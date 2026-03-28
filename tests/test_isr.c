@@ -25,8 +25,13 @@ static void pic_send_eoi(uint8_t irq) {
     test_eoi_irq = irq;
 }
 
-/* Guard against real pic.h */
+/* Guard against real pic.h and lapic.h */
 #define ARCHOS_ARCH_X86_64_PIC_H
+#define ARCHOS_ARCH_X86_64_LAPIC_H
+
+/* Stub lapic_eoi */
+static int test_lapic_eoi_called;
+static void lapic_eoi(void) { test_lapic_eoi_called++; }
 
 /* Include the real ISR implementation */
 #include "../kernel/arch/x86_64/isr.c"

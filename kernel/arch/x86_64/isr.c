@@ -1,9 +1,15 @@
 #include "arch/x86_64/isr.h"
 #include "arch/x86_64/pic.h"
+#include "arch/x86_64/lapic.h"
 #include "lib/kprintf.h"
 #include <stddef.h>
 
 static isr_handler_t handlers[ISR_COUNT];
+static int apic_mode;
+
+void isr_set_apic_mode(int enabled) {
+    apic_mode = enabled;
+}
 
 /* Human-readable names for CPU exception vectors 0-31 */
 static const char *exception_names[EXCEPTION_COUNT] = {
@@ -82,18 +88,25 @@ void isr_dispatch(InterruptFrame *frame) {
     if (vector >= IRQ_BASE && vector < IRQ_BASE + IRQ_COUNT) {
         uint8_t irq = (uint8_t)(vector - IRQ_BASE);
 
-        /* Check for spurious IRQ */
-        if (pic_is_spurious(irq)) {
-            return;
+        if (apic_mode) {
+            /* APIC mode: LAPIC EOI */
+            lapic_eoi();
+        } else {
+            /* PIC mode: check for spurious, send PIC EOI */
+            if (pic_is_spurious(irq)) return;
+            pic_send_eoi(irq);
         }
-
-        /* Send EOI before handler — handler may context_switch and never return */
-        pic_send_eoi(irq);
 
         /* Call registered handler if present */
         if (handlers[vector] != NULL) {
             handlers[vector](frame);
         }
+        return;
+    }
+
+    /* IPI / high-vector path (0xF0+) — handled by registered handlers */
+    if (vector >= 0xF0 && handlers[vector] != NULL) {
+        handlers[vector](frame);
         return;
     }
 

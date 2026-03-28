@@ -2,8 +2,12 @@
 #include "boot/bootinfo.h"
 #include "lib/mem.h"
 #include "lib/kprintf.h"
+#include "proc/spinlock.h"
 
 #define BITS_PER_QWORD 64
+
+/* SMP-safe: lock protects all bitmap operations */
+static Spinlock pmm_lock = SPINLOCK_INIT;
 
 /* Bitmap: bit=1 means page is allocated, bit=0 means free */
 static uint64_t *bitmap;
@@ -147,37 +151,43 @@ void pmm_init(const BootInfo *info) {
 }
 
 uint64_t pmm_alloc_page(void) {
-    if (free_pages == 0) return 0;
+    spinlock_acquire(&pmm_lock);
+    if (free_pages == 0) { spinlock_release(&pmm_lock); return 0; }
 
     uint64_t page = bitmap_find_first_free();
-    if (page >= total_pages) return 0;
+    if (page >= total_pages) { spinlock_release(&pmm_lock); return 0; }
 
     pmm_bitmap_set(bitmap, page);
     free_pages--;
+    spinlock_release(&pmm_lock);
 
     return page * PAGE_SIZE;
 }
 
 void pmm_free_page(uint64_t phys_addr) {
     uint64_t page = phys_addr / PAGE_SIZE;
-    if (page == 0 || page >= total_pages) return;  /* Don't free page 0 or out-of-range */
+    if (page == 0 || page >= total_pages) return;
 
+    spinlock_acquire(&pmm_lock);
     if (pmm_bitmap_test(bitmap, page)) {
         pmm_bitmap_clear(bitmap, page);
         free_pages++;
     }
+    spinlock_release(&pmm_lock);
 }
 
 uint64_t pmm_alloc_contiguous(size_t count) {
-    if (count == 0 || free_pages < count) return 0;
+    spinlock_acquire(&pmm_lock);
+    if (count == 0 || free_pages < count) { spinlock_release(&pmm_lock); return 0; }
 
     uint64_t start = bitmap_find_contiguous(count);
-    if (start >= total_pages) return 0;
+    if (start >= total_pages) { spinlock_release(&pmm_lock); return 0; }
 
     for (size_t i = 0; i < count; i++) {
         pmm_bitmap_set(bitmap, start + i);
         free_pages--;
     }
+    spinlock_release(&pmm_lock);
 
     return start * PAGE_SIZE;
 }

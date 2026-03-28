@@ -50,4 +50,7 @@ uint16_t pic_get_isr(void);
 /* Check if an IRQ is spurious. Returns true if spurious (no EOI needed). */
 bool pic_is_spurious(uint8_t irq);
 
+/* Disable both PICs by masking all IRQs. Called when switching to APIC mode. */
+void pic_disable(void);
+
 #endif /* ARCHOS_ARCH_X86_64_PIC_H */

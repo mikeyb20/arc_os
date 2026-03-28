@@ -69,6 +69,14 @@ volatile struct limine_module_request module_request = {
     .response = NULL
 };
 
+/* SMP — for multi-core AP bringup */
+LIMINE_SECTION
+volatile struct limine_smp_request smp_request = {
+    .id = LIMINE_SMP_REQUEST,
+    .revision = 0,
+    .response = NULL
+};
+
 LIMINE_SECTION
 volatile uint64_t limine_requests_end_marker[2] = {
     0xadc0e0531bb10d03, 0x9572709f31764c62

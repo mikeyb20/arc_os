@@ -40,4 +40,7 @@ void isr_register_handler(int vector, isr_handler_t handler);
 /* C dispatcher called from assembly. */
 void isr_dispatch(InterruptFrame *frame);
 
+/* Set APIC mode: when true, isr_dispatch sends LAPIC EOI instead of PIC EOI. */
+void isr_set_apic_mode(int enabled);
+
 #endif /* ARCHOS_ARCH_X86_64_ISR_H */

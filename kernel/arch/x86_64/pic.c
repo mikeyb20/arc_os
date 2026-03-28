@@ -87,3 +87,9 @@ bool pic_is_spurious(uint8_t irq) {
 
     return false;
 }
+
+void pic_disable(void) {
+    outb(PIC1_DATA, PIC_MASK_ALL);
+    outb(PIC2_DATA, PIC_MASK_ALL);
+    kprintf("[PIC] Disabled (all IRQs masked)\n");
+}

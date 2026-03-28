@@ -1,8 +1,12 @@
 #include "mm/vmm.h"
 #include "mm/pmm.h"
 #include "arch/x86_64/paging.h"
+#include "proc/spinlock.h"
 #include "lib/mem.h"
 #include "lib/kprintf.h"
+
+/* SMP-safe: protects kernel page table modifications */
+static Spinlock vmm_lock = SPINLOCK_INIT;
 
 /* Errno value needed for vmm_map_user_stack (defined in fs/vfs.h;
  * duplicated here to avoid mm→fs layer dependency). */
@@ -99,11 +103,15 @@ static void free_pd_entries(uint64_t *pd) {
 }
 
 void vmm_map_page(uint64_t virt, uint64_t phys, uint32_t flags) {
+    spinlock_acquire(&vmm_lock);
     vmm_map_page_in(kernel_pml4_phys, virt, phys, flags);
+    spinlock_release(&vmm_lock);
 }
 
 void vmm_unmap_page(uint64_t virt) {
+    spinlock_acquire(&vmm_lock);
     vmm_unmap_page_in(kernel_pml4_phys, virt);
+    spinlock_release(&vmm_lock);
 }
 
 uint64_t vmm_get_phys(uint64_t virt) {

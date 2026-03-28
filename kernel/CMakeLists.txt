@@ -33,6 +33,11 @@ set(KERNEL_C_SOURCES
     mm/vmm.c
     mm/kmalloc.c
     arch/x86_64/syscall.c
+    arch/x86_64/lapic.c
+    arch/x86_64/ioapic.c
+    arch/x86_64/percpu.c
+    arch/x86_64/smp.c
+    arch/x86_64/ipi.c
     proc/thread.c
     proc/sched.c
     proc/process.c
@@ -41,12 +46,20 @@ set(KERNEL_C_SOURCES
     proc/fd.c
     proc/signal.c
     proc/waitqueue.c
+    proc/mutex.c
+    proc/semaphore.c
+    proc/condvar.c
+    drivers/acpi.c
     drivers/pci.c
     drivers/virtio.c
     drivers/virtio_blk.c
     drivers/blkdev.c
     drivers/tty.c
     drivers/keyboard.c
+    drivers/fb_console.c
+    drivers/font8x16.c
+    drivers/ansi.c
+    drivers/vt.c
     fs/vfs.c
     fs/ramfs.c
     fs/pipe.c
@@ -54,6 +67,7 @@ set(KERNEL_C_SOURCES
     fs/devfs.c
     fs/procfs.c
     fs/path.c
+    fs/passwd.c
     net/net_util.c
     net/netif.c
     net/ethernet.c
@@ -61,6 +75,11 @@ set(KERNEL_C_SOURCES
     net/ipv4.c
     net/icmp.c
     net/net.c
+    net/udp.c
+    net/tcp.c
+    net/socket.c
+    net/loopback.c
+    security/hardening.c
     drivers/virtio_net.c
 )
 

@@ -12,15 +12,19 @@
 #include "proc/process.h"
 #include "arch/x86_64/syscall.h"
 #include "proc/init.h"
+#include "drivers/acpi.h"
 #include "drivers/pci.h"
 #include "drivers/virtio_blk.h"
 #include "drivers/blkdev.h"
 #include "drivers/tty.h"
 #include "drivers/keyboard.h"
+#include "drivers/fb_console.h"
+#include "security/hardening.h"
 #include "drivers/virtio_net.h"
 #include "net/net.h"
 #include "lib/kprintf.h"
 #include "lib/mem.h"
+#include "lib/string.h"
 #include "fs/vfs.h"
 #include "fs/ramfs.h"
 #include "fs/fat32.h"
@@ -28,6 +32,22 @@
 #include "fs/procfs.h"
 #include <stddef.h>
 #include <stdint.h>
+
+#include "drivers/ansi.h"
+#include "drivers/vt.h"
+#include "drivers/font8x16.h"
+#include "arch/x86_64/lapic.h"
+#include "arch/x86_64/ioapic.h"
+#include "arch/x86_64/percpu.h"
+#include "arch/x86_64/smp.h"
+#include "arch/x86_64/ipi.h"
+#include "arch/x86_64/isr.h"
+
+/* Dual output: serial + ANSI parser → framebuffer */
+static void tty_dual_output(char c) {
+    serial_putchar(c);
+    ansi_putchar(c);
+}
 
 static const char *memmap_type_name(uint32_t type) {
     switch (type) {
@@ -137,7 +157,7 @@ static void vfs_setup(const BootInfo *info) {
         }
     }
 
-    /* VFS demo: create /etc/hostname — exercises large ramfs allocations */
+    /* Create /etc with hostname and passwd */
     vfs_mkdir("/etc", 0755);
     {
         VfsFile hf;
@@ -147,6 +167,68 @@ static void vfs_setup(const BootInfo *info) {
             vfs_close(&hf);
             kprintf("[VFS] Created /etc/hostname\n");
         }
+    }
+    {
+        VfsFile pf;
+        if (vfs_open("/etc/passwd", O_CREAT | O_WRONLY, &pf) == 0) {
+            const char *passwd =
+                "root::0:0:root:/:/boot/shell\n"
+                "user:user:1000:1000:user:/home/user:/boot/shell\n";
+            vfs_write(&pf, passwd, strlen(passwd));
+            vfs_close(&pf);
+            kprintf("[VFS] Created /etc/passwd\n");
+        }
+    }
+    /* Create /home/user for the default user account */
+    vfs_mkdir("/home", 0755);
+    vfs_mkdir("/home/user", 0755);
+
+    /* Create /bin and symlink boot modules into it */
+    vfs_mkdir("/bin", 0755);
+    {
+        VfsDirEntry boot_entries[32];
+        int bcount = vfs_readdir("/boot", boot_entries, 32);
+        for (int i = 0; i < bcount; i++) {
+            if (boot_entries[i].type == VFS_FILE) {
+                /* Read from /boot, write to /bin */
+                char src[256], dst[256];
+                strncpy(src, "/boot/", sizeof(src) - 1);
+                strncpy(dst, "/bin/", sizeof(dst) - 1);
+                src[6] = '\0'; dst[5] = '\0';
+                size_t slen = strlen(src);
+                size_t dlen = strlen(dst);
+                strncpy(src + slen, boot_entries[i].name, sizeof(src) - slen - 1);
+                src[sizeof(src) - 1] = '\0';
+                strncpy(dst + dlen, boot_entries[i].name, sizeof(dst) - dlen - 1);
+                dst[sizeof(dst) - 1] = '\0';
+
+                /* Skip kernel.elf and the 5 main programs */
+                if (strcmp(boot_entries[i].name, "kernel.elf") == 0 ||
+                    strcmp(boot_entries[i].name, "init") == 0 ||
+                    strcmp(boot_entries[i].name, "login") == 0 ||
+                    strcmp(boot_entries[i].name, "shell") == 0 ||
+                    strcmp(boot_entries[i].name, "hello") == 0 ||
+                    strcmp(boot_entries[i].name, "echo") == 0) {
+                    continue;
+                }
+
+                VfsFile sf, df;
+                if (vfs_open(src, O_RDONLY, &sf) == 0) {
+                    if (vfs_open(dst, O_CREAT | O_WRONLY, &df) == 0) {
+                        uint8_t tmpbuf[4096];
+                        int nr;
+                        while ((nr = vfs_read(&sf, tmpbuf, sizeof(tmpbuf))) > 0) {
+                            vfs_write(&df, tmpbuf, (uint32_t)nr);
+                        }
+                        /* Mark as executable */
+                        if (df.node) df.node->mode = 0755;
+                        vfs_close(&df);
+                    }
+                    vfs_close(&sf);
+                }
+            }
+        }
+        kprintf("[VFS] Created /bin with coreutils\n");
     }
 
     /* Mount devfs at /dev */
@@ -196,6 +278,7 @@ static void virtio_blk_setup(void) {
 
 void kmain(void) {
     serial_init();
+    hardening_init();
     serial_puts("[BOOT] arc_os kernel booting...\n");
 
     const BootInfo *info = bootinfo_init();
@@ -219,8 +302,27 @@ void kmain(void) {
     serial_puts("[BOOT] stage: heap\n");
     kmalloc_init();
     heap_self_test();
+    /* Initialize framebuffer console if available */
+    if (info->fb_present) {
+        if (fb_console_init(&info->framebuffer) == 0) {
+            kprintf_set_putchar_hook(fb_console_putchar);
+            kprintf("[FB] Framebuffer console active (%lux%lu)\n",
+                    info->framebuffer.width, info->framebuffer.height);
+        }
+    }
+
+    /* Initialize ANSI parser and VT subsystem */
+    ansi_init();
+    if (info->fb_present) {
+        uint32_t vt_cols = (uint32_t)(info->framebuffer.width / FONT_WIDTH);
+        uint32_t vt_rows = (uint32_t)(info->framebuffer.height / FONT_HEIGHT);
+        vt_init(vt_cols, vt_rows);
+    }
+
     serial_puts("[BOOT] stage: VFS\n");
     vfs_setup(info);
+    serial_puts("[BOOT] stage: ACPI\n");
+    acpi_init(info->acpi_rsdp);
     serial_puts("[BOOT] stage: PCI\n");
     pci_init();
     serial_puts("[BOOT] stage: VirtIO-blk\n");
@@ -239,7 +341,65 @@ void kmain(void) {
 
     /* Initialize TTY and PS/2 keyboard (TTY first — keyboard handler calls tty_input_char) */
     tty_init();
+    /* Route TTY output to both serial and framebuffer */
+    if (info->fb_present) {
+        tty_set_output(tty_dual_output);
+    }
     keyboard_init();
+
+    /* --- SMP: Initialize APIC and bring up APs --- */
+    {
+        const AcpiInfo *acpi = acpi_get_info();
+        if (acpi && acpi->local_apic_address != 0) {
+            uint64_t hhdm = vmm_get_hhdm_offset();
+
+            /* Initialize BSP's per-CPU data */
+            percpu_init_bsp();
+
+            /* Initialize BSP's Local APIC */
+            lapic_init(acpi->local_apic_address + hhdm);
+            percpu_data[0].apic_id = lapic_id();
+
+            /* Initialize I/O APIC */
+            if (acpi->io_apic_address != 0) {
+                ioapic_init(acpi->io_apic_address + hhdm);
+
+                /* Remap ISA IRQs through I/O APIC, applying ISOs */
+                for (uint8_t irq = 0; irq < 16; irq++) {
+                    uint8_t gsi = irq;
+                    int active_low = 0, level = 0;
+
+                    /* Check for Interrupt Source Overrides */
+                    for (uint32_t j = 0; j < acpi->iso_count; j++) {
+                        if (acpi->isos[j].source == irq) {
+                            gsi = (uint8_t)acpi->isos[j].gsi;
+                            uint16_t flags = acpi->isos[j].flags;
+                            active_low = ((flags & 0x3) == 3);
+                            level = (((flags >> 2) & 0x3) == 3);
+                            break;
+                        }
+                    }
+
+                    /* Route to same vector (32+irq), destination = BSP */
+                    ioapic_route_irq(gsi, (uint8_t)(IRQ_BASE + irq),
+                                     (uint8_t)percpu_data[0].apic_id,
+                                     active_low, level);
+                    ioapic_unmask(gsi);
+                }
+
+                /* Mask PIC (we're using APIC now) */
+                pic_disable();
+                isr_set_apic_mode(1);
+                kprintf("[SMP] Switched from PIC to APIC mode\n");
+            }
+
+            /* Register IPI handlers */
+            ipi_init();
+
+            /* Bring up Application Processors */
+            smp_init();
+        }
+    }
 
     /* Launch init process from boot module */
     if (init_launch(info) != 0) {
