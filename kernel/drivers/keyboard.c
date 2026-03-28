@@ -1,8 +1,10 @@
 /* arc_os — PS/2 Keyboard driver implementation
- * Scan code set 1, IRQ 1 handler with shift/ctrl/caps tracking. */
+ * Scan code set 1, IRQ 1 handler with shift/ctrl/alt/caps tracking.
+ * Alt+F1-F6 switches virtual terminals. */
 
 #include "drivers/keyboard.h"
 #include "drivers/tty.h"
+#include "drivers/vt.h"
 #include "arch/x86_64/isr.h"
 #include "arch/x86_64/pic.h"
 #include "arch/x86_64/io.h"
@@ -44,6 +46,7 @@ static const char scancode_shift[128] = {
 /* Modifier state */
 static volatile int shift_held;
 static volatile int ctrl_held;
+static volatile int alt_held;
 static volatile int caps_lock;
 
 /* Scancode constants for modifiers */
@@ -53,9 +56,19 @@ static volatile int caps_lock;
 #define SC_RSHIFT_RELEASE 0xB6
 #define SC_CTRL_PRESS     0x1D
 #define SC_CTRL_RELEASE   0x9D
+#define SC_ALT_PRESS      0x38
+#define SC_ALT_RELEASE    0xB8
 #define SC_CAPS_PRESS     0x3A
 #define SC_EXTENDED_PREFIX  0xE0
 #define SC_RELEASE_BIT      0x80
+
+/* F1-F6 scancodes */
+#define SC_F1  0x3B
+#define SC_F2  0x3C
+#define SC_F3  0x3D
+#define SC_F4  0x3E
+#define SC_F5  0x3F
+#define SC_F6  0x40
 
 static void keyboard_irq_handler(InterruptFrame *frame) {
     (void)frame;
@@ -80,6 +93,12 @@ static void keyboard_irq_handler(InterruptFrame *frame) {
     case SC_CTRL_RELEASE:
         ctrl_held = 0;
         return;
+    case SC_ALT_PRESS:
+        alt_held = 1;
+        return;
+    case SC_ALT_RELEASE:
+        alt_held = 0;
+        return;
     case SC_CAPS_PRESS:
         caps_lock = !caps_lock;
         return;
@@ -87,6 +106,14 @@ static void keyboard_irq_handler(InterruptFrame *frame) {
 
     /* Ignore key releases (bit 7 set) */
     if (scancode & SC_RELEASE_BIT) return;
+
+    /* Alt+F1-F6: VT switching */
+    if (alt_held) {
+        if (scancode >= SC_F1 && scancode <= SC_F6) {
+            vt_switch(scancode - SC_F1);
+            return;
+        }
+    }
 
     /* Look up ASCII from scancode table */
     int shifted = shift_held ^ caps_lock;
@@ -106,6 +133,7 @@ static void keyboard_irq_handler(InterruptFrame *frame) {
 void keyboard_init(void) {
     shift_held = 0;
     ctrl_held = 0;
+    alt_held = 0;
     caps_lock = 0;
 
     /* Register IRQ 1 handler (vector 33) — follows PIT pattern */

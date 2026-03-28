@@ -64,6 +64,10 @@ static void tty_cap_reset(void) {
     tty_cap_pos = 0;
 }
 
+/* Stub for VT switching (keyboard now calls vt_switch) */
+#define ARCHOS_DRIVERS_VT_H
+static void vt_switch(int n) { (void)n; }
+
 /* Include the real keyboard implementation */
 #include "../kernel/drivers/keyboard.c"
 

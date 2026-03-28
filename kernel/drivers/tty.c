@@ -40,12 +40,28 @@ static uint32_t tty_fg_pgid;
 static Spinlock tty_lock = SPINLOCK_INIT;
 static WaitQueue tty_read_wq = WAITQUEUE_INIT;
 
+/* Configurable output function — defaults to serial_putchar */
+static void (*tty_output_fn)(char c);
+
+/* Emit a character through the configured output */
+static void tty_emit(char c) {
+    if (tty_output_fn)
+        tty_output_fn(c);
+    else
+        serial_putchar(c);
+}
+
 void tty_init(void) {
     read_head = 0;
     read_tail = 0;
     lines_ready = 0;
     line_pos = 0;
+    tty_output_fn = NULL;
     kprintf("[TTY] Initialized\n");
+}
+
+void tty_set_output(void (*fn)(char c)) {
+    tty_output_fn = fn;
 }
 
 void tty_input_char(char c) {
@@ -54,9 +70,9 @@ void tty_input_char(char c) {
         if (tty_fg_pgid != 0) {
             sig_send_group(tty_fg_pgid, SIGINT);
         }
-        serial_putchar('^');
-        serial_putchar('C');
-        serial_putchar('\n');
+        tty_emit('^');
+        tty_emit('C');
+        tty_emit('\n');
         return;
     }
 
@@ -65,9 +81,9 @@ void tty_input_char(char c) {
         if (tty_fg_pgid != 0) {
             sig_send_group(tty_fg_pgid, SIGTSTP);
         }
-        serial_putchar('^');
-        serial_putchar('Z');
-        serial_putchar('\n');
+        tty_emit('^');
+        tty_emit('Z');
+        tty_emit('\n');
         return;
     }
 
@@ -76,9 +92,9 @@ void tty_input_char(char c) {
         if (line_pos > 0) {
             line_pos--;
             /* Echo backspace sequence: move back, overwrite with space, move back */
-            serial_putchar('\b');
-            serial_putchar(' ');
-            serial_putchar('\b');
+            tty_emit('\b');
+            tty_emit(' ');
+            tty_emit('\b');
         }
         return;
     }
@@ -96,14 +112,14 @@ void tty_input_char(char c) {
         wq_wake(&tty_read_wq);
 
         /* Echo newline */
-        serial_putchar('\n');
+        tty_emit('\n');
         return;
     }
 
     /* Regular character: append to line buffer if room */
     if (line_pos < TTY_LINE_MAX - 1) {
         line_buf[line_pos++] = c;
-        serial_putchar(c);
+        tty_emit(c);
     }
 }
 
@@ -153,7 +169,7 @@ void tty_set_fg_pgid(uint32_t pgid) {
 int tty_write(const void *buf, uint32_t count) {
     const char *src = (const char *)buf;
     for (uint32_t i = 0; i < count; i++) {
-        serial_putchar(src[i]);
+        tty_emit(src[i]);
     }
     return (int)count;
 }
