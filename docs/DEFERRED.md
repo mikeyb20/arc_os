@@ -58,3 +58,30 @@ Items intentionally postponed from their original phase. Each entry notes the or
 - ~~**Setuid/setgid binaries**~~ **DONE** — sys_exec checks S_ISUID/S_ISGID bits on executable, updates euid/egid accordingly.
 - ~~**umask per-process**~~ **DONE** — Process.umask field (default 022), inherited on fork, applied in vfs_open (O_CREAT) and vfs_mkdir. SYS_UMASK syscall (34) implemented.
 - ~~**Kernel hardening (9.3)**~~ **DONE (partial)** — Stack canaries (`-fstack-protector-strong` + `__stack_chk_fail`), guard page infrastructure (`hardening_add_guard_page`), RDTSC-seeded canary value. Deferred: ASLR, KASLR, full W^X linker script enforcement, syscall sanitization.
+
+## Phase 10: Minimal libc + Standalone Coreutils
+
+- **DONE** — arc_libc (libarc.a): CRT0, string/mem, printf/snprintf, malloc/free (sbrk-based), FILE streams, POSIX wrappers (read/write/open/fork/exec/pipe/etc.), dirent, signal, stat/wait
+- **DONE** — 19 standalone coreutils: cat, echo, wc, head, tail, touch, mkdir, rm, ls, stat, chmod, chown, cp, mv, ps, kill, uname, grep, free
+- **DONE** — Retrofitted init, login, hello, echo, shell to use libc (shell dropped ~250 lines of duplicated utilities)
+- **DONE** — /bin directory in ramfs, BOOTINFO_MAX_MODULES 8→32, updated limine.conf and make-iso.sh
+
+## Phase 11: Graphics — ANSI Console + Virtual Terminals
+
+- **DONE** — TTY output routing: configurable tty_set_output() replaces hard-coded serial_putchar in all 11 tty.c callsites
+- **DONE** — ANSI escape code parser: ESC[nA/B/C/D cursor movement, ESC[n;mH positioning, ESC[J/K erase, ESC[n;...m SGR colors (16 standard + 16 bright)
+- **DONE** — Virtual terminals: 6 VTs with independent screen buffers, Alt+F1-F6 switching, keyboard Alt key tracking
+- **DONE** — Framebuffer enhancements: cursor get/set, erase display/line, flush API, render target abstraction
+- **Double buffering** — Back buffer allocation from PMM pages + periodic flush. Infrastructure in place (render_target pointer, fb_dirty flag, fb_console_flush), but not wired to timer-driven 60fps flush yet.
+
+## Phase 12: Symmetric Multiprocessing
+
+- **DONE** — Local APIC driver: enable, EOI, APIC ID, IPI (single/all/all-ex-self), timer calibration via PIT
+- **DONE** — I/O APIC driver: redirection table, ISA IRQ routing with MADT ISO support, PIC→APIC transition
+- **DONE** — Per-CPU data: PerCpu struct (cpu_id, apic_id, current_thread, kernel_rsp, GDT/TSS, run queue), GS base MSR access
+- **DONE** — AP bringup via Limine SMP: goto_address wake, AP entry with per-CPU + LAPIC init, BSP waits for all APs
+- **DONE** — IPI infrastructure: TLB shootdown (0xF0), reschedule (0xF1), halt (0xF2) vectors
+- **DONE** — SMP safety: spinlocks on PMM (alloc/free) and VMM (kernel map/unmap)
+- **Per-CPU scheduler** — Each CPU needs its own run queue with work-stealing. Currently using the global scheduler. Requires per-CPU idle threads.
+- **SYSCALL per-CPU kernel stack** — `syscall_entry.asm` uses global `syscall_kernel_rsp`. For SMP, must switch to `gs:PERCPU_KERNEL_RSP_OFFSET`. Critical correctness fix for multi-core syscall handling.
+- **Per-CPU GDT/TSS** — Each AP needs its own GDT and TSS for RSP0. Currently APs share BSP's GDT.

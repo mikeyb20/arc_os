@@ -29,20 +29,28 @@ See `overview.md` for the full 13-phase development roadmap.
 ```
 arc_os/
 ├── kernel/
-│   ├── arch/x86_64/      # Arch-specific code (GDT, IDT, PIC, PIT, paging, context switch)
-│   ├── boot/             # Boot protocol parsing (BootInfo)
+│   ├── arch/x86_64/      # Arch-specific (GDT, IDT, PIC, PIT, LAPIC, IOAPIC, SMP, paging, syscall)
+│   ├── boot/             # Boot protocol parsing (BootInfo, Limine)
 │   ├── mm/               # Memory management (PMM, VMM, kmalloc)
-│   ├── proc/             # Process & thread management, scheduler, signals, wait queues, ELF loader
-│   ├── fs/               # VFS layer, ramfs, devfs, procfs, pipe, fat32, path utils
-│   ├── drivers/          # Device drivers (pci, virtio, virtio_blk, blkdev, tty, keyboard)
+│   ├── proc/             # Process & thread management, scheduler, signals, sync primitives, ELF loader
+│   ├── fs/               # VFS layer, ramfs, devfs, procfs, pipe, fat32, path utils, passwd
+│   ├── drivers/          # Device drivers (pci, virtio, blkdev, tty, keyboard, fb_console, ansi, vt, acpi)
 │   ├── include/          # Freestanding C headers + limine.h
-│   ├── net/              # Network stack (empty — future)
-│   ├── ipc/              # IPC mechanisms (empty — future)
-│   ├── security/         # Permissions, capabilities (empty — future)
+│   ├── net/              # Network stack (ethernet, arp, ipv4, icmp, udp, tcp, socket, loopback)
+│   ├── security/         # Hardening (stack canaries, guard pages)
 │   └── lib/              # Kernel utility library (mem, string, kprintf)
-├── userland/             # User-space programs (init, shell, echo, hello)
+├── libc/                 # Minimal C library (libarc.a) for user-space programs
+│   ├── include/          # POSIX-compatible headers (stdio.h, stdlib.h, unistd.h, etc.)
+│   └── src/              # CRT0, string, printf, malloc, syscall wrappers
+├── userland/             # User-space programs
+│   ├── init/             # Init process (PID 1)
+│   ├── login/            # Login authentication
+│   ├── shell/            # Interactive shell (27 builtins)
+│   ├── hello/            # Hello world
+│   ├── echo/             # Echo utility
+│   └── coreutils/        # 19 standalone utilities (cat, ls, grep, ps, etc.)
 ├── tools/                # Build tools, image creation scripts
-├── tests/                # Host-side unit tests
+├── tests/                # Host-side unit tests (47 suites)
 ├── docs/                 # Implementation plan, deferred items
 └── CMakeLists.txt
 ```
@@ -53,7 +61,7 @@ arc_os/
 - **Types/Structs**: `PascalCase` or `snake_case_t` — e.g., `BootInfo`, `thread_t`
 - **Constants/Macros**: `UPPER_SNAKE_CASE` — e.g., `PAGE_SIZE`, `GFP_KERNEL`
 - **Files**: `snake_case.c` / `snake_case.h`
-- **Subsystem prefixes**: Functions are prefixed with their subsystem — `pmm_`, `vmm_`, `hal_`, `vfs_`, `sched_`
+- **Subsystem prefixes**: Functions are prefixed with their subsystem — `pmm_`, `vmm_`, `hal_`, `vfs_`, `sched_`, `lapic_`, `ioapic_`, `ansi_`, `vt_`
 
 ## Abstraction Boundary Rules
 

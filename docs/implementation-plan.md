@@ -77,7 +77,7 @@ Create directory structure and all build infrastructure.
 
 **Milestone**: Serial prints memory map entries, HHDM offset, framebuffer dimensions, kernel addresses.
 
-### Chunk 1.4 — Framebuffer Console (~290 lines, 3 files) — [ ] NOT STARTED (deferred)
+### Chunk 1.4 — Framebuffer Console (~290 lines, 3 files) — [x] DONE
 
 **Files**:
 - `kernel/drivers/fb_console.h` + `fb_console.c` — Pixel rendering with bitmap font, cursor, scrolling, newline
@@ -185,7 +185,7 @@ Create directory structure and all build infrastructure.
 ### Phase 4: Drivers
 | Chunk | Description | ~Lines | Status |
 |-------|-------------|--------|--------|
-| 4.1 | ACPI table parsing (RSDP/RSDT/MADT) | 150 | NOT STARTED |
+| 4.1 | ACPI table parsing (RSDP/RSDT/MADT) | 150 | DONE |
 | 4.2 | PCI bus enumeration | 200 | DONE |
 | 4.3 | VirtIO common infrastructure (virtqueues) | 250 | DONE |
 | 4.4 | VirtIO block device driver | 200 | DONE |
@@ -233,9 +233,9 @@ Create directory structure and all build infrastructure.
 | 8.2c | ICMP echo (ping request/reply) | 70 | DONE |
 | 8.2d | Network interface layer + utilities (htons, checksum) | 90 | DONE |
 | 8.2e | Network stack init (static IP 10.0.2.15/24) | 25 | DONE |
-| 8.3 | Socket API (socket/bind/listen/accept/connect/send/recv) | 400 | NOT STARTED |
-| 8.4 | TCP/UDP protocols | 600 | NOT STARTED |
-| 8.5 | Network services (DHCP, DNS, loopback) | 300 | NOT STARTED |
+| 8.3 | Socket API (socket/bind/listen/accept/connect/send/recv) | 400 | DONE |
+| 8.4 | TCP/UDP protocols | 600 | DONE |
+| 8.5 | Network services (DHCP, DNS, loopback) | 300 | PARTIAL (loopback done, DHCP/DNS deferred) |
 
 ### Phase 9: Security & Permissions
 | Chunk | Description | ~Lines | Status |
@@ -243,9 +243,37 @@ Create directory structure and all build infrastructure.
 | 9.1a | Process credentials (uid/gid/euid/egid) + getuid/getgid/setuid/setgid syscalls | 80 | DONE |
 | 9.1b | VFS permission checking (owner/group/other rwx) | 50 | DONE |
 | 9.2a | chmod/chown syscalls | 60 | DONE |
-| 9.2b | umask, setuid/setgid binaries | 100 | NOT STARTED |
-| 9.1c | /etc/passwd, /etc/group, login authentication | 250 | NOT STARTED |
-| 9.3 | Kernel hardening (stack canaries, guard pages, W^X, ASLR) | 300 | NOT STARTED |
+| 9.2b | umask, setuid/setgid binaries | 100 | DONE |
+| 9.1c | /etc/passwd, /etc/group, login authentication | 250 | DONE |
+| 9.3 | Kernel hardening (stack canaries, guard pages, W^X, ASLR) | 300 | PARTIAL (stack canaries + guard pages done, ASLR/KASLR/W^X deferred) |
+
+### Phase 10: Minimal libc + Standalone Coreutils
+| Chunk | Description | ~Lines | Status |
+|-------|-------------|--------|--------|
+| 10.1 | arc_libc foundation (libarc.a) — CRT0, string, stdio, stdlib, malloc, unistd, dirent, signal, stat, wait | 1200 | DONE |
+| 10.2 | Retrofit existing programs (init, login, hello, echo, shell → libc) | 200 | DONE |
+| 10.3 | Simple coreutils (cat, echo, wc, head, tail, touch, mkdir, rm) | 300 | DONE |
+| 10.4 | Advanced coreutils (ls, stat, chmod, chown, cp, mv, ps, kill, uname, grep, free) | 500 | DONE |
+| 10.5 | Build system polish (/bin in ramfs, limine.conf, make-iso.sh) | 100 | DONE |
+
+### Phase 11: Graphics — ANSI Console + Virtual Terminals
+| Chunk | Description | ~Lines | Status |
+|-------|-------------|--------|--------|
+| 11.1 | Route TTY output to framebuffer (tty_set_output, dual serial+FB) | 40 | DONE |
+| 11.2 | ANSI escape code parser (cursor, erase, SGR 16+bright colors) | 280 | DONE |
+| 11.3 | Virtual terminal switching (6 VTs, Alt+F1-F6, per-VT buffers) | 380 | DONE |
+| 11.4 | Framebuffer enhancements (cursor get/set, erase display/line, flush) | 110 | DONE |
+
+### Phase 12: Symmetric Multiprocessing
+| Chunk | Description | ~Lines | Status |
+|-------|-------------|--------|--------|
+| 12.1 | Local APIC driver (enable, EOI, IPI, timer calibration) | 200 | DONE |
+| 12.2 | I/O APIC driver (redirection table, PIC→APIC transition) | 220 | DONE |
+| 12.3 | Per-CPU data infrastructure (PerCpu struct, GS base, BSP/AP init) | 260 | DONE |
+| 12.4 | AP bringup via Limine SMP (goto_address, AP entry, online count) | 230 | DONE |
+| 12.5 | SMP safety (PMM/VMM spinlocks) | 100 | DONE |
+| 12.6 | IPI infrastructure (TLB shootdown, reschedule, halt vectors) | 190 | DONE |
+| 12.7 | Per-CPU scheduler + SYSCALL fix (per-CPU run queues, GS:kernel_rsp) | 370 | NOT STARTED |
 
 ---
 
@@ -263,7 +291,10 @@ Create directory structure and all build infrastructure.
 | 7 | 9 | 2,100 | IPC, interactive shell, signals, argv, PATH, cwd, job control |
 | 8 | 9 | 2,025 | VirtIO-net, Ethernet/ARP/IPv4/ICMP stack, ping works |
 | 9 | 6 | 840 | UID/GID credentials, VFS permissions, chmod/chown |
-| **Total** | **63 chunks** | **~12,220** | |
+| 10 | 5 | 2,300 | libc, 19 coreutils, all programs retrofitted |
+| 11 | 4 | 810 | ANSI colors, 6 virtual terminals, Alt+F1-F6 |
+| 12 | 7 | 1,570 | LAPIC/IOAPIC, SMP bringup, IPI, PMM/VMM locks |
+| **Total** | **79 chunks** | **~16,900** | |
 
 ---
 
@@ -271,18 +302,21 @@ Create directory structure and all build infrastructure.
 
 Items intentionally postponed from their original phase:
 
-- **Phase 1.4**: Framebuffer console (pixel rendering, bitmap font)
+- ~~**Phase 1.4**: Framebuffer console~~ **DONE**
 - ~~**Phase 1.9**: PS/2 keyboard driver~~ **DONE**
 - **Phase 1.10**: HAL consolidation (`hal.h` unified interface)
-- **Phase 3.4**: Sleeping mutexes, semaphores, condition variables (spinlock done)
+- ~~**Phase 3.4**: Sleeping mutexes, semaphores, condition variables~~ **DONE**
 - ~~**Phase 3**: Sleep queues~~ **DONE** — Wait queues (3.5)
 - **Phase 3**: Thread-local storage, work queues
-- **Phase 4.1**: ACPI table parsing
+- ~~**Phase 4.1**: ACPI table parsing~~ **DONE**
 - **Phase 4**: Memory barrier HAL abstraction, VirtIO feature caching, DMA buffer pool
 - ~~**Phase 5**: fork/exec/wait (5.5), user pointer validation (copy_from_user/copy_to_user)~~ **DONE**
 - **Phase 6**: Dentry cache
 - ~~**Phase 6**: Mount table~~ **DONE** — Multi-mount VFS with 8 slots (ramfs at /, devfs at /dev, procfs at /proc)
 - ~~**Phase 7**: Process groups / killpg~~ **DONE** — pgid, sig_send_group, setpgid/getpgid/tcsetpgrp, job control
 - **Phase 7**: Signal masking (`sigprocmask`), `sigaction` with `sa_flags`, `-EINTR` for interrupted blocking syscalls, `sigaltstack`, ISR return path signal checking
-- **Phase 8**: Socket API, TCP/UDP, DHCP client, DNS resolver, loopback interface
-- **Phase 9**: /etc/passwd, login authentication, setuid binaries, umask, kernel hardening
+- ~~**Phase 8**: Socket API, TCP/UDP, loopback interface~~ **DONE**
+- **Phase 8**: DHCP client, DNS resolver
+- ~~**Phase 9**: /etc/passwd, login authentication, setuid binaries, umask~~ **DONE**
+- **Phase 9**: Kernel hardening — ASLR, KASLR, full W^X enforcement
+- **Phase 12**: Per-CPU scheduler + SYSCALL per-CPU kernel stack fix (chunk 12.7)

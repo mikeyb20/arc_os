@@ -13,18 +13,21 @@ A long-term project outline for building a custom operating system. Designed aro
 | Phase | Status | Notes |
 |-------|--------|-------|
 | 0 | COMPLETE | Toolchain, build system, Limine, freestanding headers |
-| 1 | MOSTLY COMPLETE | Serial, BootInfo, kprintf, GDT, IDT, PIC, PIT, PS/2 keyboard. Deferred: framebuffer console (1.4), HAL consolidation (1.10) |
+| 1 | COMPLETE | Serial, BootInfo, kprintf, GDT, IDT, PIC, PIT, PS/2 keyboard, framebuffer console (8x16 font, ANSI escape codes, VT switching) |
 | 2 | COMPLETE | PMM bitmap allocator, VMM with own page tables, kmalloc free-list heap |
-| 3 | CORE COMPLETE | TCB, context switch, round-robin scheduler, preemptive multitasking, spinlock, wait queues. Deferred: mutexes/semaphores/condvars, TLS, work queues |
-| 4 | CORE COMPLETE | PCI enumeration, VirtIO common, VirtIO-blk polling read, block device abstraction. Deferred: ACPI (4.1) |
+| 3 | COMPLETE | TCB, context switch, round-robin scheduler, preemptive multitasking, spinlock, wait queues, mutex, semaphore, condvar. Deferred: TLS, work queues |
+| 4 | COMPLETE | PCI enumeration, VirtIO common, VirtIO-blk polling read, block device abstraction, ACPI (RSDP/RSDT/XSDT/MADT parsing) |
 | 5 | COMPLETE | SYSCALL/SYSRET, per-process address spaces, ELF64 loader, init process, FD table, fork/exec/wait, user pointer validation |
-| 6 | MOSTLY COMPLETE | VFS + ramfs (6.1-6.2), file syscalls (6.3), devfs (/dev/null, /dev/zero, /dev/tty), procfs (/proc/meminfo, /proc/uptime, /proc/[pid]/status), path normalization, multi-mount VFS (8 slots). Deferred: FAT32 mounting (6.4 — driver exists) |
+| 6 | COMPLETE | VFS + ramfs, file syscalls, devfs (/dev/null, /dev/zero, /dev/tty), procfs (/proc/meminfo, /proc/uptime, /proc/[pid]/status), path normalization, multi-mount VFS (8 slots), FAT32 mounting via VirtIO-blk |
 | 7 | COMPLETE | PS/2 keyboard, TTY, interactive shell (27 builtins incl jobs/fg/bg), echo/hello binaries, pipes, POSIX signals (signal/kill/sigreturn, SIGINT/SIGCHLD/SIGPIPE/SIGTSTP/SIGSTOP/SIGCONT, Ctrl+C/Ctrl+Z), process groups, job control (& background, fg/bg/jobs), wait queues, PATH lookup, quoting, shell variables, exec argv passing, cwd. Deferred: signal masking, sigaction, -EINTR, sigaltstack |
-| 8 | CORE COMPLETE | VirtIO-net driver (RX/TX queues, IRQ), Ethernet framing, ARP cache (16 entries, learning), IPv4 (header/checksum/routing), ICMP echo (ping). Deferred: socket API (8.3), TCP/UDP, DHCP/DNS (8.4) |
-| 9 | CORE COMPLETE | UID/GID credentials (uid/gid/euid/egid per process), VFS permission checking (owner/group/other rwx), chmod/chown/setuid/setgid/getuid/getgid syscalls. Deferred: /etc/passwd, login, setuid binaries, kernel hardening (9.3) |
-| 10-13 | NOT STARTED | |
+| 8 | MOSTLY COMPLETE | VirtIO-net driver (RX/TX queues, IRQ), Ethernet framing, ARP cache (16 entries, learning), IPv4 (header/checksum/routing), ICMP echo (ping), socket API (9 syscalls), TCP, UDP, loopback (lo0). Deferred: DHCP, DNS |
+| 9 | MOSTLY COMPLETE | UID/GID credentials (uid/gid/euid/egid per process), VFS permission checking (owner/group/other rwx), chmod/chown/setuid/setgid/getuid/getgid syscalls, /etc/passwd, login, umask, stack canaries, guard pages. Deferred: ASLR, KASLR, full W^X |
+| 10 | COMPLETE | Minimal libc (libarc.a), 19 standalone coreutils, all programs retrofitted |
+| 11 | COMPLETE | ANSI escape codes, 6 virtual terminals (Alt+F1-F6), framebuffer routing, double-buffer prep |
+| 12 | MOSTLY COMPLETE | LAPIC, I/O APIC, per-CPU data, Limine SMP bringup, IPI infrastructure, PMM/VMM spinlocks. Deferred: per-CPU scheduler/run queues, SYSCALL per-CPU kernel stack fix, work-stealing |
+| 13 | NOT STARTED | |
 
-**Test infrastructure**: 39 suites, 607 host-side tests — all passing.
+**Test infrastructure**: 44 suites, 674 host-side tests — all passing.
 
 ---
 
@@ -851,11 +854,13 @@ Each step has a concrete milestone — a thing you can boot and demonstrate.
 12. **Phase 7 (pipes)** → Pipes working — `echo hello | cat` — **DONE**
 13. **Phase 7 (signals)** → Signal delivery, Ctrl+C, SIGCHLD, SIGPIPE — **DONE**
 14. **Phase 5.3** → musl libc ported, user programs can use printf()
-15. **Phase 6.4** → FAT32 read/write on VirtIO-blk disk image
-15. **Phase 8** → Ping works over VirtIO-net (ICMP echo reply)
-16. **Phase 9** → Multi-user login, file permissions enforced
-17. **Phase 12** → Boots and runs on multiple cores
-18. **Phase 11, 13** → Graphics, polish, hardening — ongoing
+15. **Phase 6.4** → FAT32 read/write on VirtIO-blk disk image — **DONE**
+16. **Phase 8** → Ping works over VirtIO-net (ICMP echo reply), socket API, TCP, UDP, loopback — **DONE** (deferred: DHCP, DNS)
+17. **Phase 9** → Multi-user login, file permissions enforced, passwd, hardening — **DONE** (deferred: ASLR, KASLR, full W^X)
+18. **Phase 10** → Minimal libc (libarc.a), 19 standalone coreutils — **DONE**
+19. **Phase 11** → ANSI escape codes, 6 virtual terminals, framebuffer routing — **DONE**
+20. **Phase 12** → LAPIC, I/O APIC, SMP bringup, IPI, spinlocks — **MOSTLY DONE** (deferred: per-CPU run queues, work-stealing)
+21. **Phase 13** → Stability, testing, hardening — ongoing
 
 ---
 
