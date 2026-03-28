@@ -1,77 +1,26 @@
 /* arc_os — Interactive shell v0.2
- * Built-in commands using direct syscalls. Freestanding, no libc.
+ * Built-in commands using libarc. Linked against libarc (CRT0 provides _start).
  * Features: PATH lookup, quoting, shell variables, variable expansion. */
 
-#include <stdint.h>
-
-/* --- Syscall wrapper --- */
-
-static inline int64_t syscall3(uint64_t num, uint64_t a0, uint64_t a1, uint64_t a2) {
-    int64_t ret;
-    __asm__ volatile (
-        "syscall"
-        : "=a"(ret)
-        : "a"(num), "D"(a0), "S"(a1), "d"(a2)
-        : "rcx", "r11", "memory"
-    );
-    return ret;
-}
-
-/* --- Syscall numbers --- */
-
-#define SYS_EXIT    0
-#define SYS_WRITE   1
-#define SYS_GETPID  2
-#define SYS_OPEN    3
-#define SYS_READ    4
-#define SYS_CLOSE   5
-#define SYS_STAT    8
-#define SYS_MKDIR   9
-#define SYS_READDIR 10
-#define SYS_UNLINK  11
-#define SYS_DUP2    14
-#define SYS_GETPPID 15
-#define SYS_FORK    16
-#define SYS_EXEC    17
-#define SYS_WAIT    18
-#define SYS_PIPE    19
-#define SYS_CHDIR   23
-#define SYS_GETCWD  24
-#define SYS_GETUID  25
-#define SYS_GETGID  26
-#define SYS_SETUID  27
-#define SYS_SETGID  28
-#define SYS_CHMOD   29
-#define SYS_CHOWN     30
-#define SYS_SETPGID   31
-#define SYS_GETPGID   32
-#define SYS_TCSETPGRP 33
-
-#define SYS_SIGNAL    20
-#define SYS_KILL      21
-
-/* POSIX wait status decoding */
-#define WIFEXITED(s)    (((s) & 0x7F) == 0)
-#define WEXITSTATUS(s)  (((s) >> 8) & 0xFF)
-#define WIFSTOPPED(s)   (((s) & 0xFF) == 0x7F)
-#define WSTOPSIG(s)     (((s) >> 8) & 0xFF)
-
-#define WNOHANG 1
-
-/* --- Open flags (must match kernel/fs/vfs.h) --- */
-
-#define O_RDONLY  0x00
-#define O_WRONLY  0x01
-#define O_CREAT   0x40
-#define O_TRUNC   0x200
-#define O_APPEND  0x400
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <dirent.h>
+#include <syscall.h>
+#include <errno.h>
 
 /* --- VFS types (must match kernel/fs/vfs.h) --- */
 
 #define VFS_FILE      0
 #define VFS_DIRECTORY 1
 
-/* --- Userland struct declarations (must match kernel layout exactly) --- */
+/* --- DirEntry for SYS_READDIR (must match kernel VfsDirEntry layout) --- */
 
 typedef struct {
     char     name[256];
@@ -79,117 +28,21 @@ typedef struct {
     uint8_t  type;
 } DirEntry;
 
-typedef struct {
-    uint64_t inode_num;
-    uint8_t  type;
-    uint64_t size;
-    uint32_t mode;
-    uint32_t uid;
-    uint32_t gid;
-} StatInfo;
-
 /* --- Parsing constants --- */
 
 #define MAX_ARGS 16
 #define MAX_ARGV (MAX_ARGS + 1)  /* +1 for NULL terminator */
 #define LINE_MAX 256
 
-/* --- String utilities (no libc available) --- */
+/* --- Octal parsing helper --- */
 
-static uint64_t sh_strlen(const char *s) {
-    uint64_t n = 0;
-    while (s[n]) n++;
-    return n;
-}
-
-static int sh_strcmp(const char *a, const char *b) {
-    while (*a && *a == *b) { a++; b++; }
-    return (unsigned char)*a - (unsigned char)*b;
-}
-
-static void sh_memset(void *dst, int c, uint64_t n) {
-    uint8_t *d = (uint8_t *)dst;
-    for (uint64_t i = 0; i < n; i++) d[i] = (uint8_t)c;
-}
-
-static int sh_atoi(const char *s) {
-    int neg = 0, val = 0;
-    if (*s == '-') { neg = 1; s++; }
-    while (*s >= '0' && *s <= '9') {
-        val = val * 10 + (*s - '0');
+static uint32_t sh_parse_octal(const char *s) {
+    uint32_t val = 0;
+    while (*s >= '0' && *s <= '7') {
+        val = val * 8 + (uint32_t)(*s - '0');
         s++;
     }
-    return neg ? -val : val;
-}
-
-static uint64_t sh_strlcpy(char *dst, const char *src, uint64_t size) {
-    uint64_t slen = sh_strlen(src);
-    if (size > 0) {
-        uint64_t copy = slen < size - 1 ? slen : size - 1;
-        for (uint64_t i = 0; i < copy; i++) dst[i] = src[i];
-        dst[copy] = '\0';
-    }
-    return slen;
-}
-
-static char *sh_strchr(const char *s, int c) {
-    for (; *s; s++)
-        if (*s == (char)c) return (char *)s;
-    return (void *)0;
-}
-
-static int sh_strncmp(const char *a, const char *b, uint64_t n) __attribute__((unused));
-static int sh_strncmp(const char *a, const char *b, uint64_t n) {
-    for (uint64_t i = 0; i < n; i++) {
-        if (a[i] != b[i] || !a[i])
-            return (unsigned char)a[i] - (unsigned char)b[i];
-    }
-    return 0;
-}
-
-static void sh_memcpy(void *dst, const void *src, uint64_t n) {
-    uint8_t *d = (uint8_t *)dst;
-    const uint8_t *s = (const uint8_t *)src;
-    for (uint64_t i = 0; i < n; i++) d[i] = s[i];
-}
-
-/* --- I/O helpers --- */
-
-static void print(const char *s) {
-    syscall3(SYS_WRITE, 1, (uint64_t)s, sh_strlen(s));
-}
-
-static void println(const char *s) {
-    print(s);
-    syscall3(SYS_WRITE, 1, (uint64_t)"\n", 1);
-}
-
-static void print_num(int64_t n) {
-    char buf[21];
-    int pos = 20;
-    int neg = 0;
-    buf[pos] = '\0';
-
-    if (n < 0) { neg = 1; n = -n; }
-    if (n == 0) { buf[--pos] = '0'; }
-    while (n > 0) {
-        buf[--pos] = '0' + (char)(n % 10);
-        n /= 10;
-    }
-    if (neg) buf[--pos] = '-';
-    print(&buf[pos]);
-}
-
-static void print_octal(uint32_t n) {
-    char buf[12];
-    int pos = 11;
-    buf[pos] = '\0';
-    if (n == 0) { buf[--pos] = '0'; }
-    while (n > 0) {
-        buf[--pos] = '0' + (char)(n & 7);
-        n >>= 3;
-    }
-    print(&buf[pos]);
+    return val;
 }
 
 static void mode_to_rwx(uint32_t mode, char *buf) {
@@ -205,20 +58,8 @@ static void mode_to_rwx(uint32_t mode, char *buf) {
     buf[9] = '\0';
 }
 
-static uint32_t sh_parse_octal(const char *s) {
-    uint32_t val = 0;
-    while (*s >= '0' && *s <= '7') {
-        val = val * 8 + (uint32_t)(*s - '0');
-        s++;
-    }
-    return val;
-}
-
-static void print_error(const char *prefix, int64_t err) {
-    print(prefix);
-    print(": error ");
-    print_num(-err);
-    print("\n");
+static void print_error(const char *prefix, int err) {
+    printf("%s: error %d\n", prefix, err);
 }
 
 /* --- cwd tracking --- */
@@ -226,7 +67,7 @@ static void print_error(const char *prefix, int64_t err) {
 static char shell_cwd[512];
 
 static void refresh_cwd(void) {
-    syscall3(SYS_GETCWD, (uint64_t)shell_cwd, 512, 0);
+    getcwd(shell_cwd, 512);
 }
 
 /* --- Shell variables --- */
@@ -241,26 +82,29 @@ static int  var_count = 0;
 
 static int shell_findvar(const char *name) {
     for (int i = 0; i < var_count; i++)
-        if (sh_strcmp(var_names[i], name) == 0) return i;
+        if (strcmp(var_names[i], name) == 0) return i;
     return -1;
 }
 
 static const char *shell_getvar(const char *name) {
     int i = shell_findvar(name);
-    return i >= 0 ? var_values[i] : (void *)0;
+    return i >= 0 ? var_values[i] : NULL;
 }
 
 static int shell_setvar(const char *name, const char *value) {
-    if (sh_strlen(name) >= VAR_NAME_MAX || sh_strlen(value) >= VAR_VALUE_MAX)
+    if (strlen(name) >= VAR_NAME_MAX || strlen(value) >= VAR_VALUE_MAX)
         return -1;
     int i = shell_findvar(name);
     if (i >= 0) {
-        sh_strlcpy(var_values[i], value, VAR_VALUE_MAX);
+        strncpy(var_values[i], value, VAR_VALUE_MAX - 1);
+        var_values[i][VAR_VALUE_MAX - 1] = '\0';
         return 0;
     }
     if (var_count >= MAX_VARS) return -1;
-    sh_strlcpy(var_names[var_count], name, VAR_NAME_MAX);
-    sh_strlcpy(var_values[var_count], value, VAR_VALUE_MAX);
+    strncpy(var_names[var_count], name, VAR_NAME_MAX - 1);
+    var_names[var_count][VAR_NAME_MAX - 1] = '\0';
+    strncpy(var_values[var_count], value, VAR_VALUE_MAX - 1);
+    var_values[var_count][VAR_VALUE_MAX - 1] = '\0';
     var_count++;
     return 0;
 }
@@ -270,8 +114,8 @@ static int shell_unsetvar(const char *name) {
     if (i < 0) return -1;
     var_count--;
     if (i < var_count) {
-        sh_memcpy(var_names[i], var_names[var_count], VAR_NAME_MAX);
-        sh_memcpy(var_values[i], var_values[var_count], VAR_VALUE_MAX);
+        memcpy(var_names[i], var_names[var_count], VAR_NAME_MAX);
+        memcpy(var_values[i], var_values[var_count], VAR_VALUE_MAX);
     }
     return 0;
 }
@@ -301,11 +145,12 @@ static Job *job_alloc(int32_t pid, int32_t pgid, const char *cmd) {
             job_table[i].pid = pid;
             job_table[i].pgid = pgid;
             job_table[i].stopped = 0;
-            sh_strlcpy(job_table[i].cmd, cmd, 128);
+            strncpy(job_table[i].cmd, cmd, 127);
+            job_table[i].cmd[127] = '\0';
             return &job_table[i];
         }
     }
-    return (void *)0;
+    return NULL;
 }
 
 static Job *job_find_by_id(int id) {
@@ -313,7 +158,7 @@ static Job *job_find_by_id(int id) {
         if (job_table[i].in_use && job_table[i].job_id == id)
             return &job_table[i];
     }
-    return (void *)0;
+    return NULL;
 }
 
 static void job_free(Job *j) {
@@ -321,28 +166,24 @@ static void job_free(Job *j) {
 }
 
 static void job_print(Job *j) {
-    print("[");
-    print_num(j->job_id);
-    print("] ");
-    print(j->stopped ? "Stopped    " : "Running    ");
-    println(j->cmd);
+    printf("[%d] %s%s\n", j->job_id,
+           j->stopped ? "Stopped    " : "Running    ",
+           j->cmd);
 }
 
 /* Reap any completed background jobs (non-blocking) */
 static void reap_background_jobs(void) {
-    int32_t status = 0;
-    int64_t w;
-    while ((w = syscall3(SYS_WAIT, (uint64_t)&status, WNOHANG, 0)) > 0) {
+    int status = 0;
+    pid_t w;
+    while ((w = waitpid(-1, &status, WNOHANG)) > 0) {
         /* Find the job by PID */
         for (int i = 0; i < MAX_JOBS; i++) {
             if (job_table[i].in_use && job_table[i].pid == (int32_t)w) {
                 if (WIFSTOPPED(status)) {
                     job_table[i].stopped = 1;
                 } else {
-                    print("[");
-                    print_num(job_table[i].job_id);
-                    print("] Done       ");
-                    println(job_table[i].cmd);
+                    printf("[%d] Done       %s\n",
+                           job_table[i].job_id, job_table[i].cmd);
                     job_free(&job_table[i]);
                 }
                 break;
@@ -406,7 +247,7 @@ static int expand_variables(const char *input, char *output, uint64_t output_siz
                     continue;
                 }
             } else {
-                /* Outside quotes: \$ → literal $ */
+                /* Outside quotes: \$ -> literal $ */
                 if (input[ri + 1] == '$') {
                     if (wi >= output_size - 1) return -1;
                     output[wi++] = '$';
@@ -422,7 +263,7 @@ static int expand_variables(const char *input, char *output, uint64_t output_siz
 
         /* Dollar expansion */
         if (ch == '$') {
-            /* $$ → literal $ */
+            /* $$ -> literal $ */
             if (input[ri + 1] == '$') {
                 if (wi >= output_size - 1) return -1;
                 output[wi++] = '$';
@@ -443,14 +284,14 @@ static int expand_variables(const char *input, char *output, uint64_t output_siz
 
                 const char *val = shell_getvar(name);
                 if (val) {
-                    uint64_t vlen = sh_strlen(val);
+                    uint64_t vlen = strlen(val);
                     if (wi + vlen >= output_size) return -1;
                     for (uint64_t j = 0; j < vlen; j++) output[wi++] = val[j];
                 }
                 ri = end - 1; /* for loop will ri++ */
                 continue;
             }
-            /* Bare $ at end or before non-name char → literal */
+            /* Bare $ at end or before non-name char -> literal */
             if (wi >= output_size - 1) return -1;
             output[wi++] = '$';
             continue;
@@ -538,7 +379,7 @@ static int parse_line(char *line, char *argv[MAX_ARGV]) {
         line[wi] = '\0';
     }
 
-    argv[argc] = (void *)0; /* NULL-terminate for exec */
+    argv[argc] = NULL; /* NULL-terminate for exec */
     return argc;
 }
 
@@ -556,8 +397,8 @@ typedef struct {
 /* Scan argv for >, >>, < tokens. Compact argv in-place, decrement argc.
  * Returns 0 on success, -1 if an operator has no filename after it. */
 static int parse_redirects(int *argc, char *argv[], Redirect *r) {
-    r->in_file = (void *)0;
-    r->out_file = (void *)0;
+    r->in_file = NULL;
+    r->out_file = NULL;
     r->append = 0;
 
     int out = 0;
@@ -573,7 +414,7 @@ static int parse_redirects(int *argc, char *argv[], Redirect *r) {
             } else {
                 i++;
                 if (i >= *argc) {
-                    print("syntax error: missing filename after >>\n");
+                    printf("syntax error: missing filename after >>\n");
                     return -1;
                 }
                 r->out_file = argv[i];
@@ -587,7 +428,7 @@ static int parse_redirects(int *argc, char *argv[], Redirect *r) {
             } else {
                 i++;
                 if (i >= *argc) {
-                    print("syntax error: missing filename after >\n");
+                    printf("syntax error: missing filename after >\n");
                     return -1;
                 }
                 r->out_file = argv[i];
@@ -601,7 +442,7 @@ static int parse_redirects(int *argc, char *argv[], Redirect *r) {
             } else {
                 i++;
                 if (i >= *argc) {
-                    print("syntax error: missing filename after <\n");
+                    printf("syntax error: missing filename after <\n");
                     return -1;
                 }
                 r->in_file = argv[i];
@@ -618,18 +459,18 @@ static int parse_redirects(int *argc, char *argv[], Redirect *r) {
 /* Open files and dup2 to stdin/stdout. Returns 0 on success, -1 on error. */
 static int apply_redirects(const Redirect *r) {
     if (r->in_file) {
-        int64_t fd = syscall3(SYS_OPEN, (uint64_t)r->in_file, O_RDONLY, 0);
-        if (fd < 0) { print_error(r->in_file, fd); return -1; }
-        syscall3(SYS_DUP2, (uint64_t)fd, 0, 0);
-        syscall3(SYS_CLOSE, (uint64_t)fd, 0, 0);
+        int fd = open(r->in_file, O_RDONLY);
+        if (fd < 0) { print_error(r->in_file, errno); return -1; }
+        dup2(fd, 0);
+        close(fd);
     }
     if (r->out_file) {
         int flags = O_WRONLY | O_CREAT;
         flags |= r->append ? O_APPEND : O_TRUNC;
-        int64_t fd = syscall3(SYS_OPEN, (uint64_t)r->out_file, (uint64_t)flags, 0);
-        if (fd < 0) { print_error(r->out_file, fd); return -1; }
-        syscall3(SYS_DUP2, (uint64_t)fd, 1, 0);
-        syscall3(SYS_CLOSE, (uint64_t)fd, 0, 0);
+        int fd = open(r->out_file, flags);
+        if (fd < 0) { print_error(r->out_file, errno); return -1; }
+        dup2(fd, 1);
+        close(fd);
     }
     return 0;
 }
@@ -639,8 +480,9 @@ static int apply_redirects(const Redirect *r) {
 /* Search PATH for cmd; write full path to resolved. Returns 1 if found, 0 if not. */
 static int resolve_command(const char *cmd, char *resolved, uint64_t buf_size) {
     /* If cmd contains '/', use as-is */
-    if (sh_strchr(cmd, '/')) {
-        sh_strlcpy(resolved, cmd, buf_size);
+    if (strchr(cmd, '/')) {
+        strncpy(resolved, cmd, buf_size - 1);
+        resolved[buf_size - 1] = '\0';
         return 1;
     }
 
@@ -649,9 +491,9 @@ static int resolve_command(const char *cmd, char *resolved, uint64_t buf_size) {
 
     /* Walk PATH entries separated by ':' */
     while (*path) {
-        const char *sep = sh_strchr(path, ':');
-        uint64_t dlen = sep ? (uint64_t)(sep - path) : sh_strlen(path);
-        uint64_t clen = sh_strlen(cmd);
+        const char *sep = strchr(path, ':');
+        uint64_t dlen = sep ? (uint64_t)(sep - path) : strlen(path);
+        uint64_t clen = strlen(cmd);
 
         if (dlen + 1 + clen < buf_size) {
             for (uint64_t i = 0; i < dlen; i++) resolved[i] = path[i];
@@ -659,10 +501,9 @@ static int resolve_command(const char *cmd, char *resolved, uint64_t buf_size) {
             for (uint64_t i = 0; i < clen; i++) resolved[dlen + 1 + i] = cmd[i];
             resolved[dlen + 1 + clen] = '\0';
 
-            StatInfo st;
-            sh_memset(&st, 0, sizeof(st));
-            int64_t r = syscall3(SYS_STAT, (uint64_t)resolved, (uint64_t)&st, 0);
-            if (r == 0 && st.type == VFS_FILE) return 1;
+            struct stat st;
+            memset(&st, 0, sizeof(st));
+            if (stat(resolved, &st) == 0 && st.st_type == VFS_FILE) return 1;
         }
 
         if (!sep) break;
@@ -673,38 +514,35 @@ static int resolve_command(const char *cmd, char *resolved, uint64_t buf_size) {
 }
 
 /* Try resolve_command, then exec. Falls back to raw argv[0] if not found. */
-static int64_t exec_resolved(char *argv[]) {
+static int exec_resolved(char *argv[]) {
     char resolved[256];
     if (resolve_command(argv[0], resolved, 256))
-        return syscall3(SYS_EXEC, (uint64_t)resolved, (uint64_t)argv, 0);
-    return syscall3(SYS_EXEC, (uint64_t)argv[0], (uint64_t)argv, 0);
+        return execv(resolved, argv);
+    return execv(argv[0], argv);
 }
 
 /* Fork, apply redirects in child, dispatch or exec, parent waits. */
 static void execute_with_redirect(int argc, char *argv[], const Redirect *r) {
-    int64_t pid = syscall3(SYS_FORK, 0, 0, 0);
+    pid_t pid = fork();
     if (pid < 0) {
-        print_error("fork", pid);
+        print_error("fork", errno);
         return;
     }
     if (pid == 0) {
         /* Child: apply redirects */
         if (apply_redirects(r) < 0) {
-            syscall3(SYS_EXIT, 1, 0, 0);
-            for (;;) __asm__ volatile ("ud2");
+            exit(1);
         }
         if (argc > 0) {
             /* Try exec first (pass argv for argument passing) */
-            int64_t er = exec_resolved(argv);
-            (void)er;
+            exec_resolved(argv);
             /* Exec failed — try as builtin */
             dispatch(argc, argv);
         }
-        syscall3(SYS_EXIT, 0, 0, 0);
-        for (;;) __asm__ volatile ("ud2");
+        exit(0);
     }
     /* Parent: wait for child */
-    syscall3(SYS_WAIT, 0, 0, 0);
+    wait(NULL);
 }
 
 /* --- Builtin command implementations --- */
@@ -793,9 +631,9 @@ static void dispatch(int argc, char *argv[]) {
     /* Bare assignment: NAME=VALUE */
     if (argc == 1 && try_assignment(argv[0])) {
         char name[VAR_NAME_MAX];
-        const char *eq = sh_strchr(argv[0], '=');
+        const char *eq = strchr(argv[0], '=');
         uint64_t nlen = (uint64_t)(eq - argv[0]);
-        if (nlen >= VAR_NAME_MAX) { print("name too long\n"); return; }
+        if (nlen >= VAR_NAME_MAX) { printf("name too long\n"); return; }
         for (uint64_t j = 0; j < nlen; j++) name[j] = argv[0][j];
         name[nlen] = '\0';
         shell_setvar(name, eq + 1);
@@ -803,38 +641,32 @@ static void dispatch(int argc, char *argv[]) {
     }
 
     for (int i = 0; i < (int)NUM_BUILTINS; i++) {
-        if (sh_strcmp(argv[0], builtins[i].name) == 0) {
+        if (strcmp(argv[0], builtins[i].name) == 0) {
             builtins[i].fn(argc, argv);
             return;
         }
     }
     /* Not a builtin — try fork + exec */
-    int64_t pid = syscall3(SYS_FORK, 0, 0, 0);
-    if (pid < 0) { print_error("fork", pid); return; }
+    pid_t pid = fork();
+    if (pid < 0) { print_error("fork", errno); return; }
     if (pid == 0) {
         /* Child: create own process group */
-        syscall3(SYS_SETPGID, 0, 0, 0);
-        int64_t er = exec_resolved(argv);
-        (void)er;
-        print(argv[0]);
-        println(": command not found");
-        syscall3(SYS_EXIT, 127, 0, 0);
-        for (;;) __asm__ volatile ("ud2");
+        syscall2(SYS_SETPGID, 0, 0);
+        exec_resolved(argv);
+        printf("%s: command not found\n", argv[0]);
+        exit(127);
     }
     /* Parent: set child pgid, give foreground, wait */
-    syscall3(SYS_SETPGID, (uint64_t)pid, (uint64_t)pid, 0);
-    syscall3(SYS_TCSETPGRP, (uint64_t)pid, 0, 0);
-    int32_t status = 0;
-    syscall3(SYS_WAIT, (uint64_t)&status, 0, 0);
-    syscall3(SYS_TCSETPGRP, (uint64_t)shell_pgid, 0, 0);
+    syscall2(SYS_SETPGID, (uint64_t)pid, (uint64_t)pid);
+    syscall1(SYS_TCSETPGRP, (uint64_t)pid);
+    int status = 0;
+    waitpid(-1, &status, 0);
+    syscall1(SYS_TCSETPGRP, (uint64_t)shell_pgid);
     if (WIFSTOPPED(status)) {
         Job *j = job_alloc((int32_t)pid, (int32_t)pid, argv[0]);
         if (j) {
             j->stopped = 1;
-            print("\n[");
-            print_num(j->job_id);
-            print("] Stopped    ");
-            println(argv[0]);
+            printf("\n[%d] Stopped    %s\n", j->job_id, argv[0]);
         }
     }
 }
@@ -843,23 +675,18 @@ static void dispatch(int argc, char *argv[]) {
 
 static void cmd_help(int argc, char *argv[]) {
     (void)argc; (void)argv;
-    println("Available commands:");
+    puts("Available commands:");
     for (int i = 0; i < (int)NUM_BUILTINS; i++) {
-        print("  ");
-        print(builtins[i].name);
-        /* Pad to 10 chars */
-        int len = (int)sh_strlen(builtins[i].name);
-        for (int j = len; j < 10; j++) print(" ");
-        println(builtins[i].help);
+        printf("  %-10s%s\n", builtins[i].name, builtins[i].help);
     }
 }
 
 static void cmd_echo(int argc, char *argv[]) {
     for (int i = 1; i < argc; i++) {
-        if (i > 1) print(" ");
-        print(argv[i]);
+        if (i > 1) printf(" ");
+        printf("%s", argv[i]);
     }
-    print("\n");
+    printf("\n");
 }
 
 static void cmd_ls(int argc, char *argv[]) {
@@ -867,14 +694,14 @@ static void cmd_ls(int argc, char *argv[]) {
     DirEntry entries[16];
     int64_t count = syscall3(SYS_READDIR, (uint64_t)path, (uint64_t)entries, 16);
     if (count < 0) {
-        print_error(path, count);
+        print_error(path, (int)(-count));
         return;
     }
     for (int64_t i = 0; i < count; i++) {
         /* Build full path for stat: path + "/" + name */
         char fullpath[512];
-        uint64_t plen = sh_strlen(path);
-        uint64_t nlen = sh_strlen(entries[i].name);
+        uint64_t plen = strlen(path);
+        uint64_t nlen = strlen(entries[i].name);
         if (plen + 1 + nlen >= 512) continue;
 
         /* Copy path */
@@ -886,43 +713,30 @@ static void cmd_ls(int argc, char *argv[]) {
         for (uint64_t j = 0; j < nlen; j++) fullpath[pos + j] = entries[i].name[j];
         fullpath[pos + nlen] = '\0';
 
-        StatInfo st;
-        sh_memset(&st, 0, sizeof(st));
-        int64_t sr = syscall3(SYS_STAT, (uint64_t)fullpath, (uint64_t)&st, 0);
+        struct stat st;
+        memset(&st, 0, sizeof(st));
+        int sr = stat(fullpath, &st);
 
         /* Type + permissions */
-        print(entries[i].type == VFS_DIRECTORY ? "d" : "-");
+        printf("%s", entries[i].type == VFS_DIRECTORY ? "d" : "-");
         if (sr == 0) {
             char rwx[10];
-            mode_to_rwx(st.mode, rwx);
-            print(rwx);
+            mode_to_rwx(st.st_mode, rwx);
+            printf("%s", rwx);
         } else {
-            print("---------");
+            printf("---------");
         }
-        print(" ");
+        printf(" ");
 
         if (sr == 0 && entries[i].type == VFS_FILE) {
             /* Right-align size in 8 chars */
-            char size_buf[9];
-            sh_memset(size_buf, ' ', 8);
-            size_buf[8] = '\0';
-            int64_t sz = (int64_t)st.size;
-            int p = 7;
-            if (sz == 0) {
-                size_buf[p] = '0';
-            } else {
-                while (sz > 0 && p >= 0) {
-                    size_buf[p--] = '0' + (char)(sz % 10);
-                    sz /= 10;
-                }
-            }
-            print(size_buf);
-            print(" ");
+            printf("%8ld", (long)st.st_size);
+            printf(" ");
         } else {
-            print("         ");
+            printf("         ");
         }
 
-        println(entries[i].name);
+        puts(entries[i].name);
     }
 }
 
@@ -931,168 +745,158 @@ static void cmd_cat(int argc, char *argv[]) {
         /* No file argument — read from stdin (for pipe support) */
         char buf[256];
         for (;;) {
-            int64_t n = syscall3(SYS_READ, 0, (uint64_t)buf, 256);
+            ssize_t n = read(0, buf, 256);
             if (n <= 0) break;
-            syscall3(SYS_WRITE, 1, (uint64_t)buf, (uint64_t)n);
+            write(1, buf, (size_t)n);
         }
         return;
     }
-    int64_t fd = syscall3(SYS_OPEN, (uint64_t)argv[1], O_RDONLY, 0);
-    if (fd < 0) { print_error(argv[1], fd); return; }
+    int fd = open(argv[1], O_RDONLY);
+    if (fd < 0) { print_error(argv[1], errno); return; }
 
     char buf[256];
     for (;;) {
-        int64_t n = syscall3(SYS_READ, (uint64_t)fd, (uint64_t)buf, 256);
+        ssize_t n = read(fd, buf, 256);
         if (n <= 0) break;
-        syscall3(SYS_WRITE, 1, (uint64_t)buf, (uint64_t)n);
+        write(1, buf, (size_t)n);
     }
-    syscall3(SYS_CLOSE, (uint64_t)fd, 0, 0);
+    close(fd);
 }
 
 static void cmd_stat(int argc, char *argv[]) {
-    if (argc < 2) { println("usage: stat <path>"); return; }
-    StatInfo st;
-    sh_memset(&st, 0, sizeof(st));
-    int64_t r = syscall3(SYS_STAT, (uint64_t)argv[1], (uint64_t)&st, 0);
-    if (r < 0) { print_error(argv[1], r); return; }
+    if (argc < 2) { puts("usage: stat <path>"); return; }
+    struct stat st;
+    memset(&st, 0, sizeof(st));
+    int r = stat(argv[1], &st);
+    if (r < 0) { print_error(argv[1], errno); return; }
 
-    print("  File: "); println(argv[1]);
-    print("  Type: "); println(st.type == VFS_DIRECTORY ? "directory" : "file");
-    print(" Inode: "); print_num((int64_t)st.inode_num); print("\n");
-    print("  Size: "); print_num((int64_t)st.size); print("\n");
-    print("  Mode: 0"); print_octal(st.mode); print("\n");
+    printf("  File: %s\n", argv[1]);
+    printf("  Type: %s\n", st.st_type == VFS_DIRECTORY ? "directory" : "file");
+    printf(" Inode: %ld\n", (long)st.st_ino);
+    printf("  Size: %ld\n", (long)st.st_size);
+    printf("  Mode: 0%o\n", st.st_mode);
     char rwx[10];
-    mode_to_rwx(st.mode, rwx);
-    print(" Perms: "); println(rwx);
-    print(" Owner: "); print_num((int64_t)st.uid); print("\n");
-    print(" Group: "); print_num((int64_t)st.gid); print("\n");
+    mode_to_rwx(st.st_mode, rwx);
+    printf(" Perms: %s\n", rwx);
+    printf(" Owner: %ld\n", (long)st.st_uid);
+    printf(" Group: %ld\n", (long)st.st_gid);
 }
 
 static void cmd_mkdir(int argc, char *argv[]) {
-    if (argc < 2) { println("usage: mkdir <dir>"); return; }
-    int64_t r = syscall3(SYS_MKDIR, (uint64_t)argv[1], 0755, 0);
-    if (r < 0) print_error(argv[1], r);
+    if (argc < 2) { puts("usage: mkdir <dir>"); return; }
+    int r = mkdir(argv[1], 0755);
+    if (r < 0) print_error(argv[1], errno);
 }
 
 static void cmd_rm(int argc, char *argv[]) {
-    if (argc < 2) { println("usage: rm <file>"); return; }
-    int64_t r = syscall3(SYS_UNLINK, (uint64_t)argv[1], 0, 0);
-    if (r < 0) print_error(argv[1], r);
+    if (argc < 2) { puts("usage: rm <file>"); return; }
+    int r = unlink(argv[1]);
+    if (r < 0) print_error(argv[1], errno);
 }
 
 static void cmd_touch(int argc, char *argv[]) {
-    if (argc < 2) { println("usage: touch <file>"); return; }
-    int64_t fd = syscall3(SYS_OPEN, (uint64_t)argv[1], O_CREAT | O_WRONLY, 0);
-    if (fd < 0) { print_error(argv[1], fd); return; }
-    syscall3(SYS_CLOSE, (uint64_t)fd, 0, 0);
+    if (argc < 2) { puts("usage: touch <file>"); return; }
+    int fd = open(argv[1], O_CREAT | O_WRONLY);
+    if (fd < 0) { print_error(argv[1], errno); return; }
+    close(fd);
 }
 
 static void cmd_write(int argc, char *argv[]) {
-    if (argc < 3) { println("usage: write <file> <text...>"); return; }
-    int64_t fd = syscall3(SYS_OPEN, (uint64_t)argv[1], O_CREAT | O_WRONLY | O_TRUNC, 0);
-    if (fd < 0) { print_error(argv[1], fd); return; }
+    if (argc < 3) { puts("usage: write <file> <text...>"); return; }
+    int fd = open(argv[1], O_CREAT | O_WRONLY | O_TRUNC);
+    if (fd < 0) { print_error(argv[1], errno); return; }
 
     for (int i = 2; i < argc; i++) {
-        if (i > 2) syscall3(SYS_WRITE, (uint64_t)fd, (uint64_t)" ", 1);
-        syscall3(SYS_WRITE, (uint64_t)fd, (uint64_t)argv[i], sh_strlen(argv[i]));
+        if (i > 2) write(fd, " ", 1);
+        write(fd, argv[i], strlen(argv[i]));
     }
-    syscall3(SYS_WRITE, (uint64_t)fd, (uint64_t)"\n", 1);
-    syscall3(SYS_CLOSE, (uint64_t)fd, 0, 0);
+    write(fd, "\n", 1);
+    close(fd);
 }
 
 static void cmd_uname(int argc, char *argv[]) {
     (void)argc; (void)argv;
-    println("arc_os");
+    puts("arc_os");
 }
 
 static void cmd_clear(int argc, char *argv[]) {
     (void)argc; (void)argv;
-    print("\033[2J\033[H");
+    printf("\033[2J\033[H");
 }
 
 static void cmd_exit(int argc, char *argv[]) {
     int code = 0;
-    if (argc >= 2) code = sh_atoi(argv[1]);
-    syscall3(SYS_EXIT, (uint64_t)code, 0, 0);
-    for (;;) __asm__ volatile ("ud2");
+    if (argc >= 2) code = atoi(argv[1]);
+    exit(code);
 }
 
 static void cmd_run(int argc, char *argv[]) {
-    if (argc < 2) { println("usage: run <path>"); return; }
-    /* Resolve before fork so child doesn't need SYS_STAT */
+    if (argc < 2) { puts("usage: run <path>"); return; }
+    /* Resolve before fork so child doesn't need stat */
     char resolved[256];
     const char *exec_path = argv[1];
     if (resolve_command(argv[1], resolved, 256))
         exec_path = resolved;
-    int64_t pid = syscall3(SYS_FORK, 0, 0, 0);
+    pid_t pid = fork();
     if (pid < 0) {
-        print_error("fork", pid);
+        print_error("fork", errno);
         return;
     }
     if (pid == 0) {
         /* Child: exec the binary (argv+1 so binary gets argv[0]=path) */
-        syscall3(SYS_EXEC, (uint64_t)exec_path, (uint64_t)(argv + 1), 0);
+        execv(exec_path, argv + 1);
         /* If exec fails, exit */
-        println("exec failed");
-        syscall3(SYS_EXIT, 1, 0, 0);
-        for (;;) __asm__ volatile ("ud2");
+        puts("exec failed");
+        exit(1);
     }
     /* Parent: wait for child */
-    int32_t status = -1;
-    syscall3(SYS_WAIT, (uint64_t)&status, 0, 0);
-    print("exited with status ");
+    int status = -1;
+    waitpid(-1, &status, 0);
+    printf("exited with status ");
     if (WIFEXITED(status))
-        print_num((int64_t)WEXITSTATUS(status));
+        printf("%d", WEXITSTATUS(status));
     else
-        print_num((int64_t)status);
-    print("\n");
+        printf("%d", status);
+    printf("\n");
 }
 
 static void cmd_pid(int argc, char *argv[]) {
     (void)argc; (void)argv;
-    int64_t p = syscall3(SYS_GETPID, 0, 0, 0);
-    print("PID: ");
-    print_num(p);
-    print("\n");
+    printf("PID: %d\n", (int)getpid());
 }
 
 static void cmd_cd(int argc, char *argv[]) {
     const char *path = argc >= 2 ? argv[1] : "/";
-    int64_t r = syscall3(SYS_CHDIR, (uint64_t)path, 0, 0);
-    if (r < 0) print_error(path, r);
+    int r = chdir(path);
+    if (r < 0) print_error(path, errno);
     else refresh_cwd();
 }
 
 static void cmd_pwd(int argc, char *argv[]) {
     (void)argc; (void)argv;
     refresh_cwd();
-    println(shell_cwd);
+    puts(shell_cwd);
 }
 
 static void cmd_ppid(int argc, char *argv[]) {
     (void)argc; (void)argv;
-    int64_t p = syscall3(SYS_GETPPID, 0, 0, 0);
-    print("PPID: ");
-    print_num(p);
-    print("\n");
+    printf("PPID: %d\n", (int)getppid());
 }
 
 static void cmd_export(int argc, char *argv[]) {
     if (argc < 2) {
         /* List all variables */
         for (int i = 0; i < var_count; i++) {
-            print(var_names[i]);
-            print("=");
-            println(var_values[i]);
+            printf("%s=%s\n", var_names[i], var_values[i]);
         }
         return;
     }
     for (int i = 1; i < argc; i++) {
         if (try_assignment(argv[i])) {
             char name[VAR_NAME_MAX];
-            const char *eq = sh_strchr(argv[i], '=');
+            const char *eq = strchr(argv[i], '=');
             uint64_t nlen = (uint64_t)(eq - argv[i]);
-            if (nlen >= VAR_NAME_MAX) { print("name too long\n"); continue; }
+            if (nlen >= VAR_NAME_MAX) { printf("name too long\n"); continue; }
             for (uint64_t j = 0; j < nlen; j++) name[j] = argv[i][j];
             name[nlen] = '\0';
             shell_setvar(name, eq + 1);
@@ -1104,14 +908,12 @@ static void cmd_export(int argc, char *argv[]) {
 static void cmd_env(int argc, char *argv[]) {
     (void)argc; (void)argv;
     for (int i = 0; i < var_count; i++) {
-        print(var_names[i]);
-        print("=");
-        println(var_values[i]);
+        printf("%s=%s\n", var_names[i], var_values[i]);
     }
 }
 
 static void cmd_unset(int argc, char *argv[]) {
-    if (argc < 2) { println("usage: unset NAME [...]"); return; }
+    if (argc < 2) { puts("usage: unset NAME [...]"); return; }
     for (int i = 1; i < argc; i++) {
         shell_unsetvar(argv[i]);
     }
@@ -1119,38 +921,35 @@ static void cmd_unset(int argc, char *argv[]) {
 
 static void cmd_whoami(int argc, char *argv[]) {
     (void)argc; (void)argv;
-    int64_t uid = syscall3(SYS_GETUID, 0, 0, 0);
-    if (uid == 0) println("root");
-    else { print("user"); print_num(uid); print("\n"); }
+    uid_t uid = getuid();
+    if (uid == 0) puts("root");
+    else printf("user%d\n", (int)uid);
 }
 
 static void cmd_id(int argc, char *argv[]) {
     (void)argc; (void)argv;
-    int64_t uid = syscall3(SYS_GETUID, 0, 0, 0);
-    int64_t gid = syscall3(SYS_GETGID, 0, 0, 0);
-    print("uid="); print_num(uid);
-    print(" gid="); print_num(gid);
-    print("\n");
+    printf("uid=%d gid=%d\n", (int)getuid(), (int)getgid());
 }
 
 static void cmd_chmod(int argc, char *argv[]) {
-    if (argc < 3) { println("usage: chmod <mode> <path>"); return; }
+    if (argc < 3) { puts("usage: chmod <mode> <path>"); return; }
     uint32_t mode = sh_parse_octal(argv[1]);
-    int64_t r = syscall3(SYS_CHMOD, (uint64_t)argv[2], (uint64_t)mode, 0);
-    if (r < 0) print_error(argv[2], r);
+    int r = chmod(argv[2], (mode_t)mode);
+    if (r < 0) print_error(argv[2], errno);
 }
 
 static void cmd_chown(int argc, char *argv[]) {
-    if (argc < 3) { println("usage: chown <uid[:gid]> <path>"); return; }
-    uint32_t uid = 0, gid = (uint32_t)-1;
+    if (argc < 3) { puts("usage: chown <uid[:gid]> <path>"); return; }
+    uint32_t uid = 0;
+    gid_t gid = (gid_t)-1;
     const char *s = argv[1];
     while (*s >= '0' && *s <= '9') { uid = uid * 10 + (uint32_t)(*s - '0'); s++; }
     if (*s == ':') {
         s++; gid = 0;
-        while (*s >= '0' && *s <= '9') { gid = gid * 10 + (uint32_t)(*s - '0'); s++; }
+        while (*s >= '0' && *s <= '9') { gid = gid * 10 + (gid_t)(*s - '0'); s++; }
     }
-    int64_t r = syscall3(SYS_CHOWN, (uint64_t)argv[2], (uint64_t)uid, (uint64_t)gid);
-    if (r < 0) print_error(argv[2], r);
+    int r = chown(argv[2], (uid_t)uid, gid);
+    if (r < 0) print_error(argv[2], errno);
 }
 
 /* --- Job control builtins --- */
@@ -1164,50 +963,47 @@ static void cmd_jobs(int argc, char *argv[]) {
 }
 
 static void cmd_fg(int argc, char *argv[]) {
-    Job *j = (void *)0;
+    Job *j = NULL;
     if (argc >= 2) {
-        j = job_find_by_id(sh_atoi(argv[1]));
+        j = job_find_by_id(atoi(argv[1]));
     } else {
         /* Most recent job */
         for (int i = MAX_JOBS - 1; i >= 0; i--) {
             if (job_table[i].in_use) { j = &job_table[i]; break; }
         }
     }
-    if (!j) { println("fg: no such job"); return; }
+    if (!j) { puts("fg: no such job"); return; }
 
-    println(j->cmd);
+    puts(j->cmd);
 
     /* Give job the foreground */
-    syscall3(SYS_TCSETPGRP, (uint64_t)j->pgid, 0, 0);
+    syscall1(SYS_TCSETPGRP, (uint64_t)j->pgid);
 
     /* If stopped, send SIGCONT */
     if (j->stopped) {
-        syscall3(SYS_KILL, (uint64_t)(-(int64_t)j->pgid), 18 /* SIGCONT */, 0);
+        kill(-(pid_t)j->pgid, SIGCONT);
         j->stopped = 0;
     }
 
     /* Wait for it */
-    int32_t status = 0;
-    syscall3(SYS_WAIT, (uint64_t)&status, 0, 0);
+    int status = 0;
+    waitpid(-1, &status, 0);
 
     /* Reclaim foreground */
-    syscall3(SYS_TCSETPGRP, (uint64_t)shell_pgid, 0, 0);
+    syscall1(SYS_TCSETPGRP, (uint64_t)shell_pgid);
 
     if (WIFSTOPPED(status)) {
         j->stopped = 1;
-        print("\n[");
-        print_num(j->job_id);
-        print("] Stopped    ");
-        println(j->cmd);
+        printf("\n[%d] Stopped    %s\n", j->job_id, j->cmd);
     } else {
         job_free(j);
     }
 }
 
 static void cmd_bg(int argc, char *argv[]) {
-    Job *j = (void *)0;
+    Job *j = NULL;
     if (argc >= 2) {
-        j = job_find_by_id(sh_atoi(argv[1]));
+        j = job_find_by_id(atoi(argv[1]));
     } else {
         for (int i = MAX_JOBS - 1; i >= 0; i--) {
             if (job_table[i].in_use && job_table[i].stopped) {
@@ -1215,15 +1011,12 @@ static void cmd_bg(int argc, char *argv[]) {
             }
         }
     }
-    if (!j) { println("bg: no such job"); return; }
-    if (!j->stopped) { println("bg: job not stopped"); return; }
+    if (!j) { puts("bg: no such job"); return; }
+    if (!j->stopped) { puts("bg: job not stopped"); return; }
 
     j->stopped = 0;
-    syscall3(SYS_KILL, (uint64_t)(-(int64_t)j->pgid), 18 /* SIGCONT */, 0);
-    print("[");
-    print_num(j->job_id);
-    print("] ");
-    println(j->cmd);
+    kill(-(pid_t)j->pgid, SIGCONT);
+    printf("[%d] %s\n", j->job_id, j->cmd);
 }
 
 /* --- Background execution --- */
@@ -1236,28 +1029,22 @@ static void execute_background(char *line) {
     Redirect redir = {0, 0, 0};
     if (parse_redirects(&argc, argv, &redir) < 0) return;
 
-    int64_t pid = syscall3(SYS_FORK, 0, 0, 0);
-    if (pid < 0) { print_error("fork", pid); return; }
+    pid_t pid = fork();
+    if (pid < 0) { print_error("fork", errno); return; }
     if (pid == 0) {
         /* Child: create own process group */
-        syscall3(SYS_SETPGID, 0, 0, 0);
+        syscall2(SYS_SETPGID, 0, 0);
         if (redir.in_file || redir.out_file)
             apply_redirects(&redir);
-        int64_t er = exec_resolved(argv);
-        (void)er;
+        exec_resolved(argv);
         dispatch(argc, argv);
-        syscall3(SYS_EXIT, 0, 0, 0);
-        for (;;) __asm__ volatile ("ud2");
+        exit(0);
     }
     /* Parent: set child's pgid, add to job table, do NOT wait */
-    syscall3(SYS_SETPGID, (uint64_t)pid, (uint64_t)pid, 0);
+    syscall2(SYS_SETPGID, (uint64_t)pid, (uint64_t)pid);
     Job *j = job_alloc((int32_t)pid, (int32_t)pid, argv[0]);
     if (j) {
-        print("[");
-        print_num(j->job_id);
-        print("] ");
-        print_num(pid);
-        print("\n");
+        printf("[%d] %d\n", j->job_id, (int)pid);
     }
 }
 
@@ -1273,7 +1060,7 @@ static char *find_pipe(char *line) {
         if (ch == '"' && !in_single) { in_double = !in_double; continue; }
         if (ch == '|' && !in_single && !in_double) return &line[i];
     }
-    return (void *)0;
+    return NULL;
 }
 
 /* Strip leading spaces from a string */
@@ -1288,26 +1075,26 @@ static void execute_pipe(char *left, char *right) {
     right = skip_spaces(right);
 
     /* Create pipe */
-    int32_t pipefd[2];
-    int64_t err = syscall3(SYS_PIPE, (uint64_t)pipefd, 0, 0);
+    int pipefd[2];
+    int err = pipe(pipefd);
     if (err < 0) {
-        print_error("pipe", err);
+        print_error("pipe", errno);
         return;
     }
 
-    /* Fork child 1 (writer — runs left command, stdout → pipe write end) */
-    int64_t pid1 = syscall3(SYS_FORK, 0, 0, 0);
+    /* Fork child 1 (writer — runs left command, stdout -> pipe write end) */
+    pid_t pid1 = fork();
     if (pid1 < 0) {
-        print_error("fork", pid1);
-        syscall3(SYS_CLOSE, (uint64_t)pipefd[0], 0, 0);
-        syscall3(SYS_CLOSE, (uint64_t)pipefd[1], 0, 0);
+        print_error("fork", errno);
+        close(pipefd[0]);
+        close(pipefd[1]);
         return;
     }
     if (pid1 == 0) {
         /* Child 1: close read end, dup write end to stdout, close original */
-        syscall3(SYS_CLOSE, (uint64_t)pipefd[0], 0, 0);
-        syscall3(SYS_DUP2, (uint64_t)pipefd[1], 1, 0);
-        syscall3(SYS_CLOSE, (uint64_t)pipefd[1], 0, 0);
+        close(pipefd[0]);
+        dup2(pipefd[1], 1);
+        close(pipefd[1]);
 
         /* Parse and run left command (with optional redirects) */
         char *argv[MAX_ARGV];
@@ -1317,30 +1104,28 @@ static void execute_pipe(char *left, char *right) {
             if (parse_redirects(&argc, argv, &redir) == 0)
                 apply_redirects(&redir);
             /* Try exec first (pass argv) */
-            int64_t r = exec_resolved(argv);
-            (void)r;
+            exec_resolved(argv);
             /* Exec failed — try as builtin */
             dispatch(argc, argv);
         }
-        syscall3(SYS_EXIT, 0, 0, 0);
-        for (;;) __asm__ volatile ("ud2");
+        exit(0);
     }
 
-    /* Fork child 2 (reader — runs right command, stdin → pipe read end) */
-    int64_t pid2 = syscall3(SYS_FORK, 0, 0, 0);
+    /* Fork child 2 (reader — runs right command, stdin -> pipe read end) */
+    pid_t pid2 = fork();
     if (pid2 < 0) {
-        print_error("fork", pid2);
-        syscall3(SYS_CLOSE, (uint64_t)pipefd[0], 0, 0);
-        syscall3(SYS_CLOSE, (uint64_t)pipefd[1], 0, 0);
+        print_error("fork", errno);
+        close(pipefd[0]);
+        close(pipefd[1]);
         /* Wait for child1 */
-        syscall3(SYS_WAIT, 0, 0, 0);
+        wait(NULL);
         return;
     }
     if (pid2 == 0) {
         /* Child 2: close write end, dup read end to stdin, close original */
-        syscall3(SYS_CLOSE, (uint64_t)pipefd[1], 0, 0);
-        syscall3(SYS_DUP2, (uint64_t)pipefd[0], 0, 0);
-        syscall3(SYS_CLOSE, (uint64_t)pipefd[0], 0, 0);
+        close(pipefd[1]);
+        dup2(pipefd[0], 0);
+        close(pipefd[0]);
 
         /* Parse and run right command (with optional redirects) */
         char *argv[MAX_ARGV];
@@ -1349,24 +1134,22 @@ static void execute_pipe(char *left, char *right) {
             Redirect redir = {0, 0, 0};
             if (parse_redirects(&argc, argv, &redir) == 0)
                 apply_redirects(&redir);
-            int64_t r = exec_resolved(argv);
-            (void)r;
+            exec_resolved(argv);
             dispatch(argc, argv);
         }
-        syscall3(SYS_EXIT, 0, 0, 0);
-        for (;;) __asm__ volatile ("ud2");
+        exit(0);
     }
 
     /* Parent: close both pipe ends, wait for both children */
-    syscall3(SYS_CLOSE, (uint64_t)pipefd[0], 0, 0);
-    syscall3(SYS_CLOSE, (uint64_t)pipefd[1], 0, 0);
-    syscall3(SYS_WAIT, 0, 0, 0);
-    syscall3(SYS_WAIT, 0, 0, 0);
+    close(pipefd[0]);
+    close(pipefd[1]);
+    wait(NULL);
+    wait(NULL);
 }
 
 /* --- Entry point --- */
 
-void _start(uint64_t argc, char **argv) {
+int main(int argc, char **argv) {
     (void)argc; (void)argv;
 
     /* Initialize default variables */
@@ -1374,15 +1157,15 @@ void _start(uint64_t argc, char **argv) {
     shell_setvar("HOME", "/");
 
     /* Set shell as its own process group and take foreground */
-    syscall3(SYS_SETPGID, 0, 0, 0);
-    shell_pgid = (int32_t)syscall3(SYS_GETPID, 0, 0, 0);
-    syscall3(SYS_TCSETPGRP, (uint64_t)shell_pgid, 0, 0);
+    syscall2(SYS_SETPGID, 0, 0);
+    shell_pgid = (int32_t)getpid();
+    syscall1(SYS_TCSETPGRP, (uint64_t)shell_pgid);
     /* Ignore SIGTSTP so shell can't be stopped */
-    syscall3(SYS_SIGNAL, 20 /* SIGTSTP */, 1 /* SIG_IGN */, 0);
+    signal(SIGTSTP, SIG_IGN);
 
-    println("arc_os shell v0.2");
-    println("Type 'help' for available commands.");
-    print("\n");
+    puts("arc_os shell v0.2");
+    puts("Type 'help' for available commands.");
+    printf("\n");
 
     char line[LINE_MAX];
     char expanded[LINE_MAX * 2];
@@ -1390,10 +1173,8 @@ void _start(uint64_t argc, char **argv) {
     refresh_cwd();
 
     for (;;) {
-        print("[");
-        print(shell_cwd);
-        print("]$ ");
-        int64_t n = syscall3(SYS_READ, 0, (uint64_t)line, LINE_MAX - 1);
+        printf("[%s]$ ", shell_cwd);
+        ssize_t n = read(0, line, LINE_MAX - 1);
         if (n <= 0) break;
         line[n] = '\0';
 
@@ -1404,7 +1185,7 @@ void _start(uint64_t argc, char **argv) {
 
         /* Expand variables */
         if (expand_variables(line, expanded, sizeof(expanded)) < 0) {
-            println("expansion error: line too long");
+            puts("expansion error: line too long");
             continue;
         }
 
@@ -1428,7 +1209,7 @@ void _start(uint64_t argc, char **argv) {
         } else {
             /* Check for pipe (quote-aware) */
             char *pipe_pos = find_pipe(expanded);
-            if (pipe_pos != (void *)0) {
+            if (pipe_pos != NULL) {
                 *pipe_pos = '\0';
                 execute_pipe(expanded, pipe_pos + 1);
             } else {
@@ -1445,6 +1226,5 @@ void _start(uint64_t argc, char **argv) {
         }
     }
 
-    syscall3(SYS_EXIT, 0, 0, 0);
-    for (;;) __asm__ volatile ("ud2");
+    exit(0);
 }

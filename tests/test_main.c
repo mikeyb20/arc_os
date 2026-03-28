@@ -86,6 +86,22 @@ extern TestCase icmp_tests[];
 extern int icmp_test_count;
 extern TestCase cred_tests[];
 extern int cred_test_count;
+extern TestCase mutex_tests[];
+extern int mutex_test_count;
+extern TestCase acpi_tests[];
+extern int acpi_test_count;
+extern TestCase fb_console_tests[];
+extern int fb_console_test_count;
+extern TestCase passwd_tests[];
+extern int passwd_test_count;
+extern TestCase socket_net_tests[];
+extern int socket_net_test_count;
+extern TestCase arc_string_tests[];
+extern int arc_string_test_count;
+extern TestCase arc_printf_tests[];
+extern int arc_printf_test_count;
+extern TestCase ansi_tests[];
+extern int ansi_test_count;
 
 static void run_suite(const char *suite_name, TestCase *tests, int count) {
     printf("[%s] Running %d tests\n", suite_name, count);
@@ -148,6 +164,14 @@ int main(int argc, char **argv) {
         { "ipv4",         ipv4_tests,         &ipv4_test_count },
         { "icmp",         icmp_tests,         &icmp_test_count },
         { "cred",         cred_tests,         &cred_test_count },
+        { "mutex",        mutex_tests,        &mutex_test_count },
+        { "acpi",         acpi_tests,         &acpi_test_count },
+        { "fb_console",   fb_console_tests,   &fb_console_test_count },
+        { "passwd",       passwd_tests,       &passwd_test_count },
+        { "socket_net",   socket_net_tests,   &socket_net_test_count },
+        { "arc_string",   arc_string_tests,   &arc_string_test_count },
+        { "arc_printf",   arc_printf_tests,   &arc_printf_test_count },
+        { "ansi",         ansi_tests,         &ansi_test_count },
     };
     int suite_count = (int)(sizeof(suites) / sizeof(suites[0]));
 

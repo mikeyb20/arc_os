@@ -27,25 +27,13 @@ mkdir -p "$ISO_ROOT/boot" "$ISO_ROOT/boot/limine" "$ISO_ROOT/EFI/BOOT"
 cp "$BUILD_DIR/kernel.elf" "$ISO_ROOT/boot/kernel.elf"
 cp "$PROJECT_DIR/limine.conf" "$ISO_ROOT/boot/limine/limine.conf"
 
-# Copy init binary if it exists
-if [ -f "$BUILD_DIR/init" ]; then
-    cp "$BUILD_DIR/init" "$ISO_ROOT/boot/init"
-fi
-
-# Copy hello binary if it exists
-if [ -f "$BUILD_DIR/hello" ]; then
-    cp "$BUILD_DIR/hello" "$ISO_ROOT/boot/hello"
-fi
-
-# Copy echo binary if it exists
-if [ -f "$BUILD_DIR/echo" ]; then
-    cp "$BUILD_DIR/echo" "$ISO_ROOT/boot/echo"
-fi
-
-# Copy shell binary if it exists
-if [ -f "$BUILD_DIR/shell" ]; then
-    cp "$BUILD_DIR/shell" "$ISO_ROOT/boot/shell"
-fi
+# Copy all userland binaries
+BINARIES="init login shell hello echo cat wc head tail touch mkdir rm ls stat chmod chown cp mv ps kill uname grep free"
+for bin in $BINARIES; do
+    if [ -f "$BUILD_DIR/$bin" ]; then
+        cp "$BUILD_DIR/$bin" "$ISO_ROOT/boot/$bin"
+    fi
+done
 
 # Copy Limine binaries
 cp "$LIMINE_DIR/limine-bios.sys" "$ISO_ROOT/boot/limine/"

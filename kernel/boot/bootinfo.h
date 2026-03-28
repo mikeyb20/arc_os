@@ -46,7 +46,7 @@ typedef struct {
     char     path[128];
 } BootModule;
 
-#define BOOTINFO_MAX_MODULES 8
+#define BOOTINFO_MAX_MODULES 32
 
 /* Bootloader-agnostic boot information. */
 typedef struct {
