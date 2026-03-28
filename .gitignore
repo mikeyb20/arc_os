@@ -1,6 +1,7 @@
 # Build artifacts
 build/
 build_host/
+build-tests/
 *.o
 *.d
 *.elf
