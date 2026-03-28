@@ -5,6 +5,8 @@
 
 #define IPV4_HEADER_SIZE  20
 #define IPV4_PROTO_ICMP   1
+#define IPV4_PROTO_TCP    6
+#define IPV4_PROTO_UDP   17
 #define IPV4_DEFAULT_TTL  64
 
 typedef struct {

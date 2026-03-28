@@ -88,3 +88,11 @@ arc_os/
 ## Phase Tracking
 
 Current phase progress is tracked in `overview.md`. Each phase has concrete milestones. Follow the "Suggested Order of Attack" section for implementation sequence.
+
+## Key Docs
+
+- Workflow philosophy: `docs/WORKFLOW.md`
+- Skill specifications: `docs/SKILL-MAP.md`
+- Development plans: `docs/plans/`
+- Architecture decisions: `docs/decisions/`
+- Session state: `scratchpad.md`

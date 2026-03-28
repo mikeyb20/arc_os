@@ -8,6 +8,7 @@
 #define VFS_FILE      0
 #define VFS_DIRECTORY 1
 #define VFS_PIPE      2
+#define VFS_SOCKET    3
 
 /* Maximum length of a path component name (excluding NUL) */
 #define VFS_NAME_MAX  256
@@ -114,6 +115,11 @@ typedef struct {
     uint32_t uid;
     uint32_t gid;
 } VfsStat;
+
+/* Special mode bits */
+#define S_ISUID  04000  /* Set-user-ID on execution */
+#define S_ISGID  02000  /* Set-group-ID on execution */
+#define S_ISVTX  01000  /* Sticky bit */
 
 /* Access check flags */
 #define R_OK  4

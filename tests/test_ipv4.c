@@ -11,6 +11,8 @@
 #define ARCHOS_NET_NETIF_H
 #define ARCHOS_NET_ARP_H
 #define ARCHOS_NET_ICMP_H
+#define ARCHOS_NET_UDP_H
+#define ARCHOS_NET_TCP_H
 #define ARCHOS_LIB_MEM_H
 #define ARCHOS_LIB_KPRINTF_H
 
@@ -20,6 +22,8 @@
 #define ETH_TYPE_IPV4   0x0800
 #define IPV4_HEADER_SIZE 20
 #define IPV4_PROTO_ICMP  1
+#define IPV4_PROTO_TCP   6
+#define IPV4_PROTO_UDP  17
 #define IPV4_DEFAULT_TTL 64
 
 static inline uint16_t htons(uint16_t h) {
@@ -108,6 +112,20 @@ static int eth_send(struct NetIf *nif, const uint8_t dst[ETH_ALEN],
 }
 
 static void kprintf(const char *fmt, ...) { (void)fmt; }
+
+/* Stubs for udp_rx and tcp_rx (now called from ipv4_rx) */
+static int udp_rx_called;
+static void udp_rx(struct NetIf *nif, uint32_t src_ip, uint32_t dst_ip,
+                   const void *data, uint32_t len) {
+    (void)nif; (void)src_ip; (void)dst_ip; (void)data; (void)len;
+    udp_rx_called++;
+}
+static int tcp_rx_called;
+static void tcp_rx(struct NetIf *nif, uint32_t src_ip, uint32_t dst_ip,
+                   const void *data, uint32_t len) {
+    (void)nif; (void)src_ip; (void)dst_ip; (void)data; (void)len;
+    tcp_rx_called++;
+}
 
 /* Include ipv4.c */
 #include "../kernel/net/ipv4.c"

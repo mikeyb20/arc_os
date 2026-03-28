@@ -23,6 +23,7 @@ static void proc_setup(Process *p) {
     p->pid = next_pid++;
     p->pgid = p->pid;  /* Each process starts as its own group leader */
     p->state = PROC_ALIVE;
+    p->umask = 022;     /* Default: owner full, group/other no write */
     strncpy(p->cwd, "/", PATH_MAX);
     sig_init(&p->sig);
     wq_init(&p->child_exit_wq);
@@ -162,6 +163,7 @@ Process *proc_fork(Process *parent, const ForkContext *user_ctx) {
     child->gid  = parent->gid;
     child->euid = parent->euid;
     child->egid = parent->egid;
+    child->umask = parent->umask;
     child->pgid = parent->pgid;
     child->parent = parent;
 

@@ -16,7 +16,7 @@ set(CMAKE_RANLIB "${CROSS_PREFIX}ranlib")
 # Freestanding C flags
 set(CMAKE_C_FLAGS_INIT
     "-ffreestanding -nostdlib -nostdinc -mno-red-zone -mcmodel=kernel \
-     -fno-pic -fno-pie -fno-stack-protector -Wall -Wextra -Werror -std=c11")
+     -fno-pic -fno-pie -fstack-protector-strong -Wall -Wextra -Werror -std=c11")
 
 # Skip compiler checks — freestanding environment has no libc
 set(CMAKE_C_COMPILER_WORKS TRUE)

@@ -1,11 +1,15 @@
 #include "net/net.h"
 #include "net/netif.h"
 #include "net/arp.h"
+#include "net/loopback.h"
 #include "net/net_util.h"
 #include "lib/kprintf.h"
 
 void net_init(void) {
     arp_init();
+
+    /* Register loopback interface (127.0.0.1) */
+    loopback_init();
 
     NetIf *nif = netif_get_default();
     if (!nif) {

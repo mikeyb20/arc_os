@@ -58,3 +58,7 @@ limine/
 # Misc
 .DS_Store
 *.log
+
+# Workflow state
+scratchpad*.md
+.claude/scope.txt

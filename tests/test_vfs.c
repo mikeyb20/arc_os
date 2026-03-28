@@ -51,6 +51,7 @@ typedef struct Process {
     gid_t gid;
     uid_t euid;
     gid_t egid;
+    uint32_t umask;
 } Process;
 static Process *vfs_test_proc_ptr = NULL;
 static Process *proc_current(void) { return vfs_test_proc_ptr; }
@@ -675,6 +676,63 @@ static int test_create_sets_ownership(void) {
     return 0;
 }
 
+static int test_umask_applied_on_create(void) {
+    setup_vfs();
+    Process user_proc = { .euid = 0, .egid = 0, .umask = 022 };
+    vfs_test_proc_ptr = &user_proc;
+    VfsFile f;
+    int r = vfs_open("/masked_file", O_CREAT | O_WRONLY, &f);
+    ASSERT_EQ(r, 0);
+    vfs_close(&f);
+    VfsNode *node = vfs_resolve("/masked_file");
+    ASSERT_TRUE(node != NULL);
+    /* Default file mode 0666 & ~022 = 0644 */
+    ASSERT_EQ(node->mode, 0644);
+    return 0;
+}
+
+static int test_umask_applied_on_mkdir(void) {
+    setup_vfs();
+    Process user_proc = { .euid = 0, .egid = 0, .umask = 077 };
+    vfs_test_proc_ptr = &user_proc;
+    int r = vfs_mkdir("/restricted", 0777);
+    ASSERT_EQ(r, 0);
+    VfsStat st;
+    ASSERT_EQ(vfs_stat("/restricted", &st), 0);
+    /* 0777 & ~077 = 0700 */
+    ASSERT_EQ(st.mode, 0700);
+    return 0;
+}
+
+static int test_umask_zero_preserves_mode(void) {
+    setup_vfs();
+    Process user_proc = { .euid = 0, .egid = 0, .umask = 0 };
+    vfs_test_proc_ptr = &user_proc;
+    VfsFile f;
+    int r = vfs_open("/full_perms", O_CREAT | O_WRONLY, &f);
+    ASSERT_EQ(r, 0);
+    vfs_close(&f);
+    VfsNode *node = vfs_resolve("/full_perms");
+    ASSERT_TRUE(node != NULL);
+    /* 0666 & ~0 = 0666 */
+    ASSERT_EQ(node->mode, 0666);
+    return 0;
+}
+
+static int test_umask_no_process_gets_default(void) {
+    setup_vfs();
+    vfs_test_proc_ptr = NULL;
+    VfsFile f;
+    int r = vfs_open("/kernel_file", O_CREAT | O_WRONLY, &f);
+    ASSERT_EQ(r, 0);
+    vfs_close(&f);
+    VfsNode *node = vfs_resolve("/kernel_file");
+    ASSERT_TRUE(node != NULL);
+    /* No process context: default 0666 */
+    ASSERT_EQ(node->mode, 0666);
+    return 0;
+}
+
 /* --- Test suite export --- */
 
 TestCase vfs_tests[] = {
@@ -720,6 +778,10 @@ TestCase vfs_tests[] = {
     { "open_writable_checks_write",    test_open_writable_checks_write },
     { "mkdir_checks_parent_wx",        test_mkdir_checks_parent_wx },
     { "create_sets_ownership",         test_create_sets_ownership },
+    { "umask_applied_on_create",       test_umask_applied_on_create },
+    { "umask_applied_on_mkdir",        test_umask_applied_on_mkdir },
+    { "umask_zero_preserves_mode",     test_umask_zero_preserves_mode },
+    { "umask_no_process_gets_default", test_umask_no_process_gets_default },
 };
 
 int vfs_test_count = sizeof(vfs_tests) / sizeof(vfs_tests[0]);

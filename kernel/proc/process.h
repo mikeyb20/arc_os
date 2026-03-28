@@ -50,6 +50,7 @@ typedef struct Process {
     gid_t           gid;            /* Real group ID */
     uid_t           euid;           /* Effective user ID */
     gid_t           egid;           /* Effective group ID */
+    uint32_t        umask;          /* File creation permission mask */
     SigState        sig;            /* Per-process signal state */
     WaitQueue       child_exit_wq;  /* Parents sleep here in sys_wait */
     struct Process *parent;

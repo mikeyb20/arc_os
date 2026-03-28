@@ -211,10 +211,13 @@ int vfs_open(const char *path, uint32_t flags, VfsFile *out) {
         node = parent->ops->create(parent, name, VFS_FILE);
         if (node == NULL) return -ENOMEM;
 
-        /* Set ownership on new file */
+        /* Set ownership and default mode (apply umask) on new file */
         if (p != NULL) {
             node->uid = p->euid;
             node->gid = p->egid;
+            node->mode = 0666 & ~p->umask;
+        } else {
+            node->mode = 0666;
         }
     }
 
@@ -341,10 +344,13 @@ int vfs_mkdir(const char *path, uint32_t mode) {
     VfsNode *dir = parent->ops->create(parent, name, VFS_DIRECTORY);
     if (dir == NULL) return -ENOMEM;
 
-    dir->mode = mode;
+    /* Apply umask to requested mode */
     if (p != NULL) {
+        dir->mode = mode & ~p->umask;
         dir->uid = p->euid;
         dir->gid = p->egid;
+    } else {
+        dir->mode = mode;
     }
     return VFS_OK;
 }

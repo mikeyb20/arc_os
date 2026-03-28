@@ -19,10 +19,12 @@ A long-term project outline for building a custom operating system. Designed aro
 | 4 | CORE COMPLETE | PCI enumeration, VirtIO common, VirtIO-blk polling read, block device abstraction. Deferred: ACPI (4.1) |
 | 5 | COMPLETE | SYSCALL/SYSRET, per-process address spaces, ELF64 loader, init process, FD table, fork/exec/wait, user pointer validation |
 | 6 | MOSTLY COMPLETE | VFS + ramfs (6.1-6.2), file syscalls (6.3), devfs (/dev/null, /dev/zero, /dev/tty), procfs (/proc/meminfo, /proc/uptime, /proc/[pid]/status), path normalization, multi-mount VFS (8 slots). Deferred: FAT32 mounting (6.4 — driver exists) |
-| 7 | MOSTLY COMPLETE | PS/2 keyboard, TTY, interactive shell (20 builtins), echo/hello binaries, pipes (`cmd1 \| cmd2`), POSIX signals (signal/kill/sigreturn, SIGINT/SIGCHLD/SIGPIPE, Ctrl+C), wait queues replace busy-waits, PATH lookup, quoting, shell variables, variable expansion, exec argv passing, cwd (chdir/getcwd), shell auto-exec of non-builtins. Deferred: signal masking, sigaction, -EINTR, process groups |
-| 8-13 | NOT STARTED | |
+| 7 | COMPLETE | PS/2 keyboard, TTY, interactive shell (27 builtins incl jobs/fg/bg), echo/hello binaries, pipes, POSIX signals (signal/kill/sigreturn, SIGINT/SIGCHLD/SIGPIPE/SIGTSTP/SIGSTOP/SIGCONT, Ctrl+C/Ctrl+Z), process groups, job control (& background, fg/bg/jobs), wait queues, PATH lookup, quoting, shell variables, exec argv passing, cwd. Deferred: signal masking, sigaction, -EINTR, sigaltstack |
+| 8 | CORE COMPLETE | VirtIO-net driver (RX/TX queues, IRQ), Ethernet framing, ARP cache (16 entries, learning), IPv4 (header/checksum/routing), ICMP echo (ping). Deferred: socket API (8.3), TCP/UDP, DHCP/DNS (8.4) |
+| 9 | CORE COMPLETE | UID/GID credentials (uid/gid/euid/egid per process), VFS permission checking (owner/group/other rwx), chmod/chown/setuid/setgid/getuid/getgid syscalls. Deferred: /etc/passwd, login, setuid binaries, kernel hardening (9.3) |
+| 10-13 | NOT STARTED | |
 
-**Test infrastructure**: 33 suites, 521 host-side tests — all passing.
+**Test infrastructure**: 39 suites, 607 host-side tests — all passing.
 
 ---
 

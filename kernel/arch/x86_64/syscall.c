@@ -21,6 +21,7 @@
 #include "proc/signal.h"
 #include "proc/waitqueue.h"
 #include "lib/string.h"
+#include "net/socket.h"
 
 /* Exported from syscall_entry.asm: user context saved during SYSCALL */
 extern uint64_t syscall_saved_user_rip;
@@ -552,14 +553,25 @@ static int64_t sys_exec(uint64_t path_addr, uint64_t argv_addr, uint64_t a2,
     err = vmm_map_user_stack(new_pml4);
     if (err != 0) { vmm_free_user_pages(new_pml4); return err; }
 
-    /* 6. Switch to new address space */
+    /* 6. Check setuid/setgid bits on the executable */
+    VfsNode *exec_node = vfs_resolve(abs);
+    if (exec_node != NULL) {
+        if (exec_node->mode & S_ISUID) {
+            p->euid = exec_node->uid;
+        }
+        if (exec_node->mode & S_ISGID) {
+            p->egid = exec_node->gid;
+        }
+    }
+
+    /* 7. Switch to new address space */
     p->page_table = new_pml4;
     p->brk_start = result.brk_start;
     p->brk_current = result.brk_start;
     vmm_free_user_pages(old_pml4);
     paging_write_cr3(new_pml4);
 
-    /* 7. Write argv onto new user stack */
+    /* 8. Write argv onto new user stack */
     uint64_t user_rsp, argv_ptr;
     exec_setup_user_stack(&args, &user_rsp, &argv_ptr);
 
@@ -899,6 +911,160 @@ static int64_t sys_tcsetpgrp(uint64_t pgid_arg, uint64_t a1, uint64_t a2,
     return 0;
 }
 
+/* SYS_UMASK: set file creation mask, return previous mask */
+static int64_t sys_umask(uint64_t new_mask, uint64_t a1, uint64_t a2,
+                          uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+    Process *p = proc_current();
+    if (p == NULL) return -ENOSYS;
+    uint32_t old = p->umask;
+    p->umask = (uint32_t)new_mask & 0777;
+    return (int64_t)old;
+}
+
+/* --- Socket syscalls --- */
+
+/* SYS_SOCKET: create a socket */
+static int64_t sys_socket(uint64_t family, uint64_t type, uint64_t protocol,
+                           uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a3; (void)a4; (void)a5;
+    Process *p = proc_current();
+    if (p == NULL || p->fd_table == NULL) return -ENOSYS;
+
+    int sk_idx = socket_create((uint16_t)family, (uint16_t)type, (uint16_t)protocol);
+    if (sk_idx < 0) return sk_idx;
+
+    int fd = fd_alloc(p->fd_table);
+    if (fd < 0) { socket_free(sk_idx); return -ENOMEM; }
+
+    /* Set up FD entry to track socket index */
+    VfsFile *f = fd_get(p->fd_table, fd);
+    f->node = NULL;  /* No VfsNode for sockets — use offset as socket index */
+    f->offset = (uint64_t)sk_idx;
+    f->flags = VFS_SOCKET;  /* Mark as socket */
+    return fd;
+}
+
+/* Helper: get Socket from fd */
+static Socket *fd_to_socket(int fd) {
+    Process *p = proc_current();
+    if (p == NULL || p->fd_table == NULL) return NULL;
+    VfsFile *f = fd_get(p->fd_table, fd);
+    if (f == NULL || f->flags != VFS_SOCKET) return NULL;
+    return socket_get((int)f->offset);
+}
+
+/* SYS_BIND: bind socket to address */
+static int64_t sys_bind(uint64_t fd, uint64_t addr_ptr, uint64_t addrlen,
+                         uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a3; (void)a4; (void)a5;
+    if (!user_ptr_valid((void *)addr_ptr, sizeof(SockAddrIn))) return -EINVAL;
+    Socket *sk = fd_to_socket((int)fd);
+    if (sk == NULL) return -EBADF;
+    const SockAddrIn *addr = (const SockAddrIn *)addr_ptr;
+    (void)addrlen;
+    return socket_bind(sk, addr->sin_addr, addr->sin_port);
+}
+
+/* SYS_LISTEN: mark socket as listening */
+static int64_t sys_listen(uint64_t fd, uint64_t backlog, uint64_t a2,
+                           uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a2; (void)a3; (void)a4; (void)a5;
+    Socket *sk = fd_to_socket((int)fd);
+    if (sk == NULL) return -EBADF;
+    return socket_listen(sk, (int)backlog);
+}
+
+/* SYS_ACCEPT: accept incoming connection */
+static int64_t sys_accept(uint64_t fd, uint64_t addr_ptr, uint64_t addrlen_ptr,
+                           uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a3; (void)a4; (void)a5;
+    Socket *sk = fd_to_socket((int)fd);
+    if (sk == NULL) return -EBADF;
+
+    SockAddrIn addr;
+    int child_idx = socket_accept(sk, &addr);
+    if (child_idx < 0) return child_idx;
+
+    /* Create fd for the accepted socket */
+    Process *p = proc_current();
+    int new_fd = fd_alloc(p->fd_table);
+    if (new_fd < 0) { socket_free(child_idx); return -ENOMEM; }
+
+    VfsFile *f = fd_get(p->fd_table, new_fd);
+    f->node = NULL;
+    f->offset = (uint64_t)child_idx;
+    f->flags = VFS_SOCKET;
+
+    if (addr_ptr && user_ptr_valid((void *)addr_ptr, sizeof(SockAddrIn))) {
+        *(SockAddrIn *)addr_ptr = addr;
+    }
+    (void)addrlen_ptr;
+
+    return new_fd;
+}
+
+/* SYS_CONNECT: connect to remote address */
+static int64_t sys_connect(uint64_t fd, uint64_t addr_ptr, uint64_t addrlen,
+                            uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a3; (void)a4; (void)a5; (void)addrlen;
+    if (!user_ptr_valid((void *)addr_ptr, sizeof(SockAddrIn))) return -EINVAL;
+    Socket *sk = fd_to_socket((int)fd);
+    if (sk == NULL) return -EBADF;
+    const SockAddrIn *addr = (const SockAddrIn *)addr_ptr;
+    return socket_connect(sk, addr->sin_addr, addr->sin_port);
+}
+
+/* SYS_SEND: send data on connected socket */
+static int64_t sys_send(uint64_t fd, uint64_t buf_addr, uint64_t len,
+                         uint64_t flags, uint64_t a4, uint64_t a5) {
+    (void)flags; (void)a4; (void)a5;
+    if (!user_ptr_valid((void *)buf_addr, len)) return -EINVAL;
+    Socket *sk = fd_to_socket((int)fd);
+    if (sk == NULL) return -EBADF;
+    return socket_send(sk, (const void *)buf_addr, (uint32_t)len);
+}
+
+/* SYS_RECV: receive data from socket */
+static int64_t sys_recv(uint64_t fd, uint64_t buf_addr, uint64_t len,
+                         uint64_t flags, uint64_t a4, uint64_t a5) {
+    (void)flags; (void)a4; (void)a5;
+    if (!user_ptr_valid((void *)buf_addr, len)) return -EINVAL;
+    Socket *sk = fd_to_socket((int)fd);
+    if (sk == NULL) return -EBADF;
+    return socket_recv(sk, (void *)buf_addr, (uint32_t)len);
+}
+
+/* SYS_SENDTO: send datagram with destination */
+static int64_t sys_sendto(uint64_t fd, uint64_t buf_addr, uint64_t len,
+                           uint64_t flags, uint64_t addr_ptr, uint64_t addrlen) {
+    (void)flags; (void)addrlen;
+    if (!user_ptr_valid((void *)buf_addr, len)) return -EINVAL;
+    if (!user_ptr_valid((void *)addr_ptr, sizeof(SockAddrIn))) return -EINVAL;
+    Socket *sk = fd_to_socket((int)fd);
+    if (sk == NULL) return -EBADF;
+    const SockAddrIn *addr = (const SockAddrIn *)addr_ptr;
+    return socket_sendto(sk, (const void *)buf_addr, (uint32_t)len,
+                         addr->sin_addr, addr->sin_port);
+}
+
+/* SYS_RECVFROM: receive datagram with sender info */
+static int64_t sys_recvfrom(uint64_t fd, uint64_t buf_addr, uint64_t len,
+                             uint64_t flags, uint64_t addr_ptr, uint64_t addrlen_ptr) {
+    (void)flags; (void)addrlen_ptr;
+    if (!user_ptr_valid((void *)buf_addr, len)) return -EINVAL;
+    Socket *sk = fd_to_socket((int)fd);
+    if (sk == NULL) return -EBADF;
+    SockAddrIn addr;
+    int ret = socket_recvfrom(sk, (void *)buf_addr, (uint32_t)len,
+                              &addr.sin_addr, &addr.sin_port);
+    if (ret > 0 && addr_ptr && user_ptr_valid((void *)addr_ptr, sizeof(SockAddrIn))) {
+        addr.sin_family = AF_INET;
+        *(SockAddrIn *)addr_ptr = addr;
+    }
+    return ret;
+}
+
 /* --- Dispatcher --- */
 
 int64_t syscall_dispatch(uint64_t num, uint64_t a0, uint64_t a1, uint64_t a2,
@@ -972,6 +1138,16 @@ void syscall_init(void) {
     syscall_register(SYS_SETPGID,   sys_setpgid);
     syscall_register(SYS_GETPGID,   sys_getpgid);
     syscall_register(SYS_TCSETPGRP, sys_tcsetpgrp);
+    syscall_register(SYS_UMASK,     sys_umask);
+    syscall_register(SYS_SOCKET,    sys_socket);
+    syscall_register(SYS_BIND,      sys_bind);
+    syscall_register(SYS_LISTEN,    sys_listen);
+    syscall_register(SYS_ACCEPT,    sys_accept);
+    syscall_register(SYS_CONNECT,   sys_connect);
+    syscall_register(SYS_SEND,      sys_send);
+    syscall_register(SYS_RECV,      sys_recv);
+    syscall_register(SYS_SENDTO,    sys_sendto);
+    syscall_register(SYS_RECVFROM,  sys_recvfrom);
 
     kprintf("[SYSCALL] Initialized (LSTAR=0x%lx, STAR=0x%lx)\n",
             (uint64_t)syscall_entry, star);

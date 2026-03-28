@@ -126,6 +126,7 @@ typedef struct Process {
     uint32_t        gid;
     uint32_t        euid;
     uint32_t        egid;
+    uint32_t        umask;
     SigState        sig;
     WaitQueue       child_exit_wq;
     struct Process *parent;

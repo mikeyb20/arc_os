@@ -41,6 +41,16 @@
 #define SYS_SETPGID   31
 #define SYS_GETPGID   32
 #define SYS_TCSETPGRP 33
+#define SYS_UMASK     34
+#define SYS_SOCKET    35
+#define SYS_BIND      36
+#define SYS_LISTEN    37
+#define SYS_ACCEPT    38
+#define SYS_CONNECT   39
+#define SYS_SEND      40
+#define SYS_RECV      41
+#define SYS_SENDTO    42
+#define SYS_RECVFROM  43
 
 /* Syscall handler type: up to 6 arguments, returns int64_t */
 typedef int64_t (*syscall_handler_t)(uint64_t, uint64_t, uint64_t,

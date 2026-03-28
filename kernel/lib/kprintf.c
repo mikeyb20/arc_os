@@ -5,12 +5,25 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* Secondary output hook (e.g., framebuffer console) */
+static void (*putchar_hook)(char c);
+
+void kprintf_set_putchar_hook(void (*hook)(char c)) {
+    putchar_hook = hook;
+}
+
+/* Output one character to serial + optional hook. */
+static void emit(char c) {
+    serial_putchar(c);
+    if (putchar_hook) putchar_hook(c);
+}
+
 static void print_uint64(uint64_t val, int base) {
     char buf[21]; /* max 20 digits for uint64 in decimal + NUL */
     int i = 0;
 
     if (val == 0) {
-        serial_putchar('0');
+        emit('0');
         return;
     }
 
@@ -22,13 +35,13 @@ static void print_uint64(uint64_t val, int base) {
 
     /* Print digits in reverse order. */
     while (i > 0) {
-        serial_putchar(buf[--i]);
+        emit(buf[--i]);
     }
 }
 
 static void print_int64(int64_t val) {
     if (val < 0) {
-        serial_putchar('-');
+        emit('-');
         /* Handle INT64_MIN: -(INT64_MIN) overflows, so cast after negate. */
         if (val == INT64_MIN) {
             print_uint64((uint64_t)INT64_MAX + 1, 10);
@@ -40,13 +53,13 @@ static void print_int64(int64_t val) {
 }
 
 static void print_ptr(uint64_t val) {
-    serial_putchar('0');
-    serial_putchar('x');
+    emit('0');
+    emit('x');
 
     /* Print exactly 16 hex digits, zero-padded. */
     for (int shift = 60; shift >= 0; shift -= 4) {
         uint64_t nibble = (val >> shift) & 0xF;
-        serial_putchar((nibble < 10) ? '0' + nibble : 'a' + (nibble - 10));
+        emit((nibble < 10) ? '0' + nibble : 'a' + (nibble - 10));
     }
 }
 
@@ -56,7 +69,7 @@ void kprintf(const char *fmt, ...) {
 
     for (int i = 0; fmt[i] != '\0'; i++) {
         if (fmt[i] != '%') {
-            serial_putchar(fmt[i]);
+            emit(fmt[i]);
             continue;
         }
 
@@ -106,20 +119,20 @@ void kprintf(const char *fmt, ...) {
                 s = "(null)";
             }
             while (*s) {
-                serial_putchar(*s++);
+                emit(*s++);
             }
             break;
         }
         case '%':
-            serial_putchar('%');
+            emit('%');
             break;
         default:
             /* Unknown specifier — print literally. */
-            serial_putchar('%');
+            emit('%');
             if (is_long) {
-                serial_putchar('l');
+                emit('l');
             }
-            serial_putchar(fmt[i]);
+            emit(fmt[i]);
             break;
         }
     }

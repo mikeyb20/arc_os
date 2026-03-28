@@ -222,6 +222,30 @@ Create directory structure and all build infrastructure.
 | 7.6 | exec() argv passing + shell auto-exec | 200 | DONE |
 | 7.7 | PATH lookup, quoting, shell variables, variable expansion | 300 | DONE |
 | 7.8 | cwd support (chdir/getcwd syscalls, cd/pwd builtins) | 100 | DONE |
+| 7.9 | Job control (process groups, SIGTSTP/SIGSTOP/SIGCONT, fg/bg/jobs, &) | 250 | DONE |
+
+### Phase 8: Networking
+| Chunk | Description | ~Lines | Status |
+|-------|-------------|--------|--------|
+| 8.1 | VirtIO-net driver (RX/TX queues, IRQ, MAC) | 230 | DONE |
+| 8.2a | Ethernet frame handling + ARP cache | 190 | DONE |
+| 8.2b | IPv4 layer (header, checksum, routing) | 120 | DONE |
+| 8.2c | ICMP echo (ping request/reply) | 70 | DONE |
+| 8.2d | Network interface layer + utilities (htons, checksum) | 90 | DONE |
+| 8.2e | Network stack init (static IP 10.0.2.15/24) | 25 | DONE |
+| 8.3 | Socket API (socket/bind/listen/accept/connect/send/recv) | 400 | NOT STARTED |
+| 8.4 | TCP/UDP protocols | 600 | NOT STARTED |
+| 8.5 | Network services (DHCP, DNS, loopback) | 300 | NOT STARTED |
+
+### Phase 9: Security & Permissions
+| Chunk | Description | ~Lines | Status |
+|-------|-------------|--------|--------|
+| 9.1a | Process credentials (uid/gid/euid/egid) + getuid/getgid/setuid/setgid syscalls | 80 | DONE |
+| 9.1b | VFS permission checking (owner/group/other rwx) | 50 | DONE |
+| 9.2a | chmod/chown syscalls | 60 | DONE |
+| 9.2b | umask, setuid/setgid binaries | 100 | NOT STARTED |
+| 9.1c | /etc/passwd, /etc/group, login authentication | 250 | NOT STARTED |
+| 9.3 | Kernel hardening (stack canaries, guard pages, W^X, ASLR) | 300 | NOT STARTED |
 
 ---
 
@@ -236,8 +260,10 @@ Create directory structure and all build infrastructure.
 | 4 | 4 | 800 | VirtIO block device reads sectors |
 | 5 | 5 | 1,100 | User-space ELF binary runs, fork/exec/wait |
 | 6 | 8 | 1,750 | VFS + ramfs, file syscalls, devfs, procfs, multi-mount, blkdev |
-| 7 | 8 | 1,850 | IPC, interactive shell, signals, argv, PATH, cwd |
-| **Total** | **47 chunks** | **~9,105** | |
+| 7 | 9 | 2,100 | IPC, interactive shell, signals, argv, PATH, cwd, job control |
+| 8 | 9 | 2,025 | VirtIO-net, Ethernet/ARP/IPv4/ICMP stack, ping works |
+| 9 | 6 | 840 | UID/GID credentials, VFS permissions, chmod/chown |
+| **Total** | **63 chunks** | **~12,220** | |
 
 ---
 
@@ -256,4 +282,7 @@ Items intentionally postponed from their original phase:
 - ~~**Phase 5**: fork/exec/wait (5.5), user pointer validation (copy_from_user/copy_to_user)~~ **DONE**
 - **Phase 6**: Dentry cache
 - ~~**Phase 6**: Mount table~~ **DONE** — Multi-mount VFS with 8 slots (ramfs at /, devfs at /dev, procfs at /proc)
-- **Phase 7**: Signal masking (`sigprocmask`), `sigaction` with `sa_flags`, `-EINTR` for interrupted blocking syscalls, `sigaltstack`, process groups / `killpg`, ISR return path signal checking
+- ~~**Phase 7**: Process groups / killpg~~ **DONE** — pgid, sig_send_group, setpgid/getpgid/tcsetpgrp, job control
+- **Phase 7**: Signal masking (`sigprocmask`), `sigaction` with `sa_flags`, `-EINTR` for interrupted blocking syscalls, `sigaltstack`, ISR return path signal checking
+- **Phase 8**: Socket API, TCP/UDP, DHCP client, DNS resolver, loopback interface
+- **Phase 9**: /etc/passwd, login authentication, setuid binaries, umask, kernel hardening
