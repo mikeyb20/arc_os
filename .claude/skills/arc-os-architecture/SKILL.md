@@ -46,7 +46,7 @@ arc_os uses the **Abstraction Boundary Model**: the OS is a stack of replaceable
 
 ## Roadmap Status
 
-The roadmap is `docs/plans/knowledge-os.md` (milestones M0–M5). `overview.md` phases 0–12 are history and are complete or mostly complete.
+The roadmap is `docs/plans/knowledge-os.md` (milestones M0–M5); the build order, block specs and status are in `docs/plans/work-blocks.md` and `docs/plans/blocks/`. `overview.md` phases 0–12 are history and are complete or mostly complete.
 
 **Current state (2026-11-07)**: phases 0–12 done; M0 (lock-in decisions) in progress. Known gaps vs the plan: no FPU/XSAVE save, no mmap/page cache, no user threads, VirtIO-only drivers, read-only FAT32, arc_os-specific syscall numbers (being migrated).
 

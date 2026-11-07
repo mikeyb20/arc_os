@@ -2,6 +2,7 @@
 
 > **Status: APPROVED (2026-11-07).** This file is the roadmap for arc_os. It replaces the phase list in
 > `overview.md`, which is kept as history for phases 0–12.
+> The build order (work blocks, sizes, status) is in [`work-blocks.md`](work-blocks.md).
 > Changing anything under "Locked technical spec" or "Lock-in decisions" needs Michael's explicit OK
 > **and** a new or superseding ADR in `docs/decisions/`. Everything else (task lists, order inside a
 > milestone) may be refined as work proceeds, as long as the change is recorded here.
@@ -168,8 +169,9 @@ without reprocessing the library. Details and exact formats: [ADR-0011](../decis
 ## 8. Milestones in detail
 
 Every milestone ends with an automated test (QEMU or real hardware) checked over serial or the log
-channel, on top of host-side unit tests. Each milestone gets its own implementation plan in
-`docs/plans/` (written with `/plan` just before the milestone starts), broken into PR-sized tasks.
+channel, on top of host-side unit tests. The work is split into PR-sized blocks in
+[`work-blocks.md`](work-blocks.md). M0 and M1 have full specs in `docs/plans/blocks/`; each later milestone
+starts with a planning block that writes its specs.
 
 ### M0 — Lock-in decisions
 - [x] ADRs 0001–0017
@@ -179,12 +181,12 @@ channel, on top of host-side unit tests. Each milestone gets its own implementat
 - [ ] Reproducible dev container with pinned versions of both toolchains; GitHub Actions running unit and QEMU tests
 - [ ] QEMU integration-test harness (boot, run a program, check serial output)
 - [ ] Archive the exact source of every outside component (§3.4) in repos Michael owns
-- [ ] M1 implementation plan: PR-sized tasks, dependency order, SMP lock-ordering rules
+- [x] M1 implementation plan: PR-sized tasks, dependency order, SMP lock-ordering rules ([`work-blocks.md`](work-blocks.md) §4 and §7, `docs/plans/blocks/M1-*`)
 
 ### M1 — Compute kernel
 - [ ] Per-page descriptor array from the PMM at boot (ADR-0016)
-- [ ] Eager XSAVE/XRSTOR, CPUID-sized save area; SSE/AVX enabled for user space
-- [ ] Per-CPU SYSCALL kernel stack fix; per-CPU run queues
+- [ ] Eager XSAVE/XRSTOR, CPUID-sized save area; SSE/AVX enabled for user space; kernel built with `-mgeneral-regs-only`
+- [ ] Per-CPU SYSCALL kernel stack fix; per-CPU run queues; x2APIC mode; up to 256 CPUs
 - [ ] Hybrid CPU awareness: core type from CPUID; inference threads can pin to P-cores
 - [ ] Threads: `clone`, `futex`, `arch_prctl`, `set_tid_address`, `exit_group`, `sched_setaffinity`, `rt_sigprocmask`
 - [ ] Memory: COW fork, demand paging, `mmap`/`munmap`/`mprotect`/`madvise`, page cache shared with `read()`, clean-page eviction, 2 MiB pages
@@ -192,9 +194,9 @@ channel, on top of host-side unit tests. Each milestone gets its own implementat
 - [ ] Hardening: SMEP, SMAP, NX enforced
 - [ ] Power base: tickless idle, MWAIT idle states, Intel HWP/EPP, RAPL energy counters (ADR-0017)
 - [ ] Block layer: async request queue with interrupts; virtio-blk moved onto it
-- [ ] VFS inode refactor; GPT parsing; ext2 rev 1 read/write with large files
-- [ ] AF_UNIX sockets; MSI/MSI-X
-- [ ] Real-hardware debug channel: logs to framebuffer and a log file on the ESP/USB stick (the laptop has no serial port); UDP log later
+- [ ] VFS inode refactor with 64-bit offsets; GPT parsing; ext2 rev 1 read/write with large files; one data partition mounted as `/apps /models /packs /home /var`
+- [ ] AF_UNIX sockets and poll/select; driver model with MSI/MSI-X
+- [ ] Real-hardware debug channel: framebuffer log with scrollback, panic screen and a boot report to photograph (the laptop has no serial port). A log file needs a disk driver, so it moves to M4; UDP log later
 - [ ] **Done when:** a 4-thread AVX2 test program runs on 4 CPUs and memory-maps a 10 GB ext2 file with 4 GB RAM in QEMU, and arc_os boots to the shell on both real test machines
 
 ### M2 — Toolchain and first LLM
@@ -224,11 +226,12 @@ channel, on top of host-side unit tests. Each milestone gets its own implementat
 - [ ] Network (optional at runtime): Intel e1000e/I219 first, then Realtek RTL8111/8168; DHCP, DNS
 - [ ] Power: ACPI power-off and reboot via uACPI; battery %, AC adapter, lid and power button; low-battery warning and clean shutdown at critical level; power profiles wired to EPP and `arc-llm` thread count; screen blanking and backlight control; NVMe APST; `power` command showing battery, profile and watts
 - [ ] Maps, part 2: framebuffer map viewer with pre-rendered tiles, mouse pan and zoom
+- [ ] Kernel log kept in a file under `/var/log` (moved from M1: needs the NVMe/AHCI drivers)
 - [ ] **Done when:** M3's test passes on both test machines, with and without a network cable; idle and inference power are recorded per profile on both machines
 
 ### M5 — Packages and installer
 - [ ] `arcpkg`: install, remove, list, verify, switch model role; offline from USB or disk
-- [ ] Installer: detect disks, create GPT layout, format, copy system, pick storage tier by disk size and models by RAM
+- [ ] Installer: detect disks, create GPT layout, format, copy system, pick storage tier by disk size and models by RAM (`mke2fs`/`e2fsck` ported from e2fsprogs; the ESP is written from a prebuilt FAT32 image)
 - [ ] Host script that builds the USB image (Limine, UEFI + legacy BIOS)
 - [ ] Host tool that wraps any GGUF into an `.arcpkg`
 - [ ] Full offline copy of arc_os source, archived outside sources and toolchains on the key
@@ -251,7 +254,7 @@ Static Linux programs may run thanks to the ABI, but that is not a goal.
 | ext2 has no journal | Power loss can damage files being written | Write temp, verify checksum, `fsync`, `rename`; journal later |
 | Real-hardware driver variety | M4 drags on | Support the two test machines first; early boot check in M1 |
 | Running on battery or solar | Shorter uptime | Power is first-class (ADR-0017): tickless idle, profiles, critical-battery shutdown, measured watts |
-| No serial port on the laptop | Hard to debug real-hardware boots | Framebuffer + log file channel in M1 |
+| No serial port on the laptop | Hard to debug real-hardware boots | Framebuffer log, panic screen and boot report in M1; log file on disk in M4 |
 | Embedding a large library is slow | Pack build time | Strongest host available; packs may ship keyword-only and add vectors later |
 | Content and model licenses | Matters if copies are shared | Every manifest records license and source |
 | arc_os repo is public | Plans and manifests are visible | Fine for code; private material goes in a separate private repo |
@@ -262,4 +265,5 @@ Static Linux programs may run thanks to the ABI, but that is not a goal.
 - **2026-11-07 — Six-reviewer pass** (junior coder, senior coder, product user, tech enthusiast, OS expert, off-grid operator). Added lock-ins 13–16; syscall inventory, dev container, CI; library reader and images; GGUF wrapping tool; battery awareness; verify-and-repair.
 - **2026-11-07 — Final read-over before committing.** Fixed: battery display contradicted "battery management out of scope" (now only suspend/hibernate is out); COW fork, TSC, SMEP/SMAP and PSF2 fonts from the approved spec were missing from milestone tasks; uACPI missing from the archive list; M1 done-test wording aligned.
 - **2026-11-07 — Power management added** at Michael's request (ADR-0017). Battery and power saving are in scope; system suspend stays later because the laptop likely needs S0ix.
+- **2026-11-07 — Work-block plan** ([`work-blocks.md`](work-blocks.md)): 70 blocks, full specs for M0 and M1, session rules to keep compute down, lock order. Code inspection added to M1: `-mgeneral-regs-only` (live bug), x2APIC and 256 CPUs, 64-bit VFS offsets, poll/select, one data partition for five directories. The M1 log file moved to M4 (no disk driver on real hardware before then). M5 installer needs an e2fsprogs port. Proposed: defer the Realtek driver (neither test machine has one).
 - **2026-11-07 — Decisions by Michael:** Linux syscall ABI (yes); test machines (laptop + used ThinkCentre Tiny i3); Secure Boot off; project instructions approved.

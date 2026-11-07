@@ -21,6 +21,10 @@ Do not guess which workstream to use. If ambiguous, ask.
 
 ## Step 2: Load State
 
+**Block work:** if the branch is `block/<id>-...`, stop here and run
+`/os/implement-block <ID>` instead. The block file's Notes are the handoff;
+scratchpad files are gitignored and don't survive a cloud session.
+
 1. Determine the correct scratchpad:
    - Workstream session: read `scratchpad-<workstream>.md` (if exists)
      AND `scratchpad.md` for global state

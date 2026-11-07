@@ -38,6 +38,11 @@ Recommend the appropriate tier:
 
 ## Step 4: Update Scratchpad
 
+**Block work** (branch `block/<id>-...`): write the handoff into the Notes
+section of `docs/plans/blocks/<ID>-*.md` instead (done, decisions, surprises,
+exact next step), commit and push. Scratchpad files are gitignored and are lost
+when a cloud session ends. Skip the rest of this step.
+
 Determine the correct scratchpad file:
 - Workstream session: update `scratchpad-<workstream>.md`
 - Single-workstream feature: update `scratchpad.md`

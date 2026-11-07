@@ -112,11 +112,12 @@ arc_os/
 
 ## Milestone Tracking
 
-Progress is tracked as milestones M0–M5 in `docs/plans/knowledge-os.md` (§8). Each milestone gets its own implementation plan in `docs/plans/` (written with `/plan` before work starts), split into PR-sized tasks: header/interface first, then code, then tests. Every milestone ends with an automated QEMU or real-hardware test. `overview.md` phases 0–12 are history.
+Progress is tracked as milestones M0–M5 in `docs/plans/knowledge-os.md` (§8), built as **work blocks** listed in `docs/plans/work-blocks.md` (order, size, status). One block = one session = one PR; specs live in `docs/plans/blocks/` (M2–M5 specs are written by each milestone's planning block). Start a block with `/os/implement-block <ID>`, read only what its spec lists, and follow the session rules in work-blocks.md §3. Every milestone ends with an automated QEMU or real-hardware test. `overview.md` phases 0–12 are history.
 
 ## Key Docs
 
 - **Master plan:** `docs/plans/knowledge-os.md`
+- **Build order and block status:** `docs/plans/work-blocks.md` (`/os/block-status`)
 - **Decisions (binding):** `docs/decisions/` (ADR-0001 … ADR-0017)
 - Skills for repeated work: `add-syscall`, `driver-bringup`, `port-package` (in `.claude/skills/`)
 
@@ -124,4 +125,4 @@ Progress is tracked as milestones M0–M5 in `docs/plans/knowledge-os.md` (§8).
 - Skill specifications: `docs/SKILL-MAP.md`
 - Development plans: `docs/plans/`
 - Architecture decisions: `docs/decisions/`
-- Session state: `scratchpad.md`
+- Session handoff: the Notes section of the block file (`scratchpad*.md` is gitignored and lost when a cloud session ends)
