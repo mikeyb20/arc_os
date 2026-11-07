@@ -41,12 +41,14 @@ arc_os uses the **Abstraction Boundary Model**: the OS is a stack of replaceable
 3. HAL isolates all arch-specific code — everything above is portable
 4. Kernel never knows which bootloader was used — reads `BootInfo`
 5. User programs link against libc, never call syscalls directly
+6. Syscalls follow the **Linux x86_64 ABI** (ADR-0001). Never invent a number.
+7. Binding decisions live in `docs/decisions/` (ADR-0001…0016). Code that contradicts an ADR is a bug.
 
-## Phase Status
+## Roadmap Status
 
-Track implementation progress in `overview.md` → "Suggested Order of Attack" section.
+The roadmap is `docs/plans/knowledge-os.md` (milestones M0–M5). `overview.md` phases 0–12 are history and are complete or mostly complete.
 
-**Current state**: Phases 0-2 complete, Phase 3 core complete, Phase 4 PCI+VirtIO-blk complete, Phase 6.1-6.2 VFS+ramfs complete
+**Current state (2026-11-07)**: phases 0–12 done; M0 (lock-in decisions) in progress. Known gaps vs the plan: no FPU/XSAVE save, no mmap/page cache, no user threads, VirtIO-only drivers, read-only FAT32, arc_os-specific syscall numbers (being migrated).
 
 ## Reference Files
 
@@ -54,5 +56,5 @@ Detailed reference documents in `reference/`:
 - `hal-interface.md` — HAL function signatures and contracts
 - `memory-layout.md` — Kernel address space layout, page table structure
 - `boot-protocol.md` — BootInfo struct definition, bootloader contract
-- `syscall-table.md` — Syscall numbers, signatures, conventions
+- `syscall-table.md` — Linux ABI target, migration map, per-syscall status
 - `build-system.md` — How the build works, targets, toolchain details

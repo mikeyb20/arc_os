@@ -2,9 +2,25 @@
 
 ## Project Description
 
-arc_os is a custom x86_64 operating system built from scratch. Monolithic kernel, POSIX-compatible, Unix-like personality. The goal is a fully functional OS that can boot on real hardware, run a shell, and execute standard Unix utilities.
+arc_os is a custom x86_64 operating system built from scratch. Monolithic kernel, POSIX-compatible, Unix-like personality.
 
-See `overview.md` for the full 13-phase development roadmap.
+**Project goal:** an offline knowledge computer. arc_os installs from a USB key, runs on 4 GB RAM up to a strong desktop, and lets local LLMs (llama.cpp, CPU only) search a large offline library with citations. It works fully without internet.
+
+**The master plan is `docs/plans/knowledge-os.md`. Treat it and the ADRs in `docs/decisions/` as binding.** `overview.md` is history for phases 0–12.
+
+## Non-Negotiables (see ADRs)
+
+- **Syscalls follow the Linux x86_64 ABI** (numbers, semantics, struct layouts). Never invent a syscall number; look it up in the archived `syscall_64.tbl`. Unimplemented → `-ENOSYS`. (ADR-0001)
+- System V process start + TLS via FS base; static ELF only. (ADR-0002)
+- Kernel code never uses SSE/AVX; user FPU state is saved eagerly with XSAVE. (ADR-0003)
+- File I/O and `mmap` share one page cache; per-page metadata comes from the PMM, never kmalloc. (ADR-0004, ADR-0016)
+- Drivers register with a bus and plug into block/net/input/fb subsystems; storage is async + DMA. (ADR-0005, ADR-0006)
+- Input is Linux `input_event` via `/dev/input`; graphics via `/dev/fb0`; text is UTF-8. (ADR-0007, 0013, 0014)
+- Disks: GPT, ESP (FAT32) + system/data (ext2 rev 1). Layout `/system /apps /models /packs /home /var`. (ADR-0008, 0009)
+- Programs, models and packs ship as `.arcpkg`; apps reach models only through `arc-llm`. (ADR-0010, 0011, 0012)
+- Search and reading must work without the LLM. (ADR-0015)
+- No scope beyond the plan without Michael's OK. Flag any choice that would force a later rewrite **before** building on it.
+- Changing a locked decision = new superseding ADR + Michael's explicit OK + plan update.
 
 ## Language & Toolchain
 
@@ -51,7 +67,7 @@ arc_os/
 │   └── coreutils/        # 19 standalone utilities (cat, ls, grep, ps, etc.)
 ├── tools/                # Build tools, image creation scripts
 ├── tests/                # Host-side unit tests (47 suites)
-├── docs/                 # Implementation plan, deferred items
+├── docs/                 # plans/ (master plan), decisions/ (ADRs), deferred items
 └── CMakeLists.txt
 ```
 
@@ -93,11 +109,15 @@ arc_os/
 4. Check serial output (primary debug channel)
 5. Debug with GDB if needed (connect to QEMU remote target)
 
-## Phase Tracking
+## Milestone Tracking
 
-Current phase progress is tracked in `overview.md`. Each phase has concrete milestones. Follow the "Suggested Order of Attack" section for implementation sequence.
+Progress is tracked as milestones M0–M5 in `docs/plans/knowledge-os.md` (§8). Each milestone gets its own implementation plan in `docs/plans/` (written with `/plan` before work starts), split into PR-sized tasks: header/interface first, then code, then tests. Every milestone ends with an automated QEMU or real-hardware test. `overview.md` phases 0–12 are history.
 
 ## Key Docs
+
+- **Master plan:** `docs/plans/knowledge-os.md`
+- **Decisions (binding):** `docs/decisions/` (ADR-0001 … ADR-0016)
+- Skills for repeated work: `add-syscall`, `driver-bringup`, `port-package` (in `.claude/skills/`)
 
 - Workflow philosophy: `docs/WORKFLOW.md`
 - Skill specifications: `docs/SKILL-MAP.md`
