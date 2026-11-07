@@ -1,5 +1,9 @@
 # Operating System Development Roadmap (v2)
 
+> **Superseded as the roadmap (2026-11-07).** Phases 0–12 below are kept as history of what was built.
+> The current roadmap is [`docs/plans/knowledge-os.md`](docs/plans/knowledge-os.md) (milestones M0–M5),
+> and binding decisions are in [`docs/decisions/`](docs/decisions/README.md).
+
 A long-term project outline for building a custom operating system. Designed around two core principles:
 
 1. **Leverage First, Replace Later** — Use existing, battle-tested tools (bootloaders, libc, filesystems) behind clean abstraction boundaries. This lets you focus on the interesting kernel work early and swap in custom implementations at any time without touching the rest of the system.
