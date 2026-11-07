@@ -127,6 +127,9 @@ Start every block with `/os/implement-block <ID>`. These rules are what keep ses
 
 ### M3 — Knowledge layer (specs from M3-00)
 
+M3-00 sets the smallest supported screen at 1366×768, common on the low-tier reference laptops: the reader,
+assistant and viewers lay out from the framebuffer size, never a fixed one.
+
 | ID | Block | Size | Tier | Lane | Needs | Done when | Status |
 |---|---|---|---|---|---|---|---|
 | M3-00 | Plan M3 | S | D | P | M2-06 | M3 block specs written | todo |
@@ -164,7 +167,7 @@ xHCI quirk does, or a USB key on those machines stays invisible.
 | M4-10 | Realtek RTL8111/8168 (deferral proposed) | M | R | K | M4-00 | Decision pending: neither test machine has one | todo |
 | M4-11 | uACPI: power-off, reboot, buttons, lid | L | D | K | M4-00 | Power button and lid events; clean power-off | todo |
 | M4-12 | Battery, profiles, backlight, APST, `power` | M | R | K | M4-05, M4-11 | Battery %, critical shutdown, profiles change watts | todo |
-| M4-13 | Maps part 2: map viewer | M | R | U | M4-03 | Pre-rendered tiles, mouse pan and zoom | todo |
+| M4-13 | Maps part 2: map viewer | M | R | U | M4-03 | Pre-rendered tiles; pan and zoom by keyboard or mouse | todo |
 | M4-14 | Hardware test campaign | M | R | H | M4-04, M4-06, M4-07, M4-09, M4-10, M4-12, M4-13 | M3's test passes on both machines with and without a cable; watts per profile | todo |
 
 ### M5 — Packages and installer (specs from M5-00)
@@ -211,10 +214,10 @@ Parallel sessions shorten the calendar; they don't save compute.
 
 | When | What | Default if no answer |
 |---|---|---|
-| Now (this PR) | Defer the Realtek driver (M4-10)? Neither test machine has one, and QEMU can't emulate it, so it would ship untested | Keep it planned until you decide |
+| Now (this PR) | Defer the Realtek driver (M4-10)? Neither test machine has one, and QEMU can't emulate it, so it would ship untested. Most low-tier reference laptops use Intel I219 (planned); cheaper business lines such as ThinkPad E and HP ProBook often use Realtek (not verified) | Keep it planned until you decide |
 | M0-01 | Approve the cloud environment card (setup script) | — (needed to continue) |
 | M0-03 | Archive location for outside sources | Release assets on arc_os; private material in a private repo |
-| Before M1-04 | Send the old work computer's details: model, CPU, RAM, Ethernet, Secure Boot state | Assume it meets the CPU floor and Secure Boot can be turned off |
+| Before M1-04 | In the old work computer's firmware setup, check that Secure Boot can be turned off and booting from USB is allowed (a BIOS password left by the former employer blocks both). No specs to send: the M1-04 boot report records them | Assume it can. If it can't, you decide whether a reference-class laptop (knowledge-os.md §4) replaces it |
 | M1-04 | Boot both machines from the USB stick; photograph the boot report and self-test | — |
 | M1-22 | Boot both machines to the shell; read idle watts on the laptop | — |
 | Before M2-06 | Allow a Remote Control session on the laptop (QEMU with KVM, model downloads) | — |
@@ -274,14 +277,15 @@ Parallel sessions shorten the calendar; they don't save compute.
 | 20 | ADR-0001's syscall migration table was written from memory | M0-04 verifies it against the archived `syscall_64.tbl` |
 | 21 | The low-tier machine can't keep installs; arc_os must run entirely from the USB key | ADR-0018: M1-02 (`arc.mem`), M1-04 (RAM mode), M1-10/M1-13 (own partition types, mount from the boot disk), M1-15 (no atime), M4-04, M5 |
 | 22 | Older Intel chipsets (7- and 8-series) route USB ports to EHCI until the OS switches them | M4-01 |
-| 23 | No test machine exercises AHCI on real hardware any more | AHCI tested in QEMU only, until a SATA machine is available |
+| 23 | No test machine writes to a SATA disk | AHCI writes tested in QEMU only; if the old work computer's disk is SATA, M4-14 covers AHCI reads (read-only, ADR-0018) |
 | 24 | A machine with Secure Boot locked on can't boot unsigned Limine | Off for now; shim + own enrolled key is the known path (ADR-0018), a separate decision |
 
 ## 9. Later: compatibility track (not counted)
 
 After M5, for machines Michael chooses to support (ADR-0018). Each item becomes blocks only with his OK:
-USB hubs and docks; more network chips (Realtek if M4-10 is deferred); AMD power management (CPPC instead of Intel
-HWP); chipset and firmware quirks found on new machines; Secure Boot through a signed shim and our own key.
+USB hubs and docks; more network chips (Realtek if M4-10 is deferred) and USB Ethernet adapters; I2C-HID
+touchpads; AMD power management (CPPC instead of Intel HWP); chipset and firmware quirks found on new machines;
+Secure Boot through a signed shim and our own key.
 
 ## 10. Change log
 
@@ -289,3 +293,7 @@ HWP); chipset and firmware quirks found on new machines; Secure Boot through a s
 - **2026-11-07** — Portable mode (ADR-0018) at Michael's request: fitted into M1-02, M1-04, M1-10, M1-13, M1-15,
   M4-01, M4-04 and M5 with no new blocks; low-tier machine is now Michael's old work computer (USB-only);
   compatibility track listed for later.
+- **2026-11-07** — Low tier defined as a class (Michael): a standard used business laptop, about $150–300 CAD;
+  the 4 GB floor stays. The old work computer stands in for it; its parts come from the M1-04 boot report, so the
+  "send details" task became a firmware check. M1-04 reports the machine model (SMBIOS); M4-13 pans by keyboard
+  too; M3-00 plans for 1366×768 screens; USB Ethernet adapters and I2C touchpads listed in the compatibility track.

@@ -17,15 +17,17 @@ screen, so hardware surprises show up before the rest of M1 is built on top.
    `/proc/kmsg`-style read.
 2. Panic screen: reason, registers, CR2, CPU index, symbolised backtrace (symbol table generated at build time and
    linked in or loaded as a Limine module), in a colour block that photographs well.
-3. Boot report on one screen, paged automatically every 10 s when no key is pressed: CPU model, features, core
-   types and count, memory map summary, ACPI tables, APIC mode, timer calibration, PCI devices
-   (`vendor:device`, class, bound driver or "no driver"), framebuffer mode.
+3. Boot report on one screen, paged automatically every 10 s when no key is pressed: machine maker and model
+   (SMBIOS type 1, through Limine's SMBIOS request), CPU model, features, core types and count, memory map summary,
+   ACPI tables, APIC mode, timer calibration, PCI devices (`vendor:device`, class, bound driver or "no driver"),
+   framebuffer mode.
 4. Self-test (`arc.selftest=1`): wake all CPUs, AVX2 checksum on each, 256 MB memory pattern test, timer check
    against the TSC; PASS/FAIL per line.
 5. USB image: the hybrid ISO from `make-iso.sh` with boot entries for normal boot and self-test. Everything runs
    from RAM (ADR-0018's RAM mode), so no USB driver is needed yet and nothing is written to the machine's disks.
    `docs/hardware/bringup.md`: how to write the stick (`dd` or Etcher), firmware settings (UEFI on, Secure Boot
-   off, legacy USB support on where offered), what to photograph.
+   off, legacy USB support on where offered), what to photograph, and the buying check for a low-tier machine
+   (knowledge-os.md §4).
 6. QEMU tests: a forced panic (test-only command line flag) shows the panic markers on serial; the boot report
    markers are present.
 
@@ -33,6 +35,8 @@ screen, so hardware surprises show up before the rest of M1 is built on top.
 - [ ] QEMU tests pass.
 - [ ] **Michael:** both machines boot the stick; photos of the boot report and self-test are posted in the PR.
       Small fixes go in this block; anything bigger becomes a new block in work-blocks.md.
+- [ ] The old work computer's maker and model, CPU, RAM, disk controller and Ethernet chip, read from its boot
+      report, are recorded in knowledge-os.md §4 (Low row).
 
 **Watch out.**
 - Low-tier machine: a USB keyboard works only through the firmware's legacy USB emulation until xHCI (M4-01); a

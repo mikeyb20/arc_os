@@ -94,12 +94,24 @@ This section mirrors the project instructions. Each item links to its ADR.
 
 Model sizes are approximate and get confirmed by measurement in M2.
 
+**Low-tier reference machine** (Michael, 2026-11-07): a standard used business laptop of the kind sold for about
+$150–300 CAD on Facebook Marketplace or Kijiji. If arc_os works there, it works on most Intel machines from about
+2015 on. Typical parts: Core i5 of the 6th–10th generation, 8 GB run at 4 GB (`arc.mem=4G`), SATA or NVMe SSD,
+Intel xHCI, Intel I219 Ethernet on most models, PS/2 keyboard, PS/2 or I2C touchpad, often a 1366×768 screen, UEFI
+with a Secure Boot switch. Examples: Dell Latitude 5490/7490, Lenovo ThinkPad T480, HP EliteBook 840 G5 (parts and
+examples are a reading of that market, not checked model by model).
+
+- Buying check: Core i3/i5/i7, not Celeron or Pentium (those usually lack AVX2 and fall below the CPU floor); no
+  BIOS password set (it blocks turning Secure Boot off); an Intel Ethernet port if a wired network matters.
+- Gaps until the compatibility track ([`work-blocks.md`](work-blocks.md) §9): AMD power management, Realtek network
+  chips (decision pending), I2C touchpads, USB Ethernet adapters.
+
 ### Test machines
 
 | Role | Machine | Key hardware | Notes |
 |---|---|---|---|
 | High | Michael's laptop ("scrubtop") | Intel Core Ultra 7 255H (16 cores, hybrid P/E, AVX2 + AVX-VNNI, no AVX-512), 32 GB, Crucial P3 1 TB NVMe, Intel Ethernet `8086:550a` (I219 family, unverified), Intel xHCI, Intel integrated graphics | Keyboard is PS/2 (works with today's driver). Touchpad is I2C (out of scope); a USB wireless mouse is used. **No serial port.** Secure Boot already off. Wi-Fi `8086:272b` out of scope. |
-| Low | Michael's old work computer (owned) | Specs to confirm. CPU must meet x86-64-v3 (Intel 4th-gen Core or newer). Run at 4 GB (capped in software if it has more) | Its internal disk must stay as it is, so arc_os runs only from the USB key ([ADR-0018](../decisions/0018-portable-usb-mode.md)). Secure Boot state and Ethernet chip to confirm. With no internal disk in use, AHCI is tested only in QEMU |
+| Low | Michael's old work computer (owned) | Stands in for the low-tier reference machine above; its exact parts are recorded from the M1-04 boot report, not collected up front. CPU must meet x86-64-v3 (Intel 4th-gen Core or newer). Run at 4 GB (capped in software if it has more) | Its internal disk must stay as it is, so arc_os runs only from the USB key ([ADR-0018](../decisions/0018-portable-usb-mode.md)). Its firmware must allow a USB boot with Secure Boot off; a BIOS password left by the former employer would block that. With no internal disk in use, AHCI writes are tested only in QEMU |
 
 ### Storage tiers
 
@@ -227,7 +239,7 @@ starts with a planning block that writes its specs.
 - [ ] Input: PS/2 mouse; all input through `/dev/input`
 - [ ] Network (optional at runtime): Intel e1000e/I219 first, then Realtek RTL8111/8168; DHCP, DNS
 - [ ] Power: ACPI power-off and reboot via uACPI; battery %, AC adapter, lid and power button; low-battery warning and clean shutdown at critical level; power profiles wired to EPP and `arc-llm` thread count; screen blanking and backlight control; NVMe APST; `power` command showing battery, profile and watts
-- [ ] Maps, part 2: framebuffer map viewer with pre-rendered tiles, mouse pan and zoom
+- [ ] Maps, part 2: framebuffer map viewer with pre-rendered tiles; pan and zoom by keyboard or mouse (I2C touchpads are out of scope)
 - [ ] Kernel log kept in a file under `/var/log` (moved from M1: needs the NVMe/AHCI drivers)
 - [ ] **Done when:** M3's test passes on both test machines, with and without a network cable; idle and inference power are recorded per profile on both machines
 
@@ -251,7 +263,7 @@ Static Linux programs may run thanks to the ABI, but that is not a goal.
 | Risk | Impact | Plan |
 |---|---|---|
 | Small models make things up, including medical answers | Safety | Answers only from retrieved sources, always cited; "not found in library" when retrieval is empty; source one keystroke away |
-| Many laptops have only Wi-Fi | No network on those machines | Wired or USB Ethernet; the system works offline anyway |
+| Many laptops have only Wi-Fi | No network on those machines | The system works offline anyway; wired Ethernet where the machine has a port. USB Ethernet adapters need their own driver (compatibility track) |
 | Secure Boot blocks the unsigned bootloader | Won't boot | Install docs say to turn it off. Where it can't be turned off, the known path is a Microsoft-signed shim plus our own enrolled key (ADR-0018); a separate decision when needed |
 | USB keys are slow at random reads and wear out with writes | Slow search; a worn key | Read-only system partition, no access-time updates, batched writeback (ADR-0018); recommend a USB 3 stick with good random reads or a USB SSD; measured in M4-14 |
 | ext2 has no journal | Power loss can damage files being written | Write temp, verify checksum, `fsync`, `rename`; journal later |
@@ -270,4 +282,5 @@ Static Linux programs may run thanks to the ABI, but that is not a goal.
 - **2026-11-07 — Power management added** at Michael's request (ADR-0017). Battery and power saving are in scope; system suspend stays later because the laptop likely needs S0ix.
 - **2026-11-07 — Work-block plan** ([`work-blocks.md`](work-blocks.md)): 70 blocks, full specs for M0 and M1, session rules to keep compute down, lock order. Code inspection added to M1: `-mgeneral-regs-only` (live bug), x2APIC and 256 CPUs, 64-bit VFS offsets, poll/select, one data partition for five directories. The M1 log file moved to M4 (no disk driver on real hardware before then). M5 installer needs an e2fsprogs port. Proposed: defer the Realtek driver (neither test machine has one).
 - **2026-11-07 — Portable mode added at Michael's request** (ADR-0018). The low-tier machine is his old work computer, which can't keep installs, so arc_os runs entirely from the USB key like Tails. The key uses the normal disk layout; the kernel mounts from the disk it booted from; host disks are never written. Built inside existing blocks (M1-02, M1-10, M1-13, M1-15, M4-04, M5); more drivers for other people's machines come in a later compatibility track.
+- **2026-11-07 — Low-tier reference machine** set by Michael: a standard used business laptop (about $150–300 CAD); the 4 GB floor stays. The old work computer stands in for that class, and its parts come from the M1-04 boot report instead of being collected up front. Follow-ups: buying check, map panning by keyboard, 1366×768 as the smallest screen, and the USB Ethernet mitigation corrected (no driver for it is planned).
 - **2026-11-07 — Decisions by Michael:** Linux syscall ABI (yes); test machines (laptop + used ThinkCentre Tiny i3); Secure Boot off; project instructions approved.
