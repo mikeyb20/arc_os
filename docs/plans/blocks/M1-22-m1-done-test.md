@@ -17,8 +17,9 @@ RAM; on both real machines, arc_os boots to the shell.
 2. Test disk builder: a sparse 12 GiB GPT image with an ext2 data partition holding the 10 GiB file
    (`truncate` + patterned writes + `mkfs.ext2 -d`).
 3. ctest `qemu.m1_done` with label `slow` (`-smp 4 -m 4G`), run on demand, nightly in CI and at milestone gates.
-4. Rebuild the USB image. **Michael:** boot both machines to the shell (the mini PC shows the shell; typing there
-   waits for USB HID in M4) and run the self-test; on the laptop, read idle watts from `/proc/arc/power`.
+4. Rebuild the USB image. **Michael:** boot both machines to the shell from the stick (RAM mode, ADR-0018; on the
+   low-tier machine, typing with a USB keyboard waits for M4) and run the self-test; on the laptop, read idle
+   watts from `/proc/arc/power`.
 5. Tick the M1 boxes in knowledge-os.md §8 and record findings in its review history.
 
 **Done when.**

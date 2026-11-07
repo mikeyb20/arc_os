@@ -27,3 +27,4 @@ Rules:
 | [0015](0015-library-without-llm.md) | Library works without the LLM | Accepted |
 | [0016](0016-kernel-memory-sizing.md) | Per-page metadata from the PMM | Accepted |
 | [0017](0017-power-management.md) | Power management is first-class | Accepted |
+| [0018](0018-portable-usb-mode.md) | Portable mode: runs entirely from the USB key | Accepted |

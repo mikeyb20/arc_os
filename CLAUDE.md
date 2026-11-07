@@ -20,6 +20,7 @@ arc_os is a custom x86_64 operating system built from scratch. Monolithic kernel
 - Programs, models and packs ship as `.arcpkg`; apps reach models only through `arc-llm`. (ADR-0010, 0011, 0012)
 - Search and reading must work without the LLM. (ADR-0015)
 - Power is first-class: no periodic tick assumptions, no busy-wait idle or endless polling; every driver has suspend/resume hooks. (ADR-0017)
+- Portable mode: the USB key is an ordinary arc_os disk; mount only arc_os partitions, from the disk Limine booted from; never write to a disk arc_os didn't create except through the installer. (ADR-0018)
 - No scope beyond the plan without Michael's OK. Flag any choice that would force a later rewrite **before** building on it.
 - Changing a locked decision = new superseding ADR + Michael's explicit OK + plan update.
 
@@ -118,7 +119,7 @@ Progress is tracked as milestones M0–M5 in `docs/plans/knowledge-os.md` (§8),
 
 - **Master plan:** `docs/plans/knowledge-os.md`
 - **Build order and block status:** `docs/plans/work-blocks.md` (`/os/block-status`)
-- **Decisions (binding):** `docs/decisions/` (ADR-0001 … ADR-0017)
+- **Decisions (binding):** `docs/decisions/` (ADR-0001 … ADR-0018)
 - Skills for repeated work: `add-syscall`, `driver-bringup`, `port-package` (in `.claude/skills/`)
 
 - Workflow philosophy: `docs/WORKFLOW.md`

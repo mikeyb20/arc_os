@@ -42,7 +42,7 @@ arc_os uses the **Abstraction Boundary Model**: the OS is a stack of replaceable
 4. Kernel never knows which bootloader was used — reads `BootInfo`
 5. User programs link against libc, never call syscalls directly
 6. Syscalls follow the **Linux x86_64 ABI** (ADR-0001). Never invent a number.
-7. Binding decisions live in `docs/decisions/` (ADR-0001…0017). Code that contradicts an ADR is a bug.
+7. Binding decisions live in `docs/decisions/` (ADR-0001…0018). Code that contradicts an ADR is a bug.
 
 ## Roadmap Status
 

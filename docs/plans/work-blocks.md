@@ -145,7 +145,9 @@ Start every block with `/os/implement-block <ID>`. These rules are what keep ses
 ### M4 — Real hardware (specs from M4-00)
 
 M4-00 also places the kernel log file under `/var/log`, moved here from M1 because real hardware has no disk
-driver before M4.
+driver before M4. Portable mode (ADR-0018) makes M4-04 essential: pulling the key must give I/O errors, never a
+crash. M4-01 must switch the USB ports of older Intel chipsets (7- and 8-series) from EHCI to xHCI, as Linux's
+xHCI quirk does, or a USB key on those machines stays invisible.
 
 | ID | Block | Size | Tier | Lane | Needs | Done when | Status |
 |---|---|---|---|---|---|---|---|
@@ -155,7 +157,7 @@ driver before M4.
 | M4-03 | USB HID keyboard + mouse | M | R | K | M4-02 | USB input arrives on `/dev/input` | todo |
 | M4-04 | USB mass storage (BOT) | M | R | K | M4-02 | USB stick is a block device | todo |
 | M4-05 | NVMe | M | D | K | M4-00 | Laptop's NVMe readable and writable | todo |
-| M4-06 | AHCI | M | R | K | M4-00 | Mini PC's SATA SSD readable and writable | todo |
+| M4-06 | AHCI | M | R | K | M4-00 | SATA disks readable and writable (QEMU; no SATA test machine now) | todo |
 | M4-07 | PS/2 mouse + keyboard on `/dev/input` | S | R | K | M4-00 | PS/2 devices report `input_event`s | todo |
 | M4-08 | Intel e1000e (82574 in QEMU) + I219 | M | R | K | M4-00 | Packets flow in QEMU; I219 paths ready for hardware | todo |
 | M4-09 | DHCP + DNS | M | R | U | M4-08 | Address from DHCP; names resolve | todo |
@@ -167,6 +169,10 @@ driver before M4.
 
 ### M5 — Packages and installer (specs from M5-00)
 
+M5 follows ADR-0018: the key builder writes the portable layout straight onto the stick, sized to fill it; the
+installer copies the same layout to an internal disk only where a machine allows it; `e2fsck` runs at boot after
+an unclean shutdown.
+
 | ID | Block | Size | Tier | Lane | Needs | Done when | Status |
 |---|---|---|---|---|---|---|---|
 | M5-00 | Plan M5 | S | D | P | M4-14 | M5 block specs written | todo |
@@ -175,7 +181,7 @@ driver before M4.
 | M5-03 | Installer | L | D | U | M5-01, M5-02 | Disk detected, GPT written, system copied, tier and models chosen | todo |
 | M5-04 | USB key image builder (host) | M | R | I | M5-03 | One image with installer, packages, packs, models, sources | todo |
 | M5-05 | GGUF wrapper + recovery | M | R | U | M5-02 | Any GGUF becomes an `.arcpkg`; `arcpkg verify` repairs from the key | todo |
-| M5-06 | Blank-machine test | M | R | H | M5-04, M5-05 | A blank machine becomes a working system from one USB key, offline | todo |
+| M5-06 | Blank-machine test | M | R | H | M5-04, M5-05 | A blank machine becomes a working system from one USB key, offline; the key runs on the USB-only machine without touching its disk | todo |
 
 ## 5. Order, critical path and parallel lanes
 
@@ -208,7 +214,7 @@ Parallel sessions shorten the calendar; they don't save compute.
 | Now (this PR) | Defer the Realtek driver (M4-10)? Neither test machine has one, and QEMU can't emulate it, so it would ship untested | Keep it planned until you decide |
 | M0-01 | Approve the cloud environment card (setup script) | — (needed to continue) |
 | M0-03 | Archive location for outside sources | Release assets on arc_os; private material in a private repo |
-| Before M1-04 | Buy the used mini PC (ThinkCentre M710q/M720q Tiny class, i3, run at 4 GB) | — |
+| Before M1-04 | Send the old work computer's details: model, CPU, RAM, Ethernet, Secure Boot state | Assume it meets the CPU floor and Secure Boot can be turned off |
 | M1-04 | Boot both machines from the USB stick; photograph the boot report and self-test | — |
 | M1-22 | Boot both machines to the shell; read idle watts on the laptop | — |
 | Before M2-06 | Allow a Remote Control session on the laptop (QEMU with KVM, model downloads) | — |
@@ -254,7 +260,7 @@ Parallel sessions shorten the calendar; they don't save compute.
 | 6 | `MAX_CPUS` is 16; the laptop has exactly 16 CPUs and desktops have more | M1-03: 256 |
 | 7 | The Core Ultra laptop's firmware may hand over in x2APIC mode | M1-03 |
 | 8 | No log file is possible before storage drivers exist (M4) | M1-04: framebuffer log, panic screen and boot report; log file on disk after M4 |
-| 9 | The mini PC's USB keyboard won't work before xHCI unless firmware legacy USB emulation is on | M1-04: report needs no input; M4-03 |
+| 9 | A USB keyboard on the low-tier machine won't work before xHCI unless firmware legacy USB emulation is on | M1-04: report needs no input; M4-03 |
 | 10 | VFS reads and writes take 32-bit offsets (4 GiB cap) | M1-11 |
 | 11 | A process holds a single thread | M1-16 |
 | 12 | No poll/select infrastructure | M1-18 |
@@ -266,7 +272,20 @@ Parallel sessions shorten the calendar; they don't save compute.
 | 18 | No USB hub support is planned | Fine if both machines' ports are root ports; checked in M4 |
 | 19 | M0/M1 musl tests can use Ubuntu's `musl-gcc` (C only); C++ waits for the musl toolchain | M2-01; M0-04 proves the C++ build early in an Alpine container |
 | 20 | ADR-0001's syscall migration table was written from memory | M0-04 verifies it against the archived `syscall_64.tbl` |
+| 21 | The low-tier machine can't keep installs; arc_os must run entirely from the USB key | ADR-0018: M1-02 (`arc.mem`), M1-04 (RAM mode), M1-10/M1-13 (own partition types, mount from the boot disk), M1-15 (no atime), M4-04, M5 |
+| 22 | Older Intel chipsets (7- and 8-series) route USB ports to EHCI until the OS switches them | M4-01 |
+| 23 | No test machine exercises AHCI on real hardware any more | AHCI tested in QEMU only, until a SATA machine is available |
+| 24 | A machine with Secure Boot locked on can't boot unsigned Limine | Off for now; shim + own enrolled key is the known path (ADR-0018), a separate decision |
 
-## 9. Change log
+## 9. Later: compatibility track (not counted)
+
+After M5, for machines Michael chooses to support (ADR-0018). Each item becomes blocks only with his OK:
+USB hubs and docks; more network chips (Realtek if M4-10 is deferred); AMD power management (CPPC instead of Intel
+HWP); chipset and firmware quirks found on new machines; Secure Boot through a signed shim and our own key.
+
+## 10. Change log
 
 - **2026-11-07** — First version: 70 blocks over M0–M5, full specs for M0 and M1, session protocol, lock order.
+- **2026-11-07** — Portable mode (ADR-0018) at Michael's request: fitted into M1-02, M1-04, M1-10, M1-13, M1-15,
+  M4-01, M4-04 and M5 with no new blocks; low-tier machine is now Michael's old work computer (USB-only);
+  compatibility track listed for later.

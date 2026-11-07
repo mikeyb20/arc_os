@@ -8,7 +8,7 @@
 GPT partitions, and every later storage driver plugs into the same queue (ADR-0005, ADR-0008).
 
 **Read first.**
-- `docs/decisions/0005-async-block-layer.md`, `0008-disk-layout-and-filesystem.md`
+- `docs/decisions/0005-async-block-layer.md`, `0008-disk-layout-and-filesystem.md`, `0018-portable-usb-mode.md`
 - `kernel/drivers/blkdev.c`, `blkdev.h`, `virtio_blk.c`, `kernel/fs/fat32.c` (how it reads blocks today)
 - Notes of M1-09
 
@@ -21,7 +21,9 @@ GPT partitions, and every later storage driver plugs into the same queue (ADR-00
    transfer size.
 4. virtio-blk: many requests in flight, interrupt completion, flush.
 5. GPT: protective MBR, primary header and entries with CRC32 checks, backup header fallback. Partitions become
-   block devices (`/dev/vda1` …) with PARTUUID, PARTLABEL and type GUID, plus a find-by-label call for mounting.
+   block devices (`/dev/vda1` …) with PARTUUID, PARTLABEL and type GUID. Each disk exposes its GPT disk GUID.
+   Lookup calls: by disk GUID + partition type GUID, and by label. The arc_os type GUIDs and labels (ADR-0018) live
+   in one header that the host image tools use too.
 6. FAT32 (read-only) moves onto the new API.
 7. Tests: host tests on GPT images made with `sgdisk` (valid; corrupt primary → backup used; 4Kn); QEMU: 64
    concurrent reads complete; partitions appear; FAT32 tests pass.

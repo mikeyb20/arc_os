@@ -21,8 +21,10 @@ buddy allocator that can hand out 2 MiB blocks (ADR-0016, ADR-0004).
    so callers don't change in this block. The bitmap goes away.
 4. A `below 4 GiB` allocation flag for 32-bit DMA devices, so drivers never need a rework.
 5. kmalloc: cap at 512 MB (ADR-0016); large allocations go straight to `alloc_pages`.
-6. `/proc/meminfo`: MemTotal, MemFree, descriptor overhead.
-7. Host tests: split/coalesce, order-9 still available after fragmentation, holes, exhaustion. QEMU: all suites
+6. Kernel command line `arc.mem=<size>` ignores RAM above the cap, so a bigger machine can be tested at the 4 GB
+   floor (the low-tier test machine may have more than 4 GB).
+7. `/proc/meminfo`: MemTotal, MemFree, descriptor overhead.
+8. Host tests: split/coalesce, order-9 still available after fragmentation, holes, exhaustion. QEMU: all suites
    with `-m 4G` (memory hole below 4 GiB, RAM above it).
 
 **Done when.**

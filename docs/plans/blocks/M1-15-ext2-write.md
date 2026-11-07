@@ -19,7 +19,8 @@ finds the result clean (ADR-0008).
 4. Directory entries: insert and remove with correct `rec_len`; when changing a `dir_index` directory, clear its
    index flag as Linux ext2 does.
 5. `fsync` writes data, then metadata. Superblock state is marked dirty on mount and clean on unmount. `sync`.
-6. Timestamps: mtime/ctime always; atime only when older than mtime (relatime-like).
+   A data partition found dirty at mount is mounted with an on-screen warning until `e2fsck` exists (M5-01).
+6. Timestamps: mtime/ctime always; no access-time updates on arc_os partitions (ADR-0018: flash keys wear).
 7. Host test scenarios on images, each followed by `e2fsck -fn` (must exit 0) and a content check with
    `debugfs -R dump`: 10 000 files; write, overwrite, extend, truncate; rename storms; deep trees; a 5 GiB file with
    holes.
