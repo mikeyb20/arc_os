@@ -25,6 +25,7 @@ Drivers follow ADR-0006 (driver model), ADR-0005 (async block layer), ADR-0007 (
 4. Interrupts: MSI-X, then MSI, then INTx fallback.
 5. Plug into the subsystem: block (submit + completion), net (tx/rx rings), input (`input_event`), fb.
 6. `remove` / shutdown path that quiesces DMA.
+7. `suspend` / `resume` hooks (ADR-0017) and idle power: enable the device's own power saving (e.g. NVMe APST); never poll when idle.
 
 ## 4. Test
 - QEMU device first: `-device nvme`, `-device ahci` + `ide-hd`, `-device qemu-xhci` + `usb-kbd`/`usb-mouse`/`usb-storage`,

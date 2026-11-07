@@ -19,6 +19,7 @@ arc_os is a custom x86_64 operating system built from scratch. Monolithic kernel
 - Disks: GPT, ESP (FAT32) + system/data (ext2 rev 1). Layout `/system /apps /models /packs /home /var`. (ADR-0008, 0009)
 - Programs, models and packs ship as `.arcpkg`; apps reach models only through `arc-llm`. (ADR-0010, 0011, 0012)
 - Search and reading must work without the LLM. (ADR-0015)
+- Power is first-class: no periodic tick assumptions, no busy-wait idle or endless polling; every driver has suspend/resume hooks. (ADR-0017)
 - No scope beyond the plan without Michael's OK. Flag any choice that would force a later rewrite **before** building on it.
 - Changing a locked decision = new superseding ADR + Michael's explicit OK + plan update.
 
@@ -116,7 +117,7 @@ Progress is tracked as milestones M0–M5 in `docs/plans/knowledge-os.md` (§8).
 ## Key Docs
 
 - **Master plan:** `docs/plans/knowledge-os.md`
-- **Decisions (binding):** `docs/decisions/` (ADR-0001 … ADR-0016)
+- **Decisions (binding):** `docs/decisions/` (ADR-0001 … ADR-0017)
 - Skills for repeated work: `add-syscall`, `driver-bringup`, `port-package` (in `.claude/skills/`)
 
 - Workflow philosophy: `docs/WORKFLOW.md`

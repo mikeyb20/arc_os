@@ -26,3 +26,4 @@ Rules:
 | [0014](0014-userspace-graphics-and-input.md) | Graphics and input from user space | Accepted |
 | [0015](0015-library-without-llm.md) | Library works without the LLM | Accepted |
 | [0016](0016-kernel-memory-sizing.md) | Per-page metadata from the PMM | Accepted |
+| [0017](0017-power-management.md) | Power management is first-class | Accepted |

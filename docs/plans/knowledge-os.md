@@ -20,7 +20,7 @@ Michael. Any choice that would force a later rewrite is flagged before code is w
 
 | # | Milestone | Done when |
 |---|---|---|
-| M0 | Lock-in decisions | ADRs 0001–0016 written; syscalls migrated to the Linux ABI; schemas, dev container, CI and QEMU test harness in place |
+| M0 | Lock-in decisions | ADRs 0001–0017 written; syscalls migrated to the Linux ABI; schemas, dev container, CI and QEMU test harness in place |
 | M1 | Compute kernel | A 4-thread AVX2 program runs on 4 CPUs and memory-maps a 10 GB ext2 file with 4 GB RAM in QEMU; arc_os boots to the shell on both real test machines |
 | M2 | Toolchain + first LLM | `ask "what is hypothermia"` answers inside arc_os in QEMU (4 CPUs, 4 GB); tokens/sec and RAM budget recorded |
 | M3 | Knowledge layer | A medical, a food and a repair question each get a cited answer from the 32 GB pack set; the library is usable with no LLM |
@@ -48,6 +48,7 @@ This section mirrors the project instructions. Each item links to its ADR.
 - Interrupts/time: LAPIC + IOAPIC; MSI/MSI-X for PCIe devices; invariant TSC as clocksource; TSC-deadline/LAPIC timer; PIT only for calibration; CMOS RTC for wall time.
 - ACPI: tables parsed in-kernel; AML through uACPI (power off, reboot, battery).
 - Hardening: SMEP, SMAP, NX/W^X, stack canaries, guard pages. ASLR later.
+- Power: tickless idle, MWAIT C-states, Intel HWP/EPP, power profiles (performance/balanced/saver), RAPL energy readout; battery, AC, lid, buttons and backlight via ACPI; every driver has suspend/resume hooks. System suspend itself is later. ([ADR-0017](../decisions/0017-power-management.md))
 
 ### 3.3 User-space ABI (Linux-compatible by convention, no Linux code)
 - Linux x86_64 syscall numbers, semantics, errno convention and struct layouts; `SYSCALL`/`SYSRET`. ([ADR-0001](../decisions/0001-linux-syscall-abi.md))
@@ -70,7 +71,7 @@ This section mirrors the project instructions. Each item links to its ADR.
 
 ### 3.6 Devices and network
 - In scope: PS/2 keyboard and mouse, xHCI + USB HID + mass storage, NVMe, AHCI, Intel e1000/e1000e (I219), Realtek RTL8111/8168, virtio-blk/net, Limine/UEFI framebuffer. ([ADR-0006](../decisions/0006-driver-model.md))
-- Out of scope: Wi-Fi, Bluetooth, GPU acceleration, audio, I2C-HID touchpads, suspend/hibernate.
+- Out of scope: Wi-Fi, Bluetooth, GPU acceleration, audio, I2C-HID touchpads, system suspend/hibernate (hooks exist; ADR-0017).
 - Network: IPv4, TCP, UDP, DHCP, DNS, AF_UNIX sockets. IPv6 later.
 
 ### 3.7 AI and data
@@ -128,6 +129,7 @@ Cheap now, expensive later. Each has an ADR in `docs/decisions/`.
 | 14 | Graphics and input reachable from user space | [0014](../decisions/0014-userspace-graphics-and-input.md) |
 | 15 | Library works without the LLM | [0015](../decisions/0015-library-without-llm.md) |
 | 16 | Per-page metadata from the PMM at boot | [0016](../decisions/0016-kernel-memory-sizing.md) |
+| 17 | Power management first-class: tickless, C-states, HWP, profiles, battery, driver suspend/resume hooks | [0017](../decisions/0017-power-management.md) |
 
 ## 6. Data design
 
@@ -170,7 +172,7 @@ channel, on top of host-side unit tests. Each milestone gets its own implementat
 `docs/plans/` (written with `/plan` just before the milestone starts), broken into PR-sized tasks.
 
 ### M0 — Lock-in decisions
-- [x] ADRs 0001–0016 (this PR)
+- [x] ADRs 0001–0017
 - [ ] Syscall inventory: run llama.cpp, SQLite and our test programs under `strace` on Linux; record the exact syscall list M1/M2 must provide
 - [ ] Migrate syscalls to Linux x86_64 numbers and semantics in one pass with libarc, userland and tests together
 - [ ] JSON schemas for pack, model and `.arcpkg` manifests, each with `schema_version`
@@ -188,6 +190,7 @@ channel, on top of host-side unit tests. Each milestone gets its own implementat
 - [ ] Memory: COW fork, demand paging, `mmap`/`munmap`/`mprotect`/`madvise`, page cache shared with `read()`, clean-page eviction, 2 MiB pages
 - [ ] Time: invariant TSC clocksource, TSC-deadline timer, `clock_gettime`, `nanosleep`, CMOS RTC
 - [ ] Hardening: SMEP, SMAP, NX enforced
+- [ ] Power base: tickless idle, MWAIT idle states, Intel HWP/EPP, RAPL energy counters (ADR-0017)
 - [ ] Block layer: async request queue with interrupts; virtio-blk moved onto it
 - [ ] VFS inode refactor; GPT parsing; ext2 rev 1 read/write with large files
 - [ ] AF_UNIX sockets; MSI/MSI-X
@@ -219,9 +222,9 @@ channel, on top of host-side unit tests. Each milestone gets its own implementat
 - [ ] Storage: NVMe (laptop), AHCI (mini PC)
 - [ ] Input: PS/2 mouse; all input through `/dev/input`
 - [ ] Network (optional at runtime): Intel e1000e/I219 first, then Realtek RTL8111/8168; DHCP, DNS
-- [ ] Power: ACPI power-off and reboot via uACPI; battery level display; idle CPU power saving
+- [ ] Power: ACPI power-off and reboot via uACPI; battery %, AC adapter, lid and power button; low-battery warning and clean shutdown at critical level; power profiles wired to EPP and `arc-llm` thread count; screen blanking and backlight control; NVMe APST; `power` command showing battery, profile and watts
 - [ ] Maps, part 2: framebuffer map viewer with pre-rendered tiles, mouse pan and zoom
-- [ ] **Done when:** M3's test passes on both test machines, with and without a network cable
+- [ ] **Done when:** M3's test passes on both test machines, with and without a network cable; idle and inference power are recorded per profile on both machines
 
 ### M5 — Packages and installer
 - [ ] `arcpkg`: install, remove, list, verify, switch model role; offline from USB or disk
@@ -235,7 +238,7 @@ channel, on top of host-side unit tests. Each milestone gets its own implementat
 ## 9. Out of scope (first build)
 
 Wi-Fi, Bluetooth, GPU acceleration, audio, I2C-HID touchpads, a desktop/window manager, multi-user,
-suspend/hibernate, internet updates, dynamic linking, IPv6, ASLR, Secure Boot signing, ARM.
+system suspend/hibernate (driver hooks exist), internet updates, dynamic linking, IPv6, ASLR, Secure Boot signing, ARM.
 Static Linux programs may run thanks to the ABI, but that is not a goal.
 
 ## 10. Risks
@@ -247,6 +250,7 @@ Static Linux programs may run thanks to the ABI, but that is not a goal.
 | Secure Boot blocks the unsigned bootloader | Won't boot | Install docs say to turn it off; signing later |
 | ext2 has no journal | Power loss can damage files being written | Write temp, verify checksum, `fsync`, `rename`; journal later |
 | Real-hardware driver variety | M4 drags on | Support the two test machines first; early boot check in M1 |
+| Running on battery or solar | Shorter uptime | Power is first-class (ADR-0017): tickless idle, profiles, critical-battery shutdown, measured watts |
 | No serial port on the laptop | Hard to debug real-hardware boots | Framebuffer + log file channel in M1 |
 | Embedding a large library is slow | Pack build time | Strongest host available; packs may ship keyword-only and add vectors later |
 | Content and model licenses | Matters if copies are shared | Every manifest records license and source |
@@ -257,4 +261,5 @@ Static Linux programs may run thanks to the ABI, but that is not a goal.
 - **2026-11-07 — Architect review.** Added per-page metadata and eviction; keyword-first retrieval with vector rerank; own doc store instead of a libzim port; early real-hardware boot and MSI-X in M1; Linux semantics (not just numbers); low tier set to 1–2B models.
 - **2026-11-07 — Six-reviewer pass** (junior coder, senior coder, product user, tech enthusiast, OS expert, off-grid operator). Added lock-ins 13–16; syscall inventory, dev container, CI; library reader and images; GGUF wrapping tool; battery awareness; verify-and-repair.
 - **2026-11-07 — Final read-over before committing.** Fixed: battery display contradicted "battery management out of scope" (now only suspend/hibernate is out); COW fork, TSC, SMEP/SMAP and PSF2 fonts from the approved spec were missing from milestone tasks; uACPI missing from the archive list; M1 done-test wording aligned.
+- **2026-11-07 — Power management added** at Michael's request (ADR-0017). Battery and power saving are in scope; system suspend stays later because the laptop likely needs S0ix.
 - **2026-11-07 — Decisions by Michael:** Linux syscall ABI (yes); test machines (laptop + used ThinkCentre Tiny i3); Secure Boot off; project instructions approved.
