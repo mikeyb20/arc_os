@@ -18,7 +18,7 @@
 | M5 Packages + installer | 7 | 7.5 | 9.8 |
 | **Total** | **70** | **76.5** | **104.4** |
 
-- **70 blocks** (69 if the Realtek driver is deferred): 9 small, 50 medium, 11 large. The 33 deep (D) blocks carry
+- **70 blocks**: 9 small, 50 medium, 11 large. The 33 deep (D) blocks carry
   42 of the 76.5 session units.
 - **Session units:** S = 0.5, M = 1, L = 2. "With allowance" adds debugging and rework: D blocks × 1.5, R blocks
   × 1.2. That allowance is an estimate, not a measurement; recheck it after M1, the first milestone with real
@@ -164,7 +164,7 @@ xHCI quirk does, or a USB key on those machines stays invisible.
 | M4-07 | PS/2 mouse + keyboard on `/dev/input` | S | R | K | M4-00 | PS/2 devices report `input_event`s | todo |
 | M4-08 | Intel e1000e (82574 in QEMU) + I219 | M | R | K | M4-00 | Packets flow in QEMU; I219 paths ready for hardware | todo |
 | M4-09 | DHCP + DNS | M | R | U | M4-08 | Address from DHCP; names resolve | todo |
-| M4-10 | Realtek RTL8111/8168 (deferral proposed) | M | R | K | M4-00 | Decision pending: neither test machine has one | todo |
+| M4-10 | Realtek RTL8111/8168 | M | R | K | M4-00 | Driver follows the datasheet, with Linux's `r8169` read as reference only (GPL, no code copied); hardware test when a Realtek machine is available | todo |
 | M4-11 | uACPI: power-off, reboot, buttons, lid | L | D | K | M4-00 | Power button and lid events; clean power-off | todo |
 | M4-12 | Battery, profiles, backlight, APST, `power` | M | R | K | M4-05, M4-11 | Battery %, critical shutdown, profiles change watts | todo |
 | M4-13 | Maps part 2: map viewer | M | R | U | M4-03 | Pre-rendered tiles; pan and zoom by keyboard or mouse | todo |
@@ -214,7 +214,6 @@ Parallel sessions shorten the calendar; they don't save compute.
 
 | When | What | Default if no answer |
 |---|---|---|
-| Now (this PR) | Defer the Realtek driver (M4-10)? Neither test machine has one, and QEMU can't emulate it, so it would ship untested. Most low-tier reference laptops use Intel I219 (planned); cheaper business lines such as ThinkPad E and HP ProBook often use Realtek (not verified) | Keep it planned until you decide |
 | M0-01 | Approve the cloud environment card (setup script) | — (needed to continue) |
 | M0-03 | Archive location for outside sources | Release assets on arc_os; private material in a private repo |
 | Before M1-04 | In the old work computer's firmware setup, check that Secure Boot can be turned off and booting from USB is allowed (a BIOS password left by the former employer blocks both). No specs to send: the M1-04 boot report records them | Assume it can. If it can't, you decide whether a reference-class laptop (knowledge-os.md §4) replaces it |
@@ -279,11 +278,12 @@ Parallel sessions shorten the calendar; they don't save compute.
 | 22 | Older Intel chipsets (7- and 8-series) route USB ports to EHCI until the OS switches them | M4-01 |
 | 23 | No test machine writes to a SATA disk | AHCI writes tested in QEMU only; if the old work computer's disk is SATA, M4-14 covers AHCI reads (read-only, ADR-0018) |
 | 24 | A machine with Secure Boot locked on can't boot unsigned Limine | Off for now; shim + own enrolled key is the known path (ADR-0018), a separate decision |
+| 25 | Neither test machine nor QEMU has a Realtek RTL8111/8168 | M4-10 ships untested on hardware; M4-14 tests it if a Realtek machine is available by then |
 
 ## 9. Later: compatibility track (not counted)
 
 After M5, for machines Michael chooses to support (ADR-0018). Each item becomes blocks only with his OK:
-USB hubs and docks; more network chips (Realtek if M4-10 is deferred) and USB Ethernet adapters; I2C-HID
+USB hubs and docks; more network chips and USB Ethernet adapters; I2C-HID
 touchpads; AMD power management (CPPC instead of Intel HWP); chipset and firmware quirks found on new machines;
 Secure Boot through a signed shim and our own key.
 
@@ -297,3 +297,5 @@ Secure Boot through a signed shim and our own key.
   the 4 GB floor stays. The old work computer stands in for it; its parts come from the M1-04 boot report, so the
   "send details" task became a firmware check. M1-04 reports the machine model (SMBIOS); M4-13 pans by keyboard
   too; M3-00 plans for 1366×768 screens; USB Ethernet adapters and I2C touchpads listed in the compatibility track.
+- **2026-11-08** — Michael kept the Realtek driver (M4-10): the OS ships Intel and Realtek Ethernet drivers; more
+  chips later if wanted. Network stays optional; models and packs never need it.

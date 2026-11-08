@@ -102,9 +102,9 @@ with a Secure Boot switch. Examples: Dell Latitude 5490/7490, Lenovo ThinkPad T4
 examples are a reading of that market, not checked model by model).
 
 - Buying check: Core i3/i5/i7, not Celeron or Pentium (those usually lack AVX2 and fall below the CPU floor); no
-  BIOS password set (it blocks turning Secure Boot off); an Intel Ethernet port if a wired network matters.
-- Gaps until the compatibility track ([`work-blocks.md`](work-blocks.md) §9): AMD power management, Realtek network
-  chips (decision pending), I2C touchpads, USB Ethernet adapters.
+  BIOS password set (it blocks turning Secure Boot off); an Intel or Realtek Ethernet port if a wired network matters.
+- Gaps until the compatibility track ([`work-blocks.md`](work-blocks.md) §9): AMD power management, I2C touchpads, USB
+  Ethernet adapters, network chips beyond Intel and Realtek.
 
 ### Test machines
 
@@ -280,7 +280,7 @@ Static Linux programs may run thanks to the ABI, but that is not a goal.
 - **2026-11-07 — Six-reviewer pass** (junior coder, senior coder, product user, tech enthusiast, OS expert, off-grid operator). Added lock-ins 13–16; syscall inventory, dev container, CI; library reader and images; GGUF wrapping tool; battery awareness; verify-and-repair.
 - **2026-11-07 — Final read-over before committing.** Fixed: battery display contradicted "battery management out of scope" (now only suspend/hibernate is out); COW fork, TSC, SMEP/SMAP and PSF2 fonts from the approved spec were missing from milestone tasks; uACPI missing from the archive list; M1 done-test wording aligned.
 - **2026-11-07 — Power management added** at Michael's request (ADR-0017). Battery and power saving are in scope; system suspend stays later because the laptop likely needs S0ix.
-- **2026-11-07 — Work-block plan** ([`work-blocks.md`](work-blocks.md)): 70 blocks, full specs for M0 and M1, session rules to keep compute down, lock order. Code inspection added to M1: `-mgeneral-regs-only` (live bug), x2APIC and 256 CPUs, 64-bit VFS offsets, poll/select, one data partition for five directories. The M1 log file moved to M4 (no disk driver on real hardware before then). M5 installer needs an e2fsprogs port. Proposed: defer the Realtek driver (neither test machine has one).
+- **2026-11-07 — Work-block plan** ([`work-blocks.md`](work-blocks.md)): 70 blocks, full specs for M0 and M1, session rules to keep compute down, lock order. Code inspection added to M1: `-mgeneral-regs-only` (live bug), x2APIC and 256 CPUs, 64-bit VFS offsets, poll/select, one data partition for five directories. The M1 log file moved to M4 (no disk driver on real hardware before then). M5 installer needs an e2fsprogs port. Proposed: defer the Realtek driver (neither test machine has one); Michael kept it on 2026-11-08.
 - **2026-11-07 — Portable mode added at Michael's request** (ADR-0018). The low-tier machine is his old work computer, which can't keep installs, so arc_os runs entirely from the USB key like Tails. The key uses the normal disk layout; the kernel mounts from the disk it booted from; host disks are never written. Built inside existing blocks (M1-02, M1-10, M1-13, M1-15, M4-04, M5); more drivers for other people's machines come in a later compatibility track.
 - **2026-11-07 — Low-tier reference machine** set by Michael: a standard used business laptop (about $150–300 CAD); the 4 GB floor stays. The old work computer stands in for that class, and its parts come from the M1-04 boot report instead of being collected up front. Follow-ups: buying check, map panning by keyboard, 1366×768 as the smallest screen, and the USB Ethernet mitigation corrected (no driver for it is planned).
 - **2026-11-07 — Decisions by Michael:** Linux syscall ABI (yes); test machines (laptop + used ThinkCentre Tiny i3); Secure Boot off; project instructions approved.
