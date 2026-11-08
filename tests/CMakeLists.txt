@@ -140,6 +140,9 @@ set_tests_properties(test_fat32 arc_os_tests PROPERTIES FIXTURES_REQUIRED fat32_
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
     add_test(NAME tools_archive COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/tools/test_archive.py)
+    # M0-04: tools/syscall-inventory.py on hand-written strace lines
+    add_test(NAME tools_syscall_inventory
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/tools/test_syscall_inventory.py)
 endif()
 
 # Every test in this directory runs on the build host: `ctest -L host`.
