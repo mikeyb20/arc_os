@@ -11,3 +11,101 @@ summary, not the table. The live status of each syscall is in
 
 (written after the first run)
 
+<!-- BEGIN GENERATED (tools/syscall-inventory.py) -->
+
+Programs: cxx_basic, libc_basic, llama-completion, llama-embedding, pthread_basic, sqlite3, zstd-compress, zstd-decompress. Numbers from the archived Linux v6.12 `syscall_64.tbl`.
+
+Build and run status:
+
+- `gcc (Alpine 13.2.1_git20240309) 13.2.1 20240309`
+- `build-libc_basic ok`
+- `build-pthread_basic ok`
+- `build-cxx_basic ok`
+- `build-sqlite3 ok`
+- `build-zstd ok`
+- `build-llama ok`
+- `run-libc_basic ok`
+- `run-pthread_basic ok`
+- `run-cxx_basic ok`
+- `run-sqlite3 ok`
+- `run-zstd-compress ok`
+- `run-zstd-decompress ok`
+- `zstd-roundtrip ok`
+- `run-llama-completion ok`
+- `run-llama-embedding ok`
+
+### Syscalls (59)
+
+| # | Syscall | arc_os today | Calls | Programs | Flags, requests and arguments seen |
+|---|---|---|---|---|---|
+| 0 | read | legacy | 1394 | cxx_basic, libc_basic, llama-completion, llama-embedding, sqlite3 |  |
+| 1 | write | legacy | 3 | cxx_basic, libc_basic |  |
+| 2 | open | legacy | 37 | cxx_basic, libc_basic, llama-completion, llama-embedding, sqlite3, zstd-compress, zstd-decompress | `flags: O_APPEND`, `flags: O_CLOEXEC`, `flags: O_CREAT`, `flags: O_DIRECTORY`, `flags: O_LARGEFILE`, `flags: O_NOFOLLOW`, `flags: O_RDONLY`, `flags: O_RDWR`, `flags: O_TRUNC`, `flags: O_WRONLY` |
+| 3 | close | legacy | 46 | cxx_basic, libc_basic, llama-completion, llama-embedding, sqlite3, zstd-compress, zstd-decompress |  |
+| 4 | stat | legacy | 49 | cxx_basic, libc_basic, llama-completion, llama-embedding, sqlite3, zstd-compress, zstd-decompress |  |
+| 5 | fstat | legacy | 21 | cxx_basic, libc_basic, sqlite3, zstd-compress, zstd-decompress |  |
+| 6 | lstat | missing | 5 | sqlite3 |  |
+| 8 | lseek | legacy | 42 | libc_basic, llama-completion, llama-embedding, sqlite3 | `whence: SEEK_CUR`, `whence: SEEK_END`, `whence: SEEK_SET` |
+| 9 | mmap | missing | 1659 | cxx_basic, libc_basic, llama-completion, llama-embedding, pthread_basic, sqlite3, zstd-compress, zstd-decompress | `flags: MAP_ANONYMOUS`, `flags: MAP_FIXED`, `flags: MAP_POPULATE`, `flags: MAP_PRIVATE`, `flags: MAP_SHARED`, `prot: PROT_NONE`, `prot: PROT_READ`, `prot: PROT_WRITE` |
+| 10 | mprotect | missing | 27 | cxx_basic, libc_basic, llama-completion, llama-embedding, pthread_basic, zstd-compress, zstd-decompress | `prot: PROT_READ`, `prot: PROT_WRITE` |
+| 11 | munmap | missing | 1587 | cxx_basic, libc_basic, llama-completion, llama-embedding, pthread_basic, sqlite3, zstd-compress, zstd-decompress |  |
+| 12 | brk | legacy | 78 | cxx_basic, libc_basic, llama-completion, llama-embedding, sqlite3, zstd-compress, zstd-decompress |  |
+| 13 | rt_sigaction | missing (old `signal` = 20) | 9 | libc_basic, llama-completion, sqlite3, zstd-compress, zstd-decompress | `signal: SIGHUP`, `signal: SIGINT`, `signal: SIGTERM`, `signal: SIGUSR1` |
+| 14 | rt_sigprocmask | missing | 123 | cxx_basic, libc_basic, llama-completion, llama-embedding, pthread_basic, sqlite3, zstd-compress, zstd-decompress | `how: SIG_BLOCK`, `how: SIG_SETMASK`, `how: SIG_UNBLOCK` |
+| 15 | rt_sigreturn | legacy | 1 | libc_basic |  |
+| 16 | ioctl | missing (old `tcsetpgrp` = 33) | 25 | cxx_basic, libc_basic, llama-completion, llama-embedding, pthread_basic, sqlite3, zstd-compress, zstd-decompress | `request: SNDCTL_TMR_START`, `request: TCGETS`, `request: TCSETS`, `request: TIOCGWINSZ` |
+| 17 | pread64 | missing | 9 | libc_basic, sqlite3 |  |
+| 18 | pwrite64 | missing | 52 | sqlite3 |  |
+| 19 | readv | missing | 3605 | llama-completion, llama-embedding, zstd-compress, zstd-decompress |  |
+| 20 | writev | missing | 929 | cxx_basic, libc_basic, llama-completion, llama-embedding, pthread_basic, sqlite3, zstd-compress, zstd-decompress |  |
+| 21 | access | missing | 4 | libc_basic, sqlite3 | `mode: F_OK`, `mode: R_OK` |
+| 22 | pipe | legacy | 1 | libc_basic |  |
+| 28 | madvise | missing | 2 | llama-completion, llama-embedding | `advice: MADV_WILLNEED` |
+| 32 | dup | legacy | 1 | libc_basic |  |
+| 35 | nanosleep | missing | 2 | cxx_basic, libc_basic |  |
+| 39 | getpid | legacy | 7 | libc_basic, sqlite3 |  |
+| 56 | clone | missing | 25 | cxx_basic, llama-completion, llama-embedding, pthread_basic, zstd-compress, zstd-decompress | `flags: CLONE_CHILD_CLEARTID`, `flags: CLONE_FILES`, `flags: CLONE_FS`, `flags: CLONE_PARENT_SETTID`, `flags: CLONE_SETTLS`, `flags: CLONE_SIGHAND`, `flags: CLONE_SYSVSEM`, `flags: CLONE_THREAD`, `flags: CLONE_VM` |
+| 57 | fork | legacy | 2 | libc_basic |  |
+| 59 | execve | legacy (no envp) | 9 | cxx_basic, libc_basic, llama-completion, llama-embedding, pthread_basic, sqlite3, zstd-compress, zstd-decompress |  |
+| 60 | exit | legacy | 22 | cxx_basic, llama-completion, llama-embedding, pthread_basic, zstd-compress, zstd-decompress |  |
+| 61 | wait4 | legacy (old `wait`) | 2 | libc_basic |  |
+| 72 | fcntl | missing | 62 | cxx_basic, libc_basic, sqlite3 | `cmd: F_GETFD`, `cmd: F_GETFL`, `cmd: F_SETFD`, `cmd: F_SETLK` |
+| 74 | fsync | missing | 13 | libc_basic, sqlite3 |  |
+| 77 | ftruncate | missing | 1 | libc_basic |  |
+| 79 | getcwd | legacy | 2 | libc_basic, sqlite3 |  |
+| 80 | chdir | legacy | 2 | libc_basic |  |
+| 82 | rename | missing | 2 | cxx_basic, libc_basic |  |
+| 83 | mkdir | legacy | 5 | cxx_basic, libc_basic |  |
+| 84 | rmdir | missing | 3 | cxx_basic, libc_basic |  |
+| 87 | unlink | legacy | 10 | cxx_basic, libc_basic, sqlite3 |  |
+| 90 | chmod | legacy | 1 | libc_basic |  |
+| 91 | fchmod | missing | 2 | zstd-compress, zstd-decompress |  |
+| 93 | fchown | missing | 7 | sqlite3, zstd-compress, zstd-decompress |  |
+| 99 | sysinfo | missing | 6 | llama-completion, llama-embedding |  |
+| 102 | getuid | legacy | 3 | libc_basic, sqlite3 |  |
+| 107 | geteuid | missing | 4 | libc_basic, sqlite3 |  |
+| 110 | getppid | legacy | 1 | libc_basic |  |
+| 158 | arch_prctl | missing | 9 | cxx_basic, libc_basic, llama-completion, llama-embedding, pthread_basic, sqlite3, zstd-compress, zstd-decompress | `code: ARCH_SET_FS` |
+| 200 | tkill | missing | 1 | libc_basic | `signal: SIGUSR1` |
+| 202 | futex | missing | 366 | cxx_basic, llama-completion, llama-embedding, pthread_basic, zstd-compress, zstd-decompress | `op: FUTEX_REQUEUE_PRIVATE`, `op: FUTEX_WAIT_PRIVATE`, `op: FUTEX_WAIT`, `op: FUTEX_WAKE_PRIVATE`, `op: FUTEX_WAKE` |
+| 204 | sched_getaffinity | missing | 3 | cxx_basic, llama-completion, llama-embedding |  |
+| 217 | getdents64 | missing (old `readdir` = 10) | 16 | cxx_basic, libc_basic |  |
+| 218 | set_tid_address | missing | 11 | cxx_basic, libc_basic, llama-completion, llama-embedding, pthread_basic, sqlite3, zstd-compress, zstd-decompress |  |
+| 221 | fadvise64 | missing | 2 | llama-completion, llama-embedding | `advice: POSIX_FADV_SEQUENTIAL` |
+| 228 | clock_gettime | missing | 2 | zstd-compress | `clock: CLOCK_PROCESS_CPUTIME_ID` |
+| 231 | exit_group | missing | 10 | cxx_basic, libc_basic, llama-completion, llama-embedding, pthread_basic, sqlite3, zstd-compress, zstd-decompress |  |
+| 257 | openat | missing | 8 | cxx_basic | `flags: O_CLOEXEC`, `flags: O_DIRECTORY`, `flags: O_LARGEFILE`, `flags: O_NOFOLLOW`, `flags: O_RDONLY` |
+| 263 | unlinkat | missing | 3 | cxx_basic | `flags: AT_REMOVEDIR` |
+| 280 | utimensat | missing | 2 | zstd-compress, zstd-decompress |  |
+
+### Files under /proc, /sys, /dev, /etc (5)
+
+| Path | Programs |
+|---|---|
+| `/dev/tty` | llama-completion |
+| `/dev/urandom` | sqlite3 |
+| `/etc/llama.cpp/config.ini` | llama-completion, llama-embedding |
+| `/etc/passwd` | sqlite3 |
+| `/proc/cpuinfo` | llama-completion, llama-embedding |
+
+<!-- END GENERATED -->
