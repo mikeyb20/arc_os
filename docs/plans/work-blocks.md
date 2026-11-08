@@ -78,7 +78,7 @@ Start every block with `/os/implement-block <ID>`. These rules are what keep ses
 
 | ID | Block | Size | Tier | Lane | Needs | Done when | Status |
 |---|---|---|---|---|---|---|---|
-| M0-01 | Dev environment, pinned toolchain, CI | M | R | I | — | CI builds and runs host tests; a fresh cloud session has every tool | todo |
+| M0-01 | Dev environment, pinned toolchain, CI | M | R | I | — | CI builds and runs host tests; a fresh cloud session has every tool | review (#3) |
 | M0-02 | QEMU test harness | M | R | I | M0-01 | `ctest -L qemu` passes in the cloud and in CI; failures named | todo |
 | M0-03 | Archive outside sources and test models | M | R | I | M0-01 | Every component pinned by SHA-256 and fetched from Michael's GitHub | todo |
 | M0-04 | Syscall inventory | S | R | U | M0-03 | Exact syscalls, ioctls and files used by musl, C++, SQLite, zstd, llama.cpp | todo |

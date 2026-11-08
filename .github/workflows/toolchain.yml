@@ -1,0 +1,123 @@
+# Builds the pinned x86_64-elf cross toolchain (binutils + GCC, C only) from
+# tools/toolchain.lock and publishes it as a release asset of this repo.
+#
+# Runs on manual trigger, and on pushes that change the lock or this file. It does nothing
+# when the asset named in the lock already exists: assets are never replaced in place, a new
+# toolchain gets a new TOOLCHAIN_RELEASE.
+name: toolchain
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - tools/toolchain.lock
+      - .github/workflows/toolchain.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: toolchain
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read lock
+        run: grep -E '^[A-Z0-9_]+=' tools/toolchain.lock >> "$GITHUB_ENV"
+
+      - name: Skip if the asset already exists
+        id: exists
+        run: |
+          if gh release view "$TOOLCHAIN_RELEASE" -R "$GITHUB_REPOSITORY" --json assets \
+               -q '.assets[].name' 2>/dev/null | grep -qx "$TOOLCHAIN_ASSET"; then
+            echo "already=true" >> "$GITHUB_OUTPUT"
+            echo "$TOOLCHAIN_ASSET is already published in $TOOLCHAIN_RELEASE; nothing to do."
+          else
+            echo "already=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install build dependencies
+        if: steps.exists.outputs.already == 'false'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential bison flex texinfo zstd
+
+      - name: Download and verify sources
+        if: steps.exists.outputs.already == 'false'
+        run: |
+          mkdir -p "$RUNNER_TEMP/src" && cd "$RUNNER_TEMP/src"
+          curl -fsSLo binutils.tar.xz "$BINUTILS_URL"
+          curl -fsSLo gcc.tar.xz "$GCC_URL"
+          sha256sum binutils.tar.xz gcc.tar.xz
+          echo "$BINUTILS_SHA256  binutils.tar.xz" | sha256sum -c -
+          echo "$GCC_SHA256  gcc.tar.xz" | sha256sum -c -
+          tar xf binutils.tar.xz
+          tar xf gcc.tar.xz
+          cd "gcc-$GCC_VERSION" && ./contrib/download_prerequisites
+
+      - name: Build binutils
+        if: steps.exists.outputs.already == 'false'
+        run: |
+          mkdir -p "$RUNNER_TEMP/build-binutils" && cd "$RUNNER_TEMP/build-binutils"
+          "$RUNNER_TEMP/src/binutils-$BINUTILS_VERSION/configure" \
+            --target="$TOOLCHAIN_TARGET" --prefix="$RUNNER_TEMP/cross" \
+            --with-sysroot --disable-nls --disable-werror
+          make MAKEINFO=true -j"$(nproc)"
+          make MAKEINFO=true install
+
+      - name: Build GCC (C only)
+        if: steps.exists.outputs.already == 'false'
+        run: |
+          export PATH="$RUNNER_TEMP/cross/bin:$PATH"
+          mkdir -p "$RUNNER_TEMP/build-gcc" && cd "$RUNNER_TEMP/build-gcc"
+          "$RUNNER_TEMP/src/gcc-$GCC_VERSION/configure" \
+            --target="$TOOLCHAIN_TARGET" --prefix="$RUNNER_TEMP/cross" \
+            --disable-nls --enable-languages=c --without-headers \
+            --disable-shared --disable-threads --with-newlib --disable-hosted-libstdcxx
+          make all-gcc -j"$(nproc)"
+          make all-target-libgcc -j"$(nproc)"
+          make install-strip-gcc
+          make install-target-libgcc
+
+      - name: Smoke test (relocated)
+        if: steps.exists.outputs.already == 'false'
+        run: |
+          # Prove the toolchain works from a different directory than it was built for.
+          mv "$RUNNER_TEMP/cross" "$RUNNER_TEMP/relocated"
+          T="$RUNNER_TEMP/relocated/bin/$TOOLCHAIN_TARGET"
+          printf 'int f(int x){return x*2;}\nvoid _start(void){for(;;){}}\n' > "$RUNNER_TEMP/t.c"
+          "$T-gcc" -ffreestanding -nostdlib -mno-red-zone -O2 -c "$RUNNER_TEMP/t.c" -o "$RUNNER_TEMP/t.o"
+          "$T-ld" "$RUNNER_TEMP/t.o" -o "$RUNNER_TEMP/t.elf"
+          "$T-gcc" --version | head -1
+          "$T-ld" --version | head -1
+          mv "$RUNNER_TEMP/relocated" "$RUNNER_TEMP/cross"
+
+      - name: Pack
+        if: steps.exists.outputs.already == 'false'
+        run: |
+          cd "$RUNNER_TEMP"
+          tar --sort=name --owner=0 --group=0 --numeric-owner -C cross -cf - . \
+            | zstd -19 -T0 -o "$TOOLCHAIN_ASSET"
+          sha256sum "$TOOLCHAIN_ASSET" | tee "$TOOLCHAIN_ASSET.sha256"
+          ls -l "$TOOLCHAIN_ASSET"
+
+      - name: Publish release asset
+        if: steps.exists.outputs.already == 'false'
+        run: |
+          cd "$RUNNER_TEMP"
+          if ! gh release view "$TOOLCHAIN_RELEASE" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TOOLCHAIN_RELEASE" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --title "x86_64-elf toolchain ($TOOLCHAIN_RELEASE)" \
+              --notes "binutils $BINUTILS_VERSION + GCC $GCC_VERSION (C only), target $TOOLCHAIN_TARGET, built on ubuntu-24.04 from tools/toolchain.lock. Install with tools/dev-setup.sh."
+          fi
+          gh release upload "$TOOLCHAIN_RELEASE" -R "$GITHUB_REPOSITORY" \
+            "$TOOLCHAIN_ASSET" "$TOOLCHAIN_ASSET.sha256"
+          echo "Put this in tools/toolchain.lock as TOOLCHAIN_SHA256:"
+          cut -d' ' -f1 "$TOOLCHAIN_ASSET.sha256"

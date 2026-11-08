@@ -37,7 +37,7 @@ ever builds GCC or waits on a blocked download host.
 
 **Done when.**
 - [ ] CI is green on this block's PR (build + host tests).
-- [ ] The toolchain asset exists and `tools/dev-setup.sh` verifies its SHA-256.
+- [x] The toolchain asset exists and `tools/dev-setup.sh` verifies its SHA-256.
 - [ ] A fresh cloud session has `x86_64-elf-gcc`, `nasm`, `qemu-system-x86_64` and `xorriso` with no manual steps.
 
 **Watch out.**
@@ -47,4 +47,19 @@ ever builds GCC or waits on a blocked download host.
 - Ubuntu 24.04 apt versions are the pin for host tools; record `qemu-system-x86_64 --version` in Notes.
 
 **Notes.**
--
+- Done in PR #3 (branch `claude/project-thread-amkkol`; the session harness fixes the branch name).
+- Release downloads work from cloud sessions: plain `https://github.com/mikeyb20/arc_os/releases/download/...`
+  URLs go through the proxy (arc_os is public, so no `gh`/API call is needed). The step 3 fallback isn't needed.
+- `toolchain-v1` asset: `x86_64-elf-toolchain-14.1.0-2.42.tar.zst`, 241 MB unpacked, SHA-256 in `tools/toolchain.lock`.
+  Built in ~16 min on an Actions runner; installs in ~2 s in a cloud session. GNU source hashes were confirmed
+  by the runner. The toolchain is relocatable (smoke test runs it from a moved directory).
+- Limine pinned to `v8.7.0-binary` = `aad3edd3`; its `limine.h` is identical to the committed one.
+- Host tool pins (Ubuntu 24.04 apt): `QEMU emulator version 8.2.2 (Debian 1:8.2.2+ds-0ubuntu1.18)`.
+- Host tests were red on master: `test_vmm` ran the real `cli`/`popf` spinlock in user space (SIGSEGV) and
+  `test_fat32` had no disk image. Fixed with a spinlock stub and a ctest fixture that builds the image.
+  All 49 tests carry the `host` label.
+- Cross build + ISO checked in a cloud session with the downloaded toolchain; the ISO boots in QEMU to
+  "Preemptive multitasking active".
+- For M0-02: `ctest -L qemu` is still empty; CI already installs qemu/ovmf through `dev-setup.sh`.
+- For M0-03: the toolchain workflow fetches GNU sources but doesn't archive them; M0-03 still archives
+  binutils/GCC (+ GMP/MPFR/MPC/ISL from `download_prerequisites`).
