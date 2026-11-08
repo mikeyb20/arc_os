@@ -4,6 +4,7 @@
  * our ap_entry function pointer to it, and the AP wakes up. */
 
 #include "arch/x86_64/smp.h"
+#include "arch/x86_64/fpu.h"
 #include "arch/x86_64/percpu.h"
 #include "arch/x86_64/lapic.h"
 #include "arch/x86_64/gdt.h"
@@ -30,6 +31,9 @@ static void ap_entry(struct limine_smp_info *info) {
 
     /* Initialize per-CPU data for this AP */
     percpu_init_ap(cpu_id, apic_id);
+
+    /* SSE on and FS base 0, like the BSP (only the BSP runs user code today) */
+    fpu_cpu_init(0);
 
     /* Load GDT and IDT (shared IDT, per-CPU GDT could be done later) */
     /* For now, APs use the BSP's GDT and IDT since they're the same */

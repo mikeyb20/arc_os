@@ -1,12 +1,26 @@
 #ifndef ARCHOS_PROC_PROC_SYSCALLS_H
 #define ARCHOS_PROC_PROC_SYSCALLS_H
 
-/* Register the process, credential and signal syscalls (exit, getpid, getppid,
- * fork, execve, wait4, kill, rt_sigaction, rt_sigreturn, getuid, getgid, setuid,
- * setgid, setpgid, getpgid) under their Linux numbers. Called by syscall_init. */
+/* Register the process, credential and signal syscalls (exit, exit_group,
+ * getpid, getppid, fork, execve, wait4, kill, rt_sigaction, rt_sigreturn,
+ * getuid, getgid, setuid, setgid, setpgid, getpgid, arch_prctl,
+ * set_tid_address) under their Linux numbers. Called by syscall_init. */
 void proc_syscalls_init(void);
 
+#include <stdint.h>
+#include "proc/elf.h"
+#include "proc/exec_stack.h"
+
 struct Process;
+
+/* Enter a freshly loaded program (execve, init): build the System V initial
+ * stack from strings and the auxv values, copy it to the top of the user stack
+ * of p's live address space, reset the FS base and FPU/SSE state, and jump to
+ * the entry point. Takes ownership of strings and stack_buf (both kmalloc'd,
+ * stack_buf EXEC_STACK_BUF bytes) and frees them. Does not return. */
+__attribute__((noreturn))
+void proc_enter_user(struct Process *p, const ElfLoadResult *elf, ExecStrings *strings,
+                     const char *execfn, uint8_t *stack_buf);
 
 /* Close every open fd of p (pipe ends drop their refcount, so readers see EOF).
  * Used when a process exits or is killed by a signal. */

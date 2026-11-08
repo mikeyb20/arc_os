@@ -6,9 +6,12 @@
  * ioctl(TIOCSPGRP/TIOCGPGRP), brk, getcwd's return value, socket address checks.
  * Prints one FAIL line per failed check; exit status = number of failures.
  *
+ * M0-06 adds: argument registers preserved across syscalls, arch_prctl and the
+ * FS base, set_tid_address, readv/writev, termios ioctls, execve argument
+ * errors, and SSE registers and FS base surviving context switches.
+ *
  * Unlike normal programs it makes raw syscalls for the cases libc hides (the
- * -errno value itself, unknown numbers). No "= { 0 }" struct initializers:
- * GCC emits SSE stores for them and user SSE is off until M1-01. */
+ * -errno value itself, unknown numbers). */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,6 +26,9 @@
 #include <sys/ioctl.h>
 #include <uapi/unistd.h>
 #include <uapi/socket.h>
+#include <uapi/prctl.h>
+#include <uapi/uio.h>
+#include <uapi/termios.h>
 
 static int failures;
 
@@ -317,6 +323,158 @@ static void test_sockets(void) {
     close(s);
 }
 
+/* --- M0-06 --- */
+
+/* Linux preserves every register but RAX, RCX and R11 across a syscall */
+static void test_regs_preserved(void) {
+    unsigned long out[6];
+    __asm__ volatile (
+        "mov $0x1111111111111111, %%rdi\n"
+        "mov $0x2222222222222222, %%rsi\n"
+        "mov $0x3333333333333333, %%rdx\n"
+        "mov $0x4444444444444444, %%r10\n"
+        "mov $0x5555555555555555, %%r8\n"
+        "mov $0x6666666666666666, %%r9\n"
+        "mov $39, %%eax\n"                /* getpid */
+        "syscall\n"
+        "mov %%rdi, 0(%0)\n"
+        "mov %%rsi, 8(%0)\n"
+        "mov %%rdx, 16(%0)\n"
+        "mov %%r10, 24(%0)\n"
+        "mov %%r8, 32(%0)\n"
+        "mov %%r9, 40(%0)\n"
+        : : "r"(out)
+        : "rax", "rcx", "r11", "rdi", "rsi", "rdx", "r8", "r9", "r10", "memory");
+    CHECK(out[0] == 0x1111111111111111UL);
+    CHECK(out[1] == 0x2222222222222222UL);
+    CHECK(out[2] == 0x3333333333333333UL);
+    CHECK(out[3] == 0x4444444444444444UL);
+    CHECK(out[4] == 0x5555555555555555UL);
+    CHECK(out[5] == 0x6666666666666666UL);
+}
+
+static unsigned long fs_word0(void) {
+    unsigned long v;
+    __asm__ volatile ("mov %%fs:0, %0" : "=r"(v));
+    return v;
+}
+
+static void test_arch_prctl_tid(void) {
+    static unsigned long tls_block[2];
+    tls_block[0] = 0xF5F5F5F5UL;
+    unsigned long base = 1;
+    CHECK(raw3(__NR_arch_prctl, ARCH_GET_FS, (long)&base, 0) == 0 && base == 0);
+    CHECK(raw3(__NR_arch_prctl, ARCH_SET_FS, (long)tls_block, 0) == 0);
+    CHECK(fs_word0() == 0xF5F5F5F5UL);
+    CHECK(raw3(__NR_arch_prctl, ARCH_GET_FS, (long)&base, 0) == 0);
+    CHECK(base == (unsigned long)tls_block);
+    CHECK(raw3(__NR_arch_prctl, ARCH_SET_FS, (long)0xFFFF800000000000UL, 0) == -EPERM);
+    CHECK(raw3(__NR_arch_prctl, ARCH_GET_FS, 0x10, 0) == -EFAULT);
+    CHECK(raw3(__NR_arch_prctl, ARCH_SET_GS, 0, 0) == -EINVAL);
+    CHECK(raw3(__NR_arch_prctl, ARCH_SET_FS, 0, 0) == 0);
+
+    static int tid_word;
+    CHECK(raw3(__NR_set_tid_address, (long)&tid_word, 0, 0) == getpid());
+}
+
+static void test_readv_writev(void) {
+    int fds[2];
+    CHECK(pipe(fds) == 0);
+    struct iovec out[3];
+    out[0].iov_base = "ab";   out[0].iov_len = 2;
+    out[1].iov_base = "";     out[1].iov_len = 0;
+    out[2].iov_base = "cdef"; out[2].iov_len = 4;
+    CHECK(raw3(__NR_writev, fds[1], (long)out, 3) == 6);
+    char a[3], b[8];
+    struct iovec in[2];
+    in[0].iov_base = a; in[0].iov_len = 3;
+    in[1].iov_base = b; in[1].iov_len = 8;
+    long n = raw3(__NR_readv, fds[0], (long)in, 2);
+    CHECK(n == 6);
+    CHECK(memcmp(a, "abc", 3) == 0 && memcmp(b, "def", 3) == 0);
+    CHECK(raw3(__NR_writev, fds[1], (long)out, -1) == -EINVAL);
+    CHECK(raw3(__NR_writev, fds[1], (long)out, 1025) == -EINVAL);
+    CHECK(raw3(__NR_writev, fds[1], 0x10, 1) == -EFAULT);
+    CHECK(raw3(__NR_writev, fds[1], (long)out, 0) == 0);
+    close(fds[0]);
+    close(fds[1]);
+}
+
+static void test_termios(void) {
+    struct termios t;
+    CHECK(raw3(__NR_ioctl, 0, TCGETS, (long)&t) == 0);
+    CHECK(t.c_lflag & 0x2);                      /* ICANON */
+    CHECK(raw3(__NR_ioctl, 0, TCSETSW, (long)&t) == 0);
+    struct winsize ws;
+    CHECK(raw3(__NR_ioctl, 1, TIOCGWINSZ, (long)&ws) == 0);
+    CHECK(ws.ws_row > 0 && ws.ws_col > 0);
+    CHECK(raw3(__NR_ioctl, 0, TCGETS, 0x10) == -EFAULT);
+    int fds[2];
+    CHECK(pipe(fds) == 0);
+    CHECK(raw3(__NR_ioctl, fds[0], TCGETS, (long)&t) == -ENOTTY);
+    close(fds[0]);
+    close(fds[1]);
+}
+
+/* execve fails cleanly (the process keeps running) on bad arguments */
+static void test_execve_errors(void) {
+    static char *argv[1200];
+    CHECK(raw3(__NR_execve, (long)"/nonexistent", 0x10, 0) == -EFAULT);
+    CHECK(raw3(__NR_execve, 0x10, 0, 0) == -EFAULT);
+    CHECK(raw3(__NR_execve, (long)"", 0, 0) == -ENOENT);
+    for (int i = 0; i < 1199; i++) argv[i] = "x";
+    argv[1199] = NULL;
+    CHECK(raw3(__NR_execve, (long)"/nonexistent", (long)argv, 0) == -E2BIG);
+    argv[0] = "/nonexistent";
+    argv[1] = NULL;
+    CHECK(raw3(__NR_execve, (long)"/nonexistent", (long)argv, 0) == -ENOENT);
+    CHECK(raw3(__NR_execve, (long)"/etc/passwd", (long)argv, 0) == -ENOEXEC);
+}
+
+/* Block in read() on a pipe with a pattern in XMM7 and a private FS base; the
+ * other process runs in between with its own. Returns mismatches seen. */
+static int ping(int rfd, int wfd, unsigned long pattern, int rounds, int first) {
+    static unsigned long tls[2];
+    int bad = 0;
+    char c = 'x';
+    CHECK(raw3(__NR_arch_prctl, ARCH_SET_FS, (long)&tls[first], 0) == 0);
+    for (int i = 0; i < rounds; i++) {
+        if (first || i > 0) CHECK(raw3(__NR_write, wfd, (long)&c, 1) == 1);
+        unsigned long out;
+        long ret;
+        __asm__ volatile ("movq %[pat], %%xmm7\n"
+                          "syscall\n"
+                          "movq %%xmm7, %[out]\n"
+                          : [out] "=r"(out), "=a"(ret)
+                          : [pat] "r"(pattern), "a"(0L), "D"((long)rfd), "S"(&c), "d"(1L)
+                          : "rcx", "r11", "xmm7", "memory");
+        if (ret != 1 || out != pattern) bad++;
+        unsigned long base = 0;
+        raw3(__NR_arch_prctl, ARCH_GET_FS, (long)&base, 0);
+        if (base != (unsigned long)&tls[first]) bad++;
+    }
+    if (!first) raw3(__NR_write, wfd, (long)&c, 1);
+    raw3(__NR_arch_prctl, ARCH_SET_FS, 0, 0);
+    return bad;
+}
+
+static void test_sse_and_fs_survive_switches(void) {
+    int to_child[2], to_parent[2];
+    CHECK(pipe(to_child) == 0 && pipe(to_parent) == 0);
+    pid_t pid = fork();
+    if (pid == 0) {
+        int bad = ping(to_child[0], to_parent[1], 0xC41DC41DC41DC41DUL, 20, 0);
+        _exit(bad > 0 ? 1 : 0);
+    }
+    int bad = ping(to_parent[0], to_child[1], 0xBA5EBA5EBA5EBA5EUL, 20, 1);
+    CHECK(bad == 0);
+    int status = 0;
+    CHECK(waitpid(pid, &status, 0) == pid);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    close(to_child[0]); close(to_child[1]);
+    close(to_parent[0]); close(to_parent[1]);
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     test_std_fds();
@@ -328,6 +486,12 @@ int main(int argc, char **argv) {
     test_ioctl();
     test_brk_cwd_misc();
     test_sockets();
+    test_regs_preserved();
+    test_arch_prctl_tid();
+    test_readv_writev();
+    test_termios();
+    test_execve_errors();
+    test_sse_and_fs_survive_switches();
     printf("abi_check: %s (%d failures)\n", failures ? "FAIL" : "PASS", failures);
     return failures;
 }

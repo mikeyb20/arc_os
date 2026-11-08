@@ -7,6 +7,8 @@
 #include "proc/process.h"
 #include "proc/signal.h"
 #include "lib/kprintf.h"
+#include "lib/mem.h"
+#include "uapi/termios.h"
 
 /* Ring buffer for completed lines (power-of-2 size) */
 #define TTY_BUF_SIZE 256
@@ -39,6 +41,17 @@ static uint32_t tty_fg_pgid;
 /* Wait queue for tty_read blocking */
 static Spinlock tty_lock = SPINLOCK_INIT;
 static WaitQueue tty_read_wq = WAITQUEUE_INIT;
+
+/* Linux's default termios (tty_std_termios) and window size */
+static struct termios tty_termios = {
+    .c_iflag = 0x500,    /* ICRNL | IXON */
+    .c_oflag = 0x5,      /* OPOST | ONLCR */
+    .c_cflag = 0x4BF,    /* B38400 | CS8 | CREAD | HUPCL */
+    .c_lflag = 0x8A3B,   /* ISIG|ICANON|ECHO|ECHOE|ECHOK|ECHOCTL|ECHOKE|IEXTEN */
+    .c_line  = 0,
+    .c_cc    = { 3, 034, 0177, 025, 4, 0, 1, 0, 021, 023, 032, 0, 022, 017, 027, 026, 0 },
+};
+static struct winsize tty_winsize = { .ws_row = 25, .ws_col = 80 };
 
 /* Configurable output function — defaults to serial_putchar */
 static void (*tty_output_fn)(char c);
@@ -176,4 +189,29 @@ int tty_write(const void *buf, uint32_t count) {
         tty_emit(src[i]);
     }
     return (int)count;
+}
+
+void tty_get_termios(struct termios *t) {
+    memcpy(t, &tty_termios, sizeof(*t));
+}
+
+void tty_set_termios(const struct termios *t) {
+    memcpy(&tty_termios, t, sizeof(*t));
+}
+
+void tty_flush_input(void) {
+    spinlock_acquire(&tty_lock);   /* IRQ-safe: the keyboard IRQ fills these */
+    read_head = 0;
+    read_tail = 0;
+    lines_ready = 0;
+    line_pos = 0;
+    spinlock_release(&tty_lock);
+}
+
+void tty_get_winsize(struct winsize *ws) {
+    memcpy(ws, &tty_winsize, sizeof(*ws));
+}
+
+void tty_set_winsize(const struct winsize *ws) {
+    memcpy(&tty_winsize, ws, sizeof(*ws));
 }

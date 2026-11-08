@@ -3,9 +3,11 @@
 ENTRY(_start)
 
 SECTIONS {
-    . = 0x400000;
+    /* ELF and program headers sit in the first loaded page, so the kernel can
+     * point AT_PHDR at them (System V process start, ADR-0002) */
+    . = 0x400000 + SIZEOF_HEADERS;
 
-    .text ALIGN(4096) : {
+    .text : {
         *(.text .text.*)
     }
 

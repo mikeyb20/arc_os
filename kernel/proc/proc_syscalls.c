@@ -26,24 +26,17 @@
 #include "user_access.h"
 #include "uapi/unistd.h"
 #include "uapi/wait.h"
+#include "uapi/prctl.h"
+#include "proc/exec_stack.h"
+#include "fs/path.h"
+#include "arch/x86_64/fpu.h"
+#include "arch/x86_64/cpuid.h"
 
 /* Maximum ELF binary size for execve */
 #define MAX_ELF_SIZE  (16 * 1024 * 1024)  /* 16 MB */
 
-/* execve argv limits */
-#define MAX_EXEC_ARGS     32
-#define MAX_EXEC_ARG_DATA 4096
-
 /* Linux struct rusage size (wait4 zero-fills it: there is no accounting yet) */
 #define RUSAGE_SIZE 144
-
-/* Kernel-side copy of exec argv data */
-typedef struct {
-    int    argc;
-    char  *ptrs[MAX_EXEC_ARGS + 1];  /* Pointers into data[] */
-    char   data[MAX_EXEC_ARG_DATA];  /* Packed NUL-terminated strings */
-    size_t data_used;
-} ExecArgv;
 
 void proc_release_fds(Process *p) {
     if (p->fd_table == NULL) return;
@@ -86,6 +79,42 @@ static int64_t sys_exit(uint64_t status, uint64_t a1, uint64_t a2,
     sched_schedule();
     for (;;) __asm__ volatile ("hlt");
     __builtin_unreachable();  /* suppress -Wreturn-type */
+}
+
+/* exit_group(status) — 231. A process holds one thread until M1-16, so this
+ * is exit(); M1-16 makes it end every thread of the group. */
+static int64_t sys_exit_group(uint64_t status, uint64_t a1, uint64_t a2,
+                              uint64_t a3, uint64_t a4, uint64_t a5) {
+    return sys_exit(status, a1, a2, a3, a4, a5);
+}
+
+/* arch_prctl(code, addr) — 158. Only the FS base (TLS, ADR-0002). */
+static int64_t sys_arch_prctl(uint64_t code, uint64_t addr, uint64_t a2,
+                              uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a2; (void)a3; (void)a4; (void)a5;
+    switch (code) {
+    case ARCH_SET_FS:
+        if (addr >= USER_ADDR_LIMIT) return -EPERM;   /* Linux: past TASK_SIZE */
+        arch_set_fs_base(addr);
+        return 0;
+    case ARCH_GET_FS: {
+        uint64_t base = thread_current()->fs_base;
+        return copy_to_user((void *)addr, &base, sizeof(base));
+    }
+    default:
+        return -EINVAL;   /* ARCH_SET_GS/GET_GS and the rest: not supported */
+    }
+}
+
+/* set_tid_address(tidptr) — 218. Stores the pointer that M1-16's thread exit
+ * clears (and futex-wakes); returns the caller's tid, which equals the pid
+ * while a process holds one thread. */
+static int64_t sys_set_tid_address(uint64_t tidptr, uint64_t a1, uint64_t a2,
+                                   uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+    Process *p = proc_current();
+    thread_current()->clear_child_tid = tidptr;
+    return p ? (int64_t)p->pid : 0;
 }
 
 /* getpid() — 39 */
@@ -155,120 +184,129 @@ static int exec_read_elf(const char *path, void **out_buf, uint64_t *out_size) {
     return 0;
 }
 
-/* Copy argv strings from the current (old) user address space into a kernel buffer.
- * Must be called BEFORE destroying the old PML4. tests/test_exec_argv.c keeps a copy. */
-static int exec_copy_argv(uint64_t argv_addr, ExecArgv *args) {
-    args->argc = 0;
-    args->data_used = 0;
+/* Copy one NULL-terminated user vector (argv or envp) into s, string by
+ * string, with the fault-free helpers. Returns 0, -EFAULT or -E2BIG. */
+static int exec_copy_vector(uint64_t uvec, ExecStrings *s, int is_env) {
+    if (uvec == 0) return 0;   /* Linux accepts NULL as an empty vector */
+    for (uint64_t i = 0;; i++) {
+        uint64_t uptr;
+        if (copy_from_user(&uptr, (const void *)(uvec + 8 * i), sizeof(uptr)) != 0)
+            return -EFAULT;
+        if (uptr == 0) return 0;
 
-    if (argv_addr == 0) return 0;
-
-    if (!user_ptr_valid((const void *)argv_addr, sizeof(uint64_t)))
-        return -EFAULT;
-
-    const char *const *user_argv = (const char *const *)argv_addr;
-
-    for (int i = 0; i < MAX_EXEC_ARGS; i++) {
-        const char *ustr = user_argv[i];
-        if (ustr == (void *)0) break;
-
-        if (!user_ptr_valid(ustr, 1)) return -EFAULT;
-
-        /* Copy string byte-by-byte into data[] */
-        args->ptrs[i] = &args->data[args->data_used];
-        size_t start = args->data_used;
-        while (1) {
-            if (args->data_used >= MAX_EXEC_ARG_DATA) return -E2BIG;
-            char c = ustr[args->data_used - start];
-            args->data[args->data_used++] = c;
-            if (c == '\0') break;
-        }
-        args->argc++;
+        size_t room = exec_strings_room(s);
+        if (room == 0) return -E2BIG;
+        long len = strncpy_from_user(s->data + s->used, (const char *)uptr, room);
+        if (len == -ENAMETOOLONG) return -E2BIG;
+        if (len < 0) return (int)len;
+        exec_strings_commit(s, (size_t)len + 1, is_env);
     }
-
-    /* If we hit MAX_EXEC_ARGS, check if there are more */
-    if (args->argc == MAX_EXEC_ARGS) {
-        if (user_argv[MAX_EXEC_ARGS] != (void *)0)
-            return -E2BIG;
-    }
-
-    args->ptrs[args->argc] = (void *)0;
-    return 0;
 }
 
-/* Write argv data onto the new user stack. Called AFTER paging_write_cr3(new_pml4)
- * so kernel can write directly to user virtual addresses (no SMAP). */
-static void exec_setup_user_stack(const ExecArgv *args,
-                                  uint64_t *out_rsp, uint64_t *out_argv) {
-    uint64_t sp = USER_STACK_TOP;
-    uint64_t str_addrs[MAX_EXEC_ARGS];
-
-    /* 1. Copy strings to top of stack (high→low) */
-    for (int i = args->argc - 1; i >= 0; i--) {
-        size_t len = strlen(args->ptrs[i]) + 1;
-        sp -= len;
-        memcpy((void *)sp, args->ptrs[i], len);
-        str_addrs[i] = sp;
+/* Reset a caught signal's handler to SIG_DFL: the old image's code is gone.
+ * Ignored signals stay ignored and pending ones stay pending (Linux). */
+static void exec_reset_signals(Process *p) {
+    for (int i = 0; i < NSIG; i++) {
+        if (p->sig.handlers[i] != SIG_DFL && p->sig.handlers[i] != SIG_IGN)
+            p->sig.handlers[i] = SIG_DFL;
     }
-
-    /* 2. Align to 8 bytes */
-    sp &= ~7ULL;
-
-    /* 3. NULL terminator for argv array */
-    sp -= 8;
-    *(uint64_t *)sp = 0;
-
-    /* 4. argv pointers (reverse order, growing down) */
-    for (int i = args->argc - 1; i >= 0; i--) {
-        sp -= 8;
-        *(uint64_t *)sp = str_addrs[i];
-    }
-    *out_argv = (args->argc > 0) ? sp : 0;
-
-    /* 5. Align RSP to 16 bytes (ABI) */
-    sp &= ~15ULL;
-    *out_rsp = sp;
+    p->sig.restoring = 0;
 }
 
-/* execve(path, argv, envp) — 59. envp is ignored until M0-06 builds the
- * System V initial stack (argc, argv, envp, auxv). */
+void proc_enter_user(Process *p, const ElfLoadResult *elf, ExecStrings *strings,
+                     const char *execfn, uint8_t *stack_buf) {
+    ExecAux aux;
+    aux.phdr  = elf->phdr_addr;
+    aux.phent = elf->phent;
+    aux.phnum = elf->phnum;
+    aux.entry = elf->entry_point;
+    aux.uid   = p->uid;
+    aux.euid  = p->euid;
+    aux.gid   = p->gid;
+    aux.egid  = p->egid;
+    /* Linux sets AT_SECURE for setuid programs, and musl then poll()s fds 0-2
+     * and crashes if poll fails. Always 0 until poll exists (M1-18). */
+    aux.secure = 0;
+    aux.hwcap = cpu_hwcap();
+    cpu_random_fill(aux.random, sizeof(aux.random));
+
+    /* Fits by construction: EXEC_STACK_BUF covers EXEC_ARG_MAX plus the rest */
+    uint64_t base = USER_STACK_TOP - EXEC_STACK_BUF;
+    uint64_t rsp = exec_build_stack(stack_buf, EXEC_STACK_BUF, USER_STACK_TOP,
+                                    strings, execfn, &aux);
+    if (rsp == 0) {
+        kprintf("[EXEC] FATAL: initial stack does not fit\n");
+        KERNEL_PANIC();
+    }
+
+    /* p's address space is live (CR3): copy the stack image in */
+    memcpy((void *)rsp, stack_buf + (rsp - base), USER_STACK_TOP - rsp);
+    kfree(stack_buf);
+    kfree(strings);
+
+    /* Fresh user CPU state: no TLS yet, clean FPU/SSE, no clear_child_tid */
+    arch_set_fs_base(0);
+    fpu_load_init();
+    thread_current()->clear_child_tid = 0;
+
+    jump_to_usermode(elf->entry_point, rsp);
+}
+
+/* execve(path, argv, envp) — 59. Builds the System V initial stack (argc,
+ * argv, envp, auxv; ADR-0002) for a static ELF (ET_EXEC or static-PIE). */
 static int64_t sys_execve(uint64_t path_addr, uint64_t argv_addr, uint64_t envp_addr,
                           uint64_t a3, uint64_t a4, uint64_t a5) {
-    (void)envp_addr; (void)a3; (void)a4; (void)a5;
+    (void)a3; (void)a4; (void)a5;
     Process *p = proc_current();
     if (p == NULL) return -ENOSYS;
 
+    /* The path as given (AT_EXECFN) and resolved against the cwd */
+    char raw[PATH_MAX];
+    long rlen = strncpy_from_user(raw, (const char *)path_addr, sizeof(raw));
+    if (rlen < 0) return rlen;
+    if (rlen == 0) return -ENOENT;
     char abs[PATH_MAX];
-    int perr = fs_user_path(path_addr, abs, PATH_MAX);
+    int perr = path_normalize(p->cwd, raw, abs, sizeof(abs));
     if (perr != 0) return perr;
 
-    /* 1. Copy argv from OLD address space before destroying it */
-    ExecArgv args;
-    int argerr = exec_copy_argv(argv_addr, &args);
-    if (argerr != 0) return argerr;
+    /* 1. Copy argv and envp from the OLD address space before destroying it */
+    ExecStrings *strings = kmalloc(sizeof(ExecStrings), 0);
+    uint8_t *stack_buf = kmalloc(EXEC_STACK_BUF, 0);
+    if (strings == NULL || stack_buf == NULL) {
+        kfree(strings);
+        kfree(stack_buf);
+        return -ENOMEM;
+    }
+    exec_strings_init(strings);
+    int err = exec_copy_vector(argv_addr, strings, 0);
+    if (err == 0 && strings->argc == 0) {
+        err = exec_strings_add(strings, "", 0);   /* Linux: argv[0] = "" */
+    }
+    if (err == 0) err = exec_copy_vector(envp_addr, strings, 1);
 
     /* 2. Read ELF binary from VFS */
-    void *elf_buf;
-    uint64_t file_size;
-    int err = exec_read_elf(abs, &elf_buf, &file_size);
-    if (err != 0) return err;
+    void *elf_buf = NULL;
+    uint64_t file_size = 0;
+    if (err == 0) err = exec_read_elf(abs, &elf_buf, &file_size);
 
-    /* 3. Create fresh user address space */
-    uint64_t old_pml4 = p->page_table;
-    uint64_t new_pml4 = vmm_create_user_pml4();
-    if (new_pml4 == 0) { kfree(elf_buf); return -ENOMEM; }
-
-    /* 4. Load ELF segments */
+    /* 3. Fresh user address space with the ELF segments and the stack */
+    uint64_t new_pml4 = 0;
     ElfLoadResult result;
-    err = elf_load(elf_buf, file_size, new_pml4, &result);
+    if (err == 0) {
+        new_pml4 = vmm_create_user_pml4();
+        if (new_pml4 == 0) err = -ENOMEM;
+    }
+    if (err == 0) err = elf_load(elf_buf, file_size, new_pml4, &result);
     kfree(elf_buf);
-    if (err != 0) { vmm_destroy_user_pml4(new_pml4); return err; }
+    if (err == 0) err = vmm_map_user_stack(new_pml4);
+    if (err != 0) {
+        if (new_pml4 != 0) vmm_free_user_pages(new_pml4);
+        kfree(strings);
+        kfree(stack_buf);
+        return err;
+    }
 
-    /* 5. Map user stack */
-    err = vmm_map_user_stack(new_pml4);
-    if (err != 0) { vmm_free_user_pages(new_pml4); return err; }
-
-    /* 6. Check setuid/setgid bits on the executable */
+    /* 4. setuid/setgid bits on the executable */
     VfsNode *exec_node = vfs_resolve(abs);
     if (exec_node != NULL) {
         if (exec_node->mode & S_ISUID) {
@@ -279,20 +317,20 @@ static int64_t sys_execve(uint64_t path_addr, uint64_t argv_addr, uint64_t envp_
         }
     }
 
-    /* 7. Switch to new address space */
+    /* 5. Point of no return: switch to the new address space */
+    uint64_t old_pml4 = p->page_table;
     p->page_table = new_pml4;
     p->brk_start = result.brk_start;
     p->brk_current = result.brk_start;
-    vmm_free_user_pages(old_pml4);
+    exec_reset_signals(p);
     paging_write_cr3(new_pml4);
+    vmm_free_user_pages(old_pml4);
 
-    /* 8. Write argv onto new user stack */
-    uint64_t user_rsp, argv_ptr;
-    exec_setup_user_stack(&args, &user_rsp, &argv_ptr);
+    kprintf("[EXEC] pid=%u loaded '%s' argc=%u envc=%u entry=0x%lx\n",
+            p->pid, abs, strings->argc, strings->envc, result.entry_point);
 
-    kprintf("[EXEC] pid=%u loaded '%s' argc=%d entry=0x%lx\n",
-            p->pid, abs, args.argc, result.entry_point);
-    jump_to_usermode(result.entry_point, user_rsp, (uint64_t)args.argc, argv_ptr);
+    /* 6. Initial stack, clean CPU state, enter the program */
+    proc_enter_user(p, &result, strings, raw, stack_buf);
 }
 
 /* Linux wait status words (see uapi/wait.h) */
@@ -497,6 +535,9 @@ void proc_syscalls_init(void) {
     syscall_register(__NR_fork,         sys_fork);
     syscall_register(__NR_execve,       sys_execve);
     syscall_register(__NR_exit,         sys_exit);
+    syscall_register(__NR_exit_group,   sys_exit_group);
+    syscall_register(__NR_arch_prctl,   sys_arch_prctl);
+    syscall_register(__NR_set_tid_address, sys_set_tid_address);
     syscall_register(__NR_wait4,        sys_wait4);
     syscall_register(__NR_kill,         sys_kill);
     syscall_register(__NR_getuid,       sys_getuid);

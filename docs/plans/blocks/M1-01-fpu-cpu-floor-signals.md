@@ -13,6 +13,14 @@ extended state is saved eagerly, signal frames use the Linux layout, and the CPU
 - `toolchain-x86_64.cmake`, `kernel/arch/x86_64/context_switch.asm`, `kernel/proc/thread.c`, `thread.h`,
   `kernel/proc/signal.c`, `kernel/arch/x86_64/percpu.c`, `kernel/boot/kmain.c` (CPU init order)
 
+**Already done by M0-06** (stock musl uses SSE before `main`; Michael's OK 2026-11-08): `-mgeneral-regs-only`
+on the kernel, CR4.OSFXSR/OSXMMEXCPT, a 512-byte FXSAVE area per thread switched eagerly in
+`arch_thread_switch()` (`kernel/arch/x86_64/fpu.c`), clean init image, fork copies the live state, execve
+resets it; FS base per thread. This block replaces FXSAVE with XSAVE behind the same `fpu.h` calls. Also from
+M0-06: the stack stays executable because the libarc trampoline lives on it; once `sa_restorer` is used, map
+the stack NX unless `PT_GNU_STACK` asks for exec (`ElfLoadResult.stack_exec`). The signal frame must save the
+argument registers (RDI–R10) too: today a handler return loses them.
+
 **Build.**
 1. Add `-mgeneral-regs-only` to the kernel flags (fixes a live bug: today GCC may use SSE registers in kernel
    code while nothing saves the user's). Fix whatever stops compiling.

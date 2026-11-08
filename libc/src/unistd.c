@@ -54,8 +54,7 @@ int execve(const char *path, char *const argv[], char *const envp[]) {
 }
 
 int execv(const char *path, char *const argv[]) {
-    static char *const empty_env[] = { NULL };
-    return execve(path, argv, empty_env);
+    return execve(path, argv, environ);
 }
 
 void _exit(int status) {

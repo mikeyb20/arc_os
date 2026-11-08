@@ -19,6 +19,8 @@
 #include <linux/in.h>
 #include <linux/un.h>
 #include <linux/wait.h>
+#include <linux/auxvec.h>
+#include <asm/prctl.h>
 #include "abi_layout.h"
 
 typedef struct stat               abi_stat;       /* asm/stat.h: the kernel's */

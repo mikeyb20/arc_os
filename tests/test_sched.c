@@ -15,6 +15,7 @@
 #define ARCHOS_ARCH_X86_64_PAGING_H
 #define ARCHOS_MM_VMM_H
 #define ARCHOS_BOOT_BOOTINFO_H
+#define ARCHOS_ARCH_X86_64_FPU_H
 
 /* Stub kprintf */
 static inline void kprintf(const char *fmt, ...) { (void)fmt; }
@@ -119,6 +120,18 @@ static void context_switch(ThreadContext *old, ThreadContext *new_ctx) {
     ctx_switch_new = new_ctx;
 }
 
+/* fpu.h stub: the FPU/FS-base hook runs once per real switch, before it */
+static int arch_switch_count;
+static Thread *arch_switch_old;
+static Thread *arch_switch_next;
+static int arch_switch_before_ctx;
+static void arch_thread_switch(Thread *old, Thread *next) {
+    arch_switch_count++;
+    arch_switch_old = old;
+    arch_switch_next = next;
+    arch_switch_before_ctx = (ctx_switch_count == 0);
+}
+
 /* Include the real sched.c */
 #include "../kernel/proc/sched.c"
 
@@ -142,6 +155,10 @@ static void reset_sched_state(void) {
     ctx_switch_count = 0;
     ctx_switch_old = NULL;
     ctx_switch_new = NULL;
+    arch_switch_count = 0;
+    arch_switch_old = NULL;
+    arch_switch_next = NULL;
+    arch_switch_before_ctx = 0;
     memset(thread_pool, 0, sizeof(thread_pool));
 }
 
@@ -297,6 +314,12 @@ static int test_sched_schedule_basic(void) {
     ASSERT_EQ(ctx_switch_count, 1);
     ASSERT_TRUE(ctx_switch_old == &a->context);
     ASSERT_TRUE(ctx_switch_new == &b->context);
+
+    /* FPU/SSE state and FS base were switched first, for the same pair */
+    ASSERT_EQ(arch_switch_count, 1);
+    ASSERT_TRUE(arch_switch_old == a);
+    ASSERT_TRUE(arch_switch_next == b);
+    ASSERT_TRUE(arch_switch_before_ctx);
     return 0;
 }
 

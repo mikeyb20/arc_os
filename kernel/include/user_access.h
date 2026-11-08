@@ -16,4 +16,20 @@ static inline int user_ptr_valid(const void *ptr, size_t len) {
     return (end > start) && (end <= USER_ADDR_LIMIT);
 }
 
+/* Fault-free user copies (kernel/mm/uaccess.c). The kernel has no page-fault
+ * fixups yet (M1-19), so these check that every page of the user range is
+ * mapped for user access in the current address space before touching it.
+ * Cost: one page-table walk per page crossed. All return -EFAULT on a bad range. */
+
+/* Copy len bytes from user src to kernel dst. Returns 0 or -EFAULT. */
+int copy_from_user(void *dst, const void *src, size_t len);
+
+/* Copy len bytes from kernel src to user dst (pages must be writable).
+ * Returns 0 or -EFAULT. */
+int copy_to_user(void *dst, const void *src, size_t len);
+
+/* Copy a NUL-terminated user string into dst[size]. Returns its length
+ * (without the NUL), -EFAULT, or -ENAMETOOLONG if no NUL within size bytes. */
+long strncpy_from_user(char *dst, const char *src, size_t size);
+
 #endif /* ARCHOS_USER_ACCESS_H */

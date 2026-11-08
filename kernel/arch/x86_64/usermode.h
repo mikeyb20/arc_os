@@ -3,14 +3,13 @@
 
 #include <stdint.h>
 
-/* Jump to user-mode via IRETQ. Does not return.
+/* Jump to user-mode via IRETQ, System V process start (ADR-0002): RSP points
+ * at argc on the initial stack, every general register is zero (RDX = 0 means
+ * no atexit function for the program to register). Does not return.
  * entry_rip: user-space entry point (RIP)
- * user_rsp:  user-space stack pointer (RSP)
- * argc:      argument count (passed in RDI to user)
- * argv_ptr:  pointer to argv array (passed in RSI to user) */
+ * user_rsp:  user-space stack pointer (RSP), 16-byte aligned */
 __attribute__((noreturn))
-extern void jump_to_usermode(uint64_t entry_rip, uint64_t user_rsp,
-                             uint64_t argc, uint64_t argv_ptr);
+extern void jump_to_usermode(uint64_t entry_rip, uint64_t user_rsp);
 
 /* Forward declaration */
 struct ForkContext;

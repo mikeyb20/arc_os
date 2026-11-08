@@ -34,9 +34,11 @@ set(KERNEL_C_SOURCES
     arch/x86_64/pit.c
     mm/pmm.c
     mm/vmm.c
+    mm/uaccess.c
     mm/mm_syscalls.c
     mm/kmalloc.c
     arch/x86_64/syscall.c
+    arch/x86_64/fpu.c
     arch/x86_64/lapic.c
     arch/x86_64/ioapic.c
     arch/x86_64/percpu.c
@@ -47,6 +49,7 @@ set(KERNEL_C_SOURCES
     proc/process.c
     proc/proc_syscalls.c
     proc/elf.c
+    proc/exec_stack.c
     proc/init.c
     proc/fd.c
     proc/signal.c
@@ -99,6 +102,12 @@ if(KERNEL_SOURCES)
     # NASM flags
     target_compile_options(kernel.elf PRIVATE
         $<$<COMPILE_LANGUAGE:ASM_NASM>:-f elf64>
+    )
+
+    # Kernel C never touches x87/SSE/AVX registers: they hold the running
+    # thread's user state, saved only at context switch (ADR-0003, fpu.h).
+    target_compile_options(kernel.elf PRIVATE
+        $<$<COMPILE_LANGUAGE:C>:-mgeneral-regs-only>
     )
 
     # Include the kernel root so headers use paths like "mm/pmm.h"
