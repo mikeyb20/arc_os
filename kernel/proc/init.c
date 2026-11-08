@@ -47,7 +47,7 @@ static void init_thread_entry(void *arg) {
     p->brk_current = result.brk_start;
 
     /* Allocate and map user stack pages */
-    if (vmm_map_user_stack(p->page_table) != 0) {
+    if (vmm_map_user_stack(p->page_table, result.stack_exec) != 0) {
         kprintf("[INIT] FATAL: out of memory for user stack\n");
         return;
     }

@@ -289,6 +289,22 @@ static void virtio_blk_setup(void) {
     }
 }
 
+/* Stop on a CPU below x86-64-v3 (ADR-0003), saying why on serial and, when
+ * there is one, the framebuffer. Runs before vmm_init: the bootloader's page
+ * tables still map the framebuffer. */
+static void cpu_floor_check(const BootInfo *info) {
+    char missing[160];
+    if (cpu_floor_missing(missing, sizeof(missing)) == 0) return;
+    if (info->fb_present && fb_console_init(&info->framebuffer) == 0) kprintf_set_putchar_hook(fb_console_putchar);
+    kprintf("[BOOT] CPU floor: arc_os needs an x86-64-v3 CPU (AVX2, FMA, BMI2, XSAVE).\n"
+            "[BOOT] CPU floor: this CPU lacks: %s\n",
+            missing);
+    if (testmode_active()) testmode_exit(TESTMODE_CPU_FLOOR_CODE);
+    for (;;) {
+        __asm__ volatile("cli; hlt");
+    }
+}
+
 void kmain(void) {
     serial_init();
     hardening_init();
@@ -314,6 +330,9 @@ void kmain(void) {
     gdt_init();
     serial_puts("[BOOT] stage: IDT\n");
     idt_init();
+    serial_puts("[BOOT] stage: CPU\n");
+    cpu_features_init();
+    cpu_floor_check(info);
     serial_puts("[BOOT] stage: FPU\n");
     fpu_cpu_init(1);   /* before any thread exists: threads copy its clean image */
     serial_puts("[BOOT] stage: PIC\n");

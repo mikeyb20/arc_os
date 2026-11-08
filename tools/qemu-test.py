@@ -16,6 +16,11 @@ The serial log is parsed for ARC_TEST markers written by init:
     ARC_TEST DONE pass=N fail=M
     ARC_TEST PANIC suite=<suite>          (written by the kernel)
 
+--cpu picks the QEMU CPU model (default: host under KVM, max under TCG).
+--expect-exit N makes the run pass only if QEMU's debug-exit value is N (the
+kernel ends the run itself, e.g. 0x7e when the CPU is below the x86-64-v3
+floor); the --expect patterns must still match.
+
 Exit status of this script: 0 = suite passed, 1 = failed, 2 = harness error.
 Python 3 standard library only.
 """
@@ -77,10 +82,10 @@ def qemu_command(args, iso, serial_log):
            "-no-reboot",
            "-boot", "d",
            "-cdrom", iso]
-    if kvm_usable() and not args.no_kvm:
+    if kvm_usable() and not args.no_kvm and args.cpu is None:
         cmd += ["-accel", "kvm", "-cpu", "host"]
     else:
-        cmd += ["-accel", "tcg,thread=multi", "-cpu", "max"]
+        cmd += ["-accel", "tcg,thread=multi", "-cpu", args.cpu or "max"]
     return cmd
 
 
@@ -110,6 +115,10 @@ def main():
     ap.add_argument("--smp", type=int, default=2)
     ap.add_argument("--qemu", default="qemu-system-x86_64")
     ap.add_argument("--no-kvm", action="store_true", help="force TCG")
+    ap.add_argument("--cpu", default=None,
+                    help="QEMU CPU model, run under TCG (default: host with KVM, else max)")
+    ap.add_argument("--expect-exit", type=lambda v: int(v, 0), default=None,
+                    help="pass only if the kernel ends the run with this debug-exit value")
     args = ap.parse_args()
     args.build_dir = os.path.abspath(args.build_dir)
 
@@ -154,7 +163,17 @@ def main():
 
     head = f"suite {args.suite} ({accel}, {elapsed:.1f}s)"
     problems = []
-    if args.expect_panic:
+    if args.expect_exit is not None:
+        if timed_out:
+            problems.append(f"timeout after {args.timeout:.0f}s")
+        elif debug_value != args.expect_exit:
+            problems.append(f"expected debug-exit value {args.expect_exit:#x}, got "
+                            f"{'none' if debug_value is None else hex(debug_value)}")
+        problems.extend(f"expected output not found: /{rx}/" for rx in missing)
+        if not problems:
+            log(f"{head}: PASS (exit value {args.expect_exit:#x})")
+            return 0
+    elif args.expect_panic:
         if panicked:
             log(f"{head}: kernel panic after {elapsed:.1f}s, as expected")
             return 0

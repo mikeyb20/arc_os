@@ -1,14 +1,14 @@
 #include "fs/procfs.h"
 #include "mm/pmm.h"
 #include "mm/kmalloc.h"
-#include "arch/x86_64/pit.h"
+#include "arch/hal.h"
 #include "proc/process.h"
 #include "lib/mem.h"
 #include "lib/string.h"
 #include "lib/cmdline.h"
 
 /* Scratch buffer for content generation */
-#define PROCFS_SCRATCH_SIZE 512
+#define PROCFS_SCRATCH_SIZE 2048   /* /proc/cpuinfo: ~80 bytes per CPU */
 
 /* --- Formatting helpers (no snprintf available) --- */
 
@@ -62,6 +62,28 @@ static int gen_meminfo(char *buf, int bufsz, void *ctx) {
     pos = procfs_append_u64(buf, pos, bufsz, hs.heap_mapped);
     pos = procfs_append_str(buf, pos, bufsz, " B\n");
 
+    return pos;
+}
+
+/* One block per online CPU. The core type (P, E, or - when the CPU is not
+ * hybrid) is arc_os's own line; M1-17 adds the rest of Linux's format. */
+static int gen_cpuinfo(char *buf, int bufsz, void *ctx) {
+    (void)ctx;
+    int pos = 0;
+    for (uint32_t cpu = 0; cpu < CPU_MAX; cpu++) {
+        uint32_t apic_id;
+        uint8_t core_type;
+        if (cpu_describe(cpu, &apic_id, &core_type) != 0) continue;
+        pos = procfs_append_str(buf, pos, bufsz, "processor\t: ");
+        pos = procfs_append_u64(buf, pos, bufsz, cpu);
+        pos = procfs_append_str(buf, pos, bufsz, "\nvendor_id\t: ");
+        pos = procfs_append_str(buf, pos, bufsz, cpu_features()->vendor);
+        pos = procfs_append_str(buf, pos, bufsz, "\napicid\t\t: ");
+        pos = procfs_append_u64(buf, pos, bufsz, apic_id);
+        pos = procfs_append_str(buf, pos, bufsz, "\ncore type\t: ");
+        pos = procfs_append_str(buf, pos, bufsz, cpu_core_type_name(core_type));
+        pos = procfs_append_str(buf, pos, bufsz, "\n\n");
+    }
     return pos;
 }
 
@@ -166,6 +188,7 @@ static const VfsOps procfs_file_ops = {
 static ProcfsFileNode meminfo_node;
 static ProcfsFileNode uptime_node;
 static ProcfsFileNode cmdline_node;
+static ProcfsFileNode cpuinfo_node;
 
 #define PROCFS_PID_POOL 8
 static ProcfsDirNode pid_dirs[PROCFS_PID_POOL];
@@ -231,6 +254,7 @@ static VfsNode *procfs_root_lookup(VfsNode *dir, const char *name) {
     if (strcmp(name, "meminfo") == 0) return &meminfo_node.vnode;
     if (strcmp(name, "uptime") == 0) return &uptime_node.vnode;
     if (strcmp(name, "cmdline") == 0) return &cmdline_node.vnode;
+    if (strcmp(name, "cpuinfo") == 0) return &cpuinfo_node.vnode;
 
     uint32_t pid;
     if (procfs_parse_uint(name, &pid) != 0) return NULL;
@@ -316,6 +340,13 @@ static int procfs_root_readdir(VfsNode *dir, VfsDirEntry *entries, uint32_t max)
         entries[count].type = VFS_FILE;
         count++;
     }
+    if (count < max) {
+        strncpy(entries[count].name, "cpuinfo", VFS_NAME_MAX - 1);
+        entries[count].name[VFS_NAME_MAX - 1] = '\0';
+        entries[count].inode_num = cpuinfo_node.vnode.inode_num;
+        entries[count].type = VFS_FILE;
+        count++;
+    }
 
     struct procfs_readdir_ctx ctx = { entries, max, count };
     proc_foreach(procfs_enum_pid, &ctx);
@@ -355,6 +386,7 @@ VfsNode *procfs_init(void) {
     procfs_init_file(&uptime_node, 2002, gen_uptime, NULL);
     /* 1999: below the 2000+pid range used by /proc/<pid> directories */
     procfs_init_file(&cmdline_node, 1999, gen_cmdline, NULL);
+    procfs_init_file(&cpuinfo_node, 1998, gen_cpuinfo, NULL);
 
     pid_dirs_next = 0;
     pid_status_next = 0;

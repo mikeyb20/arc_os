@@ -11,6 +11,10 @@
 #include <asm/stat.h>
 #include <linux/time_types.h>
 #include <asm/signal.h>
+#include <asm/sigcontext.h>
+#include <asm/ucontext.h>
+#include <asm/siginfo.h>
+#include <linux/signal.h>
 #include <linux/uio.h>
 #include <asm/termbits.h>
 #include <asm/ioctls.h>
@@ -26,6 +30,12 @@
 typedef struct stat               abi_stat;       /* asm/stat.h: the kernel's */
 typedef struct __kernel_timespec  abi_timespec;
 typedef struct sigaction          abi_sigaction;  /* asm/signal.h: the kernel's */
+typedef struct _fpx_sw_bytes abi_fpx_sw_bytes;
+typedef struct _fpstate abi_fpstate;    /* _fpstate_64 */
+typedef struct sigcontext abi_sigcontext;
+typedef stack_t abi_stack;
+typedef struct ucontext abi_ucontext;
+typedef siginfo_t abi_siginfo;
 typedef struct iovec              abi_iovec;
 typedef struct winsize            abi_winsize;
 typedef struct termios            abi_termios;    /* asm/termbits.h: the kernel's */

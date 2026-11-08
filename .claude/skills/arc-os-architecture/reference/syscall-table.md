@@ -41,9 +41,9 @@ same PR that changes a syscall (the `add-syscall` skill does this). Since M0-06 
 | 10 | mprotect | missing | — | musl; inventory: musl, musl threads, C++, zstd, llama.cpp (M1-07) |
 | 11 | munmap | missing | — | musl; inventory: musl, musl threads, C++, SQLite, zstd, llama.cpp (M1-07) |
 | 12 | brk | done | 6 | musl; inventory: musl, C++, SQLite, zstd, llama.cpp (M1-07) |
-| 13 | rt_sigaction | partial (handler only: sa_flags, sa_mask, sa_restorer ignored; M1-01) | 20 | musl; inventory: musl, SQLite, zstd, llama.cpp (M1-01) |
+| 13 | rt_sigaction | partial (SA_RESTORER, SA_NODEFER, SA_RESETHAND and sa_mask act; SA_RESTART, SA_ONSTACK, SA_NOCLD* stored, act in M1-17) | 20 | musl; inventory: musl, SQLite, zstd, llama.cpp (M1-01) |
 | 14 | rt_sigprocmask | missing | — | musl threads; inventory: musl, musl threads, C++, SQLite, zstd, llama.cpp (M1-01) |
-| 15 | rt_sigreturn | partial (arc_os signal frame, not rt_sigframe; M1-01) | 22 | musl; inventory: musl (M1-01) |
+| 15 | rt_sigreturn | done (Linux rt_sigframe with XSAVE image, M1-01) | 22 | musl; inventory: musl (M1-01) |
 | 16 | ioctl | partial (terminal only: TIOCS/GPGRP, TCGETS, TCSETS/W/F, TIOCG/SWINSZ; termios stored, not applied until M5) | 33 | shell, fbdev, input; inventory: musl, musl threads, C++, SQLite, zstd, llama.cpp (M0-06) |
 | 17 | pread64 | missing | — | inventory: musl, SQLite (M1-11) |
 | 18 | pwrite64 | missing | — | inventory: SQLite (M1-11) |

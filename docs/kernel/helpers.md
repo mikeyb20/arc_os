@@ -27,6 +27,8 @@ Kernel and user space are separate worlds: the same function in `kernel/lib` and
 | Close an fd, copy an fd (pipe/socket refs) | `fd_close`, `fd_file_addref` | `kernel/proc/fd.h` |
 | End the current process (exit, fatal signal) | `proc_exit` | `kernel/proc/proc_syscalls.h` |
 | Hardware access from portable code | `hal_*`, FPU state, CPUID | `kernel/arch/hal.h` |
+| CPU features, x86-64-v3 floor, core type | `cpu_features`, `cpu_floor_missing`, `cpu_core_type_detect`, `cpu_describe` | `kernel/arch/x86_64/cpu.h` (via `arch/hal.h`) |
+| Signal actions and masks (rt_sigaction, fork, execve) | `sig_set_action`, `sig_fork_copy`, `sig_exec_reset` | `kernel/proc/signal.h` |
 | Linux ABI values and structs | `__NR_*`, errno, flags, `struct stat`, ... | `kernel/include/uapi/` |
 
 ## User space

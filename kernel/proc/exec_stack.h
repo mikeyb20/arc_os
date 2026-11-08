@@ -41,6 +41,8 @@ typedef struct {
     uint64_t uid, euid, gid, egid;
     uint64_t secure;
     uint64_t hwcap;       /* CPUID 1 EDX */
+    uint64_t hwcap2;      /* Linux x86 HWCAP2 bits (0: none enabled) */
+    uint64_t minsigstksz; /* largest signal frame (sig_frame_max_size) */
     uint8_t  random[16];
 } ExecAux;
 

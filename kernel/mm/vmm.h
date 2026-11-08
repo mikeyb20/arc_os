@@ -62,8 +62,9 @@ uint64_t vmm_fork_address_space(uint64_t src_pml4_phys);
  * After this, the PML4 is destroyed (cannot be reused). */
 void vmm_free_user_pages(uint64_t pml4_phys);
 
-/* Allocate and map zeroed user stack pages in the given address space.
- * Returns 0 on success, negative errno on failure. */
-int vmm_map_user_stack(uint64_t pml4_phys);
+/* Allocate and map zeroed user stack pages in the given address space, no-
+ * execute unless exec is set (PT_GNU_STACK asked for an executable stack, or
+ * the program has none: Linux's default). Returns 0 or a negative errno. */
+int vmm_map_user_stack(uint64_t pml4_phys, int exec);
 
 #endif /* ARCHOS_MM_VMM_H */

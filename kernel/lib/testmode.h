@@ -13,6 +13,10 @@
 /* Debug-exit value for a kernel panic. QEMU exits with (value << 1) | 1 = 255. */
 #define TESTMODE_PANIC_CODE 0x7f
 
+/* Debug-exit value when the CPU is below the x86-64-v3 floor (M1-01): QEMU
+ * exits with 253. */
+#define TESTMODE_CPU_FLOOR_CODE 0x7e
+
 /* Read `arc.test=<suite>` from the command line. Call once, early in boot. */
 void testmode_init(const char *cmdline);
 

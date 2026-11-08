@@ -70,9 +70,9 @@ Build and run status:
 | 10 | mprotect | missing | 27 | cxx_basic, libc_basic, llama-completion, llama-embedding, pthread_basic, zstd-compress, zstd-decompress | `prot: PROT_READ`, `prot: PROT_WRITE` |
 | 11 | munmap | missing | 1499 | cxx_basic, libc_basic, llama-completion, llama-embedding, pthread_basic, sqlite3, zstd-compress, zstd-decompress |  |
 | 12 | brk | done | 78 | cxx_basic, libc_basic, llama-completion, llama-embedding, sqlite3, zstd-compress, zstd-decompress |  |
-| 13 | rt_sigaction | partial (handler only: sa_flags, sa_mask, sa_restorer ignored; M1-01) | 9 | libc_basic, llama-completion, sqlite3, zstd-compress, zstd-decompress | `signal: SIGHUP`, `signal: SIGINT`, `signal: SIGTERM`, `signal: SIGUSR1` |
+| 13 | rt_sigaction | partial (SA_RESTORER, SA_NODEFER, SA_RESETHAND and sa_mask act; SA_RESTART, SA_ONSTACK, SA_NOCLD* stored, act in M1-17) | 9 | libc_basic, llama-completion, sqlite3, zstd-compress, zstd-decompress | `signal: SIGHUP`, `signal: SIGINT`, `signal: SIGTERM`, `signal: SIGUSR1` |
 | 14 | rt_sigprocmask | missing | 121 | cxx_basic, libc_basic, llama-completion, llama-embedding, pthread_basic, sqlite3, zstd-compress, zstd-decompress | `how: SIG_BLOCK`, `how: SIG_SETMASK`, `how: SIG_UNBLOCK` |
-| 15 | rt_sigreturn | partial (arc_os signal frame, not rt_sigframe; M1-01) | 1 | libc_basic |  |
+| 15 | rt_sigreturn | done (Linux rt_sigframe with XSAVE image, M1-01) | 1 | libc_basic |  |
 | 16 | ioctl | partial (terminal only: TIOCS/GPGRP, TCGETS, TCSETS/W/F, TIOCG/SWINSZ; termios stored, not applied until M5) | 25 | cxx_basic, libc_basic, llama-completion, llama-embedding, pthread_basic, sqlite3, zstd-compress, zstd-decompress | `request: SNDCTL_TMR_START`, `request: TCGETS`, `request: TCSETS`, `request: TIOCGWINSZ` |
 | 17 | pread64 | missing | 9 | libc_basic, sqlite3 |  |
 | 18 | pwrite64 | missing | 52 | sqlite3 |  |

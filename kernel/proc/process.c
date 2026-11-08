@@ -166,6 +166,7 @@ Process *proc_fork(Process *parent, const ForkContext *user_ctx) {
     child->umask = parent->umask;
     child->pgid = parent->pgid;
     child->parent = parent;
+    sig_fork_copy(&child->sig, &parent->sig);   /* actions and mask, nothing pending */
 
     /* 3. Duplicate FD table */
     child->fd_table = fd_table_dup(parent->fd_table);

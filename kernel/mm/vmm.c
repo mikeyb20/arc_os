@@ -318,14 +318,14 @@ void vmm_free_user_pages(uint64_t pml4_phys) {
     pmm_free_page(pml4_phys);
 }
 
-int vmm_map_user_stack(uint64_t pml4_phys) {
+int vmm_map_user_stack(uint64_t pml4_phys, int exec) {
+    uint32_t flags = VMM_FLAG_USER | VMM_FLAG_WRITABLE | (exec ? 0 : VMM_FLAG_NOEXEC);
     uint64_t stack_bottom = USER_STACK_TOP - (USER_STACK_PAGES * PAGE_SIZE);
     for (uint64_t vaddr = stack_bottom; vaddr < USER_STACK_TOP; vaddr += PAGE_SIZE) {
         uint64_t phys = pmm_alloc_page();
         if (phys == 0) return -ENOMEM;
         memset(phys_to_virt(phys), 0, PAGE_SIZE);
-        vmm_map_page_in(pml4_phys, vaddr, phys,
-                        VMM_FLAG_USER | VMM_FLAG_WRITABLE);
+        vmm_map_page_in(pml4_phys, vaddr, phys, flags);
     }
     return 0;
 }

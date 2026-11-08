@@ -11,6 +11,7 @@
 #include "uapi/dirent.h"
 #include "uapi/time.h"
 #include "uapi/signal.h"
+#include "uapi/sigcontext.h"
 #include "uapi/uio.h"
 #include "uapi/termios.h"
 #include "uapi/poll.h"
@@ -23,6 +24,12 @@ typedef struct stat               abi_stat;
 typedef struct linux_dirent64     abi_dirent64;
 typedef struct timespec           abi_timespec;
 typedef struct kernel_sigaction   abi_sigaction;
+typedef struct _fpx_sw_bytes abi_fpx_sw_bytes;
+typedef struct _fpstate abi_fpstate;
+typedef struct sigcontext abi_sigcontext;
+typedef stack_t abi_stack;
+typedef struct ucontext abi_ucontext;
+typedef siginfo_t abi_siginfo;
 typedef struct iovec              abi_iovec;
 typedef struct winsize            abi_winsize;
 typedef struct termios            abi_termios;
