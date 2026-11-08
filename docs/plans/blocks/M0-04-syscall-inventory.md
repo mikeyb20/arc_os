@@ -28,8 +28,8 @@ exactly what is needed and nothing else.
    the ADR as a factual correction and say so in the PR.
 
 **Done when.**
-- [ ] The inventory doc is committed and `syscall-table.md` has a row for every syscall seen.
-- [ ] ADR-0001's table is verified against the archived table.
+- [x] The inventory doc is committed and `syscall-table.md` has a row for every syscall seen.
+- [x] ADR-0001's table is verified against the archived table.
 
 **Watch out.**
 - Use the musl builds. glibc programs make different syscalls (for example `openat` everywhere, `rseq`).
@@ -37,4 +37,15 @@ exactly what is needed and nothing else.
   build trouble in Notes; it is early warning for M2.
 
 **Notes.**
--
+- 2026-11-08 (M0-04 PR): `.github/workflows/inventory.yml` runs on pushes to non-master branches that touch
+  `tests/target/`, `tools/inventory/` or the merge script, and by hand. It builds in `alpine:3.20` via
+  `docker run --cap-add SYS_PTRACE` (simpler than a container job for ptrace), merges the logs on the host and
+  commits the regenerated doc back to the branch. The raw logs are an artifact (30 days).
+- Build options used for llama.cpp (a starting point for M2-03): `-DGGML_NATIVE=OFF` with AVX/AVX2/FMA/F16C/BMI2
+  on, `-DGGML_OPENMP=OFF`, `-DLLAMA_OPENSSL=OFF`, `-DBUILD_SHARED_LIBS=OFF`, linker `-static`; targets
+  `llama-completion` and `llama-embedding`. Everything linked statically against musl with no trouble.
+- The Alpine image is pinned by tag, not archived. M2-01's own musl toolchain replaces it.
+- Surprises: musl uses `open`/`fork`/`stat`, not the `*at` forms (`openat` only from C++ `std::filesystem`);
+  stdio goes through `readv`/`writev`; the clock comes from the vDSO, so strace undercounts it.
+- Next: M0-05 renumbers the existing syscalls. The inventory shows `readv`/`writev`, `arch_prctl`,
+  `set_tid_address` and `exit_group` are needed for the first musl program (M0-06).

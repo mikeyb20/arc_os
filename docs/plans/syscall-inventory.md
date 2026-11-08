@@ -9,7 +9,26 @@ summary, not the table. The live status of each syscall is in
 
 ## Summary
 
-(written after the first run)
+First run 2026-11-08 (Alpine 3.20, GCC 13.2, musl 1.2.5 from Alpine; app sources from the archive, M0-03).
+
+- **Everything builds statically against musl and runs:** the three target programs, the SQLite shell with FTS5,
+  the zstd CLI and llama.cpp b12198 (x86-64-v3, no OpenMP). No build trouble, which is good news for M2.
+- **59 distinct syscalls** in total: 23 exist in arc_os under old numbers, 36 are missing. Every one has a row in `syscall-table.md`
+  with the block that owns it.
+- **Memory is the hot path:** about 1,660 `mmap` and 1,590 `munmap` calls across the runs, most from llama.cpp,
+  with `MAP_SHARED` and `MAP_POPULATE` among the flags (a mapped model file), plus `madvise(MADV_WILLNEED)` and
+  `fadvise64(POSIX_FADV_SEQUENTIAL)` from llama.cpp. M1-07 and M1-12 must make these cheap.
+- **musl's stdio uses `readv`/`writev`** (about 4,500 calls), not `read`/`write`. They belong in M0-06, not M1.
+- **Threads** need `clone` with the standard musl flag set (`CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID`),
+  `futex` (WAIT, WAKE, REQUEUE, private and shared), `set_tid_address`, `exit` and `sched_getaffinity`.
+- **Not seen because of the vDSO:** musl reads the clock through the vDSO on Linux, so `clock_gettime` and
+  `gettimeofday` barely show up here. arc_os has no vDSO, so on arc_os they become syscalls (M1-06).
+- **Files programs expect:** `/proc/cpuinfo` (llama.cpp CPU detection), `/dev/urandom` (SQLite), `/etc/passwd`
+  (SQLite), `/dev/tty` (llama.cpp), and an optional `/etc/llama.cpp/config.ini`. `sysinfo` reports RAM to llama.cpp.
+- **ioctls:** only terminal ones: `TCGETS`, `TCSETS` (strace prints 0x5402 as `SNDCTL_TMR_START`, which
+  shares the number) and `TIOCGWINSZ`.
+- **ADR-0001** numbers all match the archived `syscall_64.tbl`. Two notes were corrected: musl on x86_64 calls
+  `open` and `fork`, not `openat` and `clone`.
 
 <!-- BEGIN GENERATED (tools/syscall-inventory.py) -->
 

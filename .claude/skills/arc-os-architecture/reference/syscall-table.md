@@ -24,27 +24,33 @@ a syscall (the `add-syscall` skill does this).
 
 | Linux # | Name | Status | Old arc_os # | Needed by |
 |---|---|---|---|---|
-| 0 | read | legacy | 4 | all |
-| 1 | write | legacy | 1 | all |
-| 2 | open | legacy | 3 | libarc |
-| 3 | close | legacy | 5 | all |
-| 4 | stat | legacy | 8 | libarc |
-| 5 | fstat | legacy | 12 | musl |
-| 8 | lseek | legacy | 7 | all |
-| 9 | mmap | missing | — | musl, llama.cpp (M1) |
-| 10 | mprotect | missing | — | musl (M1) |
-| 11 | munmap | missing | — | musl (M1) |
-| 12 | brk | legacy | 6 | musl |
-| 13 | rt_sigaction | missing (old `signal` = 20) | 20 | musl |
-| 14 | rt_sigprocmask | missing | — | musl threads (M1) |
-| 15 | rt_sigreturn | legacy | 22 | musl |
-| 16 | ioctl | missing (old `tcsetpgrp` = 33) | 33 | shell, fbdev, input |
-| 22 | pipe | legacy | 19 | shell |
-| 28 | madvise | missing | — | llama.cpp (M1) |
-| 32 | dup | legacy | 13 | shell |
+| 0 | read | legacy | 4 | all; inventory: musl, C++, SQLite, llama.cpp |
+| 1 | write | legacy | 1 | all; inventory: musl, C++ |
+| 2 | open | legacy | 3 | libarc; inventory: musl, C++, SQLite, zstd, llama.cpp (M0-05) |
+| 3 | close | legacy | 5 | all; inventory: musl, C++, SQLite, zstd, llama.cpp |
+| 4 | stat | legacy | 8 | libarc; inventory: musl, C++, SQLite, zstd, llama.cpp (M0-05) |
+| 5 | fstat | legacy | 12 | musl; inventory: musl, C++, SQLite, zstd (M0-05) |
+| 6 | lstat | missing | — | inventory: SQLite (M1-11) |
+| 8 | lseek | legacy | 7 | all; inventory: musl, SQLite, llama.cpp |
+| 9 | mmap | missing | — | musl, llama.cpp; inventory: musl, musl threads, C++, SQLite, zstd, llama.cpp (M1-07) |
+| 10 | mprotect | missing | — | musl; inventory: musl, musl threads, C++, zstd, llama.cpp (M1-07) |
+| 11 | munmap | missing | — | musl; inventory: musl, musl threads, C++, SQLite, zstd, llama.cpp (M1-07) |
+| 12 | brk | legacy | 6 | musl; inventory: musl, C++, SQLite, zstd, llama.cpp (M1-07) |
+| 13 | rt_sigaction | missing (old `signal` = 20) | 20 | musl; inventory: musl, SQLite, zstd, llama.cpp (M1-01) |
+| 14 | rt_sigprocmask | missing | — | musl threads; inventory: musl, musl threads, C++, SQLite, zstd, llama.cpp (M1-01) |
+| 15 | rt_sigreturn | legacy | 22 | musl; inventory: musl (M1-01) |
+| 16 | ioctl | missing (old `tcsetpgrp` = 33) | 33 | shell, fbdev, input; inventory: musl, musl threads, C++, SQLite, zstd, llama.cpp (M0-06) |
+| 17 | pread64 | missing | — | inventory: musl, SQLite (M1-11) |
+| 18 | pwrite64 | missing | — | inventory: SQLite (M1-11) |
+| 19 | readv | missing | — | inventory: zstd, llama.cpp (M0-06) |
+| 20 | writev | missing | — | inventory: musl, musl threads, C++, SQLite, zstd, llama.cpp (M0-06) |
+| 21 | access | missing | — | inventory: musl, SQLite (M1-20) |
+| 22 | pipe | legacy | 19 | shell; inventory: musl |
+| 28 | madvise | missing | — | llama.cpp; inventory: llama.cpp (M1-07) |
+| 32 | dup | legacy | 13 | shell; inventory: musl |
 | 33 | dup2 | legacy | 14 | shell |
-| 35 | nanosleep | missing | — | M1 |
-| 39 | getpid | legacy | 2 | all |
+| 35 | nanosleep | missing | — | M1; inventory: musl, C++ (M1-06) |
+| 39 | getpid | legacy | 2 | all; inventory: musl, SQLite |
 | 41 | socket | legacy | 35 | net, arc-llm |
 | 42 | connect | legacy | 39 | net, arc-llm |
 | 43 | accept | legacy | 38 | net, arc-llm |
@@ -52,40 +58,55 @@ a syscall (the `add-syscall` skill does this).
 | 45 | recvfrom | legacy | 41, 43 | net |
 | 49 | bind | legacy | 36 | net |
 | 50 | listen | legacy | 37 | net |
-| 56 | clone | missing | — | musl threads (M1) |
-| 57 | fork | legacy | 16 | shell |
-| 59 | execve | legacy (no envp) | 17 | shell |
-| 60 | exit | legacy | 0 | all |
-| 61 | wait4 | legacy (old `wait`) | 18 | shell |
+| 56 | clone | missing | — | musl threads; inventory: musl threads, C++, zstd, llama.cpp (M1-16) |
+| 57 | fork | legacy | 16 | shell; inventory: musl (M0-05) |
+| 59 | execve | legacy (no envp) | 17 | shell; inventory: musl, musl threads, C++, SQLite, zstd, llama.cpp (M0-06) |
+| 60 | exit | legacy | 0 | all; inventory: musl threads, C++, zstd, llama.cpp (M1-16) |
+| 61 | wait4 | legacy (old `wait`) | 18 | shell; inventory: musl (M0-05) |
 | 62 | kill | legacy | 21 | shell |
-| 79 | getcwd | legacy | 24 | shell |
-| 80 | chdir | legacy | 23 | shell |
-| 83 | mkdir | legacy | 9 | coreutils |
-| 87 | unlink | legacy | 11 | coreutils |
-| 90 | chmod | legacy | 29 | coreutils |
+| 72 | fcntl | missing | — | inventory: musl, C++, SQLite (M1-20) |
+| 74 | fsync | missing | — | inventory: musl, SQLite (M1-15) |
+| 77 | ftruncate | missing | — | inventory: musl (M1-11) |
+| 79 | getcwd | legacy | 24 | shell; inventory: musl, SQLite |
+| 80 | chdir | legacy | 23 | shell; inventory: musl |
+| 82 | rename | missing | — | inventory: musl, C++ (M1-15) |
+| 83 | mkdir | legacy | 9 | coreutils; inventory: musl, C++ |
+| 84 | rmdir | missing | — | inventory: musl, C++ (M1-15) |
+| 87 | unlink | legacy | 11 | coreutils; inventory: musl, C++, SQLite |
+| 90 | chmod | legacy | 29 | coreutils; inventory: musl |
+| 91 | fchmod | missing | — | inventory: zstd (M1-20) |
 | 92 | chown | legacy | 30 | coreutils |
+| 93 | fchown | missing | — | inventory: SQLite, zstd (M1-20) |
 | 95 | umask | legacy | 34 | shell |
-| 102 | getuid | legacy | 25 | login |
+| 99 | sysinfo | missing | — | inventory: llama.cpp (M1-20) |
+| 102 | getuid | legacy | 25 | login; inventory: musl, SQLite |
 | 104 | getgid | legacy | 26 | login |
 | 105 | setuid | legacy | 27 | login |
 | 106 | setgid | legacy | 28 | login |
+| 107 | geteuid | missing | — | inventory: musl, SQLite (M1-20) |
 | 109 | setpgid | legacy | 31 | shell |
-| 110 | getppid | legacy | 15 | shell |
+| 110 | getppid | legacy | 15 | shell; inventory: musl |
 | 121 | getpgid | legacy | 32 | shell |
-| 158 | arch_prctl | missing | — | musl TLS (M1) |
-| 202 | futex | missing | — | musl threads (M1) |
+| 158 | arch_prctl | missing | — | musl TLS; inventory: musl, musl threads, C++, SQLite, zstd, llama.cpp (M0-06) |
+| 200 | tkill | missing | — | inventory: musl (M1-17) |
+| 202 | futex | missing | — | musl threads; inventory: musl threads, C++, zstd, llama.cpp (M1-16) |
 | 203 | sched_setaffinity | missing | — | P-core pinning (M1) |
-| 217 | getdents64 | missing (old `readdir` = 10) | 10 | musl, coreutils |
-| 218 | set_tid_address | missing | — | musl (M1) |
-| 228 | clock_gettime | missing | — | M1 |
-| 231 | exit_group | missing | — | musl |
-| 257 | openat | missing | — | musl |
+| 204 | sched_getaffinity | missing | — | inventory: C++, llama.cpp (M1-17) |
+| 217 | getdents64 | missing (old `readdir` = 10) | 10 | musl, coreutils; inventory: musl, C++ (M0-05) |
+| 218 | set_tid_address | missing | — | musl; inventory: musl, musl threads, C++, SQLite, zstd, llama.cpp (M0-06) |
+| 221 | fadvise64 | missing | — | inventory: llama.cpp (M1-12) |
+| 228 | clock_gettime | missing | — | M1; inventory: zstd (M1-06) |
+| 231 | exit_group | missing | — | musl; inventory: musl, musl threads, C++, SQLite, zstd, llama.cpp (M0-06) |
+| 257 | openat | missing | — | musl; inventory: C++ (M0-05) |
 | 262 | newfstatat | missing | — | musl |
+| 263 | unlinkat | missing | — | inventory: C++ (M1-15) |
+| 280 | utimensat | missing | — | inventory: zstd (M1-20) |
 | 293 | pipe2 | missing | — | musl |
 
-Numbers above are from memory; verify each against the archived `syscall_64.tbl` when it is migrated.
-The full list needed by M1/M2 comes from the M0 syscall inventory (strace of llama.cpp, SQLite and our test
-programs on Linux); add rows for anything it finds.
+Numbers verified against the archived Linux v6.12 `syscall_64.tbl` (M0-04). "inventory:" lists the programs
+that made the call in the M0-04 syscall inventory (`docs/plans/syscall-inventory.md`, musl static builds under
+strace) and, in brackets, the block that owns it. musl reads the clock through the vDSO, so strace never sees
+`clock_gettime`/`gettimeofday` from most programs; arc_os has no vDSO, so musl will make them as syscalls.
 
 ## Argument Validation
 

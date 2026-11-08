@@ -24,7 +24,7 @@ Migration of today's 44 syscalls (done in one pass with libarc, userland and tes
 | 0 EXIT | 60 `exit` (+231 `exit_group`) | |
 | 1 WRITE | 1 `write` | |
 | 2 GETPID | 39 `getpid` | |
-| 3 OPEN | 2 `open` (+257 `openat`) | musl uses `openat` |
+| 3 OPEN | 2 `open` (+257 `openat`) | musl uses `open` on x86_64; `openat` comes from C++ `std::filesystem` (M0-04) |
 | 4 READ | 0 `read` | |
 | 5 CLOSE | 3 `close` | |
 | 6 BRK | 12 `brk` | Linux semantics: returns new break, never -errno |
@@ -37,7 +37,7 @@ Migration of today's 44 syscalls (done in one pass with libarc, userland and tes
 | 13 DUP | 32 `dup` | |
 | 14 DUP2 | 33 `dup2` | |
 | 15 GETPPID | 110 `getppid` | |
-| 16 FORK | 57 `fork` / 56 `clone` | musl uses `clone` |
+| 16 FORK | 57 `fork` / 56 `clone` | musl's `fork()` uses `fork`; threads use `clone` (M0-04) |
 | 17 EXEC | 59 `execve` | takes `envp` |
 | 18 WAIT | 61 `wait4` | status encoding per Linux |
 | 19 PIPE | 22 `pipe` (+293 `pipe2`) | |
@@ -66,8 +66,9 @@ Migration of today's 44 syscalls (done in one pass with libarc, userland and tes
 | 42 SENDTO | 44 `sendto` | |
 | 43 RECVFROM | 45 `recvfrom` | |
 
-Numbers above are from memory and **must be checked against the archived `syscall_64.tbl`** during the
-M0 migration.
+All numbers above were checked against the archived Linux v6.12 `syscall_64.tbl` in M0-04 and are correct.
+Two notes were corrected from the M0-04 strace inventory (`docs/plans/syscall-inventory.md`): musl on x86_64
+calls `open` and `fork`, not `openat` and `clone`.
 
 ## Consequences
 - musl ports with few changes; a stock `x86_64-linux-musl` toolchain builds our user space.
