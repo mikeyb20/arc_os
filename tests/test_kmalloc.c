@@ -9,6 +9,7 @@
 #define ARCHOS_LIB_KPRINTF_H
 #define ARCHOS_MM_KMALLOC_H
 #define ARCHOS_LIB_MEM_H        /* Use libc memset/memcpy */
+#define ARCHOS_PROC_SPINLOCK_H  /* Real spinlock uses cli/popf; stub below */
 
 #define PAGE_SIZE 4096
 #define GFP_KERNEL  0x00
@@ -24,6 +25,27 @@ typedef struct {
 } HeapStats;
 #define VMM_FLAG_WRITABLE 1
 #define VMM_FLAG_NOEXEC   4
+
+/* Stub spinlock that records nesting, so tests can check that every public
+ * call takes the heap lock exactly once and releases it (krealloc must not
+ * re-enter kmalloc/kfree through the locked wrappers). */
+typedef struct {
+    volatile uint32_t locked;
+    uint64_t saved_flags;
+} Spinlock;
+#define SPINLOCK_INIT { .locked = 0, .saved_flags = 0 }
+static int lock_depth;
+static int lock_max_depth;
+static int lock_acquires;
+static inline void spinlock_acquire(Spinlock *lock) {
+    lock->locked = 1;
+    lock_acquires++;
+    if (++lock_depth > lock_max_depth) lock_max_depth = lock_depth;
+}
+static inline void spinlock_release(Spinlock *lock) {
+    lock->locked = 0;
+    lock_depth--;
+}
 
 /* Stub kprintf */
 static inline void kprintf(const char *fmt, ...) { (void)fmt; }
@@ -247,6 +269,40 @@ static int test_split_block_no_underflow(void) {
     return 0;
 }
 
+static int test_lock_taken_once_per_call(void) {
+    setup_heap();
+    lock_depth = 0; lock_max_depth = 0; lock_acquires = 0;
+
+    void *p = kmalloc(64, GFP_KERNEL);
+    ASSERT_EQ(lock_acquires, 1);
+    ASSERT_EQ(lock_depth, 0);
+
+    /* Grow past the neighbouring block so krealloc takes the copy path,
+     * which allocates and frees internally. */
+    void *blocker = kmalloc(64, GFP_KERNEL);
+    lock_acquires = 0;
+    void *q = krealloc(p, 4096);
+    ASSERT_TRUE(q != NULL);
+    ASSERT_EQ(lock_acquires, 1);
+    ASSERT_EQ(lock_depth, 0);
+
+    /* Heap growth path (beyond the initial 16 KB) also holds the lock once. */
+    lock_acquires = 0;
+    void *big = kmalloc(32 * 1024, GFP_KERNEL);
+    ASSERT_TRUE(big != NULL);
+    ASSERT_EQ(lock_acquires, 1);
+
+    kfree(big);
+    kfree(q);
+    kfree(blocker);
+
+    HeapStats st;
+    kmalloc_get_stats(&st);
+    ASSERT_EQ(lock_depth, 0);
+    ASSERT_EQ(lock_max_depth, 1);
+    return 0;
+}
+
 /* --- Test suite export --- */
 
 TestCase kmalloc_tests[] = {
@@ -264,6 +320,7 @@ TestCase kmalloc_tests[] = {
     { "double_free_no_crash",       test_double_free_no_crash },
     { "canary_survives_normal",     test_canary_survives_normal_use },
     { "split_block_no_underflow",   test_split_block_no_underflow },
+    { "lock_taken_once_per_call",   test_lock_taken_once_per_call },
 };
 
 int kmalloc_test_count = sizeof(kmalloc_tests) / sizeof(kmalloc_tests[0]);

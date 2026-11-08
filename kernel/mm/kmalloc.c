@@ -3,6 +3,7 @@
 #include "mm/vmm.h"
 #include "lib/mem.h"
 #include "lib/kprintf.h"
+#include "proc/spinlock.h"
 
 /* Heap starts at 0xFFFFFFFFC0000000 (kernel heap region) */
 #define HEAP_START       0xFFFFFFFFC0000000ULL
@@ -30,6 +31,12 @@ typedef struct BlockHeader {
 } BlockHeader;
 
 #define HEADER_SIZE  ((sizeof(BlockHeader) + ALIGN_SIZE - 1) & ALIGN_MASK)
+
+/* One lock guards the block list and heap growth. It is IRQ-safe
+ * (spinlock_acquire disables interrupts) because interrupt handlers allocate:
+ * virtio-net rx -> TCP input -> kmalloc for a new connection. Lock order: this
+ * lock is taken before the VMM and PMM locks (heap_grow maps pages). */
+static Spinlock heap_lock = SPINLOCK_INIT;
 
 static BlockHeader *heap_start_block;
 static uint64_t heap_current_end;  /* Current end of mapped heap */
@@ -164,7 +171,8 @@ static BlockHeader *heap_grow_for(size_t size) {
     return block;
 }
 
-void *kmalloc(size_t size, uint32_t flags) {
+/* Allocate with heap_lock held. */
+static void *kmalloc_locked(size_t size, uint32_t flags) {
     if (size == 0) return NULL;
 
     size = align_up(size);
@@ -189,7 +197,15 @@ void *kmalloc(size_t size, uint32_t flags) {
     return block_allocate(block, size, flags);
 }
 
-void kfree(void *ptr) {
+void *kmalloc(size_t size, uint32_t flags) {
+    spinlock_acquire(&heap_lock);
+    void *ptr = kmalloc_locked(size, flags);
+    spinlock_release(&heap_lock);
+    return ptr;
+}
+
+/* Free with heap_lock held. */
+static void kfree_locked(void *ptr) {
     if (ptr == NULL) return;
 
     BlockHeader *block = (BlockHeader *)((uint8_t *)ptr - HEADER_SIZE);
@@ -216,10 +232,18 @@ void kfree(void *ptr) {
     }
 }
 
-void *krealloc(void *ptr, size_t new_size) {
-    if (ptr == NULL) return kmalloc(new_size, GFP_KERNEL);
+void kfree(void *ptr) {
+    if (ptr == NULL) return;
+    spinlock_acquire(&heap_lock);
+    kfree_locked(ptr);
+    spinlock_release(&heap_lock);
+}
+
+/* Reallocate with heap_lock held. */
+static void *krealloc_locked(void *ptr, size_t new_size) {
+    if (ptr == NULL) return kmalloc_locked(new_size, GFP_KERNEL);
     if (new_size == 0) {
-        kfree(ptr);
+        kfree_locked(ptr);
         return NULL;
     }
 
@@ -247,15 +271,23 @@ void *krealloc(void *ptr, size_t new_size) {
     }
 
     /* Allocate new, copy, free old */
-    void *new_ptr = kmalloc(new_size, GFP_KERNEL);
+    void *new_ptr = kmalloc_locked(new_size, GFP_KERNEL);
     if (new_ptr == NULL) return NULL;
 
     memcpy(new_ptr, ptr, block->size);
-    kfree(ptr);
+    kfree_locked(ptr);
+    return new_ptr;
+}
+
+void *krealloc(void *ptr, size_t new_size) {
+    spinlock_acquire(&heap_lock);
+    void *new_ptr = krealloc_locked(ptr, new_size);
+    spinlock_release(&heap_lock);
     return new_ptr;
 }
 
 void kmalloc_dump_stats(void) {
+    spinlock_acquire(&heap_lock);
     size_t total_blocks = 0, free_blocks = 0;
     size_t total_free = 0, total_used = 0;
     size_t largest_free = 0;
@@ -272,6 +304,8 @@ void kmalloc_dump_stats(void) {
         }
         block = block->next;
     }
+    uint64_t mapped_end = heap_current_end;
+    spinlock_release(&heap_lock);
 
     kprintf("[HEAP] Stats: %lu blocks (%lu free), %lu bytes used, "
             "%lu bytes free (largest=%lu)\n",
@@ -279,11 +313,12 @@ void kmalloc_dump_stats(void) {
             (uint64_t)total_used, (uint64_t)total_free,
             (uint64_t)largest_free);
     kprintf("[HEAP] Heap range: 0x%lx - 0x%lx (%lu KB mapped)\n",
-            HEAP_START, heap_current_end,
-            (heap_current_end - HEAP_START) / 1024);
+            HEAP_START, mapped_end,
+            (mapped_end - HEAP_START) / 1024);
 }
 
 void kmalloc_get_stats(HeapStats *out) {
+    spinlock_acquire(&heap_lock);
     out->total_blocks = 0;
     out->free_blocks = 0;
     out->total_free = 0;
@@ -304,4 +339,5 @@ void kmalloc_get_stats(HeapStats *out) {
     }
 
     out->heap_mapped = heap_current_end - HEAP_START;
+    spinlock_release(&heap_lock);
 }
