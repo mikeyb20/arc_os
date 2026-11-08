@@ -155,7 +155,7 @@ every model works off chunk IDs, so a better embedder, a new index or an MoE exp
 without reprocessing the library. Details and exact formats: [ADR-0011](../decisions/0011-data-contract.md).
 
 ```
-/packs/<pack-id>/
+/packs/<name>/<version>/
   manifest.json        name, version, schema_version, category, priority, size, license, source, checksums, provides (schemas/pack.schema.json)
   content/             full documents in our own zstd-compressed store keyed by document ID (maps: pre-rendered tiles)
   chunks/              plain-text passages of ~300-500 tokens, one fixed-size index record each
