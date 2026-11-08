@@ -363,8 +363,8 @@
       "kind": "test-model",
       "license": "Apache-2.0",
       "ships": "tests-only",
-      "purpose": "Tiny GGUF chat model for QEMU and CI tests (M2)",
-      "upstream_url": "https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct-GGUF/resolve/main/smollm2-135m-instruct-q8_0.gguf",
+      "purpose": "Tiny GGUF chat model (SmolLM2-135M-Instruct, Q8_0) for QEMU and CI tests (M2)",
+      "upstream_url": "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q8_0.gguf",
       "sha256": "",
       "archive_url": ""
     },
