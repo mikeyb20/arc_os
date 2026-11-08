@@ -133,6 +133,7 @@ typedef struct Process {
     pid_t           pgid;
     uint8_t         state;
     int32_t         exit_status;
+    uint8_t         term_signal;
     Thread         *main_thread;
     SigState        sig;
     WaitQueue       child_exit_wq;
@@ -215,6 +216,10 @@ static void test_reset(void) {
 }
 
 /* Include signal.c directly */
+/* signal.c calls this from sig_terminate (defined in proc_syscalls.c) */
+static int release_fds_called;
+void proc_release_fds(struct Process *p) { (void)p; release_fds_called++; }
+
 #include "../kernel/proc/signal.c"
 
 /* --- Tests --- */
@@ -282,6 +287,24 @@ TEST(default_sigterm_terminates) {
     ASSERT_EQ(test_procs[0].state, PROC_ZOMBIE);
     ASSERT_EQ(test_procs[0].exit_status, 128 + SIGTERM);
     ASSERT_TRUE(sched_schedule_called);
+    return 0;
+}
+
+/* A signal death must look like exit to the parent: fds closed, wait4 status
+ * says WIFSIGNALED, parent gets SIGCHLD (and is woken; wq_wake is a stub here). */
+TEST(sigterm_death_notifies_parent) {
+    test_reset();
+    release_fds_called = 0;
+    test_current_idx = 1;
+    test_procs[1].parent = &test_procs[0];
+    test_procs[1].sig.pending = (1u << SIGTERM);
+    SyscallFrame frame = {0};
+    frame.rsp = 0x7FFFFFFFE000ULL;
+    sig_maybe_deliver(&frame, 0);
+    ASSERT_EQ(test_procs[1].state, PROC_ZOMBIE);
+    ASSERT_EQ(test_procs[1].term_signal, SIGTERM);
+    ASSERT_EQ(release_fds_called, 1);
+    ASSERT_TRUE(test_procs[0].sig.pending & (1u << SIGCHLD));
     return 0;
 }
 
@@ -426,8 +449,17 @@ TEST(user_handler_modifies_frame) {
     ASSERT_EQ(frame.r14, 0);
     ASSERT_EQ(frame.r15, 0);
 
-    /* Check SignalFrame saved original context */
-    SignalFrame *sf = (SignalFrame *)frame.rsp;
+    /* Handler entry: RSP points at ret_addr (last field), RSP + 8 is 16-aligned,
+     * the red zone below the old RSP is untouched, and ret_addr is the
+     * trampoline at the frame's start. */
+    ASSERT_EQ((frame.rsp + 8) % 16, 0);
+    SignalFrame *sf = (SignalFrame *)(frame.rsp + 8 - sizeof(SignalFrame));
+    ASSERT_EQ(*(uint64_t *)frame.rsp, (uint64_t)sf);
+    ASSERT_EQ(sf->ret_addr, (uint64_t)sf->trampoline);
+    ASSERT_TRUE(frame.rsp + 8 <= stack_top - 128);
+    ASSERT_EQ(sf->trampoline[0], 0xB8);
+    ASSERT_EQ(sf->trampoline[1], 15);   /* mov eax, __NR_rt_sigreturn */
+    ASSERT_EQ(sf->user_rsp, stack_top);
     ASSERT_EQ(sf->user_rip, 0x401000);
     ASSERT_EQ(sf->rax, 42);
     ASSERT_EQ(sf->rbx, 0xBB);
@@ -519,6 +551,7 @@ TestCase signal_tests[] = {
     TEST_ENTRY(set_handler_returns_old),
     TEST_ENTRY(set_handler_rejects_sigkill),
     TEST_ENTRY(default_sigterm_terminates),
+    TEST_ENTRY(sigterm_death_notifies_parent),
     TEST_ENTRY(default_sigchld_ignored),
     TEST_ENTRY(sigkill_always_terminates),
     TEST_ENTRY(sig_ign_skips_signal),

@@ -120,7 +120,8 @@ static int run_test(char *line) {
         printf("ARC_TEST FAIL %s wait-failed\n", name);
         return 0;
     }
-    int code = WEXITSTATUS(status);
+    /* A child killed by a signal reports 128 + signal, like a shell does */
+    int code = WIFSIGNALED(status) ? 128 + WTERMSIG(status) : WEXITSTATUS(status);
     if (code == 0) {
         printf("ARC_TEST PASS %s\n", name);
         return 1;

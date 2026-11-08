@@ -1,37 +1,29 @@
-/* arc_os libc — stat/fstat/chmod/chown/mkdir */
+/* arc_os libc — stat/fstat/chmod/chown/mkdir/umask */
 
 #include <sys/stat.h>
-#include <syscall.h>
 #include <errno.h>
-
-extern int errno;
+#include "syscall_arch.h"
 
 int stat(const char *path, struct stat *buf) {
-    int64_t ret = syscall2(SYS_STAT, (uint64_t)path, (uint64_t)buf);
-    if (ret < 0) { errno = (int)(-ret); return -1; }
-    return 0;
+    return (int)syscall_ret(syscall2(__NR_stat, (uint64_t)path, (uint64_t)buf));
 }
 
 int fstat(int fd, struct stat *buf) {
-    int64_t ret = syscall2(SYS_FSTAT, (uint64_t)fd, (uint64_t)buf);
-    if (ret < 0) { errno = (int)(-ret); return -1; }
-    return 0;
+    return (int)syscall_ret(syscall2(__NR_fstat, (uint64_t)fd, (uint64_t)buf));
 }
 
 int chmod(const char *path, mode_t mode) {
-    int64_t ret = syscall2(SYS_CHMOD, (uint64_t)path, (uint64_t)mode);
-    if (ret < 0) { errno = (int)(-ret); return -1; }
-    return 0;
+    return (int)syscall_ret(syscall2(__NR_chmod, (uint64_t)path, (uint64_t)mode));
 }
 
 int chown(const char *path, uid_t owner, gid_t group) {
-    int64_t ret = syscall3(SYS_CHOWN, (uint64_t)path, (uint64_t)owner, (uint64_t)group);
-    if (ret < 0) { errno = (int)(-ret); return -1; }
-    return 0;
+    return (int)syscall_ret(syscall3(__NR_chown, (uint64_t)path, (uint64_t)owner, (uint64_t)group));
 }
 
 int mkdir(const char *path, mode_t mode) {
-    int64_t ret = syscall2(SYS_MKDIR, (uint64_t)path, (uint64_t)mode);
-    if (ret < 0) { errno = (int)(-ret); return -1; }
-    return 0;
+    return (int)syscall_ret(syscall2(__NR_mkdir, (uint64_t)path, (uint64_t)mode));
+}
+
+mode_t umask(mode_t mask) {
+    return (mode_t)syscall1(__NR_umask, (uint64_t)mask);
 }

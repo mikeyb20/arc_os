@@ -33,6 +33,10 @@ target_include_directories(arc PUBLIC
     ${GCC_FREESTANDING_INCLUDE}
 )
 
+# kernel/include/uapi holds the Linux ABI numbers and structs shared with the
+# kernel (#include <uapi/...>). -idirafter keeps GCC's freestanding headers first.
+target_compile_options(arc PUBLIC -idirafter ${CMAKE_SOURCE_DIR}/kernel/include)
+
 target_compile_options(arc PRIVATE
     -ffreestanding -nostdlib -nostdinc -static
     -mno-red-zone -fno-stack-protector -fno-pic -fno-pie

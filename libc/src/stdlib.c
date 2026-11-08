@@ -1,11 +1,10 @@
 /* arc_os libc — stdlib: exit, atoi, abs */
 
 #include <stdlib.h>
-#include <syscall.h>
+#include <unistd.h>
 
 void exit(int status) {
-    syscall1(SYS_EXIT, (uint64_t)status);
-    for (;;) __asm__ volatile ("ud2");
+    _exit(status);
 }
 
 int atoi(const char *s) {

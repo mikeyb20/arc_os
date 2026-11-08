@@ -2,22 +2,28 @@
 #define ARCHOS_LIBC_DIRENT_H
 
 #include <stdint.h>
+#include <sys/types.h>
 
-#define DT_REG  0   /* Regular file */
-#define DT_DIR  1   /* Directory */
+/* DT_* values (Linux, ADR-0001) */
+#include <uapi/dirent.h>
 
+/* One entry as readdir returns it: the getdents64 record, read in place. */
 struct dirent {
-    char     d_name[256];
     uint64_t d_ino;
-    uint8_t  d_type;
+    int64_t  d_off;
+    uint16_t d_reclen;
+    uint8_t  d_type;           /* DT_* */
+    char     d_name[256];
 };
 
+#define ARC_DIRBUF_SIZE 2048
+
+/* Directory stream: an open directory fd and one getdents64 buffer. */
 typedef struct {
-    int           fd;      /* Open directory fd (unused — we use path-based readdir) */
-    char          path[256];
-    struct dirent entries[64];
-    int           count;
-    int           pos;
+    int      fd;
+    int      pos;              /* next record in buf */
+    int      len;              /* bytes of records in buf */
+    char     buf[ARC_DIRBUF_SIZE] __attribute__((aligned(8)));
 } DIR;
 
 DIR           *opendir(const char *path);

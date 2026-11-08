@@ -3,28 +3,20 @@
 
 #include <sys/types.h>
 
-/* Signal numbers — must match kernel/proc/signal.h */
-#define SIGHUP   1
-#define SIGINT   2
-#define SIGQUIT  3
-#define SIGILL   4
-#define SIGABRT  6
-#define SIGKILL  9
-#define SIGSEGV  11
-#define SIGPIPE  13
-#define SIGALRM  14
-#define SIGTERM  15
-#define SIGCHLD  17
-#define SIGCONT  18
-#define SIGSTOP  19
-#define SIGTSTP  20
-
-#define SIG_DFL ((void (*)(int))0)
-#define SIG_IGN ((void (*)(int))1)
+/* Signal numbers, SA_* flags and the kernel sigaction layout (Linux, ADR-0001) */
+#include <uapi/signal.h>
 
 typedef void (*sig_t)(int);
 
+#define SIG_DFL ((sig_t)0)
+#define SIG_IGN ((sig_t)1)
+#define SIG_ERR ((sig_t)-1)
+
+/* Install handler for signo (via rt_sigaction). Returns the previous handler,
+ * or SIG_ERR with errno set. */
 sig_t signal(int signo, sig_t handler);
+
+/* Send signo to pid (> 0), the caller's group (0) or group -pid (< 0). */
 int   kill(pid_t pid, int signo);
 
 #endif /* ARCHOS_LIBC_SIGNAL_H */

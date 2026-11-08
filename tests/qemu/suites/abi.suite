@@ -1,0 +1,2 @@
+# qemu.abi: Linux syscall ABI checks (M0-05); exit status = failed checks.
+abi_check /boot/abi_check

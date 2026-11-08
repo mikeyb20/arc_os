@@ -9,7 +9,7 @@
 #define MAX_EXEC_ARGS     32
 #define MAX_EXEC_ARG_DATA 4096
 
-#define EINVAL 22
+#define EFAULT 14
 #define E2BIG   7
 
 typedef struct {
@@ -25,7 +25,7 @@ static int user_ptr_valid(const void *ptr, size_t len) {
     return ptr != NULL;
 }
 
-/* Inline the exec_copy_argv function (matching kernel implementation) */
+/* Inline the exec_copy_argv function (matching kernel/proc/proc_syscalls.c) */
 static int exec_copy_argv(uint64_t argv_addr, ExecArgv *args) {
     args->argc = 0;
     args->data_used = 0;
@@ -33,7 +33,7 @@ static int exec_copy_argv(uint64_t argv_addr, ExecArgv *args) {
     if (argv_addr == 0) return 0;
 
     if (!user_ptr_valid((const void *)argv_addr, sizeof(uint64_t)))
-        return -EINVAL;
+        return -EFAULT;
 
     const char *const *user_argv = (const char *const *)argv_addr;
 
@@ -41,7 +41,7 @@ static int exec_copy_argv(uint64_t argv_addr, ExecArgv *args) {
         const char *ustr = user_argv[i];
         if (ustr == (void *)0) break;
 
-        if (!user_ptr_valid(ustr, 1)) return -EINVAL;
+        if (!user_ptr_valid(ustr, 1)) return -EFAULT;
 
         args->ptrs[i] = &args->data[args->data_used];
         size_t start = args->data_used;

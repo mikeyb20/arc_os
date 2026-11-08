@@ -24,6 +24,9 @@ void tty_set_fg_pid(uint32_t pid);
 /* Set the foreground process group for signal delivery */
 void tty_set_fg_pgid(uint32_t pgid);
 
+/* Foreground process group of the terminal (0 = none). TIOCGPGRP reads it. */
+uint32_t tty_get_fg_pgid(void);
+
 /* Set the output function for tty (e.g., serial + framebuffer) */
 void tty_set_output(void (*fn)(char c));
 

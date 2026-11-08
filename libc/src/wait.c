@@ -1,15 +1,12 @@
-/* arc_os libc — wait/waitpid */
+/* arc_os libc — wait/waitpid over wait4 */
 
 #include <sys/wait.h>
-#include <syscall.h>
 #include <errno.h>
-
-extern int errno;
+#include "syscall_arch.h"
 
 pid_t waitpid(pid_t pid, int *status, int options) {
-    int64_t ret = syscall3(SYS_WAIT, (uint64_t)pid, (uint64_t)status, (uint64_t)options);
-    if (ret < 0) { errno = (int)(-ret); return -1; }
-    return (pid_t)ret;
+    return (pid_t)syscall_ret(syscall4(__NR_wait4, (uint64_t)(int64_t)pid, (uint64_t)status,
+                                       (uint64_t)options, 0));
 }
 
 pid_t wait(int *status) {
