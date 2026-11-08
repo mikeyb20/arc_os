@@ -9,7 +9,12 @@
  *
  * Suite file format, one test per line ('#' starts a comment line):
  *     <name> <path> [args...] [< <stdin-file>]
- * A test passes when the program exits with status 0. */
+ * A test passes when the program exits with status 0.
+ *
+ * Leak check (M0-08, ADR-0019): /proc/meminfo is read before the first test and
+ * after the last. Every child has been reaped by then, so free memory should be
+ * back where it started; init prints the difference as ARC_TEST budget lines
+ * that tools/budget-check.py compares with tests/budgets.txt. */
 
 #include <unistd.h>
 #include <stdlib.h>
@@ -136,6 +141,46 @@ static int run_test(char *line) {
     return 0;
 }
 
+typedef struct {
+    long free_kb;       /* MemFree */
+    long heap_used;     /* HeapUsed (bytes of live kmalloc blocks) */
+    long heap_mapped;   /* HeapMapped (bytes of pages the kernel heap holds) */
+} MemSnap;
+
+/* Value after "<key>:" in a /proc/meminfo text, or -1 */
+static long meminfo_field(const char *text, const char *key) {
+    const char *p = strstr(text, key);
+    if (p == NULL) return -1;
+    p += strlen(key);
+    while (*p == ':' || *p == ' ') p++;
+    long v = 0;
+    while (*p >= '0' && *p <= '9') v = v * 10 + (*p++ - '0');
+    return v;
+}
+
+static int mem_snap(MemSnap *m) {
+    char text[256];
+    if (read_file("/proc/meminfo", text, sizeof(text)) <= 0) return -1;
+    m->free_kb = meminfo_field(text, "MemFree");
+    m->heap_used = meminfo_field(text, "HeapUsed");
+    m->heap_mapped = meminfo_field(text, "HeapMapped");
+    return (m->free_kb < 0 || m->heap_used < 0 || m->heap_mapped < 0) ? -1 : 0;
+}
+
+/* Pages that left the free pool for good (pages the kernel heap grew by are
+ * excluded: the heap keeps them) and kmalloc bytes still held */
+static void report_leaks(const MemSnap *before) {
+    MemSnap after;
+    if (mem_snap(&after) != 0) {
+        printf("ARC_TEST FAIL leak-check cannot-read-meminfo\n");
+        return;
+    }
+    long lost_bytes = (before->free_kb - after.free_kb) * 1024
+                      - (after.heap_mapped - before->heap_mapped);
+    printf("ARC_TEST budget pages_leaked %ld\n", lost_bytes / 4096);
+    printf("ARC_TEST budget heap_leaked_bytes %ld\n", after.heap_used - before->heap_used);
+}
+
 static int run_suite(const char *suite) {
     static char buf[SUITE_FILE_MAX];
     char path[SUITE_NAME_MAX + 16];
@@ -148,6 +193,9 @@ static int run_suite(const char *suite) {
         return 1;
     }
 
+    MemSnap before;
+    int have_snap = (mem_snap(&before) == 0);
+
     int pass = 0, fail = 0;
     char *p = buf;
     while (*p) {
@@ -158,6 +206,7 @@ static int run_suite(const char *suite) {
         if (*line == '\0' || *line == '#') continue;
         if (run_test(line)) pass++; else fail++;
     }
+    if (have_snap) report_leaks(&before);
 
     printf("ARC_TEST DONE pass=%d fail=%d\n", pass, fail);
     return (fail == 0 && pass > 0) ? 0 : 1;

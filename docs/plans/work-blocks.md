@@ -10,16 +10,16 @@
 
 | Milestone | Blocks | Session units | With allowance |
 |---|---|---|---|
-| M0 Lock-in decisions | 9 | 7.0 | 9.0 |
+| M0 Lock-in decisions | 10 | 7.5 | 9.8 |
 | M1 Compute kernel | 23 | 29.0 | 41.7 |
 | M2 Toolchain + first LLM | 7 | 7.0 | 9.4 |
 | M3 Knowledge layer | 12 | 12.0 | 16.1 |
 | M4 Real hardware | 15 | 16.0 | 21.1 |
 | M5 Packages + installer | 7 | 7.5 | 9.8 |
-| **Total** | **73** | **78.5** | **107.1** |
+| **Total** | **74** | **79.0** | **107.9** |
 
-- **73 blocks**: 11 small, 51 medium, 11 large. The 34 deep (D) blocks carry
-  43 of the 78.5 session units.
+- **74 blocks**: 12 small, 51 medium, 11 large. The 35 deep (D) blocks carry
+  43.5 of the 79.0 session units.
 - **Session units:** S = 0.5, M = 1, L = 2. "With allowance" adds debugging and rework: D blocks × 1.5, R blocks
   × 1.2. That allowance is an estimate, not a measurement; recheck it after M1, the first milestone with real
   numbers. Budget about **108 sessions**.
@@ -86,10 +86,11 @@ Start every block with `/os/implement-block <ID>`. These rules are what keep ses
 | M0-03 | Archive outside sources and test models | M | R | I | M0-01 | Every component pinned by SHA-256 and fetched from Michael's GitHub | done |
 | M0-04 | Syscall inventory | S | R | U | M0-03 | Exact syscalls, ioctls and files used by musl, C++, SQLite, zstd, llama.cpp | done |
 | M0-05 | Move syscalls to Linux numbers | M | D | K | M0-02, M0-04 | No old numbers left; shell and coreutils pass | done |
-| M0-06 | Linux process start + musl hello | M | D | K | M0-05 | Programs built with stock `musl-gcc -static` run in QEMU | review (#10) |
+| M0-06 | Linux process start + musl hello | M | D | K | M0-05 | Programs built with stock `musl-gcc -static` run in QEMU | done |
 | M0-07 | Manifest schemas | S | R | C | — | Schemas and examples validated in CI | todo |
-| M0-08 | Budget checks in the QEMU harness | S | R | I | M0-02 | A size or count past its limit fails CI, named (ADR-0019) | todo |
+| M0-08 | Budget checks in the QEMU harness | S | R | I | M0-02 | A size or count past its limit fails CI, named (ADR-0019) | review (#11) |
 | M0-09 | Code hygiene checks | S | R | I | M0-08 | Duplicates, copied helpers, x86 includes outside arch, long functions and untracked TODOs can't grow (ADR-0020) | todo |
+| M0-10 | Free reaped processes | S | D | K | M0-09 | `pages_leaked` and `heap_leaked_bytes` budgets are 0 on every QEMU suite | todo |
 
 ### M1 — Compute kernel
 
@@ -327,3 +328,6 @@ Secure Boot through a signed shim and our own key.
 - **2026-11-08** — Maintainability review (ADR-0020, Michael approved): new block M0-09 (hygiene ratchets in CI);
   §3 rule 13 (block review before every PR); code-hygiene rules in §7; HAL include moves added to M1-03, M1-05,
   M1-06, M1-07 and M1-09; hygiene pass in M1-22.
+- **2026-11-08** — M0-08's leak check found that every exited process leaks ~54 pages and ~40 KB of kernel
+  heap (`wait4` frees nothing). Michael approved a new block, M0-10 (free reaped processes); M0-08 freezes the
+  leak budgets at today's level until then. M0 order from here: M0-08, M0-09, M0-10, then M0-07.

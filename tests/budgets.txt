@@ -1,0 +1,31 @@
+# arc_os — CI budgets (ADR-0019, M0-08). Checked by tools/budget-check.py after
+# the QEMU suites (ctest test qemu.budgets). Counts and sizes only, never time.
+# How to add a metric or change a limit: docs/kernel/budgets.md.
+#
+# A max metric fails >5% above its limit and warns >20% below it (tighten it);
+# min is the mirror image. First limits = value measured on 2026-11-08 ± ~10%.
+#
+# name                 limit       kind unit   owner  source    [off]
+
+# Kernel image: .text + .rodata + .data + .bss of kernel.elf (measured 181251)
+kernel_image_bytes     199000      max  bytes  M0-08  build
+
+# Free memory when init starts, booted with -m 4G (qemu.smoke; measured 4251873280)
+boot_free_bytes        3830000000  min  bytes  M0-08  smoke
+
+# Live kmalloc bytes when init starts (measured 2082480)
+kernel_heap_bytes      2290000     max  bytes  M0-08  smoke
+
+# Leak check: free pages and kmalloc bytes lost between the first and last test
+# of a suite (printed by init; worst suite counts). Today every exited process
+# leaks ~54 pages and ~40 KB because wait4 frees nothing: frozen at the measured
+# worst (userland: 522 pages, 397216 bytes) until M0-10 brings both to 0.
+pages_leaked           575         max  pages  M0-10  *
+heap_leaked_bytes      437000      max  bytes  M0-10  *
+
+# Most heap blocks one kmalloc walked (first fit; measured worst 215 in userland).
+# M1-02b's slab replaces it with slab steps.
+kmalloc_walk_max       237         max  blocks M1-02b *
+
+# Timer interrupts on an idle CPU over 5 s: needs the tickless timer (M1-06)
+idle_timer_irqs_5s     0           max  irqs   M1-06  smoke     off

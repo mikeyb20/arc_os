@@ -36,7 +36,7 @@ constant time and carry no per-object header (ADR-0019).
 **Done when.**
 - [ ] Host and QEMU suites pass; the first-fit heap code is gone.
 - [ ] The boot log lists the caches; `/proc/slabinfo` reads.
-- [ ] The M0-08 budget for heap blocks walked per call is replaced by slab steps per call.
+- [ ] The M0-08 budget for heap blocks walked per call (`kmalloc_walk_max`, `kmalloc_max_walk()`) is replaced by slab steps per call.
 
 **Cost.** Allocate and free O(1); `kfree` owner lookup O(1) through `pfn_to_page`; no per-object header; idle
 overhead at most one empty slab per cache.
