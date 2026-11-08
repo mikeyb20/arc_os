@@ -9,7 +9,7 @@ never need to guess.
 
 **Check first:** a block in `docs/plans/work-blocks.md` that already has a spec in
 `docs/plans/blocks/` needs no plan — run `/os/implement-block <ID>`. Use `/plan`
-for a milestone planning block (`M2-00` … `M5-00`), which writes block specs in
+for a milestone planning block (`M2-00a`, `M2-00` … `M5-00`), which writes block specs in
 the format of `docs/plans/blocks/README.md`, and for work outside the block list
 (which needs Michael's OK first). For a planning block, skip the sub-agents in
 Step 2 and read `work-blocks.md`, the milestone's part of
