@@ -365,8 +365,8 @@
       "ships": "tests-only",
       "purpose": "Tiny GGUF chat model (SmolLM2-135M-Instruct, Q8_0) for QEMU and CI tests (M2)",
       "upstream_url": "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q8_0.gguf",
-      "sha256": "",
-      "archive_url": ""
+      "sha256": "5a1395716f7913741cc51d98581b9b1228d80987a9f7d3664106742eb06bba83",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/tiny-chat-model-smollm2-135m-instruct-q8_0.gguf"
     },
     {
       "name": "tiny-embed-model",
