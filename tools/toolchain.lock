@@ -21,7 +21,7 @@ TOOLCHAIN_RELEASE=toolchain-v1
 TOOLCHAIN_ASSET=x86_64-elf-toolchain-14.1.0-2.42.tar.zst
 TOOLCHAIN_URL=https://github.com/mikeyb20/arc_os/releases/download/toolchain-v1/x86_64-elf-toolchain-14.1.0-2.42.tar.zst
 # Filled in from the workflow's output after the first build (the asset's .sha256 file).
-TOOLCHAIN_SHA256=
+TOOLCHAIN_SHA256=3ad83334c3b8def4defcdf7827af4610e4ad2e2c59faec4a16dcb718a5948cfd
 
 # Limine binary release, pinned by commit (tag v8.7.0-binary).
 LIMINE_REPO=https://github.com/limine-bootloader/limine.git
