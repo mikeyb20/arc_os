@@ -7,7 +7,6 @@
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
-#include <syscall.h>
 
 /* Passwd entry */
 typedef struct {
@@ -134,8 +133,8 @@ int main(int argc, char **argv) {
 
         printf("Welcome, %s!\n\n", found->name);
 
-        syscall1(SYS_SETGID, found->gid);
-        syscall1(SYS_SETUID, found->uid);
+        setgid(found->gid);
+        setuid(found->uid);
 
         if (found->home[0]) chdir(found->home);
 

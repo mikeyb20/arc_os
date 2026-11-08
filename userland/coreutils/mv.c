@@ -1,4 +1,4 @@
-/* arc_os coreutil — mv: move/rename file (cp + rm, no SYS_RENAME) */
+/* arc_os coreutil — mv: move/rename file (cp + rm; no rename syscall yet) */
 
 #include <stdio.h>
 #include <unistd.h>

@@ -4,6 +4,7 @@
 #include "proc/sched.h"
 #include "proc/elf.h"
 #include "proc/fd.h"
+#include "fs/vfs.h"
 #include "mm/vmm.h"
 #include "mm/pmm.h"
 #include "mm/kmalloc.h"
@@ -99,6 +100,18 @@ int init_launch(const BootInfo *info) {
         return -1;
     }
     fd_table_init(p->fd_table);
+
+    /* fds 0, 1, 2 = /dev/tty, inherited by every process (Linux programs expect
+     * them open). Without them a process's first open() returned 0-2, so
+     * opendir() in the shell took fd 1 and printf output went to a directory. */
+    for (int fd = 0; fd < 3; fd++) {
+        if (fd_alloc(p->fd_table) != fd ||
+            vfs_open("/dev/tty", O_RDWR, fd_get(p->fd_table, fd)) != 0) {
+            fd_free(p->fd_table, fd);
+            kprintf("[INIT] WARNING: no /dev/tty for fd %d (falls back to the TTY driver)\n", fd);
+            break;
+        }
+    }
 
     /* Create kernel thread that will load ELF and transition to user mode */
     g_init_args.elf_data = init_mod->address;

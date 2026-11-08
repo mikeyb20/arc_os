@@ -3,21 +3,10 @@
 
 #include <stdint.h>
 
-/* Signal numbers (POSIX subset) */
-#define SIGHUP    1
-#define SIGINT    2
-#define SIGQUIT   3
-#define SIGILL    4
-#define SIGABRT   6
-#define SIGKILL   9
-#define SIGSEGV  11
-#define SIGPIPE  13
-#define SIGALRM  14
-#define SIGTERM  15
-#define SIGCHLD  17
-#define SIGCONT  18
-#define SIGSTOP  19
-#define SIGTSTP  20
+/* Signal numbers, Linux values (ADR-0001) */
+#include "uapi/signal.h"
+
+/* Signals 1..NSIG-1 are tracked; the pending set is one 32-bit word. */
 #define NSIG     32
 
 /* Signal handler type */

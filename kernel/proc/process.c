@@ -122,11 +122,14 @@ typedef struct {
     ForkContext ctx;
 } ForkChildArgs;
 
-static ForkChildArgs g_fork_child_args; /* Single-CPU: only one fork at a time */
-
-/* Kernel thread entry for the forked child */
+/* Kernel thread entry for the forked child. args is this child's own kmalloc'd
+ * copy (a shared global was overwritten when a parent forked twice before the
+ * first child ran: both children then started with the second fork's context). */
 static void fork_child_entry(void *arg) {
-    ForkChildArgs *args = (ForkChildArgs *)arg;
+    ForkChildArgs *heap_args = (ForkChildArgs *)arg;
+    ForkChildArgs local = *heap_args;
+    kfree(heap_args);
+    ForkChildArgs *args = &local;
     Process *child = args->child;
 
     /* Set TSS.rsp0 and syscall kernel RSP for this thread */
@@ -170,12 +173,16 @@ Process *proc_fork(Process *parent, const ForkContext *user_ctx) {
     /* 3. Duplicate FD table */
     child->fd_table = fd_table_dup(parent->fd_table);
 
-    /* 4. Create child's kernel thread */
-    g_fork_child_args.child = child;
-    g_fork_child_args.ctx = *user_ctx;
-
-    Thread *t = thread_create(fork_child_entry, &g_fork_child_args);
+    /* 4. Create child's kernel thread; it frees args when it starts */
+    ForkChildArgs *args = kmalloc(sizeof(ForkChildArgs), 0);
+    Thread *t = NULL;
+    if (args != NULL) {
+        args->child = child;
+        args->ctx = *user_ctx;
+        t = thread_create(fork_child_entry, args);
+    }
     if (t == NULL) {
+        kfree(args);
         kfree(child->fd_table);
         vmm_destroy_user_pml4(child_pml4);
         kfree(child);
@@ -225,6 +232,30 @@ Process *proc_find_stopped_child(Process *parent) {
         }
     }
     return NULL;
+}
+
+static int proc_wait_selects(const Process *parent, const Process *child, int32_t pid) {
+    if (child->parent != parent || child->state == PROC_TERMINATED) return 0;
+    if (pid > 0)   return child->pid == (pid_t)pid;
+    if (pid == -1) return 1;
+    if (pid == 0)  return child->pgid == parent->pgid;
+    return child->pgid == (pid_t)(-pid);
+}
+
+Process *proc_find_waitable(Process *parent, int32_t pid, int want_stopped) {
+    for (Process *p = proc_list; p != NULL; p = p->next) {
+        if (!proc_wait_selects(parent, p, pid)) continue;
+        if (p->state == PROC_ZOMBIE) return p;
+        if (want_stopped && p->state == PROC_STOPPED && p->exit_status != 0) return p;
+    }
+    return NULL;
+}
+
+int proc_has_selected_child(Process *parent, int32_t pid) {
+    for (Process *p = proc_list; p != NULL; p = p->next) {
+        if (proc_wait_selects(parent, p, pid)) return 1;
+    }
+    return 0;
 }
 
 int proc_foreach(void (*cb)(Process *p, void *ctx), void *ctx) {

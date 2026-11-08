@@ -59,7 +59,10 @@ target_include_directories(test_runner PRIVATE
     ${CMAKE_SOURCE_DIR}/tests
 )
 
-target_compile_options(test_runner PRIVATE -Wall -Wextra -std=c11)
+# kernel/include/uapi (Linux ABI numbers and structs) is reached as "uapi/..." through
+# -idirafter, so system headers still win for stdint.h and friends.
+target_compile_options(test_runner PRIVATE -Wall -Wextra -std=c11
+    -idirafter ${CMAKE_SOURCE_DIR}/kernel/include)
 
 # test_bootinfo.c includes limine.c which does #include <limine.h>.
 # Use -idirafter so kernel/include is searched AFTER system paths,
@@ -135,6 +138,16 @@ set_tests_properties(fat32_test_image PROPERTIES
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     FIXTURES_SETUP fat32_image)
 set_tests_properties(test_fat32 arc_os_tests PROPERTIES FIXTURES_REQUIRED fat32_image)
+
+# M0-05: kernel/include/uapi against the host's Linux headers (sizes, offsets,
+# syscall numbers, errno and flag values). Its own program: the two header sets
+# cannot share a translation unit.
+add_executable(test_abi_layout test_abi_layout.c abi_layout_ours.c abi_layout_host_linux.c)
+target_include_directories(test_abi_layout PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+target_compile_options(test_abi_layout PRIVATE -Wall -Wextra -std=c11)
+set_source_files_properties(abi_layout_ours.c PROPERTIES
+    COMPILE_FLAGS "-idirafter ${CMAKE_SOURCE_DIR}/kernel/include")
+add_test(NAME test_abi_layout COMMAND test_abi_layout)
 
 # M0-03: tools/archive.py (lock-file checks, bundles, fetch) with file:// URLs only
 find_package(Python3 COMPONENTS Interpreter)

@@ -23,10 +23,20 @@ int     pipe(int pipefd[2]);
 /* Process operations */
 pid_t   fork(void);
 int     execv(const char *path, char *const argv[]);
+int     execve(const char *path, char *const argv[], char *const envp[]);
+void    _exit(int status) __attribute__((noreturn));
 pid_t   getpid(void);
 pid_t   getppid(void);
 uid_t   getuid(void);
 gid_t   getgid(void);
+int     setuid(uid_t uid);
+int     setgid(gid_t gid);
+int     setpgid(pid_t pid, pid_t pgid);
+pid_t   getpgid(pid_t pid);
+
+/* Terminal foreground process group (ioctl TIOCSPGRP / TIOCGPGRP) */
+int     tcsetpgrp(int fd, pid_t pgrp);
+pid_t   tcgetpgrp(int fd);
 
 /* Directory operations */
 int     chdir(const char *path);

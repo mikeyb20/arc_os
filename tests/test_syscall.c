@@ -7,7 +7,9 @@
 
 /* --- Test the dispatch logic in isolation (no kernel dependencies) --- */
 
-#define SYSCALL_MAX 64
+/* Same size and numbers as the kernel (kernel/include/uapi/unistd.h, M0-05) */
+#include "uapi/unistd.h"
+#define SYSCALL_MAX ARC_NR_SYSCALLS
 
 typedef int64_t (*syscall_handler_t)(uint64_t, uint64_t, uint64_t,
                                      uint64_t, uint64_t, uint64_t);
@@ -80,9 +82,13 @@ TEST(six_arguments_passed) {
 
 TEST(max_syscall_number) {
     memset(test_syscall_table, 0, sizeof(test_syscall_table));
-    ASSERT_EQ(test_dispatch(64, 0, 0, 0, 0, 0, 0), -38);
-    test_register(63, handler_add);
-    ASSERT_EQ(test_dispatch(63, 100, 200, 0, 0, 0, 0), 300);
+    ASSERT_EQ(SYSCALL_MAX, 512);
+    ASSERT_EQ(test_dispatch(512, 0, 0, 0, 0, 0, 0), -38);
+    ASSERT_EQ(test_dispatch((uint64_t)-1, 0, 0, 0, 0, 0, 0), -38);
+    test_register(511, handler_add);
+    ASSERT_EQ(test_dispatch(511, 100, 200, 0, 0, 0, 0), 300);
+    test_register(512, handler_add);   /* out of range: ignored */
+    ASSERT_EQ(test_dispatch(512, 1, 1, 0, 0, 0, 0), -38);
     return 0;
 }
 
@@ -104,38 +110,48 @@ TEST(null_slot_returns_enosys) {
 
 TEST(file_syscall_numbers_routed) {
     memset(test_syscall_table, 0, sizeof(test_syscall_table));
-    /* Register at file syscall numbers (7-11) */
-    test_register(7, handler_add);     /* SYS_LSEEK */
-    test_register(8, handler_negate);  /* SYS_STAT */
-    test_register(9, handler_add);     /* SYS_MKDIR */
-    test_register(10, handler_negate); /* SYS_READDIR */
-    test_register(11, handler_add);    /* SYS_UNLINK */
-    ASSERT_EQ(test_dispatch(7, 10, 20, 0, 0, 0, 0), 30);
-    ASSERT_EQ(test_dispatch(8, 5, 0, 0, 0, 0, 0), -5);
-    ASSERT_EQ(test_dispatch(9, 1, 2, 0, 0, 0, 0), 3);
-    ASSERT_EQ(test_dispatch(10, 7, 0, 0, 0, 0, 0), -7);
-    ASSERT_EQ(test_dispatch(11, 100, 200, 0, 0, 0, 0), 300);
+    test_register(__NR_lseek, handler_add);
+    test_register(__NR_stat, handler_negate);
+    test_register(__NR_mkdir, handler_add);
+    test_register(__NR_getdents64, handler_negate);
+    test_register(__NR_unlink, handler_add);
+    ASSERT_EQ(test_dispatch(8, 10, 20, 0, 0, 0, 0), 30);       /* lseek */
+    ASSERT_EQ(test_dispatch(4, 5, 0, 0, 0, 0, 0), -5);         /* stat */
+    ASSERT_EQ(test_dispatch(83, 1, 2, 0, 0, 0, 0), 3);         /* mkdir */
+    ASSERT_EQ(test_dispatch(217, 7, 0, 0, 0, 0, 0), -7);       /* getdents64 */
+    ASSERT_EQ(test_dispatch(87, 100, 200, 0, 0, 0, 0), 300);   /* unlink */
     return 0;
 }
 
 TEST(fork_exec_wait_numbers_routed) {
     memset(test_syscall_table, 0, sizeof(test_syscall_table));
-    test_register(16, handler_add);    /* SYS_FORK */
-    test_register(17, handler_negate); /* SYS_EXEC */
-    test_register(18, handler_add);    /* SYS_WAIT */
-    ASSERT_EQ(test_dispatch(16, 3, 4, 0, 0, 0, 0), 7);
-    ASSERT_EQ(test_dispatch(17, 42, 0, 0, 0, 0, 0), -42);
-    ASSERT_EQ(test_dispatch(18, 50, 50, 0, 0, 0, 0), 100);
+    test_register(__NR_fork, handler_add);
+    test_register(__NR_execve, handler_negate);
+    test_register(__NR_wait4, handler_add);
+    ASSERT_EQ(test_dispatch(57, 3, 4, 0, 0, 0, 0), 7);         /* fork */
+    ASSERT_EQ(test_dispatch(59, 42, 0, 0, 0, 0, 0), -42);      /* execve */
+    ASSERT_EQ(test_dispatch(61, 50, 50, 0, 0, 0, 0), 100);     /* wait4 */
+    return 0;
+}
+
+TEST(old_arc_numbers_are_not_linux_ones) {
+    /* The pre-M0-05 numbers collide with different Linux calls (ADR-0001) */
+    ASSERT_EQ(__NR_read, 0);
+    ASSERT_EQ(__NR_write, 1);
+    ASSERT_EQ(__NR_open, 2);
+    ASSERT_EQ(__NR_exit, 60);
+    ASSERT_EQ(__NR_getpid, 39);
+    ASSERT_EQ(__NR_rt_sigreturn, 15);
     return 0;
 }
 
 TEST(unregistered_file_syscalls_return_enosys) {
     memset(test_syscall_table, 0, sizeof(test_syscall_table));
-    ASSERT_EQ(test_dispatch(7, 0, 0, 0, 0, 0, 0), -38);
-    ASSERT_EQ(test_dispatch(8, 0, 0, 0, 0, 0, 0), -38);
-    ASSERT_EQ(test_dispatch(9, 0, 0, 0, 0, 0, 0), -38);
-    ASSERT_EQ(test_dispatch(10, 0, 0, 0, 0, 0, 0), -38);
-    ASSERT_EQ(test_dispatch(11, 0, 0, 0, 0, 0, 0), -38);
+    ASSERT_EQ(test_dispatch(__NR_lseek, 0, 0, 0, 0, 0, 0), -38);
+    ASSERT_EQ(test_dispatch(__NR_stat, 0, 0, 0, 0, 0, 0), -38);
+    ASSERT_EQ(test_dispatch(__NR_mkdir, 0, 0, 0, 0, 0, 0), -38);
+    ASSERT_EQ(test_dispatch(__NR_getdents64, 0, 0, 0, 0, 0, 0), -38);
+    ASSERT_EQ(test_dispatch(__NR_mmap, 0, 0, 0, 0, 0, 0), -38);
     return 0;
 }
 
@@ -151,6 +167,7 @@ TestCase syscall_tests[] = {
     TEST_ENTRY(null_slot_returns_enosys),
     TEST_ENTRY(file_syscall_numbers_routed),
     TEST_ENTRY(fork_exec_wait_numbers_routed),
+    TEST_ENTRY(old_arc_numbers_are_not_linux_ones),
     TEST_ENTRY(unregistered_file_syscalls_return_enosys),
 };
 int syscall_test_count = sizeof(syscall_tests) / sizeof(syscall_tests[0]);

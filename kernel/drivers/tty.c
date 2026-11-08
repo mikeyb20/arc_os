@@ -166,6 +166,10 @@ void tty_set_fg_pgid(uint32_t pgid) {
     tty_fg_pgid = pgid;
 }
 
+uint32_t tty_get_fg_pgid(void) {
+    return tty_fg_pgid;
+}
+
 int tty_write(const void *buf, uint32_t count) {
     const char *src = (const char *)buf;
     for (uint32_t i = 0; i < count; i++) {

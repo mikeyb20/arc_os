@@ -1,49 +1,43 @@
-/* arc_os libc — directory operations via SYS_READDIR */
+/* arc_os libc — directory streams over getdents64 (ADR-0001) */
 
 #include <dirent.h>
+#include <fcntl.h>
 #include <stdlib.h>
-#include <string.h>
-#include <syscall.h>
-
-/* Kernel VfsDirEntry layout — must match kernel/fs/vfs.h */
-typedef struct {
-    char     name[256];
-    uint64_t inode_num;
-    uint8_t  type;
-} KernelDirEntry;
+#include <unistd.h>
+#include "syscall_arch.h"
 
 DIR *opendir(const char *path) {
+    int fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (fd < 0) return NULL;
     DIR *dir = malloc(sizeof(DIR));
-    if (!dir) return NULL;
-    memset(dir, 0, sizeof(DIR));
-    strncpy(dir->path, path, sizeof(dir->path) - 1);
-
-    /* Read all entries via SYS_READDIR */
-    KernelDirEntry kentries[64];
-    int64_t ret = syscall3(SYS_READDIR, (uint64_t)path,
-                           (uint64_t)kentries, 64);
-    if (ret < 0) {
-        free(dir);
+    if (!dir) {
+        close(fd);
         return NULL;
     }
-
-    dir->count = (int)ret;
-    for (int i = 0; i < dir->count; i++) {
-        strncpy(dir->entries[i].d_name, kentries[i].name, 255);
-        dir->entries[i].d_name[255] = '\0';
-        dir->entries[i].d_ino = kentries[i].inode_num;
-        dir->entries[i].d_type = kentries[i].type;
-    }
+    dir->fd = fd;
     dir->pos = 0;
+    dir->len = 0;
     return dir;
 }
 
 struct dirent *readdir(DIR *dir) {
-    if (!dir || dir->pos >= dir->count) return NULL;
-    return &dir->entries[dir->pos++];
+    if (!dir) return NULL;
+    if (dir->pos >= dir->len) {
+        int64_t n = syscall_ret(syscall3(__NR_getdents64, (uint64_t)dir->fd,
+                                         (uint64_t)dir->buf, sizeof(dir->buf)));
+        if (n <= 0) return NULL;   /* end of directory, or error (errno set) */
+        dir->len = (int)n;
+        dir->pos = 0;
+    }
+    struct dirent *de = (struct dirent *)(dir->buf + dir->pos);
+    if (de->d_reclen == 0) return NULL;   /* malformed buffer: stop, don't spin */
+    dir->pos += de->d_reclen;
+    return de;
 }
 
 int closedir(DIR *dir) {
-    if (dir) free(dir);
-    return 0;
+    if (!dir) return -1;
+    int ret = close(dir->fd);
+    free(dir);
+    return ret;
 }

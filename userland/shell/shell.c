@@ -12,21 +12,11 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <dirent.h>
-#include <syscall.h>
 #include <errno.h>
 
-/* --- VFS types (must match kernel/fs/vfs.h) --- */
-
-#define VFS_FILE      0
-#define VFS_DIRECTORY 1
-
-/* --- DirEntry for SYS_READDIR (must match kernel VfsDirEntry layout) --- */
-
-typedef struct {
-    char     name[256];
-    uint64_t inode_num;
-    uint8_t  type;
-} DirEntry;
+/* The terminal fd for job control (tcsetpgrp). When stdin is a file, as in the
+ * QEMU smoke test, tcsetpgrp fails with ENOTTY and job control is a no-op. */
+#define TTY_FD 0
 
 /* --- Parsing constants --- */
 
@@ -175,7 +165,7 @@ static void job_print(Job *j) {
 static void reap_background_jobs(void) {
     int status = 0;
     pid_t w;
-    while ((w = waitpid(-1, &status, WNOHANG)) > 0) {
+    while ((w = waitpid(-1, &status, WNOHANG | WUNTRACED)) > 0) {
         /* Find the job by PID */
         for (int i = 0; i < MAX_JOBS; i++) {
             if (job_table[i].in_use && job_table[i].pid == (int32_t)w) {
@@ -503,7 +493,7 @@ static int resolve_command(const char *cmd, char *resolved, uint64_t buf_size) {
 
             struct stat st;
             memset(&st, 0, sizeof(st));
-            if (stat(resolved, &st) == 0 && st.st_type == VFS_FILE) return 1;
+            if (stat(resolved, &st) == 0 && S_ISREG(st.st_mode)) return 1;
         }
 
         if (!sep) break;
@@ -651,17 +641,17 @@ static void dispatch(int argc, char *argv[]) {
     if (pid < 0) { print_error("fork", errno); return; }
     if (pid == 0) {
         /* Child: create own process group */
-        syscall2(SYS_SETPGID, 0, 0);
+        setpgid(0, 0);
         exec_resolved(argv);
         printf("%s: command not found\n", argv[0]);
         exit(127);
     }
     /* Parent: set child pgid, give foreground, wait */
-    syscall2(SYS_SETPGID, (uint64_t)pid, (uint64_t)pid);
-    syscall1(SYS_TCSETPGRP, (uint64_t)pid);
+    setpgid(pid, pid);
+    tcsetpgrp(TTY_FD, pid);
     int status = 0;
-    waitpid(-1, &status, 0);
-    syscall1(SYS_TCSETPGRP, (uint64_t)shell_pgid);
+    waitpid(pid, &status, WUNTRACED);
+    tcsetpgrp(TTY_FD, shell_pgid);
     if (WIFSTOPPED(status)) {
         Job *j = job_alloc((int32_t)pid, (int32_t)pid, argv[0]);
         if (j) {
@@ -691,17 +681,17 @@ static void cmd_echo(int argc, char *argv[]) {
 
 static void cmd_ls(int argc, char *argv[]) {
     const char *path = argc >= 2 ? argv[1] : ".";
-    DirEntry entries[16];
-    int64_t count = syscall3(SYS_READDIR, (uint64_t)path, (uint64_t)entries, 16);
-    if (count < 0) {
-        print_error(path, (int)(-count));
+    DIR *dir = opendir(path);
+    if (!dir) {
+        print_error(path, errno);
         return;
     }
-    for (int64_t i = 0; i < count; i++) {
+    struct dirent *de;
+    while ((de = readdir(dir)) != NULL) {
         /* Build full path for stat: path + "/" + name */
         char fullpath[512];
         uint64_t plen = strlen(path);
-        uint64_t nlen = strlen(entries[i].name);
+        uint64_t nlen = strlen(de->d_name);
         if (plen + 1 + nlen >= 512) continue;
 
         /* Copy path */
@@ -710,7 +700,7 @@ static void cmd_ls(int argc, char *argv[]) {
         uint64_t pos = plen;
         if (plen > 0 && path[plen - 1] != '/') fullpath[pos++] = '/';
         /* Copy name */
-        for (uint64_t j = 0; j < nlen; j++) fullpath[pos + j] = entries[i].name[j];
+        for (uint64_t j = 0; j < nlen; j++) fullpath[pos + j] = de->d_name[j];
         fullpath[pos + nlen] = '\0';
 
         struct stat st;
@@ -718,7 +708,7 @@ static void cmd_ls(int argc, char *argv[]) {
         int sr = stat(fullpath, &st);
 
         /* Type + permissions */
-        printf("%s", entries[i].type == VFS_DIRECTORY ? "d" : "-");
+        printf("%s", de->d_type == DT_DIR ? "d" : "-");
         if (sr == 0) {
             char rwx[10];
             mode_to_rwx(st.st_mode, rwx);
@@ -728,7 +718,7 @@ static void cmd_ls(int argc, char *argv[]) {
         }
         printf(" ");
 
-        if (sr == 0 && entries[i].type == VFS_FILE) {
+        if (sr == 0 && de->d_type == DT_REG) {
             /* Right-align size in 8 chars */
             printf("%8ld", (long)st.st_size);
             printf(" ");
@@ -736,8 +726,9 @@ static void cmd_ls(int argc, char *argv[]) {
             printf("         ");
         }
 
-        puts(entries[i].name);
+        puts(de->d_name);
     }
+    closedir(dir);
 }
 
 static void cmd_cat(int argc, char *argv[]) {
@@ -771,10 +762,10 @@ static void cmd_stat(int argc, char *argv[]) {
     if (r < 0) { print_error(argv[1], errno); return; }
 
     printf("  File: %s\n", argv[1]);
-    printf("  Type: %s\n", st.st_type == VFS_DIRECTORY ? "directory" : "file");
+    printf("  Type: %s\n", S_ISDIR(st.st_mode) ? "directory" : "file");
     printf(" Inode: %ld\n", (long)st.st_ino);
     printf("  Size: %ld\n", (long)st.st_size);
-    printf("  Mode: 0%o\n", st.st_mode);
+    printf("  Mode: 0%o\n", st.st_mode & 07777);
     char rwx[10];
     mode_to_rwx(st.st_mode, rwx);
     printf(" Perms: %s\n", rwx);
@@ -851,7 +842,7 @@ static void cmd_run(int argc, char *argv[]) {
     }
     /* Parent: wait for child */
     int status = -1;
-    waitpid(-1, &status, 0);
+    waitpid(pid, &status, 0);
     printf("exited with status ");
     if (WIFEXITED(status))
         printf("%d", WEXITSTATUS(status));
@@ -977,7 +968,7 @@ static void cmd_fg(int argc, char *argv[]) {
     puts(j->cmd);
 
     /* Give job the foreground */
-    syscall1(SYS_TCSETPGRP, (uint64_t)j->pgid);
+    tcsetpgrp(TTY_FD, j->pgid);
 
     /* If stopped, send SIGCONT */
     if (j->stopped) {
@@ -987,10 +978,10 @@ static void cmd_fg(int argc, char *argv[]) {
 
     /* Wait for it */
     int status = 0;
-    waitpid(-1, &status, 0);
+    waitpid(j->pid, &status, WUNTRACED);
 
     /* Reclaim foreground */
-    syscall1(SYS_TCSETPGRP, (uint64_t)shell_pgid);
+    tcsetpgrp(TTY_FD, shell_pgid);
 
     if (WIFSTOPPED(status)) {
         j->stopped = 1;
@@ -1033,7 +1024,7 @@ static void execute_background(char *line) {
     if (pid < 0) { print_error("fork", errno); return; }
     if (pid == 0) {
         /* Child: create own process group */
-        syscall2(SYS_SETPGID, 0, 0);
+        setpgid(0, 0);
         if (redir.in_file || redir.out_file)
             apply_redirects(&redir);
         exec_resolved(argv);
@@ -1041,7 +1032,7 @@ static void execute_background(char *line) {
         exit(0);
     }
     /* Parent: set child's pgid, add to job table, do NOT wait */
-    syscall2(SYS_SETPGID, (uint64_t)pid, (uint64_t)pid);
+    setpgid(pid, pid);
     Job *j = job_alloc((int32_t)pid, (int32_t)pid, argv[0]);
     if (j) {
         printf("[%d] %d\n", j->job_id, (int)pid);
@@ -1147,6 +1138,23 @@ static void execute_pipe(char *left, char *right) {
     wait(NULL);
 }
 
+/* Read one line from stdin, one byte at a time so a script on stdin (the QEMU
+ * smoke test) runs line by line instead of as one chunk. Returns the length,
+ * 0 at end of input, or -1 on error. The newline is kept; buf is NUL-terminated. */
+static ssize_t read_line_fd0(char *buf, int size) {
+    int n = 0;
+    while (n < size - 1) {
+        char c;
+        ssize_t r = read(0, &c, 1);
+        if (r < 0) return n > 0 ? n : -1;
+        if (r == 0) break;
+        buf[n++] = c;
+        if (c == '\n') break;
+    }
+    buf[n] = '\0';
+    return n;
+}
+
 /* --- Entry point --- */
 
 int main(int argc, char **argv) {
@@ -1157,9 +1165,9 @@ int main(int argc, char **argv) {
     shell_setvar("HOME", "/");
 
     /* Set shell as its own process group and take foreground */
-    syscall2(SYS_SETPGID, 0, 0);
+    setpgid(0, 0);
     shell_pgid = (int32_t)getpid();
-    syscall1(SYS_TCSETPGRP, (uint64_t)shell_pgid);
+    tcsetpgrp(TTY_FD, shell_pgid);
     /* Ignore SIGTSTP so shell can't be stopped */
     signal(SIGTSTP, SIG_IGN);
 
@@ -1174,9 +1182,8 @@ int main(int argc, char **argv) {
 
     for (;;) {
         printf("[%s]$ ", shell_cwd);
-        ssize_t n = read(0, line, LINE_MAX - 1);
+        ssize_t n = read_line_fd0(line, LINE_MAX);
         if (n <= 0) break;
-        line[n] = '\0';
 
         /* Strip trailing newline */
         for (int i = 0; line[i]; i++) {

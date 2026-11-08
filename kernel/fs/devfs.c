@@ -131,3 +131,7 @@ VfsNode *devfs_init(void) {
     devfs_init_node(&dev_tty_node,  1003, VFS_FILE, 0666, &devfs_tty_ops,  DEV_TTY);
     return &dev_root_node.vnode;
 }
+
+int devfs_is_tty(const VfsNode *node) {
+    return node != NULL && node->ops == &devfs_tty_ops;
+}

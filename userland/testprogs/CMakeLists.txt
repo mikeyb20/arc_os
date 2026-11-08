@@ -1,10 +1,10 @@
-# arc_os — Test-only user programs (M0-02). Shipped only on test ISOs.
+# arc_os — Test-only user programs (M0-02, M0-05). Shipped only on test ISOs.
 
 if(NOT CMAKE_CROSSCOMPILING)
     return()
 endif()
 
-foreach(prog testfail)
+foreach(prog testfail abi_check)
     add_executable(${prog} ${prog}.c)
     target_compile_options(${prog} PRIVATE
         -ffreestanding -nostdlib -nostdinc -static

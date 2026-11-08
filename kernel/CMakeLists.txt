@@ -34,6 +34,7 @@ set(KERNEL_C_SOURCES
     arch/x86_64/pit.c
     mm/pmm.c
     mm/vmm.c
+    mm/mm_syscalls.c
     mm/kmalloc.c
     arch/x86_64/syscall.c
     arch/x86_64/lapic.c
@@ -44,6 +45,7 @@ set(KERNEL_C_SOURCES
     proc/thread.c
     proc/sched.c
     proc/process.c
+    proc/proc_syscalls.c
     proc/elf.c
     proc/init.c
     proc/fd.c
@@ -64,6 +66,7 @@ set(KERNEL_C_SOURCES
     drivers/ansi.c
     drivers/vt.c
     fs/vfs.c
+    fs/fs_syscalls.c
     fs/ramfs.c
     fs/pipe.c
     fs/fat32.c
@@ -81,6 +84,7 @@ set(KERNEL_C_SOURCES
     net/udp.c
     net/tcp.c
     net/socket.c
+    net/net_syscalls.c
     net/loopback.c
     security/hardening.c
     drivers/virtio_net.c

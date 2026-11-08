@@ -17,9 +17,9 @@ int main(int argc, char **argv) {
         printf("  File: %s\n", argv[i]);
         printf("  Size: %lu\tType: %s\n",
                (unsigned long)st.st_size,
-               st.st_type == 1 ? "directory" : "regular file");
+               S_ISDIR(st.st_mode) ? "directory" : "regular file");
         printf(" Inode: %lu\tMode: %o\n",
-               (unsigned long)st.st_ino, (unsigned)st.st_mode);
+               (unsigned long)st.st_ino, (unsigned)(st.st_mode & 07777));
         printf("   Uid: %u\tGid: %u\n", st.st_uid, st.st_gid);
     }
     return 0;

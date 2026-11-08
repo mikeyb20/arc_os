@@ -13,44 +13,16 @@
 /* Maximum length of a path component name (excluding NUL) */
 #define VFS_NAME_MAX  256
 
-/* Open flags */
-#define O_RDONLY   0x00
-#define O_WRONLY   0x01
-#define O_RDWR     0x02
-#define O_CREAT    0x40
-#define O_TRUNC    0x200
-#define O_APPEND   0x400
-
-/* Access mode mask (low 2 bits) */
-#define O_ACCMODE  0x03
+/* Open flags (O_*) and error codes (negative errno), Linux values (ADR-0001) */
+#include "uapi/fcntl.h"
+#include "uapi/errno.h"
 
 /* Seek whence */
 #define SEEK_SET 0
 #define SEEK_CUR 1
 #define SEEK_END 2
 
-/* Error codes (negative) */
 #define VFS_OK       0
-#define ENOENT       2
-#define ESRCH        3
-#define EBADF        9
-#define ENOMEM      12
-#define EEXIST      17
-#define ENOTDIR     20
-#define EISDIR      21
-#define EINVAL      22
-#define ENOSPC      28
-#define ENOSYS      38
-#define EIO          5
-#define ENOTEMPTY   39
-#define ECHILD      10
-#define EAGAIN      11
-#define ESPIPE      29
-#define EPIPE       32
-#define ENAMETOOLONG 36
-#define E2BIG        7
-#define EACCES      13
-#define EPERM        1
 
 /* Forward declarations */
 typedef struct VfsNode VfsNode;
@@ -153,6 +125,10 @@ int vfs_stat(const char *path, VfsStat *out);
 /* Directory operations */
 int vfs_mkdir(const char *path, uint32_t mode);
 int vfs_readdir(const char *path, VfsDirEntry *entries, uint32_t max);
+
+/* Fill 'entries' with up to 'max' entries of directory 'node' (mount points
+ * included for the root). Returns the count, or -ENOTDIR/-EINVAL. */
+int vfs_readdir_node(VfsNode *node, VfsDirEntry *entries, uint32_t max);
 int vfs_unlink(const char *path);
 
 /* Mount a filesystem root at a mount point (e.g., "/disk").

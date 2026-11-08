@@ -4,34 +4,27 @@
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
-#include <syscall.h>
+#include <dirent.h>
 #include <stdint.h>
-
-/* Kernel DirEntry layout */
-typedef struct {
-    char     name[256];
-    uint64_t inode_num;
-    uint8_t  type;
-} DirEntry;
 
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
 
     printf("  PID  STATE  NAME\n");
 
-    DirEntry entries[64];
-    int64_t count = syscall3(SYS_READDIR, (uint64_t)"/proc", (uint64_t)entries, 64);
-    if (count < 0) {
+    DIR *dir = opendir("/proc");
+    if (dir == NULL) {
         fprintf(stderr, "ps: cannot read /proc\n");
         return 1;
     }
 
-    for (int64_t i = 0; i < count; i++) {
+    struct dirent *de;
+    while ((de = readdir(dir)) != NULL) {
         /* Skip non-numeric entries (meminfo, uptime) */
-        if (entries[i].name[0] < '0' || entries[i].name[0] > '9') continue;
+        if (de->d_name[0] < '0' || de->d_name[0] > '9') continue;
 
         char path[256];
-        snprintf(path, sizeof(path), "/proc/%s/status", entries[i].name);
+        snprintf(path, sizeof(path), "/proc/%s/status", de->d_name);
 
         int fd = open(path, O_RDONLY);
         if (fd < 0) continue;
@@ -44,5 +37,6 @@ int main(int argc, char **argv) {
 
         printf("%s", buf);
     }
+    closedir(dir);
     return 0;
 }

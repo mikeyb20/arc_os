@@ -1,4 +1,4 @@
-/* arc_os libc — malloc/free via sbrk (SYS_BRK)
+/* arc_os libc — malloc/free via sbrk (Linux brk)
  * Simple free-list allocator, similar to kernel's kmalloc. */
 
 #include <stdlib.h>

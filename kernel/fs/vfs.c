@@ -221,8 +221,11 @@ int vfs_open(const char *path, uint32_t flags, VfsFile *out) {
         }
     }
 
+    /* Directories open read-only (for getdents64); O_DIRECTORY demands one. */
     if (node->type == VFS_DIRECTORY) {
-        return -EISDIR;
+        if ((flags & O_ACCMODE) != O_RDONLY || (flags & O_TRUNC)) return -EISDIR;
+    } else if (flags & O_DIRECTORY) {
+        return -ENOTDIR;
     }
 
     /* Truncate if requested */
@@ -250,6 +253,7 @@ int vfs_read(VfsFile *file, void *buf, uint32_t size) {
     if ((file->flags & O_ACCMODE) == O_WRONLY) return -EINVAL;
 
     VfsNode *node = file->node;
+    if (node->type == VFS_DIRECTORY) return -EISDIR;
     if (node->ops == NULL || node->ops->read == NULL) return -EINVAL;
 
     int n = node->ops->read(node, buf, (uint32_t)file->offset, size);
@@ -360,6 +364,11 @@ int vfs_readdir(const char *path, VfsDirEntry *entries, uint32_t max) {
 
     VfsNode *node = vfs_resolve(path);
     if (node == NULL) return -ENOENT;
+    return vfs_readdir_node(node, entries, max);
+}
+
+int vfs_readdir_node(VfsNode *node, VfsDirEntry *entries, uint32_t max) {
+    if (node == NULL || entries == NULL) return -EINVAL;
     if (node->type != VFS_DIRECTORY) return -ENOTDIR;
     if (node->ops == NULL || node->ops->readdir == NULL) return -EINVAL;
 

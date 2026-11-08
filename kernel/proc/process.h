@@ -40,6 +40,7 @@ typedef struct Process {
     pid_t           pgid;           /* Process group ID */
     uint8_t         state;
     int32_t         exit_status;    /* Exit status for wait() */
+    uint8_t         term_signal;    /* Nonzero: killed by this signal (wait4 status) */
     Thread         *main_thread;
     uint64_t        page_table;     /* PML4 phys addr (0 = use kernel PML4) */
     FdTable        *fd_table;       /* Per-process file descriptor table */
@@ -96,5 +97,14 @@ int proc_foreach(void (*cb)(Process *p, void *ctx), void *ctx);
 
 /* Find a stopped (unreported) child of the given parent. Returns NULL if none. */
 Process *proc_find_stopped_child(Process *parent);
+
+/* wait4 child selection: pid > 0 that child, -1 any child, 0 any child in the
+ * parent's process group, < -1 any child in group -pid.
+ * proc_find_waitable returns the first selected child that is a zombie, or
+ * (when want_stopped) stopped with an unreported stop. NULL if none.
+ * proc_has_selected_child returns 1 if any selected child is still unreaped.
+ * Both walk the process list: O(processes). */
+Process *proc_find_waitable(Process *parent, int32_t pid, int want_stopped);
+int proc_has_selected_child(Process *parent, int32_t pid);
 
 #endif /* ARCHOS_PROC_PROCESS_H */

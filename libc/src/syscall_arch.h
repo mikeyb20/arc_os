@@ -1,53 +1,19 @@
-#ifndef ARCHOS_LIBC_SYSCALL_H
-#define ARCHOS_LIBC_SYSCALL_H
+#ifndef ARCHOS_LIBC_SYSCALL_ARCH_H
+#define ARCHOS_LIBC_SYSCALL_ARCH_H
 
 #include <stdint.h>
 
-/* Syscall numbers — must match kernel/arch/x86_64/syscall.h */
-#define SYS_EXIT      0
-#define SYS_WRITE     1
-#define SYS_GETPID    2
-#define SYS_OPEN      3
-#define SYS_READ      4
-#define SYS_CLOSE     5
-#define SYS_BRK       6
-#define SYS_LSEEK     7
-#define SYS_STAT      8
-#define SYS_MKDIR     9
-#define SYS_READDIR   10
-#define SYS_UNLINK    11
-#define SYS_FSTAT     12
-#define SYS_DUP       13
-#define SYS_DUP2      14
-#define SYS_GETPPID   15
-#define SYS_FORK      16
-#define SYS_EXEC      17
-#define SYS_WAIT      18
-#define SYS_PIPE      19
-#define SYS_SIGNAL    20
-#define SYS_KILL      21
-#define SYS_SIGRETURN 22
-#define SYS_CHDIR     23
-#define SYS_GETCWD    24
-#define SYS_GETUID    25
-#define SYS_GETGID    26
-#define SYS_SETUID    27
-#define SYS_SETGID    28
-#define SYS_CHMOD     29
-#define SYS_CHOWN     30
-#define SYS_SETPGID   31
-#define SYS_GETPGID   32
-#define SYS_TCSETPGRP 33
-#define SYS_UMASK     34
-#define SYS_SOCKET    35
-#define SYS_BIND      36
-#define SYS_LISTEN    37
-#define SYS_ACCEPT    38
-#define SYS_CONNECT   39
-#define SYS_SEND      40
-#define SYS_RECV      41
-#define SYS_SENDTO    42
-#define SYS_RECVFROM  43
+/* Raw SYSCALL helpers, private to libarc: user programs call the libc
+ * wrappers, never syscalls directly. Numbers are the Linux x86_64 __NR_*
+ * values from the kernel's uapi header (ADR-0001). */
+#include <uapi/unistd.h>
+
+/* Turn a raw return into the libc convention: -1 with errno set on error. */
+extern int errno;
+static inline int64_t syscall_ret(int64_t ret) {
+    if (ret < 0 && ret >= -4095) { errno = (int)(-ret); return -1; }
+    return ret;
+}
 
 static inline int64_t syscall0(uint64_t num) {
     int64_t ret;
@@ -122,4 +88,4 @@ static inline int64_t syscall6(uint64_t num, uint64_t a0, uint64_t a1,
     return ret;
 }
 
-#endif /* ARCHOS_LIBC_SYSCALL_H */
+#endif /* ARCHOS_LIBC_SYSCALL_ARCH_H */

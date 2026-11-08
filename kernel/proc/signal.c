@@ -1,6 +1,7 @@
 /* arc_os — POSIX signal delivery */
 
 #include "proc/signal.h"
+#include <stddef.h>
 #include "proc/process.h"
 #include "proc/thread.h"
 #include "proc/sched.h"
@@ -8,6 +9,7 @@
 #include "lib/mem.h"
 #include "user_access.h"
 #include "lib/testmode.h"
+#include "proc/proc_syscalls.h"
 
 /* Global: RDI value to pass to signal handler (signo). Set by
  * sig_maybe_deliver, loaded by syscall_entry.asm before SYSRET. */
@@ -33,12 +35,15 @@ static const uint8_t default_action[NSIG] = {
 };
 
 /* Sigreturn trampoline: machine code written onto user stack.
- *   mov eax, 22        ; SYS_SIGRETURN
+ *   mov eax, __NR_rt_sigreturn   ; 15
  *   syscall
- *   ud2                ; should never reach here
- */
+ *   ud2                          ; should never reach here
+ * The frame itself is still arc_os's own SignalFrame; M1-01 replaces it with
+ * the Linux rt_sigframe. */
+#include "uapi/unistd.h"
+_Static_assert(__NR_rt_sigreturn < 256, "trampoline encodes the number in one byte");
 static const uint8_t sigreturn_trampoline[16] = {
-    0xB8, 22, 0x00, 0x00, 0x00,   /* mov eax, 22 */
+    0xB8, __NR_rt_sigreturn, 0x00, 0x00, 0x00,   /* mov eax, 15 */
     0x0F, 0x05,                    /* syscall */
     0x0F, 0x0B,                    /* ud2 */
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00  /* padding */
@@ -103,11 +108,18 @@ static void sig_continue(Process *p) {
     sched_add_thread(p->main_thread);
 }
 
-/* Terminate a process due to a signal */
+/* Terminate a process due to a signal. Mirrors exit(): close fds, become a
+ * zombie, wake a parent blocked in wait4 and send it SIGCHLD. */
 static void sig_terminate(Process *p, int signo) {
+    proc_release_fds(p);
     p->exit_status = 128 + signo;
+    p->term_signal = (uint8_t)signo;   /* wait4 reports WIFSIGNALED */
     p->state = PROC_ZOMBIE;
     testmode_process_exited((int)p->pid, p->exit_status);
+    if (p->parent != NULL) {
+        wq_wake(&p->parent->child_exit_wq);
+        sig_send(p->parent->pid, SIGCHLD);
+    }
     p->main_thread->state = THREAD_DEAD;
     sched_schedule();
 }
@@ -133,9 +145,16 @@ static int64_t sig_restore_context(SigState *ss, SyscallFrame *frame) {
  * Returns 0 on success, -1 if user stack is invalid. */
 static int sig_setup_frame(SyscallFrame *frame, sig_handler_t handler,
                            int signo, int64_t syscall_ret) {
-    uint64_t user_rsp = frame->rsp;
-    user_rsp -= sizeof(SignalFrame);
-    user_rsp &= ~0xFULL;  /* 16-byte align */
+    /* Below the 128-byte red zone, then place the frame so that on handler
+     * entry RSP points at ret_addr (the frame's last field) and RSP + 8 is
+     * 16-byte aligned, as after a call. The handler's `ret` pops ret_addr and
+     * lands on the trampoline at the frame's start, which calls rt_sigreturn
+     * with RSP = frame + sizeof(SignalFrame). */
+    _Static_assert(offsetof(SignalFrame, ret_addr) + 8 == sizeof(SignalFrame),
+                   "ret_addr must be the last field of SignalFrame");
+    uint64_t user_rsp = frame->rsp - 128 - sizeof(SignalFrame);
+    user_rsp &= ~0xFULL;
+    user_rsp -= (user_rsp + offsetof(SignalFrame, ret_addr) + 8) & 0xFULL;
 
     if (!user_ptr_valid((void *)user_rsp, sizeof(SignalFrame)))
         return -1;
@@ -162,7 +181,7 @@ static int sig_setup_frame(SyscallFrame *frame, sig_handler_t handler,
     sf->ret_addr    = user_rsp;
 
     frame->rcx = (uint64_t)handler;
-    frame->rsp = user_rsp;
+    frame->rsp = user_rsp + offsetof(SignalFrame, ret_addr);
     frame->rbx = 0;
     frame->rbp = 0;
     frame->r12 = 0;
