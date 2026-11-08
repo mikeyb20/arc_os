@@ -16,7 +16,7 @@ the kernel only for what the kernel plan provides. M2-04b then runs them in QEMU
   `ARCHOS_<DIR>_<FILE>_H`, a doc comment on every public function, a header comment on every `.c` file).
 - Programs that embed a ported library (llama.cpp, SQLite, zstd) link **musl**, statically, because one static
   binary can't hold two C libraries. libarc stays the C library of the base system (`userland/`: init, login, shell,
-  coreutils). (Clarifies knowledge-os.md §3.4; pending Michael's confirmation, 2026-11-08.)
+  coreutils). (Michael, 2026-11-08: musl for the LLM and library stack, libarc for the OS itself; knowledge-os.md §3.4.)
 - C++ appears only where a port needs it: a program that links llama.cpp is linked with `g++` (static libstdc++).
 - No new outside component without Michael's OK. Small, well-known algorithms we need (JSON, SHA-256, ustar) are
   written once in `stack/lib/` (one home per helper, ADR-0020), not vendored.
