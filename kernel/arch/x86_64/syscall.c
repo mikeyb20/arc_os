@@ -1098,9 +1098,12 @@ void syscall_init(void) {
 
     /* 2. Set STAR MSR: kernel CS/SS and user CS/SS base
      *    STAR[47:32] = kernel CS (0x08); kernel SS = CS + 8 = 0x10
-     *    STAR[63:48] = user base (0x10); SYSRET loads CS = base+16 = 0x20|3, SS = base+8 = 0x18|3
-     *    This matches our GDT layout: 0x08=kcode, 0x10=kdata, 0x18=udata, 0x20=ucode */
-    uint64_t star = ((uint64_t)GDT_KERNEL_DATA << 48) | ((uint64_t)GDT_KERNEL_CODE << 32);
+     *    STAR[63:48] = user base 0x10 | RPL 3; SYSRET loads CS = base+16 = 0x23, SS = base+8 = 0x1b
+     *    This matches our GDT layout: 0x08=kcode, 0x10=kdata, 0x18=udata, 0x20=ucode.
+     *    The RPL bits must be in STAR itself: Intel ORs 3 into both selectors, but AMD
+     *    loads SS = STAR[63:48]+8 as is. Without them user code ran with SS = 0x18
+     *    (RPL 0) on AMD, and the first IRETQ back to user mode raised #GP(0x18). */
+    uint64_t star = ((uint64_t)(GDT_KERNEL_DATA | 3) << 48) | ((uint64_t)GDT_KERNEL_CODE << 32);
     wrmsr(MSR_STAR, star);
 
     /* 3. Set LSTAR = syscall entry point */

@@ -50,14 +50,16 @@ in a cloud session and in CI.
   request); `/proc/cmdline`; init reads it and runs `/boot/<suite>.suite` (`name path args [< stdin-file]`).
   Exit codes: init status S → QEMU `(S<<1)|1`; panic → 255. Suites live in `tests/qemu/suites/`; test-only
   programs in `userland/testprogs/` (only on test ISOs). Normal boot is unchanged.
-- Master never reached init in QEMU. The harness found five latent bugs, fixed here because every test needs
+- Master never reached init in QEMU. The harness found six latent bugs, fixed here because every test needs
   them: (1) q35 memory map has >64 entries, BootInfo cut it and the framebuffer fell outside the HHDM → raised
   to 256; (2) the identity IOAPIC route for IRQ2 overwrote the PIT's override route (IRQ0→GSI2), so the timer
   hit vector 34 and nothing was scheduled; (3) `sys_wait` read (status, flags) but libc passes
   (pid, status, options) → status written to address `pid`; pid is still ignored (M0-05 makes it `wait4`);
   (4) `sched_yield` held `sched_lock` across `context_switch`, and a thread resumed via the timer never released
   it → deadlock on the next yield; now interrupts-off only, real locking is M1-05; (5) 16 KiB user stack too
-  small for `ls` → 64 KiB.
+  small for `ls` → 64 KiB; (6) STAR[63:48] lacked RPL 3: AMD's SYSRET loads SS = STAR+8 without OR-ing 3, so
+  user code ran with SS = 0x18 and the first IRETQ to user mode raised #GP(0x18). Only seen under KVM on CI's
+  AMD runners (TCG and Intel OR in the RPL).
 - Follow-ups (not done): a user page fault halts the whole kernel instead of killing the process (M1-01 signals
   / M1-07 faults); `user_ptr_valid()` accepted address 0x2; procfs `/proc/<pid>` inodes (2000+pid) collide with
   meminfo/uptime (2001/2002); the PIT prints `[TIMER] N seconds` every second.
