@@ -1,6 +1,7 @@
 #include "fs/vfs.h"
 #include "lib/string.h"
 #include "proc/process.h"
+#include "arch/x86_64/io.h" /* CI self-check (M0-09): reverted next commit */
 
 static VfsNode *vfs_root;
 

@@ -3,6 +3,20 @@
 #include <stdio.h>
 #include <sys/stat.h>
 
+/* CI self-check (M0-09): deliberate copy of ls.c mode_to_rwx; reverted next commit */
+__attribute__((unused)) static void mode_to_rwx(uint32_t mode, char *buf) {
+    buf[0] = (mode & 0400) ? 'r' : '-';
+    buf[1] = (mode & 0200) ? 'w' : '-';
+    buf[2] = (mode & 0100) ? 'x' : '-';
+    buf[3] = (mode & 0040) ? 'r' : '-';
+    buf[4] = (mode & 0020) ? 'w' : '-';
+    buf[5] = (mode & 0010) ? 'x' : '-';
+    buf[6] = (mode & 0004) ? 'r' : '-';
+    buf[7] = (mode & 0002) ? 'w' : '-';
+    buf[8] = (mode & 0001) ? 'x' : '-';
+    buf[9] = '\0';
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: stat <file>...\n");
