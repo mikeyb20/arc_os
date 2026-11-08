@@ -93,7 +93,7 @@ Process *proc_current(void) {
 
 Process *proc_get_by_pid(uint32_t pid) {
     for (Process *p = proc_list; p != NULL; p = p->next) {
-        if (p->pid == pid && p->state != PROC_TERMINATED) {
+        if (p->pid == pid) {
             return p;
         }
     }
@@ -212,7 +212,7 @@ Process *proc_find_zombie_child(Process *parent) {
 
 int proc_has_children(Process *parent) {
     for (Process *p = proc_list; p != NULL; p = p->next) {
-        if (p->parent == parent && p->state != PROC_TERMINATED) {
+        if (p->parent == parent) {
             return 1;
         }
     }
@@ -264,7 +264,7 @@ Process *proc_find_stopped_child(Process *parent) {
 }
 
 static int proc_wait_selects(const Process *parent, const Process *child, int32_t pid) {
-    if (child->parent != parent || child->state == PROC_TERMINATED) return 0;
+    if (child->parent != parent) return 0;
     if (pid > 0)   return child->pid == (pid_t)pid;
     if (pid == -1) return 1;
     if (pid == 0)  return child->pgid == parent->pgid;
@@ -290,10 +290,8 @@ int proc_has_selected_child(Process *parent, int32_t pid) {
 int proc_foreach(void (*cb)(Process *p, void *ctx), void *ctx) {
     int count = 0;
     for (Process *p = proc_list; p != NULL; p = p->next) {
-        if (p->state != PROC_TERMINATED) {
-            cb(p, ctx);
-            count++;
-        }
+        cb(p, ctx);
+        count++;
     }
     return count;
 }

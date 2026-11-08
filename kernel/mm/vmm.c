@@ -94,14 +94,6 @@ static uint64_t *walk_to_pt_entry(uint64_t pml4_phys, uint64_t virt) {
     return &pt[PT_INDEX(virt)];
 }
 
-/* Free all present, non-huge PT pages in a page directory. */
-static void free_pd_entries(uint64_t *pd) {
-    for (int i = 0; i < PT_ENTRIES; i++) {
-        if (!(pd[i] & PTE_PRESENT) || (pd[i] & PTE_HUGE)) continue;
-        pmm_free_page(pd[i] & PTE_ADDR_MASK);
-    }
-}
-
 void vmm_map_page(uint64_t virt, uint64_t phys, uint32_t flags) {
     spinlock_acquire(&vmm_lock);
     vmm_map_page_in(kernel_pml4_phys, virt, phys, flags);
@@ -190,24 +182,6 @@ uint64_t vmm_create_user_pml4(void) {
     /* User half (0 to PML4_KERNEL_START-1) is already zeroed by alloc_table_page() */
 
     return pml4_phys;
-}
-
-void vmm_destroy_user_pml4(uint64_t pml4_phys) {
-    uint64_t *pml4 = (uint64_t *)phys_to_virt(pml4_phys);
-
-    /* Free user-half page table structures */
-    for (int i = 0; i < PML4_KERNEL_START; i++) {
-        if (!(pml4[i] & PTE_PRESENT)) continue;
-        uint64_t *pdpt = (uint64_t *)phys_to_virt(pml4[i] & PTE_ADDR_MASK);
-        for (int j = 0; j < PT_ENTRIES; j++) {
-            if (!(pdpt[j] & PTE_PRESENT) || (pdpt[j] & PTE_HUGE)) continue;
-            uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[j] & PTE_ADDR_MASK);
-            free_pd_entries(pd);
-            pmm_free_page(pdpt[j] & PTE_ADDR_MASK);
-        }
-        pmm_free_page(pml4[i] & PTE_ADDR_MASK);
-    }
-    pmm_free_page(pml4_phys);
 }
 
 void vmm_map_page_in(uint64_t pml4_phys, uint64_t virt, uint64_t phys, uint32_t flags) {

@@ -145,7 +145,6 @@ typedef struct Process {
 static int vmm_free_calls;
 static uint64_t vmm_free_last;
 static uint64_t vmm_create_user_pml4(void) { return 0x300000; }
-static void vmm_destroy_user_pml4(uint64_t pml4) { (void)pml4; }
 static uint64_t vmm_fork_address_space(uint64_t src) { (void)src; return 0x400000; }
 static void vmm_free_user_pages(uint64_t pml4) { vmm_free_calls++; vmm_free_last = pml4; }
 
@@ -449,17 +448,6 @@ static int test_state_alive_to_zombie(void) {
     return 0;
 }
 
-static int test_state_zombie_to_terminated(void) {
-    reset_proc_state();
-    proc_init();
-    Process *p = proc_create((thread_entry_t)0xDEAD, NULL);
-    ASSERT_TRUE(p != NULL);
-    p->state = PROC_ZOMBIE;
-    p->state = PROC_TERMINATED;
-    ASSERT_EQ(p->state, PROC_TERMINATED);
-    return 0;
-}
-
 static int test_state_values_distinct(void) {
     ASSERT_NEQ(PROC_ALIVE, PROC_ZOMBIE);
     ASSERT_NEQ(PROC_ZOMBIE, PROC_TERMINATED);
@@ -717,7 +705,6 @@ TestCase process_tests[] = {
     { "reparent_when_init_exits",   test_reparent_when_init_exits },
     { "fork_failure_unlinks_and_frees", test_fork_failure_unlinks_and_frees },
     { "state_alive_to_zombie",      test_state_alive_to_zombie },
-    { "state_zombie_to_terminated", test_state_zombie_to_terminated },
     { "state_values_distinct",      test_state_values_distinct },
     { "max_processes_boundary",     test_max_processes_boundary },
     { "parent_null_by_default",     test_parent_null_by_default },

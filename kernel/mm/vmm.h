@@ -36,9 +36,6 @@ uint64_t vmm_get_hhdm_offset(void);
 /* Create a new PML4 for a user process (copies kernel-half entries 256-511). */
 uint64_t vmm_create_user_pml4(void);
 
-/* Destroy a user PML4 — frees user-half page table pages (not leaf pages). */
-void vmm_destroy_user_pml4(uint64_t pml4);
-
 /* Map a page in a specific address space (given PML4 physical address). */
 void vmm_map_page_in(uint64_t pml4, uint64_t virt, uint64_t phys, uint32_t flags);
 

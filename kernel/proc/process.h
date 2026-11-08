@@ -15,7 +15,7 @@ typedef uint32_t gid_t;
 /* Process states */
 #define PROC_ALIVE       0
 #define PROC_ZOMBIE      1
-#define PROC_TERMINATED  2
+#define PROC_TERMINATED  2   /* unused since M0-10: a reaped process is freed */
 #define PROC_STOPPED     3
 
 /* Saved user context for fork (captured from SYSCALL frame) */
@@ -77,7 +77,7 @@ Process *proc_create_user(void);
 /* Get the process for the current thread. */
 Process *proc_current(void);
 
-/* Look up process by PID. Returns NULL if not found or terminated. */
+/* Look up process by PID. Returns NULL if not found (never existed or reaped). */
 Process *proc_get_by_pid(uint32_t pid);
 
 /* Register a thread as the main thread of a process (sets t->proc). */
@@ -103,10 +103,10 @@ Process *proc_find_zombie_child(Process *parent);
  * pid; child is invalid afterwards. O(pages it mapped). */
 int proc_reap(Process *child, int32_t *status_out);
 
-/* Check if a process has any live (non-TERMINATED) children. */
+/* Check if a process has any unreaped children. */
 int proc_has_children(Process *parent);
 
-/* Iterate all non-TERMINATED processes, calling cb for each. Returns count. */
+/* Iterate all unreaped processes, calling cb for each. Returns count. */
 int proc_foreach(void (*cb)(Process *p, void *ctx), void *ctx);
 
 /* Find a stopped (unreported) child of the given parent. Returns NULL if none. */
