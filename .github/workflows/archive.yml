@@ -31,6 +31,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0     # full history, so the lock-file commit can rebase
 
       - name: Check the lock file
         run: python3 tools/archive.py check
