@@ -90,7 +90,7 @@ Start every block with `/os/implement-block <ID>`. These rules are what keep ses
 | M0-07 | Manifest schemas | S | R | C | — | Schemas and examples validated in CI | todo |
 | M0-08 | Budget checks in the QEMU harness | S | R | I | M0-02 | A size or count past its limit fails CI, named (ADR-0019) | done |
 | M0-09 | Code hygiene checks | S | R | I | M0-08 | Duplicates, copied helpers, x86 includes outside arch, long functions and untracked TODOs can't grow (ADR-0020) | done |
-| M0-10 | Free reaped processes | M | D | K | M0-09 | `pages_leaked` and `heap_leaked_bytes` budgets are 0 on every QEMU suite | in progress |
+| M0-10 | Free reaped processes | M | D | K | M0-09 | `pages_leaked` and `heap_leaked_bytes` budgets are 0 on every QEMU suite | review (#13) |
 
 ### M1 — Compute kernel
 
