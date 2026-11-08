@@ -1,0 +1,3 @@
+# qemu.selftest.fail: the harness must report the failing program by name and reason.
+hello /boot/hello
+testfail /boot/testfail

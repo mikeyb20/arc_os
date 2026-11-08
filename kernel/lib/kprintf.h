@@ -16,7 +16,10 @@ void kprintf(const char *fmt, ...);
  * Characters will be sent to both serial AND this callback. */
 void kprintf_set_putchar_hook(void (*hook)(char c));
 
-/* Halt the CPU permanently — use after printing a fatal error message. */
-#define KERNEL_PANIC() do { for (;;) __asm__ volatile ("cli; hlt"); } while(0)
+/* Stop permanently — use after printing a fatal error message. Halts the CPU,
+ * or in kernel test mode (arc.test=) exits QEMU with a failure code at once.
+ * Defined in lib/testmode.c. */
+void kernel_panic_halt(void) __attribute__((noreturn));
+#define KERNEL_PANIC() kernel_panic_halt()
 
 #endif /* ARCHOS_LIB_KPRINTF_H */

@@ -69,6 +69,14 @@ volatile struct limine_module_request module_request = {
     .response = NULL
 };
 
+/* Kernel file — gives the kernel command line (limine.conf `cmdline:`) */
+LIMINE_SECTION
+volatile struct limine_kernel_file_request kernel_file_request = {
+    .id = LIMINE_KERNEL_FILE_REQUEST,
+    .revision = 0,
+    .response = NULL
+};
+
 /* SMP — for multi-core AP bringup */
 LIMINE_SECTION
 volatile struct limine_smp_request smp_request = {

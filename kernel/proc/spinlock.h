@@ -27,4 +27,16 @@ static inline void spinlock_release(Spinlock *lock) {
     __asm__ volatile ("push %0; popf" : : "r"(flags) : "memory", "cc");
 }
 
+/* Disable interrupts on this CPU and return the previous RFLAGS. */
+static inline uint64_t irq_save(void) {
+    uint64_t flags;
+    __asm__ volatile ("pushf; pop %0; cli" : "=r"(flags) : : "memory");
+    return flags;
+}
+
+/* Restore RFLAGS (and so the interrupt flag) saved by irq_save(). */
+static inline void irq_restore(uint64_t flags) {
+    __asm__ volatile ("push %0; popf" : : "r"(flags) : "memory", "cc");
+}
+
 #endif /* ARCHOS_PROC_SPINLOCK_H */

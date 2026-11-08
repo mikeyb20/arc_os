@@ -12,6 +12,7 @@
 #include "arch/x86_64/paging.h"
 #include "arch/x86_64/usermode.h"
 #include "lib/kprintf.h"
+#include "lib/testmode.h"
 
 /* Argument passed to the init kernel thread */
 typedef struct {
@@ -112,6 +113,7 @@ int init_launch(const BootInfo *info) {
 
     /* Register thread with process */
     proc_set_main_thread(p, t);
+    testmode_set_init_pid((int)p->pid);
 
     /* Add to scheduler */
     sched_add_thread(t);

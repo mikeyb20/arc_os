@@ -30,6 +30,8 @@
 #include "fs/fat32.h"
 #include "fs/devfs.h"
 #include "fs/procfs.h"
+#include "lib/cmdline.h"
+#include "lib/testmode.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -287,6 +289,14 @@ void kmain(void) {
         KERNEL_PANIC();
     }
 
+    /* Kernel command line; arc.test=<suite> turns on test mode (M0-02) */
+    cmdline_set(info->cmdline);
+    testmode_init(info->cmdline);
+    kprintf("[BOOT] Command line: '%s'\n", cmdline_raw());
+    if (testmode_active()) {
+        kprintf("[TEST] Kernel test mode, suite '%s'\n", testmode_suite());
+    }
+
     boot_log_info(info);
 
     serial_puts("[BOOT] stage: GDT\n");
@@ -380,6 +390,20 @@ void kmain(void) {
                         }
                     }
 
+                    /* A GSI claimed by another IRQ's override (e.g. PIT IRQ0 ->
+                     * GSI2) must not be re-routed by the identity mapping of the
+                     * IRQ with the same number, or the timer lands on vector 34. */
+                    int claimed = 0;
+                    if (gsi == irq) {
+                        for (uint32_t j = 0; j < acpi->iso_count; j++) {
+                            if (acpi->isos[j].gsi == irq && acpi->isos[j].source != irq) {
+                                claimed = 1;
+                                break;
+                            }
+                        }
+                    }
+                    if (claimed) continue;
+
                     /* Route to same vector (32+irq), destination = BSP */
                     ioapic_route_irq(gsi, (uint8_t)(IRQ_BASE + irq),
                                      (uint8_t)percpu_data[0].apic_id,
@@ -399,6 +423,12 @@ void kmain(void) {
             /* Bring up Application Processors */
             smp_init();
         }
+    }
+
+    /* Test mode self-check: suite "kpanic" proves a panic ends the run at once */
+    if (testmode_active() && strcmp(testmode_suite(), "kpanic") == 0) {
+        kprintf("[TEST] kpanic suite: panicking on purpose\n");
+        KERNEL_PANIC();
     }
 
     /* Launch init process from boot module */

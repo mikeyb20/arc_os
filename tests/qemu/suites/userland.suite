@@ -1,0 +1,19 @@
+# qemu.userland: the existing user programs, each run once; exit status 0 = pass.
+echo        /boot/echo hello world
+uname       /bin/uname
+cat         /bin/cat /etc/hostname
+wc          /bin/wc /etc/passwd
+head        /bin/head /etc/passwd
+tail        /bin/tail /etc/passwd
+grep        /bin/grep root /etc/passwd
+ls          /bin/ls /boot
+stat        /bin/stat /etc/hostname
+ps          /bin/ps
+free        /bin/free
+mkdir       /bin/mkdir /tmp
+touch       /bin/touch /tmp/a
+cp          /bin/cp /etc/hostname /tmp/b
+mv          /bin/mv /tmp/b /tmp/c
+chmod       /bin/chmod 600 /tmp/c
+chown       /bin/chown 1000 /tmp/c
+rm          /bin/rm /tmp/c

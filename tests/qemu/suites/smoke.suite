@@ -1,0 +1,4 @@
+# qemu.smoke: run hello, then the shell non-interactively (stdin = smoke.sh).
+hello /boot/hello
+hello_args /boot/hello arc os
+shell /boot/shell < /boot/smoke.sh

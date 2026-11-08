@@ -48,4 +48,5 @@ change in the same PR, and no old number is left anywhere (ADR-0001).
 - Keep behaviour changes to what the renumbering needs. Process start and new syscalls are M0-06.
 
 **Notes.**
--
+- From M0-02: `sys_wait` now takes libc's (pid, status, options) order but ignores pid (reaps any child);
+  `wait4` must honour pid. Run `ctest -L qemu` (smoke + userland cover the shell and coreutils).
