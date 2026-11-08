@@ -216,9 +216,23 @@ static void test_reset(void) {
 }
 
 /* Include signal.c directly */
-/* signal.c calls this from sig_terminate (defined in proc_syscalls.c) */
-static int release_fds_called;
-void proc_release_fds(struct Process *p) { (void)p; release_fds_called++; }
+/* signal.c ends a process through proc_exit (proc_syscalls.c, which does not
+ * return). This stub records the call and does what the real one does to the
+ * process and its parent, then returns so the test can look. */
+#define ARCHOS_PROC_PROC_SYSCALLS_H
+static int proc_exit_called;
+static int32_t proc_exit_status;
+static uint8_t proc_exit_signal;
+static void proc_exit(struct Process *p, int32_t exit_status, uint8_t term_signal) {
+    proc_exit_called++;
+    proc_exit_status = exit_status;
+    proc_exit_signal = term_signal;
+    p->exit_status = exit_status;
+    p->term_signal = term_signal;
+    p->state = PROC_ZOMBIE;
+    if (p->parent != NULL) sig_send(p->parent->pid, SIGCHLD);
+    sched_schedule();
+}
 
 #include "../kernel/proc/signal.c"
 
@@ -294,7 +308,7 @@ TEST(default_sigterm_terminates) {
  * says WIFSIGNALED, parent gets SIGCHLD (and is woken; wq_wake is a stub here). */
 TEST(sigterm_death_notifies_parent) {
     test_reset();
-    release_fds_called = 0;
+    proc_exit_called = 0;
     test_current_idx = 1;
     test_procs[1].parent = &test_procs[0];
     test_procs[1].sig.pending = (1u << SIGTERM);
@@ -303,7 +317,9 @@ TEST(sigterm_death_notifies_parent) {
     sig_maybe_deliver(&frame, 0);
     ASSERT_EQ(test_procs[1].state, PROC_ZOMBIE);
     ASSERT_EQ(test_procs[1].term_signal, SIGTERM);
-    ASSERT_EQ(release_fds_called, 1);
+    ASSERT_EQ(proc_exit_called, 1);
+    ASSERT_EQ(proc_exit_status, 128 + SIGTERM);
+    ASSERT_EQ(proc_exit_signal, SIGTERM);
     ASSERT_TRUE(test_procs[0].sig.pending & (1u << SIGCHLD));
     return 0;
 }

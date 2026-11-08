@@ -14,6 +14,7 @@
 #define ARCHOS_PROC_SIGNAL_H
 #define ARCHOS_PROC_WAITQUEUE_H
 #define ARCHOS_PROC_FD_H
+#define ARCHOS_PROC_PROC_SYSCALLS_H  /* proc_release_fds: stubbed below */
 #define ARCHOS_ARCH_X86_64_USERMODE_H
 #define ARCHOS_ARCH_X86_64_GDT_H
 #define ARCHOS_ARCH_X86_64_SYSCALL_H
@@ -59,6 +60,7 @@ typedef struct Thread {
     void           *fpu_state;
     uint64_t        fs_base;
     uint64_t        clear_child_tid;
+    struct Process *proc;
     struct Thread  *next;
 } Thread;
 
@@ -135,16 +137,26 @@ typedef struct Process {
     SigState        sig;
     WaitQueue       child_exit_wq;
     struct Process *parent;
+    struct Process *prev;
     struct Process *next;
 } Process;
 
-/* VMM stubs */
+/* VMM stubs: count address spaces freed */
+static int vmm_free_calls;
+static uint64_t vmm_free_last;
 static uint64_t vmm_create_user_pml4(void) { return 0x300000; }
 static void vmm_destroy_user_pml4(uint64_t pml4) { (void)pml4; }
 static uint64_t vmm_fork_address_space(uint64_t src) { (void)src; return 0x400000; }
+static void vmm_free_user_pages(uint64_t pml4) { vmm_free_calls++; vmm_free_last = pml4; }
 
-/* FD stubs */
-static FdTable *fd_table_dup(const FdTable *src) { (void)src; return NULL; }
+/* FD stubs: fork's table copy is a real allocation, so reaping must free it */
+struct FdTable { int dummy; };
+static void *kmalloc(size_t size, uint32_t flags);
+static FdTable *fd_table_dup(const FdTable *src) {
+    return src != NULL ? kmalloc(sizeof(FdTable), 0) : NULL;
+}
+static int release_fds_calls;
+static void proc_release_fds(Process *p) { (void)p; release_fds_calls++; }
 
 /* Arch stubs */
 static void gdt_set_kernel_stack(uint64_t rsp0) { (void)rsp0; }
@@ -181,6 +193,7 @@ static void *kmalloc(size_t size, uint32_t flags) {
 }
 
 static void kfree(void *ptr) {
+    if (ptr == NULL) return;      /* like the kernel's kfree: NULL is a no-op */
     kfree_call_count++;
     free(ptr);
 }
@@ -220,6 +233,11 @@ static Thread *thread_create(thread_entry_t entry, void *arg) {
     return t;
 }
 
+/* thread_destroy stub: records which threads were freed */
+static int thread_destroy_calls;
+static Thread *thread_destroy_last;
+static void thread_destroy(Thread *t) { thread_destroy_calls++; thread_destroy_last = t; }
+
 /* Tracking sched_add_thread stub (static to avoid linker clash) */
 static int sched_add_call_count;
 static Thread *sched_add_last_thread;
@@ -235,13 +253,14 @@ void proc_init(void);
 Process *proc_create(thread_entry_t entry, void *arg);
 Process *proc_create_user(void);
 Process *proc_current(void);
-Process *proc_get_by_tid(uint32_t tid);
 void proc_set_main_thread(Process *p, Thread *t);
 Process *proc_get_by_pid(uint32_t pid);
 Process *proc_fork(Process *parent, const ForkContext *user_ctx);
 Process *proc_find_zombie_child(Process *parent);
 int proc_reap(Process *child, int32_t *status_out);
 int proc_has_children(Process *parent);
+void proc_set_init(Process *p);
+Process *proc_reparent_children(Process *p);
 
 /* fpu.h stub: records the fork child's FPU area being filled */
 static int fpu_save_calls;
@@ -264,7 +283,12 @@ static void setup_boot_thread(void) {
 static void reset_proc_state(void) {
     proc_list = NULL;
     next_pid = 0;
-    memset(proc_table, 0, sizeof(proc_table));
+    init_proc = NULL;
+    vmm_free_calls = 0;
+    vmm_free_last = 0;
+    release_fds_calls = 0;
+    thread_destroy_calls = 0;
+    thread_destroy_last = NULL;
 
     kmalloc_call_count = 0;
     kfree_call_count = 0;
@@ -294,7 +318,7 @@ static int test_proc_init_creates_boot_process(void) {
     ASSERT_EQ(p->pid, 0);
     ASSERT_EQ(p->state, PROC_ALIVE);
     ASSERT_TRUE(p->main_thread == &boot_thread);
-    ASSERT_TRUE(proc_table[0] == p);
+    ASSERT_TRUE(boot_thread.proc == p);
     return 0;
 }
 
@@ -385,18 +409,30 @@ static int test_proc_create_pid_sequence(void) {
     return 0;
 }
 
-static int test_proc_table_stores_entries(void) {
+static int test_threads_point_at_process(void) {
     reset_proc_state();
     proc_init();
 
     Process *p1 = proc_create((thread_entry_t)0xDEAD, NULL);
     Process *p2 = proc_create((thread_entry_t)0xDEAD, NULL);
 
-    /* Boot process at tid=0, p1's thread at tid=1, p2's thread at tid=2 */
-    ASSERT_TRUE(proc_table[0] != NULL);
-    ASSERT_EQ(proc_table[0]->pid, 0);
-    ASSERT_TRUE(proc_table[1] == p1);
-    ASSERT_TRUE(proc_table[2] == p2);
+    ASSERT_EQ(boot_thread.proc->pid, 0);
+    ASSERT_TRUE(p1->main_thread->proc == p1);
+    ASSERT_TRUE(p2->main_thread->proc == p2);
+    return 0;
+}
+
+/* A thread with tid >= 64 still finds its process (the old tid-indexed table
+ * returned NULL past 64 threads) */
+static int test_current_with_large_tid(void) {
+    reset_proc_state();
+    proc_init();
+    thread_next_tid = 1000;
+    Process *p = proc_create((thread_entry_t)0xDEAD, NULL);
+    ASSERT_TRUE(p != NULL);
+    ASSERT_EQ(p->main_thread->tid, 1000);
+    test_current_thread = p->main_thread;
+    ASSERT_TRUE(proc_current() == p);
     return 0;
 }
 
@@ -439,9 +475,10 @@ static int test_max_processes_boundary(void) {
         Process *p = proc_create((thread_entry_t)0xDEAD, NULL);
         ASSERT_TRUE(p != NULL);
     }
-    /* Verify proc_table has entries */
-    for (int i = 0; i < THREAD_POOL_SIZE; i++) {
-        ASSERT_TRUE(proc_table[i] != NULL);
+    /* Every thread maps back to its process */
+    for (int i = 0; i < THREAD_POOL_SIZE - 1; i++) {
+        ASSERT_TRUE(thread_pool[i].proc != NULL);
+        ASSERT_TRUE(thread_pool[i].proc->main_thread == &thread_pool[i]);
     }
     return 0;
 }
@@ -471,6 +508,164 @@ static int test_current_after_thread_switch(void) {
     test_current_thread = &boot_thread;
     cur = proc_current();
     ASSERT_EQ(cur->pid, 0);
+    return 0;
+}
+
+/* --- Reaping and re-parenting (M0-10) --- */
+
+static int list_contains(const Process *p) {
+    for (Process *q = proc_list; q != NULL; q = q->next) {
+        if (q == p) return 1;
+    }
+    return 0;
+}
+
+/* The list stays consistent in both directions */
+static int list_well_formed(void) {
+    Process *prev = NULL;
+    for (Process *q = proc_list; q != NULL; q = q->next) {
+        if (q->prev != prev) return 0;
+        prev = q;
+    }
+    return 1;
+}
+
+/* A forked child, as wait4 sees it after exit: a zombie with its own address
+ * space, fd table and thread */
+static Process *make_zombie_child(Process *parent) {
+    ForkContext ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    Process *c = proc_fork(parent, &ctx);
+    if (c == NULL) return NULL;
+    c->state = PROC_ZOMBIE;
+    c->exit_status = 7;
+    return c;
+}
+
+static Process *make_parent(void) {
+    Process *p = proc_create((thread_entry_t)0xDEAD, NULL);
+    if (p == NULL) return NULL;
+    p->page_table = 0x300000;
+    static FdTable parent_fds;
+    p->fd_table = &parent_fds;
+    test_current_thread = p->main_thread;
+    return p;
+}
+
+static int test_reap_frees_everything(void) {
+    reset_proc_state();
+    proc_init();
+    Process *parent = make_parent();
+    ASSERT_TRUE(parent != NULL);
+    Process *c = make_zombie_child(parent);
+    ASSERT_TRUE(c != NULL);
+    Thread *ct = c->main_thread;
+    uint64_t pml4 = c->page_table;
+    pid_t pid = c->pid;
+    int live_before = kmalloc_call_count - kfree_call_count;
+
+    int32_t status = 0;
+    ASSERT_EQ(proc_reap(c, &status), (int)pid);
+    ASSERT_EQ(status, 7);
+    ASSERT_EQ(vmm_free_calls, 1);                 /* user pages + page tables */
+    ASSERT_EQ(vmm_free_last, pml4);
+    ASSERT_EQ(thread_destroy_calls, 1);           /* stack, FPU area, TCB */
+    ASSERT_TRUE(thread_destroy_last == ct);
+    /* The fd table and the PCB: the two allocations fork made that remain */
+    ASSERT_EQ(kmalloc_call_count - kfree_call_count, live_before - 2);
+    ASSERT_TRUE(proc_get_by_pid(pid) == NULL);
+    return 0;
+}
+
+static int test_reap_unlinks_head_middle_tail(void) {
+    reset_proc_state();
+    proc_init();
+    Process *parent = make_parent();
+    Process *a = make_zombie_child(parent);       /* list: c b a parent boot */
+    Process *b = make_zombie_child(parent);
+    Process *c = make_zombie_child(parent);
+    ASSERT_TRUE(a && b && c);
+    ASSERT_TRUE(proc_list == c && list_well_formed());
+
+    ASSERT_TRUE(proc_reap(b, NULL) > 0);          /* middle */
+    ASSERT_TRUE(list_well_formed() && !list_contains(b) && c->next == a);
+    ASSERT_TRUE(proc_reap(c, NULL) > 0);          /* head */
+    ASSERT_TRUE(proc_list == a && a->prev == NULL && list_well_formed());
+    ASSERT_TRUE(proc_reap(a, NULL) > 0);
+    ASSERT_TRUE(proc_list == parent && list_well_formed());
+    ASSERT_EQ(proc_has_children(parent), 0);
+    return 0;
+}
+
+static int test_reap_rejects_live_child(void) {
+    reset_proc_state();
+    proc_init();
+    Process *parent = make_parent();
+    ForkContext ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    Process *c = proc_fork(parent, &ctx);
+    ASSERT_TRUE(c != NULL);
+    ASSERT_EQ(proc_reap(c, NULL), -EINVAL);
+    ASSERT_EQ(vmm_free_calls, 0);
+    ASSERT_TRUE(list_contains(c));
+    return 0;
+}
+
+static int test_reparent_to_init(void) {
+    reset_proc_state();
+    proc_init();
+    Process *init = make_parent();
+    proc_set_init(init);
+    Process *mid = make_zombie_child(init);
+    mid->state = PROC_ALIVE;
+    test_current_thread = mid->main_thread;
+    mid->page_table = 0x300000;
+    static FdTable mid_fds;
+    mid->fd_table = &mid_fds;
+    Process *live = make_zombie_child(mid);
+    live->state = PROC_ALIVE;
+    Process *other = make_zombie_child(init);     /* not mid's: untouched */
+
+    /* No zombie among mid's children: init needs no wake-up */
+    ASSERT_TRUE(proc_reparent_children(mid) == NULL);
+    ASSERT_TRUE(live->parent == init);
+    ASSERT_TRUE(other->parent == init);
+
+    /* A zombie handed over: init is returned so the caller wakes it */
+    Process *zombie = make_zombie_child(live);
+    ASSERT_TRUE(proc_reparent_children(live) == init);
+    ASSERT_TRUE(zombie->parent == init);
+    ASSERT_TRUE(proc_find_zombie_child(init) != NULL);
+    return 0;
+}
+
+static int test_reparent_when_init_exits(void) {
+    reset_proc_state();
+    proc_init();
+    Process *init = make_parent();
+    proc_set_init(init);
+    Process *c = make_zombie_child(init);
+    /* init's own children get no parent, and nobody is woken */
+    ASSERT_TRUE(proc_reparent_children(init) == NULL);
+    ASSERT_TRUE(c->parent == NULL);
+    return 0;
+}
+
+/* Fork failing after the PCB is linked must undo all of it */
+static int test_fork_failure_unlinks_and_frees(void) {
+    reset_proc_state();
+    proc_init();
+    Process *parent = make_parent();
+    Process *head = proc_list;
+    int live_before = kmalloc_call_count - kfree_call_count;
+    thread_create_force_fail = 1;
+    ForkContext ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ASSERT_TRUE(proc_fork(parent, &ctx) == NULL);
+    ASSERT_TRUE(proc_list == head && list_well_formed());
+    ASSERT_EQ(vmm_free_calls, 1);                 /* copied pages too */
+    ASSERT_EQ(release_fds_calls, 1);              /* pipe refs fd_table_dup took */
+    ASSERT_EQ(kmalloc_call_count - kfree_call_count, live_before);
     return 0;
 }
 
@@ -513,7 +708,14 @@ TestCase process_tests[] = {
     { "create_kmalloc_failure",     test_proc_create_kmalloc_failure },
     { "current_returns_boot",       test_proc_current_returns_boot },
     { "create_pid_sequence",        test_proc_create_pid_sequence },
-    { "table_stores_entries",       test_proc_table_stores_entries },
+    { "threads_point_at_process",   test_threads_point_at_process },
+    { "current_with_large_tid",     test_current_with_large_tid },
+    { "reap_frees_everything",      test_reap_frees_everything },
+    { "reap_unlinks_head_middle_tail", test_reap_unlinks_head_middle_tail },
+    { "reap_rejects_live_child",    test_reap_rejects_live_child },
+    { "reparent_to_init",           test_reparent_to_init },
+    { "reparent_when_init_exits",   test_reparent_when_init_exits },
+    { "fork_failure_unlinks_and_frees", test_fork_failure_unlinks_and_frees },
     { "state_alive_to_zombie",      test_state_alive_to_zombie },
     { "state_zombie_to_terminated", test_state_zombie_to_terminated },
     { "state_values_distinct",      test_state_values_distinct },

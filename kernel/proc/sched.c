@@ -101,10 +101,8 @@ void sched_schedule(void) {
         }
 
         /* Switch CR3 if switching between different address spaces */
-        Process *old_proc = proc_get_by_tid(old->tid);
-        Process *new_proc = proc_get_by_tid(next->tid);
-        uint64_t old_cr3 = proc_get_cr3(old_proc);
-        uint64_t new_cr3 = proc_get_cr3(new_proc);
+        uint64_t old_cr3 = proc_get_cr3(old->proc);
+        uint64_t new_cr3 = proc_get_cr3(next->proc);
         if (new_cr3 != old_cr3) {
             paging_write_cr3(new_cr3);
         }

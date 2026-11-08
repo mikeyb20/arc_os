@@ -30,8 +30,10 @@ add_test(NAME qemu.smoke COMMAND ${_qemu_test} --suite smoke --memory 4G
 # Every existing user program, run once
 add_test(NAME qemu.userland COMMAND ${_qemu_test} --suite userland)
 
-# Linux syscall ABI (M0-05): getdents64, stat, wait4, rt_sigaction, ioctl, brk, -ENOSYS
-add_test(NAME qemu.abi COMMAND ${_qemu_test} --suite abi --module abi_check)
+# Linux syscall ABI (M0-05): getdents64, stat, wait4, rt_sigaction, ioctl, brk, -ENOSYS;
+# process lifecycle (M0-10): 200 children forked and reaped, orphans adopted by init
+add_test(NAME qemu.abi COMMAND ${_qemu_test} --suite abi --module abi_check --module forkreap
+    --expect "forkreap: 200 children reaped, 0 failures")
 
 # Linux process start (M0-06): stock musl static and static-PIE programs and
 # the same test built with libarc: argv, envp, auxv, TLS, stdio, files, tty

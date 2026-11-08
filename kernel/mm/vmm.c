@@ -296,7 +296,7 @@ uint64_t vmm_fork_address_space(uint64_t src_pml4_phys) {
                                      ((uint64_t)pd_idx << 21) | ((uint64_t)pt_idx << 12);
 
                     if (fork_copy_page(src_pt[pt_idx], dst_pml4_phys, vaddr) != 0) {
-                        vmm_destroy_user_pml4(dst_pml4_phys);
+                        vmm_free_user_pages(dst_pml4_phys);   /* pages copied so far too */
                         return 0;
                     }
                 }

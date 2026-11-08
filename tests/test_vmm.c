@@ -93,6 +93,7 @@ uint64_t vmm_get_hhdm_offset(void);
 void vmm_map_page_in(uint64_t pml4, uint64_t virt, uint64_t phys, uint32_t flags);
 void vmm_unmap_page_in(uint64_t pml4, uint64_t virt);
 uint64_t vmm_get_phys_in(uint64_t pml4, uint64_t virt);
+void vmm_free_user_pages(uint64_t pml4);
 
 /* Static arena for pmm_alloc_page stub — enough for page tables.
  * With hhdm_offset=0, phys_to_virt(addr)==addr, so we need the arena

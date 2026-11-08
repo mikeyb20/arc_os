@@ -192,6 +192,9 @@ static void vfs_setup(const BootInfo *info) {
     /* Create /home/user for the default user account */
     vfs_mkdir("/home", 0755);
     vfs_mkdir("/home/user", 0755);
+    /* /tmp exists on every Unix system; programs expect it (M0-10: a suite
+     * creating it showed up as leaked heap) */
+    vfs_mkdir("/tmp", 01777);
 
     /* Create /bin and symlink boot modules into it */
     vfs_mkdir("/bin", 0755);

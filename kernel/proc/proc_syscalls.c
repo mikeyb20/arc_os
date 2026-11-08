@@ -50,34 +50,44 @@ void proc_release_fds(Process *p) {
     }
 }
 
+void proc_exit(Process *p, int32_t exit_status, uint8_t term_signal) {
+    /* Close all open file descriptors (critical for pipe EOF signaling) */
+    proc_release_fds(p);
+
+    p->exit_status = exit_status;
+    p->term_signal = term_signal;
+    Process *heir = proc_reparent_children(p);
+    p->state = PROC_ZOMBIE;
+    /* DEAD before any wake-up: the scheduler never queues it again. Syscalls
+     * and signal delivery run with interrupts off on one CPU, so nothing runs
+     * (and no wait4 frees this thread) until sched_schedule() has switched
+     * away from it for the last time. */
+    thread_current()->state = THREAD_DEAD;
+
+    /* Kernel test mode: init exiting ends the QEMU run with its status */
+    testmode_process_exited((int)p->pid, p->exit_status);
+
+    if (heir != NULL) {               /* init adopted a zombie: let it reap */
+        wq_wake(&heir->child_exit_wq);
+        sig_send(heir->pid, SIGCHLD);
+    }
+    if (p->parent != NULL) {
+        wq_wake(&p->parent->child_exit_wq);
+        sig_send(p->parent->pid, SIGCHLD);
+    }
+
+    sched_schedule();
+    for (;;) __asm__ volatile ("hlt");
+}
+
 /* exit(status) — 60: terminate the current process */
 static int64_t sys_exit(uint64_t status, uint64_t a1, uint64_t a2,
                         uint64_t a3, uint64_t a4, uint64_t a5) {
     (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
     Process *p = proc_current();
     kprintf("[SYSCALL] exit(%lu) from pid=%u\n", status & 0xFF, p->pid);
-
-    /* Close all open file descriptors (critical for pipe EOF signaling) */
-    proc_release_fds(p);
-
     /* Only the low 8 bits of the status reach the parent (Linux) */
-    p->exit_status = (int32_t)(status & 0xFF);
-    p->term_signal = 0;
-    p->state = PROC_ZOMBIE;
-
-    /* Kernel test mode: init exiting ends the QEMU run with its status */
-    testmode_process_exited((int)p->pid, p->exit_status);
-
-    /* Notify parent of child exit */
-    if (p->parent != NULL) {
-        wq_wake(&p->parent->child_exit_wq);
-        sig_send(p->parent->pid, SIGCHLD);
-    }
-
-    thread_current()->state = THREAD_DEAD;
-    sched_schedule();
-    for (;;) __asm__ volatile ("hlt");
-    __builtin_unreachable();  /* suppress -Wreturn-type */
+    proc_exit(p, (int32_t)(status & 0xFF), 0);
 }
 
 /* exit_group(status) — 231. A process holds one thread until M1-16, so this

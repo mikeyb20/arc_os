@@ -60,8 +60,9 @@ typedef struct Process {
     uint32_t        umask;          /* File creation permission mask */
     SigState        sig;            /* Per-process signal state */
     WaitQueue       child_exit_wq;  /* Parents sleep here in sys_wait */
-    struct Process *parent;
-    struct Process *next;           /* Process list linkage */
+    struct Process *parent;         /* Reaps it; init once the parent exits, NULL for none */
+    struct Process *prev;           /* Process list linkage */
+    struct Process *next;
 } Process;
 
 /* Initialize process management — creates process 0 for the boot thread. */
@@ -76,14 +77,19 @@ Process *proc_create_user(void);
 /* Get the process for the current thread. */
 Process *proc_current(void);
 
-/* Look up process by thread ID. Returns NULL if not found. */
-Process *proc_get_by_tid(uint32_t tid);
-
 /* Look up process by PID. Returns NULL if not found or terminated. */
 Process *proc_get_by_pid(uint32_t pid);
 
-/* Register a thread as the main thread of a process. */
+/* Register a thread as the main thread of a process (sets t->proc). */
 void proc_set_main_thread(Process *p, Thread *t);
+
+/* Record the init process, which adopts orphans. */
+void proc_set_init(Process *p);
+
+/* Exit path: hand p's children to init (Linux re-parenting); with no init, or
+ * when p is init, they get no parent. Returns init when it received a zombie
+ * (the caller wakes it and sends SIGCHLD), else NULL. O(processes). */
+Process *proc_reparent_children(Process *p);
 
 /* Fork the current process. Returns child Process* or NULL on failure.
  * The child's thread will return to user_ctx location with RAX=0. */
@@ -92,7 +98,9 @@ Process *proc_fork(Process *parent, const ForkContext *user_ctx);
 /* Find a zombie child of the given parent. Returns NULL if none. */
 Process *proc_find_zombie_child(Process *parent);
 
-/* Reap a zombie child: copy exit status, mark TERMINATED. */
+/* Reap a zombie child: copy its exit status, unlink it and free everything it
+ * held (user pages and page tables, fd table, main thread, PCB). Returns its
+ * pid; child is invalid afterwards. O(pages it mapped). */
 int proc_reap(Process *child, int32_t *status_out);
 
 /* Check if a process has any live (non-TERMINATED) children. */

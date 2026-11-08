@@ -32,6 +32,8 @@ typedef struct {
     uint64_t rsp;
 } ThreadContext;
 
+struct Process;  /* proc/process.h */
+
 /* Thread Control Block */
 typedef struct Thread {
     tid_t           tid;
@@ -45,6 +47,7 @@ typedef struct Thread {
     void           *fpu_state;      /* FXSAVE area (arch/x86_64/fpu.h); NULL for the boot thread */
     uint64_t        fs_base;        /* User TLS pointer (arch_prctl ARCH_SET_FS) */
     uint64_t        clear_child_tid; /* set_tid_address pointer; used by M1-16 thread exit */
+    struct Process *proc;           /* Owning process; NULL for a thread with none (idle) */
     struct Thread  *next;           /* Intrusive list for scheduler */
 } Thread;
 
@@ -54,7 +57,8 @@ void thread_init(void);
 /* Create a new kernel thread. Returns NULL on failure. */
 Thread *thread_create(thread_entry_t entry, void *arg);
 
-/* Destroy a dead thread — frees stack and TCB. Thread must be DEAD. */
+/* Destroy a dead thread: frees its kernel stack, FPU area and TCB. The thread
+ * must be DEAD and must have switched away for the last time (never itself). */
 void thread_destroy(Thread *t);
 
 /* Get the currently running thread. */

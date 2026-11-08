@@ -121,7 +121,13 @@ static int run_test(char *line) {
     }
 
     int status = 0;
-    if (waitpid(pid, &status, 0) < 0) {
+    pid_t got = waitpid(pid, &status, 0);
+    /* Reap orphans the test left behind: the kernel hands them to init (us),
+     * and an unreaped zombie would show up as leaked memory */
+    int orphan_status;
+    while (waitpid(-1, &orphan_status, WNOHANG) > 0) {
+    }
+    if (got < 0) {
         printf("ARC_TEST FAIL %s wait-failed\n", name);
         return 0;
     }

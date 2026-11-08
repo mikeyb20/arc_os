@@ -53,6 +53,7 @@ typedef struct Thread {
     uint64_t        kernel_stack_top;
     thread_entry_t  entry;
     void           *arg;
+    struct Process *proc;
     struct Thread  *next;
 } Thread;
 
@@ -104,10 +105,11 @@ typedef struct Process {
     struct Process *next;
 } Process;
 
-static Process *proc_get_by_tid(uint32_t tid) { (void)tid; return NULL; }
 static void gdt_set_kernel_stack(uint64_t rsp0) { (void)rsp0; }
 static uint64_t vmm_get_kernel_pml4(void) { return 0x1000; }
-static void paging_write_cr3(uint64_t cr3) { (void)cr3; }
+static int cr3_writes;
+static uint64_t cr3_last;
+static void paging_write_cr3(uint64_t cr3) { cr3_writes++; cr3_last = cr3; }
 static uint64_t syscall_kernel_rsp;
 
 /* Tracking context_switch stub (static to avoid linker clash) */
@@ -160,6 +162,8 @@ static void reset_sched_state(void) {
     arch_switch_old = NULL;
     arch_switch_next = NULL;
     arch_switch_before_ctx = 0;
+    cr3_writes = 0;
+    cr3_last = 0;
     memset(thread_pool, 0, sizeof(thread_pool));
 }
 
@@ -407,7 +411,36 @@ static int test_sched_yield_calls_schedule(void) {
 
 /* --- Test suite export --- */
 
+/* CR3 follows the threads' own processes (Thread.proc, M0-10); a thread
+ * with no process runs on the kernel page tables */
+static int test_sched_cr3_from_thread_proc(void) {
+    reset_sched_state();
+    static Process pa, pb;
+    memset(&pa, 0, sizeof(pa));
+    memset(&pb, 0, sizeof(pb));
+    pa.page_table = 0xA000;
+    pb.page_table = 0xB000;
+    Thread *a = make_thread(0, 100, THREAD_RUNNING);
+    Thread *b = make_thread(1, 200, THREAD_CREATED);
+    Thread *k = make_thread(2, 300, THREAD_CREATED);
+    a->proc = &pa;
+    b->proc = &pb;
+    test_current_thread = a;
+    a->state = THREAD_DEAD;                 /* an exiting thread: never re-queued */
+    sched_add_thread(b);
+    sched_schedule();                       /* a -> b */
+    ASSERT_EQ(cr3_writes, 1);
+    ASSERT_EQ(cr3_last, 0xB000);
+    ASSERT_TRUE(queue_head == NULL);
+    sched_add_thread(k);
+    sched_schedule();                       /* b -> k (no process) */
+    ASSERT_EQ(cr3_writes, 2);
+    ASSERT_EQ(cr3_last, 0x1000);
+    return 0;
+}
+
 TestCase sched_tests[] = {
+    { "cr3_from_thread_proc",     test_sched_cr3_from_thread_proc },
     { "init",                     test_sched_init },
     { "add_one_thread",           test_sched_add_one_thread },
     { "add_multiple_fifo",        test_sched_add_multiple_fifo },

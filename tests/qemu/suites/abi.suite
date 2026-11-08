@@ -1,2 +1,4 @@
 # qemu.abi: Linux syscall ABI checks (M0-05); exit status = failed checks.
 abi_check /boot/abi_check
+# M0-10: fork and reap 200 children, orphans adopted by init (leak budgets 0)
+forkreap  /boot/forkreap

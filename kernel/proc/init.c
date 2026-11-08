@@ -144,6 +144,7 @@ int init_launch(const BootInfo *info) {
 
     /* Register thread with process */
     proc_set_main_thread(p, t);
+    proc_set_init(p);
     testmode_set_init_pid((int)p->pid);
 
     /* Add to scheduler */
