@@ -1,4 +1,4 @@
-# arc_os — Test-only user programs (M0-02, M0-05, M0-10). Shipped only on test ISOs.
+# arc_os — Test-only user programs (M0-02, M0-05, M0-10, M1-01). Shipped only on test ISOs.
 
 if(NOT CMAKE_CROSSCOMPILING)
     return()
@@ -51,8 +51,20 @@ if(MUSL_GCC)
                 -o ${CMAKE_BINARY_DIR}/start_musl_pie ${_start_src}
         DEPENDS ${_start_src}
         COMMENT "musl-gcc -static-pie start_musl_pie")
+    # M1-01: AVX2 state across preemption and signals, with musl's own
+    # sigaction and __restore_rt (qemu.fpu)
+    foreach(prog sig_fpu fpu_avx)
+        string(TOUPPER ${prog} _define)
+        add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/${prog}
+            COMMAND ${MUSL_GCC} -static -O2 -Wall -Wextra -Werror -std=c11 -D${_define}
+                    -o ${CMAKE_BINARY_DIR}/${prog} ${CMAKE_CURRENT_SOURCE_DIR}/${prog}.c
+                    ${CMAKE_CURRENT_SOURCE_DIR}/fpu_test.S
+            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/${prog}.c ${CMAKE_CURRENT_SOURCE_DIR}/fpu_test.S
+            COMMENT "musl-gcc -static ${prog}")
+    endforeach()
     add_custom_target(musl_testprogs ALL
-        DEPENDS ${CMAKE_BINARY_DIR}/start_musl ${CMAKE_BINARY_DIR}/start_musl_pie)
+        DEPENDS ${CMAKE_BINARY_DIR}/start_musl ${CMAKE_BINARY_DIR}/start_musl_pie
+                ${CMAKE_BINARY_DIR}/sig_fpu ${CMAKE_BINARY_DIR}/fpu_avx)
 else()
     message(WARNING "musl-gcc not found (apt install musl-tools): qemu.musl will fail")
 endif()

@@ -203,9 +203,9 @@ starts with a planning block that writes its specs.
 
 ### M1 — Compute kernel
 - [ ] Per-page descriptor array from the PMM at boot (ADR-0016)
-- [ ] Eager XSAVE/XRSTOR, CPUID-sized save area; SSE/AVX enabled for user space; kernel built with `-mgeneral-regs-only` (M0-06 already: user SSE, 512 B FXSAVE per thread, `-mgeneral-regs-only`)
+- [x] Eager XSAVE/XRSTOR, CPUID-sized save area; SSE/AVX enabled for user space; kernel built with `-mgeneral-regs-only` (M1-01; `kernel.no_simd` checks it)
 - [ ] Per-CPU SYSCALL kernel stack fix; per-CPU run queues; x2APIC mode; up to 256 CPUs
-- [ ] Hybrid CPU awareness: core type from CPUID; inference threads can pin to P-cores
+- [ ] Hybrid CPU awareness: core type from CPUID; inference threads can pin to P-cores (core type per CPU since M1-01)
 - [ ] Threads: `clone`, `futex`, `arch_prctl`, `set_tid_address`, `exit_group`, `sched_setaffinity`, `rt_sigprocmask` (single-thread `arch_prctl`, `set_tid_address`, `exit_group` since M0-06)
 - [ ] Memory: COW fork, demand paging, `mmap`/`munmap`/`mprotect`/`madvise`, page cache shared with `read()`, clean-page eviction, 2 MiB pages
 - [ ] Time: invariant TSC clocksource, TSC-deadline timer, `clock_gettime`, `nanosleep`, CMOS RTC

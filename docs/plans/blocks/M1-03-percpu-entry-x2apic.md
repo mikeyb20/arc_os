@@ -40,4 +40,6 @@ works in xAPIC or x2APIC mode with 32-bit APIC IDs and up to 256 CPUs.
 - MSI to CPUs with APIC ID above 255 needs interrupt remapping, which is out of scope; M1-09 handles the limit.
 
 **Notes.**
--
+- From M1-01: `syscall_entry.asm` does `pop rsp` (user RSP) before `o64 sysret`, so for two instructions the
+  kernel runs on the user stack. An NMI or #MC there would push onto user memory; per-CPU entry should give NMI
+  and #MC an IST stack.

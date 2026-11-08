@@ -5,9 +5,10 @@
 #include "proc/thread.h"
 #include "proc/spinlock.h"
 #include "arch/x86_64/gdt.h"
+#include "arch/x86_64/cpu.h"
 
 /* Maximum CPUs supported */
-#define MAX_CPUS 16
+#define MAX_CPUS CPU_MAX
 
 /* Offset of kernel_rsp in PerCpu — must match assembly */
 #define PERCPU_KERNEL_RSP_OFFSET 24
@@ -36,6 +37,9 @@ typedef struct __attribute__((aligned(64))) {
 
     /* AP startup synchronization */
     volatile int online;
+
+    /* CPU_CORE_* from CPUID 0x1A (hybrid parts), for the scheduler (ADR-0003) */
+    uint8_t core_type;
 } PerCpu;
 
 /* Global array of per-CPU data */

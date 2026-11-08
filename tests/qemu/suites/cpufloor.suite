@@ -1,0 +1,2 @@
+# qemu.cpufloor (M1-01): booted on a CPU below x86-64-v3, the kernel stops
+# before init runs, so nothing here is executed.

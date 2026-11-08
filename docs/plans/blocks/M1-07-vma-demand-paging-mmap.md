@@ -51,4 +51,8 @@ kernel; TLB shootdown works across CPUs (ADR-0004).
 
 **Notes.**
 - From M0-02: a user page fault still halts the kernel (no SIGSEGV), and the user stack is a fixed 64 KiB
-  (`USER_STACK_PAGES` 16). Growable stacks and fault-kills belong here or in M1-01.
+  (`USER_STACK_PAGES` 16). Growable stacks and fault-kills belong here.
+- From M1-01: signal frames are built only at syscall exit, from the `SyscallFrame` (`sig_setup_frame` in
+  proc/signal.c). A SIGSEGV with a handler raised by a page fault needs the same frame built from the interrupt
+  frame and a return through `iretq`; without a handler, ending the process with `proc_exit` is enough. Other
+  user exceptions (#UD, #GP, #DE, #XM, #MF, #DB, #AC) also still halt the kernel today.

@@ -208,16 +208,6 @@ static int exec_copy_vector(uint64_t uvec, ExecStrings *s, int is_env) {
     }
 }
 
-/* Reset a caught signal's handler to SIG_DFL: the old image's code is gone.
- * Ignored signals stay ignored and pending ones stay pending (Linux). */
-static void exec_reset_signals(Process *p) {
-    for (int i = 0; i < NSIG; i++) {
-        if (p->sig.handlers[i] != SIG_DFL && p->sig.handlers[i] != SIG_IGN)
-            p->sig.handlers[i] = SIG_DFL;
-    }
-    p->sig.restoring = 0;
-}
-
 void proc_enter_user(Process *p, const ElfLoadResult *elf, ExecStrings *strings,
                      const char *execfn, uint8_t *stack_buf) {
     ExecAux aux;
@@ -233,6 +223,8 @@ void proc_enter_user(Process *p, const ElfLoadResult *elf, ExecStrings *strings,
      * and crashes if poll fails. Always 0 until poll exists (M1-18). */
     aux.secure = 0;
     aux.hwcap = cpu_hwcap();
+    aux.hwcap2 = cpu_hwcap2();
+    aux.minsigstksz = sig_frame_max_size();
     cpu_random_fill(aux.random, sizeof(aux.random));
 
     /* Fits by construction: EXEC_STACK_BUF covers EXEC_ARG_MAX plus the rest */
@@ -303,7 +295,7 @@ static int64_t sys_execve(uint64_t path_addr, uint64_t argv_addr, uint64_t envp_
     }
     if (err == 0) err = elf_load(elf_buf, file_size, new_pml4, &result);
     kfree(elf_buf);
-    if (err == 0) err = vmm_map_user_stack(new_pml4);
+    if (err == 0) err = vmm_map_user_stack(new_pml4, result.stack_exec);
     if (err != 0) {
         if (new_pml4 != 0) vmm_free_user_pages(new_pml4);
         kfree(strings);
@@ -327,7 +319,7 @@ static int64_t sys_execve(uint64_t path_addr, uint64_t argv_addr, uint64_t envp_
     p->page_table = new_pml4;
     p->brk_start = result.brk_start;
     p->brk_current = result.brk_start;
-    exec_reset_signals(p);
+    sig_exec_reset(&p->sig);
     paging_write_cr3(new_pml4);
     vmm_free_user_pages(old_pml4);
 
@@ -419,9 +411,9 @@ static int64_t sys_kill(uint64_t pid_arg, uint64_t signo, uint64_t a2,
     return sig_send((uint32_t)pid, (int)signo);
 }
 
-/* rt_sigaction(sig, act, oact, sigsetsize) — 13. Stores the handler only:
- * sa_flags, sa_mask and sa_restorer are accepted and ignored, and delivery still
- * uses arc_os's own frame and trampoline. M1-01 implements them. */
+/* rt_sigaction(sig, act, oact, sigsetsize) — 13. Linux semantics: handler,
+ * sa_flags (SA_RESTORER, SA_NODEFER, SA_RESETHAND act at delivery; the rest
+ * are stored), sa_restorer and sa_mask. */
 static int64_t sys_rt_sigaction(uint64_t signo, uint64_t act_addr, uint64_t oact_addr,
                                 uint64_t sigsetsize, uint64_t a4, uint64_t a5) {
     (void)a4; (void)a5;
@@ -430,41 +422,25 @@ static int64_t sys_rt_sigaction(uint64_t signo, uint64_t act_addr, uint64_t oact
     if (sigsetsize != ARC_SIGSET_SIZE) return -EINVAL;
     if (signo < 1 || signo >= NSIG) return -EINVAL;
     if (act_addr != 0 && (signo == SIGKILL || signo == SIGSTOP)) return -EINVAL;
-    if (act_addr != 0 && !user_ptr_valid((const void *)act_addr, sizeof(struct kernel_sigaction)))
-        return -EFAULT;
-    if (oact_addr != 0 && !user_ptr_valid((void *)oact_addr, sizeof(struct kernel_sigaction)))
-        return -EFAULT;
 
-    sig_handler_t old = p->sig.handlers[signo];
-    if (act_addr != 0) {
-        /* Read act before writing oact: they may be the same buffer */
-        struct kernel_sigaction act = *(const struct kernel_sigaction *)act_addr;
-        sig_set_handler(&p->sig, (int)signo, (sig_handler_t)act.sa_handler);
-    }
-    if (oact_addr != 0) {
-        struct kernel_sigaction *oact = (struct kernel_sigaction *)oact_addr;
-        memset(oact, 0, sizeof(*oact));
-        oact->sa_handler = (uint64_t)old;
-    }
+    struct kernel_sigaction act, old;
+    if (act_addr != 0 && copy_from_user(&act, (const void *)act_addr, sizeof(act)) != 0) return -EFAULT;
+    if (oact_addr != 0 && !user_ptr_valid((void *)oact_addr, sizeof(old))) return -EFAULT;
+    int err = sig_set_action(&p->sig, (int)signo, act_addr ? &act : NULL, &old);
+    if (err != 0) return err;
+    if (oact_addr != 0 && copy_to_user((void *)oact_addr, &old, sizeof(old)) != 0) return -EFAULT;
     return 0;
 }
 
-/* rt_sigreturn() — 15: restore the context saved by signal delivery */
+/* rt_sigreturn() — 15. The handler's ret popped pretcode, so the frame starts
+ * 8 bytes below the restorer's RSP; the context comes back at syscall exit. */
 static int64_t sys_rt_sigreturn(uint64_t a0, uint64_t a1, uint64_t a2,
                                 uint64_t a3, uint64_t a4, uint64_t a5) {
     (void)a0; (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
     Process *p = proc_current();
     if (p == NULL) return -ENOSYS;
-
-    /* The handler's ret popped ret_addr, the frame's last field, so the frame
-     * ends at the trampoline's RSP (see sig_setup_frame). */
-    uint64_t frame_addr = syscall_user_rsp() - sizeof(SignalFrame);
-    if (!user_ptr_valid((void *)frame_addr, sizeof(SignalFrame))) return -EFAULT;
-
-    SignalFrame *sf = (SignalFrame *)frame_addr;
-    p->sig.restore_frame = *sf;
-    p->sig.restoring = 1;
-    return 0;  /* dummy — sig_maybe_deliver will override RAX */
+    sig_request_return(&p->sig, syscall_user_rsp() - sizeof(uint64_t));
+    return 0;  /* replaced by the frame's RAX in sig_maybe_deliver */
 }
 
 /* getuid() — 102: real user ID */

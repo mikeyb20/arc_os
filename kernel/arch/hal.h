@@ -26,6 +26,7 @@
 #include "arch/x86_64/msr.h"
 #include "arch/x86_64/fpu.h"     /* fpu_*, arch_thread_switch, arch_set_fs_base */
 #include "arch/x86_64/cpuid.h"   /* cpu_hwcap, cpu_random_fill */
+#include "arch/x86_64/cpu.h"     /* CPU features, floor, core types */
 
 /* ==================================================================
  * CPU Initialization & Control

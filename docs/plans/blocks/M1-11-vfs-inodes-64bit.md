@@ -42,4 +42,5 @@ cache and ext2. Today's `VfsNode` read/write take 32-bit offsets, which caps fil
 - L block: a clean stopping point is after the core types + ramfs + devfs + pipe + tty are converted and passing.
 
 **Notes.**
--
+- From M1-01: procfs inode numbers overlap. `meminfo` is 2001 and `/proc/<pid>` is 2000 + pid, so it shares a
+  number with `/proc/1`; `/proc/cpuinfo` took 1998 to stay clear. 64-bit inodes should give procfs a real scheme.

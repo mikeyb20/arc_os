@@ -15,7 +15,7 @@ memory is both writable and executable (knowledge-os.md §3.2).
 1. EFER.NXE. Kernel mappings: `.text` read + execute, `.rodata` read-only, `.data`/`.bss` read-write + NX, the
    HHDM read-write + NX.
 2. User mappings follow ELF segment flags and `PROT_EXEC`. The stack is NX unless `PT_GNU_STACK` asks for
-   execute (follow Linux).
+   execute (follow Linux). The stack part is done (M1-01: `vmm_map_user_stack(pml4, exec)`).
 3. CR4.SMEP and CR4.SMAP when the CPU has them. `STAC`/`CLAC` only inside the user-copy helpers. Any other kernel
    access to user memory panics with a message naming the function.
 4. W^X: kernel mappings are never writable and executable at once. User space follows Linux (W+X allowed), since

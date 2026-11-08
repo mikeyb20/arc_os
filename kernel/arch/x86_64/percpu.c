@@ -5,6 +5,7 @@
 
 #include "arch/x86_64/percpu.h"
 #include "arch/x86_64/gdt.h"
+#include "arch/x86_64/cpu.h"
 #include "lib/mem.h"
 #include "lib/kprintf.h"
 
@@ -23,6 +24,7 @@ void percpu_init_bsp(void) {
     bsp->run_queue_head = NULL;
     bsp->run_queue_tail = NULL;
     bsp->online = 1;
+    bsp->core_type = cpu_core_type_detect();
 
     /* Set GS base to point to this CPU's data */
     percpu_set_gs_base(bsp);
@@ -44,6 +46,14 @@ void percpu_init_ap(uint32_t cpu_id, uint32_t apic_id) {
     ap->run_queue_head = NULL;
     ap->run_queue_tail = NULL;
     ap->online = 0;
+    ap->core_type = cpu_core_type_detect();   /* runs on the AP itself */
 
     percpu_set_gs_base(ap);
+}
+
+int cpu_describe(uint32_t cpu, uint32_t *apic_id, uint8_t *core_type) {
+    if (cpu >= MAX_CPUS || !percpu_data[cpu].online) return -1;
+    *apic_id = percpu_data[cpu].apic_id;
+    *core_type = percpu_data[cpu].core_type;
+    return 0;
 }

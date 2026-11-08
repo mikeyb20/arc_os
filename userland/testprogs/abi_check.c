@@ -243,7 +243,18 @@ static void test_rt_sigaction(void) {
     CHECK(raw4(__NR_rt_sigaction, SIGUSR1, 0, (long)&old, 8) == 0);
     CHECK(old.sa_handler == (unsigned long)on_usr1);
 
-    /* Delivery goes through the trampoline, which calls rt_sigreturn (15) */
+    /* Linux x86_64 needs SA_RESTORER: without one, delivery is a SIGSEGV */
+    pid_t c = fork();
+    if (c == 0) {
+        kill(getpid(), SIGUSR1);
+        _exit(0);
+    }
+    int status = 0;
+    CHECK(waitpid(c, &status, 0) == c && WIFSIGNALED(status) && WTERMSIG(status) == SIGSEGV);
+
+    /* libc signal() sets the restorer; the handler returns through it to
+     * rt_sigreturn (15) */
+    CHECK(signal(SIGUSR1, on_usr1) == on_usr1);
     CHECK(kill(getpid(), SIGUSR1) == 0);
     CHECK(got_usr1 == SIGUSR1);
 

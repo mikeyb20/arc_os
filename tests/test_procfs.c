@@ -10,7 +10,7 @@
 #define ARCHOS_MM_PMM_H
 #define ARCHOS_BOOT_BOOTINFO_H
 #define ARCHOS_MM_KMALLOC_H
-#define ARCHOS_ARCH_X86_64_PIT_H
+#define ARCHOS_ARCH_HAL_H
 #define ARCHOS_PROC_PROCESS_H
 #define ARCHOS_PROC_THREAD_H
 #define ARCHOS_PROC_SIGNAL_H
@@ -135,6 +135,25 @@ static void setup_test_procs(void) {
 static uint64_t pmm_get_total_pages(void) { return stub_total_pages; }
 static uint64_t pmm_get_free_pages(void) { return stub_free_pages; }
 static uint64_t pit_get_uptime_ms(void) { return stub_uptime_ms; }
+
+/* CPU queries (arch/hal.h -> cpu.h): CPUs 0 (P-core) and 2 (E-core) online */
+#define CPU_MAX 16
+typedef struct {
+    char vendor[13];
+} CpuFeatures;
+static const CpuFeatures stub_features = {"GenuineIntel"};
+static const CpuFeatures *cpu_features(void) {
+    return &stub_features;
+}
+static int cpu_describe(uint32_t cpu, uint32_t *apic_id, uint8_t *core_type) {
+    if (cpu != 0 && cpu != 2) return -1;
+    *apic_id = cpu * 2;
+    *core_type = cpu == 0 ? 0x40 : 0x20;
+    return 0;
+}
+static const char *cpu_core_type_name(uint8_t type) {
+    return type == 0x40 ? "P" : type == 0x20 ? "E" : "-";
+}
 
 static void kmalloc_get_stats(HeapStats *out) {
     *out = stub_heap_stats;
@@ -272,6 +291,18 @@ TEST(cmdline_content) {
     return 0;
 }
 
+TEST(cpuinfo_content) {
+    VfsNode *root = procfs_init();
+    VfsNode *n = root->ops->lookup(root, "cpuinfo");
+    ASSERT_TRUE(n != NULL);
+    char buf[512] = {0};
+    int rd = n->ops->read(n, buf, 0, sizeof(buf) - 1);
+    ASSERT_TRUE(rd > 0);
+    ASSERT_STR_EQ(buf, "processor\t: 0\nvendor_id\t: GenuineIntel\napicid\t\t: 0\ncore type\t: P\n\n"
+                       "processor\t: 2\nvendor_id\t: GenuineIntel\napicid\t\t: 4\ncore type\t: E\n\n");
+    return 0;
+}
+
 TEST(pid_status_content) {
     setup_test_procs();
     VfsNode *root = procfs_init();
@@ -298,11 +329,12 @@ TEST(readdir_root) {
     VfsNode *root = procfs_init();
     VfsDirEntry entries[16];
     int count = root->ops->readdir(root, entries, 16);
-    /* meminfo + uptime + cmdline + 3 non-terminated PIDs (0, 1, 2) */
-    ASSERT_EQ(count, 6);
+    /* meminfo + uptime + cmdline + cpuinfo + 3 non-terminated PIDs (0, 1, 2) */
+    ASSERT_EQ(count, 7);
     ASSERT_STR_EQ(entries[0].name, "meminfo");
     ASSERT_STR_EQ(entries[1].name, "uptime");
     ASSERT_STR_EQ(entries[2].name, "cmdline");
+    ASSERT_STR_EQ(entries[3].name, "cpuinfo");
     return 0;
 }
 
@@ -329,20 +361,11 @@ TEST(no_create_ops) {
 /* --- Suite --- */
 
 TestCase procfs_tests[] = {
-    TEST_ENTRY(init_returns_non_null),
-    TEST_ENTRY(root_is_directory),
-    TEST_ENTRY(lookup_meminfo),
-    TEST_ENTRY(lookup_uptime),
-    TEST_ENTRY(lookup_pid),
-    TEST_ENTRY(lookup_nonexistent_pid),
-    TEST_ENTRY(lookup_non_numeric),
-    TEST_ENTRY(meminfo_content),
-    TEST_ENTRY(meminfo_partial_read),
-    TEST_ENTRY(uptime_content),
-    TEST_ENTRY(cmdline_content),
-    TEST_ENTRY(pid_status_content),
-    TEST_ENTRY(readdir_root),
-    TEST_ENTRY(readdir_pid_dir),
+    TEST_ENTRY(init_returns_non_null), TEST_ENTRY(root_is_directory), TEST_ENTRY(lookup_meminfo),
+    TEST_ENTRY(lookup_uptime),         TEST_ENTRY(lookup_pid),        TEST_ENTRY(lookup_nonexistent_pid),
+    TEST_ENTRY(lookup_non_numeric),    TEST_ENTRY(meminfo_content),   TEST_ENTRY(meminfo_partial_read),
+    TEST_ENTRY(uptime_content),        TEST_ENTRY(cmdline_content),   TEST_ENTRY(cpuinfo_content),
+    TEST_ENTRY(pid_status_content),    TEST_ENTRY(readdir_root),      TEST_ENTRY(readdir_pid_dir),
     TEST_ENTRY(no_create_ops),
 };
 int procfs_test_count = sizeof(procfs_tests) / sizeof(procfs_tests[0]);

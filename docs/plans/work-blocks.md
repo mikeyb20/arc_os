@@ -90,7 +90,7 @@ Start every block with `/os/implement-block <ID>`. These rules are what keep ses
 | M0-04 | Syscall inventory | S | R | U | M0-03 | Exact syscalls, ioctls and files used by musl, C++, SQLite, zstd, llama.cpp | done |
 | M0-05 | Move syscalls to Linux numbers | M | D | K | M0-02, M0-04 | No old numbers left; shell and coreutils pass | done |
 | M0-06 | Linux process start + musl hello | M | D | K | M0-05 | Programs built with stock `musl-gcc -static` run in QEMU | done |
-| M0-07 | Manifest schemas | S | R | C | — | Schemas and examples validated in CI | review (#14) |
+| M0-07 | Manifest schemas | S | R | C | — | Schemas and examples validated in CI | done |
 | M0-08 | Budget checks in the QEMU harness | S | R | I | M0-02 | A size or count past its limit fails CI, named (ADR-0019) | done |
 | M0-09 | Code hygiene checks | S | R | I | M0-08 | Duplicates, copied helpers, x86 includes outside arch, long functions and untracked TODOs can't grow (ADR-0020) | done |
 | M0-10 | Free reaped processes | M | D | K | M0-09 | `pages_leaked` and `heap_leaked_bytes` budgets are 0 on every QEMU suite | done |
@@ -99,7 +99,7 @@ Start every block with `/os/implement-block <ID>`. These rules are what keep ses
 
 | ID | Block | Size | Tier | Lane | Needs | Done when | Status |
 |---|---|---|---|---|---|---|---|
-| M1-01 | FPU state, CPU floor, Linux signal frames | M | D | K | M0-06 | AVX2 state survives switches and signals; no SIMD in the kernel | todo |
+| M1-01 | FPU state, CPU floor, Linux signal frames | M | D | K | M0-06 | AVX2 state survives switches and signals; no SIMD in the kernel | in progress |
 | M1-02 | Page descriptors + buddy allocator | M | D | K | M0-02 | Descriptor array from the PMM; 2 MiB blocks available | todo |
 | M1-02b | Slab allocator | M | D | K | M1-02 | kmalloc/kfree O(1) from slab caches; first-fit heap gone (ADR-0019) | todo |
 | M1-03 | Per-CPU entry paths + x2APIC | M | D | K | M0-06 | `-smp 4` in xAPIC and x2APIC modes; no global syscall stack | todo |

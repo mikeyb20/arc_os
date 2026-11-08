@@ -43,6 +43,18 @@ add_test(NAME qemu.musl COMMAND ${_qemu_test} --suite musl
     --expect "start_basic\\(libarc\\): PASS"
     --expect "writev ok")
 
+# FPU state and signal frames (M1-01, ADR-0003): AVX2 registers survive
+# preemption and signals; Linux rt_sigframe with musl's sigaction
+add_test(NAME qemu.fpu COMMAND ${_qemu_test} --suite fpu --module sig_fpu --module fpu_avx
+    --expect "sig_fpu: 0 failures"
+    --expect "fpu_avx: 0 failures"
+    --expect "\\[FPU\\] XSAVE on")
+
+# CPU floor (M1-01): on a CPU without AVX2 the kernel says why and stops
+add_test(NAME qemu.cpufloor COMMAND ${_qemu_test} --suite cpufloor --cpu Nehalem
+    --expect-exit 0x7e --timeout 60
+    --expect "CPU floor: this CPU lacks: .*AVX2")
+
 # Harness self-checks: a failing program is reported by name and reason,
 # and a kernel panic ends the run within seconds instead of at the timeout.
 add_test(NAME qemu.selftest.fail COMMAND ${_qemu_test} --suite selftest --module testfail)
@@ -50,7 +62,8 @@ set_tests_properties(qemu.selftest.fail PROPERTIES
     PASS_REGULAR_EXPRESSION "FAIL testfail exit=3")
 add_test(NAME qemu.selftest.panic COMMAND ${_qemu_test} --suite kpanic --expect-panic --timeout 30)
 
-set_tests_properties(qemu.smoke qemu.userland qemu.abi qemu.musl qemu.selftest.fail qemu.selftest.panic
+set_tests_properties(qemu.smoke qemu.userland qemu.abi qemu.musl qemu.fpu qemu.cpufloor
+    qemu.selftest.fail qemu.selftest.panic
     PROPERTIES LABELS qemu TIMEOUT 180 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     FIXTURES_SETUP qemu_logs)
 
@@ -68,3 +81,9 @@ add_test(NAME qemu.budgets.selftest COMMAND ${_budget_check}
 set_tests_properties(qemu.budgets qemu.budgets.selftest
     PROPERTIES LABELS qemu TIMEOUT 30 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     FIXTURES_REQUIRED qemu_logs)
+
+# kernel.no_simd (M1-01, ADR-0003): no instruction in kernel.elf names an
+# XMM/YMM/ZMM or mask register. Needs only the cross build, no boot.
+add_test(NAME kernel.no_simd COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/no-simd-check.py
+    ${ARC_CROSS_BUILD_DIR}/kernel.elf)
+set_tests_properties(kernel.no_simd PROPERTIES LABELS qemu TIMEOUT 60)

@@ -38,6 +38,7 @@ set(KERNEL_C_SOURCES
     mm/mm_syscalls.c
     mm/kmalloc.c
     arch/x86_64/syscall.c
+    arch/x86_64/cpu.c
     arch/x86_64/fpu.c
     arch/x86_64/lapic.c
     arch/x86_64/ioapic.c
