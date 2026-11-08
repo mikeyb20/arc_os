@@ -24,6 +24,8 @@
 **Done when.**
 - [ ] Tests pass in QEMU with `-m 4G`.
 
+**Cost.** fork copies PTEs, never data; a COW fault copies one page (or none when refcount is 1); a huge-page fault is one order-9 allocation; a split is 512 PTE writes.
+
 **Watch out.**
 - Refcounts are atomic and the copy-or-reuse decision happens under the page-table lock.
 - Splitting a huge mapping needs a TLB flush (shootdown from M1-07).

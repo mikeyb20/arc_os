@@ -33,6 +33,8 @@
 **Done when.**
 - [ ] Tests pass in TCG and in CI.
 
+**Cost.** Futex wait/wake O(1) average through a hash keyed by (mm, address); per-thread overhead is the kernel stack, guard page, XSAVE area and a slab-allocated `struct thread`.
+
 **Watch out.**
 - Per-thread signals are M1-17. Until then, process-wide signals go to the main thread.
 - The XSAVE area and FS base belong to the thread, not the process.

@@ -23,6 +23,7 @@ RAM; on both real machines, arc_os boots to the shell.
 5. Tick the M1 boxes in knowledge-os.md §8 and record findings in its review history.
 
 **Done when.**
+- [ ] `arc.bench=1` results from both machines are in `docs/perf/` and compared with M1-04's (ADR-0019).
 - [ ] `qemu.m1_done` passes in CI (or locally if the CI disk is too small; say so in Notes).
 - [ ] Michael's photos or notes from both machines are in the PR.
 

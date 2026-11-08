@@ -28,3 +28,4 @@ Rules:
 | [0016](0016-kernel-memory-sizing.md) | Per-page metadata from the PMM | Accepted |
 | [0017](0017-power-management.md) | Power management is first-class | Accepted |
 | [0018](0018-portable-usb-mode.md) | Portable mode: runs entirely from the USB key | Accepted |
+| [0019](0019-efficiency-budgets-and-allocators.md) | Efficiency rules, budgets and kernel allocators | Accepted |

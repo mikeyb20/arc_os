@@ -21,7 +21,7 @@ Michael. Any choice that would force a later rewrite is flagged before code is w
 
 | # | Milestone | Done when |
 |---|---|---|
-| M0 | Lock-in decisions | ADRs 0001–0018 written; syscalls migrated to the Linux ABI; schemas, dev container, CI and QEMU test harness in place |
+| M0 | Lock-in decisions | ADRs 0001–0019 written; syscalls migrated to the Linux ABI; schemas, dev container, CI and QEMU test harness in place |
 | M1 | Compute kernel | A 4-thread AVX2 program runs on 4 CPUs and memory-maps a 10 GB ext2 file with 4 GB RAM in QEMU; arc_os boots to the shell on both real test machines |
 | M2 | Toolchain + first LLM | `ask "what is hypothermia"` answers inside arc_os in QEMU (4 CPUs, 4 GB); tokens/sec and RAM budget recorded |
 | M3 | Knowledge layer | A medical, a food and a repair question each get a cited answer from the 32 GB pack set; the library is usable with no LLM |
@@ -145,6 +145,7 @@ Cheap now, expensive later. Each has an ADR in `docs/decisions/`.
 | 16 | Per-page metadata from the PMM at boot | [0016](../decisions/0016-kernel-memory-sizing.md) |
 | 17 | Power management first-class: tickless, C-states, HWP, profiles, battery, driver suspend/resume hooks | [0017](../decisions/0017-power-management.md) |
 | 18 | Portable mode: runs entirely from the USB key; own partition types; never writes to host disks | [0018](../decisions/0018-portable-usb-mode.md) |
+| 19 | Efficiency: cost lines per block, hot-path rules, CI budgets (counts and sizes), slab allocator, 32-byte page descriptors, page cache ready for large pages | [0019](../decisions/0019-efficiency-budgets-and-allocators.md) |
 
 ## 6. Data design
 
@@ -188,7 +189,7 @@ channel, on top of host-side unit tests. The work is split into PR-sized blocks 
 starts with a planning block that writes its specs.
 
 ### M0 — Lock-in decisions
-- [x] ADRs 0001–0018
+- [x] ADRs 0001–0019
 - [ ] Syscall inventory: run llama.cpp, SQLite and our test programs under `strace` on Linux; record the exact syscall list M1/M2 must provide
 - [ ] Migrate syscalls to Linux x86_64 numbers and semantics in one pass with libarc, userland and tests together
 - [ ] JSON schemas for pack, model and `.arcpkg` manifests, each with `schema_version`
@@ -276,6 +277,7 @@ Static Linux programs may run thanks to the ABI, but that is not a goal.
 
 ## 11. Review history
 
+- **2026-11-08 — Efficiency review** (ADR-0019, approved by Michael). Found an unlocked kernel heap reachable from an interrupt (fixed), no object allocator in the plan (new block M1-02b), a 64-byte vs 32-byte page-descriptor conflict (32 kept), and a 4 KiB-only page-cache design (API made order-agnostic). Added cost lines, hot-path rules and CI budgets on counts and sizes (new block M0-08); real timing stays on hardware checkpoints.
 - **2026-11-07 — Architect review.** Added per-page metadata and eviction; keyword-first retrieval with vector rerank; own doc store instead of a libzim port; early real-hardware boot and MSI-X in M1; Linux semantics (not just numbers); low tier set to 1–2B models.
 - **2026-11-07 — Six-reviewer pass** (junior coder, senior coder, product user, tech enthusiast, OS expert, off-grid operator). Added lock-ins 13–16; syscall inventory, dev container, CI; library reader and images; GGUF wrapping tool; battery awareness; verify-and-repair.
 - **2026-11-07 — Final read-over before committing.** Fixed: battery display contradicted "battery management out of scope" (now only suspend/hibernate is out); COW fork, TSC, SMEP/SMAP and PSF2 fonts from the approved spec were missing from milestone tasks; uACPI missing from the archive list; M1 done-test wording aligned.
