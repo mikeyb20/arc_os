@@ -12,7 +12,7 @@
       "purpose": "Assembler and linker for both cross toolchains (same pin as tools/toolchain.lock)",
       "upstream_url": "https://ftp.gnu.org/gnu/binutils/binutils-2.42.tar.xz",
       "sha256": "f6e4d41fd5fc778b06b7891457b3620da5ecea1006c6a4a41ae998109f85a800",
-      "archive_url": ""
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/binutils-2.42.tar.xz"
     },
     {
       "name": "gcc",
@@ -23,7 +23,7 @@
       "purpose": "C/C++ compilers and libstdc++ (same pin as tools/toolchain.lock)",
       "upstream_url": "https://ftp.gnu.org/gnu/gcc/gcc-14.1.0/gcc-14.1.0.tar.xz",
       "sha256": "e283c654987afe3de9d8080bc0bd79534b5ca0d681a73a11ff2b5d3767426840",
-      "archive_url": ""
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/gcc-14.1.0.tar.xz"
     },
     {
       "name": "gmp",
@@ -33,8 +33,8 @@
       "ships": "build-host",
       "purpose": "GCC prerequisite (version from gcc-14.1.0 contrib/download_prerequisites)",
       "upstream_url": "https://gcc.gnu.org/pub/gcc/infrastructure/gmp-6.2.1.tar.bz2",
-      "sha256": "",
-      "archive_url": ""
+      "sha256": "eae9326beb4158c386e39a356818031bd28f3124cf915f8c5b1dc4c7a36b4d7c",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/gmp-6.2.1.tar.bz2"
     },
     {
       "name": "mpfr",
@@ -44,8 +44,8 @@
       "ships": "build-host",
       "purpose": "GCC prerequisite (version from gcc-14.1.0 contrib/download_prerequisites)",
       "upstream_url": "https://gcc.gnu.org/pub/gcc/infrastructure/mpfr-4.1.0.tar.bz2",
-      "sha256": "",
-      "archive_url": ""
+      "sha256": "feced2d430dd5a97805fa289fed3fc8ff2b094c02d05287fd6133e7f1f0ec926",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/mpfr-4.1.0.tar.bz2"
     },
     {
       "name": "mpc",
@@ -55,8 +55,8 @@
       "ships": "build-host",
       "purpose": "GCC prerequisite (version from gcc-14.1.0 contrib/download_prerequisites)",
       "upstream_url": "https://gcc.gnu.org/pub/gcc/infrastructure/mpc-1.2.1.tar.gz",
-      "sha256": "",
-      "archive_url": ""
+      "sha256": "17503d2c395dfcf106b622dc142683c1199431d095367c6aacba6eec30340459",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/mpc-1.2.1.tar.gz"
     },
     {
       "name": "isl",
@@ -66,8 +66,8 @@
       "ships": "build-host",
       "purpose": "GCC prerequisite (version from gcc-14.1.0 contrib/download_prerequisites)",
       "upstream_url": "https://gcc.gnu.org/pub/gcc/infrastructure/isl-0.24.tar.bz2",
-      "sha256": "",
-      "archive_url": ""
+      "sha256": "fcf78dd9656c10eb8cf9fbd5f59a0b6b01386205fe1934b3b287a0a1898145c0",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/isl-0.24.tar.bz2"
     },
     {
       "name": "musl",
@@ -77,8 +77,8 @@
       "ships": "inside-arc_os",
       "purpose": "C library for ported software (linked statically into arc_os programs)",
       "upstream_url": "https://musl.libc.org/releases/musl-1.2.5.tar.gz",
-      "sha256": "",
-      "archive_url": ""
+      "sha256": "a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/musl-1.2.5.tar.gz"
     },
     {
       "name": "musl-cross-make",
@@ -89,8 +89,8 @@
       "purpose": "Build recipe for the x86_64-linux-musl cross toolchain (M2-01)",
       "upstream_url": "https://github.com/richfelker/musl-cross-make/archive/5e8042e63de29f8473fc3b0b831a587ba284e1a8.tar.gz",
       "commit": "5e8042e63de29f8473fc3b0b831a587ba284e1a8",
-      "sha256": "",
-      "archive_url": ""
+      "sha256": "c4553b236d4acb4e7990860597421f51bfb6ba2a7942f97388af335774397b7e",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/musl-cross-make-5e8042e63de29f8473fc3b0b831a587ba284e1a8.tar.gz"
     },
     {
       "name": "limine-binary",
@@ -101,8 +101,8 @@
       "purpose": "Bootloader binaries used by tools/make-iso.sh (tag v8.7.0-binary, same commit as tools/toolchain.lock)",
       "upstream_url": "https://github.com/limine-bootloader/limine/archive/aad3edd370955449717a334f0289dee10e2c5f01.tar.gz",
       "commit": "aad3edd370955449717a334f0289dee10e2c5f01",
-      "sha256": "",
-      "archive_url": ""
+      "sha256": "9c23ca261778cbe015041c02220ce26f45e05f38fe3e0c9913be71961f9023e5",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/limine-binary-8.7.0.tar.gz"
     },
     {
       "name": "limine",
@@ -113,7 +113,7 @@
       "purpose": "Bootloader source matching the binary release",
       "upstream_url": "https://github.com/limine-bootloader/limine/releases/download/v8.7.0/limine-8.7.0.tar.xz",
       "sha256": "e30c14c35063cbd79b69ed9e05a2843a4ee1d6543424aae8515ad90b7c6e0e70",
-      "archive_url": ""
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/limine-8.7.0.tar.xz"
     },
     {
       "name": "llama.cpp",
@@ -123,8 +123,8 @@
       "ships": "inside-arc_os",
       "purpose": "CPU inference engine behind arc-llm (M2-03)",
       "upstream_url": "https://github.com/ggml-org/llama.cpp/archive/refs/tags/b12198.tar.gz",
-      "sha256": "",
-      "archive_url": ""
+      "sha256": "253cb3ef6f4ff66162989910268ce56965d2b161a63b523c8e2e8df4c4cfb1ae",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/llama.cpp-b12198.tar.gz"
     },
     {
       "name": "sqlite",
@@ -134,8 +134,8 @@
       "ships": "inside-arc_os",
       "purpose": "SQLite amalgamation; FTS5 is built in with -DSQLITE_ENABLE_FTS5 (M2-02)",
       "upstream_url": "https://www.sqlite.org/2026/sqlite-amalgamation-3540100.zip",
-      "sha256": "",
-      "archive_url": ""
+      "sha256": "0a9c8e34352dad46006aa82836d5383bff9dc6bc9ce5a60553c05aa30e6ad1f9",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/sqlite-3.54.1.zip"
     },
     {
       "name": "zstd",
@@ -146,7 +146,7 @@
       "purpose": "Compression for .arcpkg and pack doc stores (hash matches upstream .sha256 file)",
       "upstream_url": "https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz",
       "sha256": "eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3",
-      "archive_url": ""
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/zstd-1.5.7.tar.gz"
     },
     {
       "name": "uacpi",
@@ -156,8 +156,8 @@
       "ships": "inside-arc_os",
       "purpose": "ACPI/AML interpreter (M4-11)",
       "upstream_url": "https://github.com/uACPI/uACPI/archive/refs/tags/7.0.0.tar.gz",
-      "sha256": "",
-      "archive_url": ""
+      "sha256": "4ccdb4c06d06c54116920eb861adf3a87efd3285c762e2e6f3529b52c6d20fa5",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/uacpi-7.0.0.tar.gz"
     },
     {
       "name": "e2fsprogs",
@@ -167,8 +167,8 @@
       "ships": "inside-arc_os",
       "purpose": "mke2fs and e2fsck port (M5-01); host-side image building",
       "upstream_url": "https://mirrors.edge.kernel.org/pub/linux/kernel/people/tytso/e2fsprogs/v1.47.4/e2fsprogs-1.47.4.tar.xz",
-      "sha256": "",
-      "archive_url": ""
+      "sha256": "fd5bf388cbdbe006a3d3b318d983b2948382440acc85a87f1e7d108653e8db0b",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/e2fsprogs-1.47.4.tar.xz"
     },
     {
       "name": "stb_image",
@@ -180,7 +180,7 @@
       "upstream_url": "https://raw.githubusercontent.com/nothings/stb/4e9b368bfc071e97206ea5c6adba68dd0cbf8897/stb_image.h",
       "commit": "4e9b368bfc071e97206ea5c6adba68dd0cbf8897",
       "sha256": "594c2fe35d49488b4382dbfaec8f98366defca819d916ac95becf3e75f4200b3",
-      "archive_url": ""
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/stb_image-4e9b368b.h"
     },
     {
       "name": "spleen",
@@ -191,7 +191,7 @@
       "purpose": "Bitmap console fonts; ships ready-made PSF2 (.psfu) files (M3-05)",
       "upstream_url": "https://github.com/fcambus/spleen/releases/download/2.2.0/spleen-2.2.0.tar.gz",
       "sha256": "ec42925c6b56d2138c862b2f97147c872e472f674bf03423417d827a08d69a89",
-      "archive_url": ""
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/spleen-2.2.0.tar.gz"
     },
     {
       "name": "linux-uapi-ref",
@@ -343,8 +343,8 @@
           "sha256": "e6a7aeffebf22a2d74b5e671ab5ff8bb99b0655cefb544bfca0acc22aa396c2a"
         }
       ],
-      "sha256": "",
-      "archive_url": ""
+      "sha256": "17028d6f48133d476732eca2987c770e2ece4c116653b973d03733cafd3a3cb7",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/linux-uapi-ref-6.12.tar.gz"
     },
     {
       "name": "ext2-doc",
@@ -354,8 +354,8 @@
       "ships": "build-host",
       "purpose": "The Second Extended File System layout spec by Dave Poirier (M1-13, M1-15)",
       "upstream_url": "https://www.nongnu.org/ext2-doc/ext2.html",
-      "sha256": "",
-      "archive_url": ""
+      "sha256": "54bba53b54d8c4576e403be540a532cff7085d32b4963b6a5935b867c9735314",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/ext2-doc-2019.html"
     },
     {
       "name": "tiny-chat-model",
@@ -376,8 +376,8 @@
       "ships": "tests-only",
       "purpose": "Tiny GGUF embedder for retrieval tests (M3)",
       "upstream_url": "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.Q8_0.gguf",
-      "sha256": "",
-      "archive_url": ""
+      "sha256": "3e24342164b3d94991ba9692fdc0dd08e3fd7362e0aacc396a9a5c54a544c3b7",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/tiny-embed-model-nomic-embed-text-v1.5-q8_0.gguf"
     }
   ]
 }
