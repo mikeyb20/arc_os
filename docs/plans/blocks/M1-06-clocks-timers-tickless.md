@@ -30,6 +30,8 @@
 
 **Done when.**
 - [ ] Tests pass. The PIT is used only for calibration.
+- [ ] Files this block rewrites outside `kernel/arch/` include `arch/hal.h` or arch-neutral headers, not
+  `arch/x86_64/`; the `arch_includes_outside_arch` limit in the budgets file is lowered to match (ADR-0020).
 
 **Watch out.**
 - TCG may report a TSC that isn't invariant. Fall back cleanly and log it.

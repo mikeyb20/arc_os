@@ -12,8 +12,8 @@ impacts readability or correctness.
 ## Step 1: Load Context
 
 1. Identify the feature branch: `git branch --show-current`
-2. Load the diff: `git diff main..HEAD`
-3. Read the plan: check scratchpad(s) for the plan path, or find it in `docs/plans/`
+2. Load the diff: `git diff origin/master...HEAD` (the default branch is `master`)
+3. Read the plan: the block spec in `docs/plans/blocks/<ID>-*.md`, including its Notes
 4. Read CLAUDE.md for project conventions
 
 ## Step 2: Spec Compliance
@@ -23,7 +23,7 @@ For each item in the plan:
 - Does the implementation match the specified approach?
 - Are the interfaces exactly as defined in the plan?
 
-Flag any deviations. Check scratchpad "Decisions Made" section —
+Flag any deviations. Check the block's Notes and the PR description —
 documented deviations are acceptable if the rationale is sound.
 Undocumented deviations are findings.
 
