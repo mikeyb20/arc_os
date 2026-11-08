@@ -17,6 +17,7 @@ add_executable(test_runner
     test_syscall.c
     test_elf.c
     test_fd.c
+    test_fd_refs.c
     test_vmm.c
     test_spinlock.c
     test_gdt.c
@@ -94,6 +95,7 @@ add_test(NAME test_vfs      COMMAND test_runner --suite vfs)
 add_test(NAME test_syscall  COMMAND test_runner --suite syscall)
 add_test(NAME test_elf      COMMAND test_runner --suite elf)
 add_test(NAME test_fd       COMMAND test_runner --suite fd)
+add_test(NAME test_fd_refs  COMMAND test_runner --suite fd_refs)
 add_test(NAME test_vmm      COMMAND test_runner --suite vmm)
 add_test(NAME test_spinlock  COMMAND test_runner --suite spinlock)
 add_test(NAME test_gdt       COMMAND test_runner --suite gdt)

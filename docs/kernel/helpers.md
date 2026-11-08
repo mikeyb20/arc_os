@@ -24,6 +24,8 @@ Kernel and user space are separate worlds: the same function in `kernel/lib` and
 | Spinlock (IRQ-safe) | `spinlock_acquire`, `spinlock_release` | `kernel/proc/spinlock.h` |
 | Interrupts off/on around a section | `irq_save`, `irq_restore` | `kernel/proc/spinlock.h` |
 | Sleeping locks and waits | mutex, semaphore, condvar, `wq_sleep` / `wq_wake` | `kernel/proc/{mutex,semaphore,condvar,waitqueue}.h` |
+| Close an fd, copy an fd (pipe/socket refs) | `fd_close`, `fd_file_addref` | `kernel/proc/fd.h` |
+| End the current process (exit, fatal signal) | `proc_exit` | `kernel/proc/proc_syscalls.h` |
 | Hardware access from portable code | `hal_*`, FPU state, CPUID | `kernel/arch/hal.h` |
 | Linux ABI values and structs | `__NR_*`, errno, flags, `struct stat`, ... | `kernel/include/uapi/` |
 

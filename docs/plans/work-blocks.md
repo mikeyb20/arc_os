@@ -10,16 +10,16 @@
 
 | Milestone | Blocks | Session units | With allowance |
 |---|---|---|---|
-| M0 Lock-in decisions | 10 | 7.5 | 9.8 |
+| M0 Lock-in decisions | 10 | 8.0 | 10.5 |
 | M1 Compute kernel | 23 | 29.0 | 41.7 |
 | M2 Toolchain + first LLM | 7 | 7.0 | 9.4 |
 | M3 Knowledge layer | 12 | 12.0 | 16.1 |
 | M4 Real hardware | 15 | 16.0 | 21.1 |
 | M5 Packages + installer | 7 | 7.5 | 9.8 |
-| **Total** | **74** | **79.0** | **107.9** |
+| **Total** | **74** | **79.5** | **108.6** |
 
-- **74 blocks**: 12 small, 51 medium, 11 large. The 35 deep (D) blocks carry
-  43.5 of the 79.0 session units.
+- **74 blocks**: 11 small, 52 medium, 11 large. The 35 deep (D) blocks carry
+  44.0 of the 79.5 session units.
 - **Session units:** S = 0.5, M = 1, L = 2. "With allowance" adds debugging and rework: D blocks × 1.5, R blocks
   × 1.2. That allowance is an estimate, not a measurement; recheck it after M1, the first milestone with real
   numbers. Budget about **108 sessions**.
@@ -89,8 +89,8 @@ Start every block with `/os/implement-block <ID>`. These rules are what keep ses
 | M0-06 | Linux process start + musl hello | M | D | K | M0-05 | Programs built with stock `musl-gcc -static` run in QEMU | done |
 | M0-07 | Manifest schemas | S | R | C | — | Schemas and examples validated in CI | todo |
 | M0-08 | Budget checks in the QEMU harness | S | R | I | M0-02 | A size or count past its limit fails CI, named (ADR-0019) | done |
-| M0-09 | Code hygiene checks | S | R | I | M0-08 | Duplicates, copied helpers, x86 includes outside arch, long functions and untracked TODOs can't grow (ADR-0020) | review (#12) |
-| M0-10 | Free reaped processes | S | D | K | M0-09 | `pages_leaked` and `heap_leaked_bytes` budgets are 0 on every QEMU suite | todo |
+| M0-09 | Code hygiene checks | S | R | I | M0-08 | Duplicates, copied helpers, x86 includes outside arch, long functions and untracked TODOs can't grow (ADR-0020) | done |
+| M0-10 | Free reaped processes | M | D | K | M0-09 | `pages_leaked` and `heap_leaked_bytes` budgets are 0 on every QEMU suite | review (#13) |
 
 ### M1 — Compute kernel
 
@@ -331,3 +331,5 @@ Secure Boot through a signed shim and our own key.
 - **2026-11-08** — M0-08's leak check found that every exited process leaks ~54 pages and ~40 KB of kernel
   heap (`wait4` frees nothing). Michael approved a new block, M0-10 (free reaped processes); M0-08 freezes the
   leak budgets at today's level until then. M0 order from here: M0-08, M0-09, M0-10, then M0-07.
+- **2026-11-08** — M0-10 grows from S to M: closing a socket never freed it (the last leak once reaped processes
+  were freed), and Michael chose to fix it in M0-10 (socket refcounts, free on last close, RST to the peer).

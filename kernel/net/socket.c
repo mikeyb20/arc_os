@@ -35,6 +35,7 @@ int socket_create(uint16_t family, uint16_t type, uint16_t protocol) {
     sk->family = family;
     sk->type = type;
     sk->state = SOCK_STATE_CLOSED;
+    sk->refs = 1;                     /* the fd socket() installs */
     sk->lock = (Spinlock)SPINLOCK_INIT;
     wq_init(&sk->rx_wq);
     wq_init(&sk->accept_wq);
@@ -63,18 +64,62 @@ Socket *socket_get(int idx) {
     return socket_table[idx];
 }
 
+/* Abortive close: tell the peer of a TCP connection that it is gone (RST).
+ * arc_os has no lingering close (FIN, TIME_WAIT) yet. */
+static void socket_reset_peer(Socket *sk) {
+    if (sk->type != SOCK_STREAM) return;
+    switch (sk->state) {
+    case SOCK_STATE_SYN_RECV:
+    case SOCK_STATE_ESTABLISHED:
+    case SOCK_STATE_CLOSE_WAIT: {
+        NetIf *nif = netif_get_default();
+        if (nif != NULL) {
+            tcp_send(nif, sk->local_ip, sk->local_port, sk->remote_ip, sk->remote_port, sk->snd_nxt, sk->rcv_nxt,
+                     TCP_RST | TCP_ACK, NULL, 0);
+        }
+        break;
+    }
+    default:
+        break;
+    }
+}
+
 void socket_free(int idx) {
     if (idx < 0 || idx >= SOCKET_MAX) return;
     spinlock_acquire(&socket_table_lock);
     Socket *sk = socket_table[idx];
     socket_table[idx] = NULL;
     spinlock_release(&socket_table_lock);
-    if (sk) {
-        sk->closed = 1;
-        wq_wake_all(&sk->rx_wq);
-        wq_wake_all(&sk->accept_wq);
-        kfree(sk);
+    if (sk == NULL) return;
+
+    /* Out of the table, so packet delivery no longer finds it. Interrupts are
+     * off in syscalls on one CPU, so no receive path holds it either; M1-05
+     * (SMP) needs the table lock in find_socket before this is safe there. */
+    spinlock_acquire(&sk->lock);
+    sk->closed = 1;
+    /* Connections a listener received but nobody accepted live only here */
+    while (sk->accept_head != sk->accept_tail) {
+        Socket *child = sk->accept_queue[sk->accept_head];
+        sk->accept_head = (sk->accept_head + 1) % SOCK_BACKLOG_MAX;
+        socket_reset_peer(child);
+        kfree(child);
     }
+    spinlock_release(&sk->lock);
+    socket_reset_peer(sk);
+    wq_wake_all(&sk->rx_wq);
+    wq_wake_all(&sk->accept_wq);
+    kfree(sk);
+}
+
+void socket_addref(int idx) {
+    Socket *sk = socket_get(idx);
+    if (sk != NULL) sk->refs++;
+}
+
+void socket_release(int idx) {
+    Socket *sk = socket_get(idx);
+    if (sk == NULL) return;
+    if (--sk->refs <= 0) socket_free(idx);
 }
 
 uint16_t socket_alloc_ephemeral_port(void) {
@@ -134,9 +179,11 @@ int socket_accept(Socket *sk, SockAddrIn *addr_out) {
     spinlock_release(&socket_table_lock);
 
     if (idx < 0) {
+        socket_reset_peer(child);
         kfree(child);
         return -ENOMEM;
     }
+    child->refs = 1;                  /* the fd accept() installs */
 
     if (addr_out) {
         addr_out->sin_family = AF_INET;

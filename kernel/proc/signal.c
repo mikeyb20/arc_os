@@ -8,7 +8,6 @@
 #include "fs/vfs.h"
 #include "lib/mem.h"
 #include "user_access.h"
-#include "lib/testmode.h"
 #include "proc/proc_syscalls.h"
 
 /* Global: RDI value to pass to signal handler (signo). Set by
@@ -108,20 +107,10 @@ static void sig_continue(Process *p) {
     sched_add_thread(p->main_thread);
 }
 
-/* Terminate a process due to a signal. Mirrors exit(): close fds, become a
- * zombie, wake a parent blocked in wait4 and send it SIGCHLD. */
+/* Terminate the current process p due to a signal: the exit path (proc_exit). */
 static void sig_terminate(Process *p, int signo) {
-    proc_release_fds(p);
-    p->exit_status = 128 + signo;
-    p->term_signal = (uint8_t)signo;   /* wait4 reports WIFSIGNALED */
-    p->state = PROC_ZOMBIE;
-    testmode_process_exited((int)p->pid, p->exit_status);
-    if (p->parent != NULL) {
-        wq_wake(&p->parent->child_exit_wq);
-        sig_send(p->parent->pid, SIGCHLD);
-    }
-    p->main_thread->state = THREAD_DEAD;
-    sched_schedule();
+    /* wait4 reports WIFSIGNALED from term_signal */
+    proc_exit(p, 128 + signo, (uint8_t)signo);
 }
 
 /* Restore context saved by sigreturn */

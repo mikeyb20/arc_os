@@ -1,6 +1,7 @@
 #include "proc/process.h"
 #include "proc/sched.h"
 #include "proc/fd.h"
+#include "proc/proc_syscalls.h"
 #include "mm/kmalloc.h"
 #include "mm/vmm.h"
 #include "arch/x86_64/usermode.h"
@@ -11,13 +12,22 @@
 #include "lib/kprintf.h"
 #include "lib/string.h"
 
+/* Every unreaped process, newest first; doubly linked so reaping unlinks in O(1) */
 static Process *proc_list = NULL;
+/* PIDs only count up (2^32 before a wrap), so a freed PID never matches a stale
+ * pid or pgid held elsewhere (the tty's foreground group) */
 static pid_t next_pid = 0;
+/* Adopts orphans (proc_reparent_children); NULL until init exists */
+static Process *init_proc = NULL;
 
-/* Simple mapping: each thread's tid maps 1:1 to a process for now.
- * We store a static table indexed by tid for quick lookup. */
-#define MAX_PROCESSES 64
-static Process *proc_table[MAX_PROCESSES];
+static void proc_unlink(Process *p) {
+    if (p->prev != NULL)
+        p->prev->next = p->next;
+    else
+        proc_list = p->next;
+    if (p->next != NULL) p->next->prev = p->prev;
+    p->next = p->prev = NULL;
+}
 
 /* Common PCB setup: assign PID, set state, init signals, link into process list. */
 static void proc_setup(Process *p) {
@@ -28,7 +38,9 @@ static void proc_setup(Process *p) {
     strncpy(p->cwd, "/", PATH_MAX);
     sig_init(&p->sig);
     wq_init(&p->child_exit_wq);
+    p->prev = NULL;
     p->next = proc_list;
+    if (proc_list != NULL) proc_list->prev = p;
     proc_list = p;
 }
 
@@ -40,10 +52,7 @@ void proc_init(void) {
     }
 
     proc_setup(p);
-    p->main_thread = thread_current();
-    if (p->main_thread->tid < MAX_PROCESSES) {
-        proc_table[p->main_thread->tid] = p;
-    }
+    proc_set_main_thread(p, thread_current());
 
     kprintf("[PROC] Process management initialized (boot process pid=%u)\n", p->pid);
 }
@@ -59,12 +68,8 @@ Process *proc_create(thread_entry_t entry, void *arg) {
     }
 
     proc_setup(p);
-    p->main_thread = t;
+    proc_set_main_thread(p, t);
     p->page_table = 0;  /* Share kernel page tables for now */
-
-    if (t->tid < MAX_PROCESSES) {
-        proc_table[t->tid] = p;
-    }
 
     sched_add_thread(t);
 
@@ -85,23 +90,12 @@ Process *proc_create_user(void) {
 
 Process *proc_current(void) {
     Thread *t = thread_current();
-    if (t == NULL) return NULL;
-    if (t->tid < MAX_PROCESSES) {
-        return proc_table[t->tid];
-    }
-    return NULL;
-}
-
-Process *proc_get_by_tid(uint32_t tid) {
-    if (tid < MAX_PROCESSES) {
-        return proc_table[tid];
-    }
-    return NULL;
+    return t != NULL ? t->proc : NULL;
 }
 
 Process *proc_get_by_pid(uint32_t pid) {
     for (Process *p = proc_list; p != NULL; p = p->next) {
-        if (p->pid == pid && p->state != PROC_TERMINATED) {
+        if (p->pid == pid) {
             return p;
         }
     }
@@ -110,9 +104,11 @@ Process *proc_get_by_pid(uint32_t pid) {
 
 void proc_set_main_thread(Process *p, Thread *t) {
     p->main_thread = t;
-    if (t->tid < MAX_PROCESSES) {
-        proc_table[t->tid] = p;
-    }
+    t->proc = p;
+}
+
+void proc_set_init(Process *p) {
+    init_proc = p;
 }
 
 /* --- Fork support --- */
@@ -155,7 +151,7 @@ Process *proc_fork(Process *parent, const ForkContext *user_ctx) {
     /* 2. Create child process PCB */
     Process *child = kmalloc(sizeof(Process), GFP_ZERO);
     if (child == NULL) {
-        vmm_destroy_user_pml4(child_pml4);
+        vmm_free_user_pages(child_pml4);
         return NULL;
     }
     proc_setup(child);
@@ -183,9 +179,13 @@ Process *proc_fork(Process *parent, const ForkContext *user_ctx) {
         t = thread_create(fork_child_entry, args);
     }
     if (t == NULL) {
+        /* Undo everything above: the copied pages (not just the tables), the
+         * pipe references fd_table_dup took, and the list entry */
         kfree(args);
+        proc_release_fds(child);
         kfree(child->fd_table);
-        vmm_destroy_user_pml4(child_pml4);
+        vmm_free_user_pages(child_pml4);
+        proc_unlink(child);
         kfree(child);
         return NULL;
     }
@@ -214,7 +214,7 @@ Process *proc_find_zombie_child(Process *parent) {
 
 int proc_has_children(Process *parent) {
     for (Process *p = proc_list; p != NULL; p = p->next) {
-        if (p->parent == parent && p->state != PROC_TERMINATED) {
+        if (p->parent == parent) {
             return 1;
         }
     }
@@ -226,8 +226,33 @@ int proc_reap(Process *child, int32_t *status_out) {
     if (status_out != NULL) {
         *status_out = child->exit_status;
     }
-    child->state = PROC_TERMINATED;
-    return (int)child->pid;
+    int pid = (int)child->pid;
+
+    /* The caller runs in its own address space, so the child's CR3 is not
+     * loaded here. The child's thread is DEAD and switched away for the last
+     * time in proc_exit (one CPU, interrupts off from exit to the switch).
+     * M1-05 (SMP) must also wait until it is off every CPU. Nothing else
+     * holds the Process: wait queues hold only running threads' sleepers,
+     * signals and the tty go by pid/pgid, and PIDs are not reused. */
+    proc_unlink(child);
+    if (child->page_table != 0) {
+        vmm_free_user_pages(child->page_table);
+    }
+    kfree(child->fd_table);          /* its files were closed at exit */
+    thread_destroy(child->main_thread);
+    kfree(child);
+    return pid;
+}
+
+Process *proc_reparent_children(Process *p) {
+    Process *heir = (p == init_proc) ? NULL : init_proc;
+    int zombie = 0;
+    for (Process *c = proc_list; c != NULL; c = c->next) {
+        if (c->parent != p) continue;
+        c->parent = heir;
+        if (c->state == PROC_ZOMBIE) zombie = 1;
+    }
+    return (zombie && heir != NULL) ? heir : NULL;
 }
 
 Process *proc_find_stopped_child(Process *parent) {
@@ -241,7 +266,7 @@ Process *proc_find_stopped_child(Process *parent) {
 }
 
 static int proc_wait_selects(const Process *parent, const Process *child, int32_t pid) {
-    if (child->parent != parent || child->state == PROC_TERMINATED) return 0;
+    if (child->parent != parent) return 0;
     if (pid > 0)   return child->pid == (pid_t)pid;
     if (pid == -1) return 1;
     if (pid == 0)  return child->pgid == parent->pgid;
@@ -267,10 +292,8 @@ int proc_has_selected_child(Process *parent, int32_t pid) {
 int proc_foreach(void (*cb)(Process *p, void *ctx), void *ctx) {
     int count = 0;
     for (Process *p = proc_list; p != NULL; p = p->next) {
-        if (p->state != PROC_TERMINATED) {
-            cb(p, ctx);
-            count++;
-        }
+        cb(p, ctx);
+        count++;
     }
     return count;
 }

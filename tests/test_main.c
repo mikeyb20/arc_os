@@ -40,6 +40,8 @@ extern TestCase elf_tests[];
 extern int elf_test_count;
 extern TestCase fd_tests[];
 extern int fd_test_count;
+extern TestCase fd_refs_tests[];
+extern int fd_refs_test_count;
 extern TestCase vmm_tests[];
 extern int vmm_test_count;
 extern TestCase spinlock_tests[];
@@ -126,6 +128,7 @@ typedef struct {
 } Suite;
 
 int main(int argc, char **argv) {
+    /* clang-format off */
     Suite suites[] = {
         { "mem",     mem_tests,     &mem_test_count },
         { "pmm",     pmm_tests,     &pmm_test_count },
@@ -142,6 +145,7 @@ int main(int argc, char **argv) {
         { "syscall", syscall_tests, &syscall_test_count },
         { "elf",     elf_tests,     &elf_test_count },
         { "fd",      fd_tests,      &fd_test_count },
+        { "fd_refs", fd_refs_tests, &fd_refs_test_count },
         { "vmm",      vmm_tests,      &vmm_test_count },
         { "spinlock",  spinlock_tests,  &spinlock_test_count },
         { "gdt",       gdt_tests,       &gdt_test_count },
@@ -176,6 +180,7 @@ int main(int argc, char **argv) {
         { "ansi",         ansi_tests,         &ansi_test_count },
         { "cmdline",      cmdline_tests,      &cmdline_test_count },
     };
+    /* clang-format on */
     int suite_count = (int)(sizeof(suites) / sizeof(suites[0]));
 
     /* Optional --suite filter */

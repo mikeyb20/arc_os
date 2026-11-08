@@ -60,7 +60,11 @@ static void *kmalloc(size_t size, uint32_t flags) {
     if (p && (flags & GFP_ZERO)) memset(p, 0, size);
     return p;
 }
-static void kfree(void *ptr) { free(ptr); }
+static int kfree_count;
+static void kfree(void *ptr) {
+    if (ptr) kfree_count++;
+    free(ptr);
+}
 
 /* Spinlock stub (no-op for single-threaded tests) */
 typedef struct { volatile uint32_t locked; uint64_t saved_flags; } Spinlock;
@@ -135,13 +139,18 @@ static int udp_send(NetIf *nif, uint32_t src_ip, uint16_t src_port,
 }
 
 static int tcp_send_count;
+static uint8_t tcp_send_last_flags;
 __attribute__((unused))
 static int tcp_send(NetIf *nif, uint32_t src_ip, uint16_t src_port,
                     uint32_t dst_ip, uint16_t dst_port,
                     uint32_t seq, uint32_t ack, uint8_t flags,
                     const void *payload, uint32_t payload_len) {
     (void)nif; (void)src_ip; (void)src_port; (void)dst_ip; (void)dst_port;
-    (void)seq; (void)ack; (void)flags; (void)payload; (void)payload_len;
+    (void)seq;
+    (void)ack;
+    (void)payload;
+    (void)payload_len;
+    tcp_send_last_flags = flags;
     tcp_send_count++;
     return 0;
 }
@@ -201,6 +210,57 @@ TEST(socket_free_works) {
     ASSERT_TRUE(idx >= 0);
     socket_free(idx);
     ASSERT_TRUE(socket_get(idx) == NULL);
+    return 0;
+}
+
+/* M0-10: a socket lives while any fd-table entry refers to it */
+TEST(socket_refs_free_on_last_release) {
+    reset_sockets();
+    int idx = socket_create(AF_INET, SOCK_DGRAM, 0);
+    ASSERT_TRUE(idx >= 0);
+    ASSERT_EQ(socket_get(idx)->refs, 1);
+    socket_addref(idx);                       /* dup or fork */
+    socket_release(idx);
+    ASSERT_TRUE(socket_get(idx) != NULL);
+    kfree_count = 0;
+    socket_release(idx);                      /* last close */
+    ASSERT_TRUE(socket_get(idx) == NULL);
+    ASSERT_EQ(kfree_count, 1);
+    socket_release(idx);                      /* stale index: no-op */
+    return 0;
+}
+
+/* Closing a connected TCP socket resets the peer; a closed one sends nothing */
+TEST(socket_free_resets_tcp_peer) {
+    reset_sockets();
+    int idx = socket_create(AF_INET, SOCK_STREAM, 0);
+    socket_get(idx)->state = SOCK_STATE_ESTABLISHED;
+    socket_release(idx);
+    ASSERT_EQ(tcp_send_count, 1);
+    ASSERT_EQ(tcp_send_last_flags, TCP_RST | TCP_ACK);
+    idx = socket_create(AF_INET, SOCK_STREAM, 0);
+    socket_release(idx);
+    ASSERT_EQ(tcp_send_count, 1);
+    return 0;
+}
+
+/* A listener's unaccepted connections are freed (and reset) with it */
+TEST(socket_free_drains_accept_queue) {
+    reset_sockets();
+    int idx = socket_create(AF_INET, SOCK_STREAM, 0);
+    Socket *sk = socket_get(idx);
+    sk->state = SOCK_STATE_LISTEN;
+    for (int i = 0; i < 2; i++) {
+        Socket *child = kmalloc(sizeof(Socket), GFP_ZERO);
+        child->type = SOCK_STREAM;
+        child->state = SOCK_STATE_SYN_RECV;
+        sk->accept_queue[sk->accept_tail] = child;
+        sk->accept_tail = (sk->accept_tail + 1) % SOCK_BACKLOG_MAX;
+    }
+    kfree_count = 0;
+    socket_release(idx);
+    ASSERT_EQ(kfree_count, 3);                /* two children + the listener */
+    ASSERT_EQ(tcp_send_count, 2);             /* each child's peer reset */
     return 0;
 }
 
@@ -378,6 +438,9 @@ TestCase socket_net_tests[] = {
     TEST_ENTRY(socket_create_tcp),
     TEST_ENTRY(socket_create_bad_family),
     TEST_ENTRY(socket_free_works),
+    TEST_ENTRY(socket_refs_free_on_last_release),
+    TEST_ENTRY(socket_free_resets_tcp_peer),
+    TEST_ENTRY(socket_free_drains_accept_queue),
     TEST_ENTRY(socket_bind_sets_port),
     TEST_ENTRY(socket_ephemeral_port),
     TEST_ENTRY(udp_sendto),

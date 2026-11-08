@@ -22,8 +22,14 @@ __attribute__((noreturn))
 void proc_enter_user(struct Process *p, const ElfLoadResult *elf, ExecStrings *strings,
                      const char *execfn, uint8_t *stack_buf);
 
-/* Close every open fd of p (pipe ends drop their refcount, so readers see EOF).
+/* Close every open fd of p (fd_close: pipe ends and sockets drop a reference).
  * Used when a process exits or is killed by a signal. */
 void proc_release_fds(struct Process *p);
+
+/* End the current process p (exit, exit_group, fatal signal): close its fds,
+ * hand its children to init, become a zombie with this status (term_signal
+ * nonzero = killed by that signal), wake the parent and send it SIGCHLD, and
+ * switch away for good. The parent's wait4 frees everything. Does not return. */
+__attribute__((noreturn)) void proc_exit(struct Process *p, int32_t exit_status, uint8_t term_signal);
 
 #endif /* ARCHOS_PROC_PROC_SYSCALLS_H */

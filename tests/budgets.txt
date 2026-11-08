@@ -17,15 +17,14 @@ boot_free_bytes        3830000000  min  bytes  M0-08  smoke
 kernel_heap_bytes      2290000     max  bytes  M0-08  smoke
 
 # Leak check: free pages and kmalloc bytes lost between the first and last test
-# of a suite (printed by init; worst suite counts). Today every exited process
-# leaks ~54 pages and ~40 KB because wait4 frees nothing: frozen at the measured
-# worst (userland: 522 pages, 397216 bytes) until M0-10 brings both to 0.
-pages_leaked           575         max  pages  M0-10  *
-heap_leaked_bytes      437000      max  bytes  M0-10  *
+# of a suite (printed by init; worst suite counts). M0-10 frees reaped processes
+# and closed sockets: both are 0, and any leak fails.
+pages_leaked           0           max  pages  M0-10  *
+heap_leaked_bytes      0           max  bytes  M0-10  *
 
-# Most heap blocks one kmalloc walked (first fit; measured worst 215 in userland).
-# M1-02b's slab replaces it with slab steps.
-kmalloc_walk_max       237         max  blocks M1-02b *
+# Most heap blocks one kmalloc walked (first fit; measured worst 148 in abi after
+# M0-10, 215 before). M1-02b's slab replaces it with slab steps.
+kmalloc_walk_max       163         max  blocks M1-02b *
 
 # Timer interrupts on an idle CPU over 5 s: needs the tickless timer (M1-06)
 idle_timer_irqs_5s     0           max  irqs   M1-06  smoke     off

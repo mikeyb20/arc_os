@@ -94,14 +94,6 @@ static uint64_t *walk_to_pt_entry(uint64_t pml4_phys, uint64_t virt) {
     return &pt[PT_INDEX(virt)];
 }
 
-/* Free all present, non-huge PT pages in a page directory. */
-static void free_pd_entries(uint64_t *pd) {
-    for (int i = 0; i < PT_ENTRIES; i++) {
-        if (!(pd[i] & PTE_PRESENT) || (pd[i] & PTE_HUGE)) continue;
-        pmm_free_page(pd[i] & PTE_ADDR_MASK);
-    }
-}
-
 void vmm_map_page(uint64_t virt, uint64_t phys, uint32_t flags) {
     spinlock_acquire(&vmm_lock);
     vmm_map_page_in(kernel_pml4_phys, virt, phys, flags);
@@ -192,24 +184,6 @@ uint64_t vmm_create_user_pml4(void) {
     return pml4_phys;
 }
 
-void vmm_destroy_user_pml4(uint64_t pml4_phys) {
-    uint64_t *pml4 = (uint64_t *)phys_to_virt(pml4_phys);
-
-    /* Free user-half page table structures */
-    for (int i = 0; i < PML4_KERNEL_START; i++) {
-        if (!(pml4[i] & PTE_PRESENT)) continue;
-        uint64_t *pdpt = (uint64_t *)phys_to_virt(pml4[i] & PTE_ADDR_MASK);
-        for (int j = 0; j < PT_ENTRIES; j++) {
-            if (!(pdpt[j] & PTE_PRESENT) || (pdpt[j] & PTE_HUGE)) continue;
-            uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[j] & PTE_ADDR_MASK);
-            free_pd_entries(pd);
-            pmm_free_page(pdpt[j] & PTE_ADDR_MASK);
-        }
-        pmm_free_page(pml4[i] & PTE_ADDR_MASK);
-    }
-    pmm_free_page(pml4_phys);
-}
-
 void vmm_map_page_in(uint64_t pml4_phys, uint64_t virt, uint64_t phys, uint32_t flags) {
     uint64_t *pml4 = (uint64_t *)phys_to_virt(pml4_phys);
     uint64_t *pdpt = ensure_table(pml4, PML4_INDEX(virt));
@@ -296,7 +270,7 @@ uint64_t vmm_fork_address_space(uint64_t src_pml4_phys) {
                                      ((uint64_t)pd_idx << 21) | ((uint64_t)pt_idx << 12);
 
                     if (fork_copy_page(src_pt[pt_idx], dst_pml4_phys, vaddr) != 0) {
-                        vmm_destroy_user_pml4(dst_pml4_phys);
+                        vmm_free_user_pages(dst_pml4_phys);   /* pages copied so far too */
                         return 0;
                     }
                 }

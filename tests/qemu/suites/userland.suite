@@ -10,10 +10,13 @@ ls          /bin/ls /boot
 stat        /bin/stat /etc/hostname
 ps          /bin/ps
 free        /bin/free
-mkdir       /bin/mkdir /tmp
+mkdir       /bin/mkdir /tmp/d
 touch       /bin/touch /tmp/a
 cp          /bin/cp /etc/hostname /tmp/b
 mv          /bin/mv /tmp/b /tmp/c
 chmod       /bin/chmod 600 /tmp/c
 chown       /bin/chown 1000 /tmp/c
 rm          /bin/rm /tmp/c
+# Remove what the suite made, so the leak budgets see only real leaks (M0-10)
+rm_file     /bin/rm /tmp/a
+rm_dir      /bin/rm /tmp/d
