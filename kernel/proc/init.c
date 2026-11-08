@@ -14,11 +14,14 @@
 #include "arch/x86_64/usermode.h"
 #include "lib/kprintf.h"
 #include "lib/testmode.h"
+#include "proc/proc_syscalls.h"
+#include "proc/exec_stack.h"
 
 /* Argument passed to the init kernel thread */
 typedef struct {
     const void *elf_data;
     uint64_t    elf_size;
+    const char *path;      /* module path: init's argv[0] and AT_EXECFN */
     Process    *proc;
 } InitArgs;
 
@@ -51,6 +54,21 @@ static void init_thread_entry(void *arg) {
     kprintf("[INIT] User stack mapped: 0x%lx - 0x%lx\n",
             USER_STACK_TOP - (USER_STACK_PAGES * PAGE_SIZE), USER_STACK_TOP);
 
+    /* argv = { path }, envp = { HOME=/, TERM=linux } as Linux gives init */
+    ExecStrings *strings = kmalloc(sizeof(ExecStrings), 0);
+    uint8_t *stack_buf = kmalloc(EXEC_STACK_BUF, 0);
+    if (strings == NULL || stack_buf == NULL) {
+        kprintf("[INIT] FATAL: out of memory for the initial stack\n");
+        return;
+    }
+    exec_strings_init(strings);
+    if (exec_strings_add(strings, args->path, 0) != 0 ||
+        exec_strings_add(strings, "HOME=/", 1) != 0 ||
+        exec_strings_add(strings, "TERM=linux", 1) != 0) {
+        kprintf("[INIT] FATAL: init arguments too long\n");
+        return;
+    }
+
     /* Set TSS.rsp0 and SYSCALL kernel RSP */
     Thread *t = thread_current();
     gdt_set_kernel_stack(t->kernel_stack_top);
@@ -59,11 +77,10 @@ static void init_thread_entry(void *arg) {
     /* Switch to the process's address space */
     paging_write_cr3(p->page_table);
 
-    kprintf("[INIT] Jumping to user mode: entry=0x%lx rsp=0x%lx\n",
-            result.entry_point, USER_STACK_TOP);
+    kprintf("[INIT] Jumping to user mode: entry=0x%lx\n", result.entry_point);
 
-    /* Jump to user space — does not return (argc=0, argv=NULL) */
-    jump_to_usermode(result.entry_point, USER_STACK_TOP, 0, 0);
+    /* System V stack, clean CPU state, user mode — does not return */
+    proc_enter_user(p, &result, strings, args->path, stack_buf);
 }
 
 int init_launch(const BootInfo *info) {
@@ -116,6 +133,7 @@ int init_launch(const BootInfo *info) {
     /* Create kernel thread that will load ELF and transition to user mode */
     g_init_args.elf_data = init_mod->address;
     g_init_args.elf_size = init_mod->size;
+    g_init_args.path = init_mod->path;
     g_init_args.proc = p;
 
     Thread *t = thread_create(init_thread_entry, &g_init_args);

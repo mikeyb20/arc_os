@@ -191,21 +191,22 @@ starts with a planning block that writes its specs.
 
 ### M0 — Lock-in decisions
 - [x] ADRs 0001–0020
-- [ ] Syscall inventory: run llama.cpp, SQLite and our test programs under `strace` on Linux; record the exact syscall list M1/M2 must provide
-- [ ] Migrate syscalls to Linux x86_64 numbers and semantics in one pass with libarc, userland and tests together
+- [x] Syscall inventory: run llama.cpp, SQLite and our test programs under `strace` on Linux; record the exact syscall list M1/M2 must provide
+- [x] Migrate syscalls to Linux x86_64 numbers and semantics in one pass with libarc, userland and tests together
 - [ ] JSON schemas for pack, model and `.arcpkg` manifests, each with `schema_version`
-- [ ] Reproducible dev container with pinned versions of both toolchains; GitHub Actions running unit and QEMU tests
-- [ ] QEMU integration-test harness (boot, run a program, check serial output)
+- [x] Reproducible dev container with pinned versions of both toolchains; GitHub Actions running unit and QEMU tests
+- [x] QEMU integration-test harness (boot, run a program, check serial output)
+- [x] Linux process start (System V stack, auxv, TLS): stock static musl programs run in QEMU (M0-06)
 - [ ] Code hygiene checks in CI: counts of duplicates, copied helpers, x86 includes outside the HAL, long functions and untracked TODOs never rise (ADR-0020)
-- [ ] Archive the exact source of every outside component (§3.4) in repos Michael owns
+- [x] Archive the exact source of every outside component (§3.4) in repos Michael owns
 - [x] M1 implementation plan: PR-sized tasks, dependency order, SMP lock-ordering rules ([`work-blocks.md`](work-blocks.md) §4 and §7, `docs/plans/blocks/M1-*`)
 
 ### M1 — Compute kernel
 - [ ] Per-page descriptor array from the PMM at boot (ADR-0016)
-- [ ] Eager XSAVE/XRSTOR, CPUID-sized save area; SSE/AVX enabled for user space; kernel built with `-mgeneral-regs-only`
+- [ ] Eager XSAVE/XRSTOR, CPUID-sized save area; SSE/AVX enabled for user space; kernel built with `-mgeneral-regs-only` (M0-06 already: user SSE, 512 B FXSAVE per thread, `-mgeneral-regs-only`)
 - [ ] Per-CPU SYSCALL kernel stack fix; per-CPU run queues; x2APIC mode; up to 256 CPUs
 - [ ] Hybrid CPU awareness: core type from CPUID; inference threads can pin to P-cores
-- [ ] Threads: `clone`, `futex`, `arch_prctl`, `set_tid_address`, `exit_group`, `sched_setaffinity`, `rt_sigprocmask`
+- [ ] Threads: `clone`, `futex`, `arch_prctl`, `set_tid_address`, `exit_group`, `sched_setaffinity`, `rt_sigprocmask` (single-thread `arch_prctl`, `set_tid_address`, `exit_group` since M0-06)
 - [ ] Memory: COW fork, demand paging, `mmap`/`munmap`/`mprotect`/`madvise`, page cache shared with `read()`, clean-page eviction, 2 MiB pages
 - [ ] Time: invariant TSC clocksource, TSC-deadline timer, `clock_gettime`, `nanosleep`, CMOS RTC
 - [ ] Hardening: SMEP, SMAP, NX enforced

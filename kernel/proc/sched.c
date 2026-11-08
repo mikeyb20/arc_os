@@ -4,6 +4,7 @@
 #include "arch/x86_64/gdt.h"
 #include "arch/x86_64/syscall.h"
 #include "arch/x86_64/paging.h"
+#include "arch/hal.h"
 #include "mm/vmm.h"
 #include "lib/kprintf.h"
 
@@ -107,6 +108,9 @@ void sched_schedule(void) {
         if (new_cr3 != old_cr3) {
             paging_write_cr3(new_cr3);
         }
+
+        /* User FPU/SSE state and FS base (TLS), eagerly (fpu.h) */
+        arch_thread_switch(old, next);
 
         context_switch(&old->context, &next->context);
     }

@@ -35,6 +35,14 @@ add_test(NAME qemu.userland COMMAND ${_qemu_test} --suite userland)
 # Linux syscall ABI (M0-05): getdents64, stat, wait4, rt_sigaction, ioctl, brk, -ENOSYS
 add_test(NAME qemu.abi COMMAND ${_qemu_test} --suite abi --module abi_check)
 
+# Linux process start (M0-06): stock musl static and static-PIE programs and
+# the same test built with libarc: argv, envp, auxv, TLS, stdio, files, tty
+add_test(NAME qemu.musl COMMAND ${_qemu_test} --suite musl
+    --module start_musl --module start_musl_pie --module start_arc
+    --expect "start_basic\\(musl\\): PASS"
+    --expect "start_basic\\(libarc\\): PASS"
+    --expect "writev ok")
+
 # Harness self-checks: a failing program is reported by name and reason,
 # and a kernel panic ends the run within seconds instead of at the timeout.
 add_test(NAME qemu.selftest.fail COMMAND ${_qemu_test} --suite selftest --module testfail)
@@ -42,5 +50,5 @@ set_tests_properties(qemu.selftest.fail PROPERTIES
     PASS_REGULAR_EXPRESSION "FAIL testfail exit=3")
 add_test(NAME qemu.selftest.panic COMMAND ${_qemu_test} --suite kpanic --expect-panic --timeout 30)
 
-set_tests_properties(qemu.smoke qemu.userland qemu.abi qemu.selftest.fail qemu.selftest.panic
+set_tests_properties(qemu.smoke qemu.userland qemu.abi qemu.musl qemu.selftest.fail qemu.selftest.panic
     PROPERTIES LABELS qemu TIMEOUT 180 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")

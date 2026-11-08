@@ -1,5 +1,7 @@
+#include "arch/hal.h"
 #include "arch/x86_64/serial.h"
 #include "arch/x86_64/gdt.h"
+#include "uapi/termios.h"
 #include "arch/x86_64/idt.h"
 #include "arch/x86_64/pic.h"
 #include "arch/x86_64/pit.h"
@@ -303,6 +305,8 @@ void kmain(void) {
     gdt_init();
     serial_puts("[BOOT] stage: IDT\n");
     idt_init();
+    serial_puts("[BOOT] stage: FPU\n");
+    fpu_cpu_init(1);   /* before any thread exists: threads copy its clean image */
     serial_puts("[BOOT] stage: PIC\n");
     pic_init();
     serial_puts("[BOOT] stage: PMM\n");
@@ -327,6 +331,8 @@ void kmain(void) {
         uint32_t vt_cols = (uint32_t)(info->framebuffer.width / FONT_WIDTH);
         uint32_t vt_rows = (uint32_t)(info->framebuffer.height / FONT_HEIGHT);
         vt_init(vt_cols, vt_rows);
+        struct winsize ws = { .ws_row = (uint16_t)vt_rows, .ws_col = (uint16_t)vt_cols };
+        tty_set_winsize(&ws);   /* TIOCGWINSZ reports the console's size */
     }
 
     serial_puts("[BOOT] stage: VFS\n");

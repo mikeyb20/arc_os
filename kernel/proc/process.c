@@ -7,6 +7,7 @@
 #include "arch/x86_64/gdt.h"
 #include "arch/x86_64/syscall.h"
 #include "arch/x86_64/paging.h"
+#include "arch/hal.h"
 #include "lib/kprintf.h"
 #include "lib/string.h"
 
@@ -188,6 +189,11 @@ Process *proc_fork(Process *parent, const ForkContext *user_ctx) {
         kfree(child);
         return NULL;
     }
+    /* The child resumes with the parent's user FPU/SSE registers (live now:
+     * the kernel never touches them) and TLS pointer */
+    fpu_save_current(t->fpu_state);
+    t->fs_base = thread_current()->fs_base;
+
     proc_set_main_thread(child, t);
     sched_add_thread(t);
 

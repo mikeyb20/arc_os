@@ -19,6 +19,12 @@ extern uint64_t syscall_saved_user_r12;
 extern uint64_t syscall_saved_user_r13;
 extern uint64_t syscall_saved_user_r14;
 extern uint64_t syscall_saved_user_r15;
+extern uint64_t syscall_saved_user_rdi;
+extern uint64_t syscall_saved_user_rsi;
+extern uint64_t syscall_saved_user_rdx;
+extern uint64_t syscall_saved_user_r10;
+extern uint64_t syscall_saved_user_r8;
+extern uint64_t syscall_saved_user_r9;
 
 /* RFLAGS bits cleared by SFMASK on SYSCALL entry */
 #define RFLAGS_IF  (1ULL << 9)   /* Interrupt Flag */
@@ -30,6 +36,11 @@ static syscall_handler_t syscall_table[ARC_NR_SYSCALLS];
 /* Kernel RSP for SYSCALL entry — set by scheduler on context switch */
 uint64_t syscall_kernel_rsp;
 
+/* fork_return_to_user (usermode.asm) reads ForkContext by these offsets */
+_Static_assert(__builtin_offsetof(ForkContext, user_r15) == 64, "ForkContext layout");
+_Static_assert(__builtin_offsetof(ForkContext, user_rdi) == 72, "ForkContext layout");
+_Static_assert(__builtin_offsetof(ForkContext, user_r9) == 112, "ForkContext layout");
+
 void syscall_save_user_context(struct ForkContext *ctx) {
     ctx->user_rip    = syscall_saved_user_rip;
     ctx->user_rsp    = syscall_saved_user_rsp;
@@ -40,6 +51,12 @@ void syscall_save_user_context(struct ForkContext *ctx) {
     ctx->user_r13    = syscall_saved_user_r13;
     ctx->user_r14    = syscall_saved_user_r14;
     ctx->user_r15    = syscall_saved_user_r15;
+    ctx->user_rdi    = syscall_saved_user_rdi;
+    ctx->user_rsi    = syscall_saved_user_rsi;
+    ctx->user_rdx    = syscall_saved_user_rdx;
+    ctx->user_r10    = syscall_saved_user_r10;
+    ctx->user_r8     = syscall_saved_user_r8;
+    ctx->user_r9     = syscall_saved_user_r9;
 }
 
 uint64_t syscall_user_rsp(void) {

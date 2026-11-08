@@ -29,6 +29,12 @@ typedef struct ForkContext {
     uint64_t user_r13;
     uint64_t user_r14;
     uint64_t user_r15;
+    uint64_t user_rdi;      /* argument registers: Linux preserves them */
+    uint64_t user_rsi;      /* across syscalls, so the fork child gets */
+    uint64_t user_rdx;      /* the parent's values too */
+    uint64_t user_r10;
+    uint64_t user_r8;
+    uint64_t user_r9;
 } ForkContext;
 
 /* Forward declaration */

@@ -4,6 +4,9 @@
 #include <stddef.h>
 #include <sys/types.h>
 
+/* The environment (set by crt0 from the initial stack) */
+extern char **environ;
+
 /* Seek whence */
 #define SEEK_SET 0
 #define SEEK_CUR 1

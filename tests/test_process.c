@@ -19,6 +19,8 @@
 #define ARCHOS_ARCH_X86_64_SYSCALL_H
 #define ARCHOS_ARCH_X86_64_PAGING_H
 #define ARCHOS_FS_PATH_H
+#define ARCHOS_ARCH_HAL_H        /* hal.h: only fpu.h is used, stubbed below */
+#define ARCHOS_ARCH_X86_64_FPU_H  /* fpu.h: stubbed below */
 
 /* Stub kprintf */
 static inline void kprintf(const char *fmt, ...) { (void)fmt; }
@@ -54,6 +56,9 @@ typedef struct Thread {
     uint64_t        kernel_stack_top;
     thread_entry_t  entry;
     void           *arg;
+    void           *fpu_state;
+    uint64_t        fs_base;
+    uint64_t        clear_child_tid;
     struct Thread  *next;
 } Thread;
 
@@ -237,6 +242,11 @@ Process *proc_fork(Process *parent, const ForkContext *user_ctx);
 Process *proc_find_zombie_child(Process *parent);
 int proc_reap(Process *child, int32_t *status_out);
 int proc_has_children(Process *parent);
+
+/* fpu.h stub: records the fork child's FPU area being filled */
+static int fpu_save_calls;
+static void *fpu_save_last;
+static void fpu_save_current(void *dst) { fpu_save_calls++; fpu_save_last = dst; }
 
 /* Include the real process.c */
 #include "../kernel/proc/process.c"
@@ -466,7 +476,35 @@ static int test_current_after_thread_switch(void) {
 
 /* --- Test suite export --- */
 
+/* fork: the child's thread starts with the parent's FPU/SSE registers and FS base */
+static int test_proc_fork_copies_fpu_and_fs_base(void) {
+    reset_proc_state();
+    proc_init();
+    fpu_save_calls = 0;
+    fpu_save_last = NULL;
+
+    Process *parent = proc_create((thread_entry_t)0xDEAD, NULL);
+    ASSERT_TRUE(parent != NULL);
+    parent->page_table = 0x300000;
+    static uint8_t parent_area[512];
+    parent->main_thread->fpu_state = parent_area;
+    parent->main_thread->fs_base = 0x7000123450ULL;
+    test_current_thread = parent->main_thread;
+
+    ForkContext ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    Process *child = proc_fork(parent, &ctx);
+    ASSERT_TRUE(child != NULL);
+    Thread *ct = child->main_thread;
+    ASSERT_TRUE(ct != NULL && ct != parent->main_thread);
+    ASSERT_EQ(ct->fs_base, 0x7000123450ULL);
+    ASSERT_EQ(fpu_save_calls, 1);
+    ASSERT_TRUE(fpu_save_last == ct->fpu_state);
+    return 0;
+}
+
 TestCase process_tests[] = {
+    { "fork_copies_fpu_and_fs_base", test_proc_fork_copies_fpu_and_fs_base },
     { "init_creates_boot_process",  test_proc_init_creates_boot_process },
     { "init_pid_sequence",          test_proc_init_pid_sequence },
     { "create_basic",               test_proc_create_basic },

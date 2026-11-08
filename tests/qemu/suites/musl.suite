@@ -1,0 +1,5 @@
+# qemu.musl (M0-06): System V process start. The same program built with stock
+# musl (static and static-PIE) and with libarc; exit status = failed checks.
+musl        /boot/start_musl alpha beta
+musl_pie    /boot/start_musl_pie alpha beta
+libarc      /boot/start_arc alpha beta

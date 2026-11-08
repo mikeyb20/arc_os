@@ -8,6 +8,7 @@
 #define MSR_STAR    0xC0000081  /* Segment selectors for SYSCALL/SYSRET */
 #define MSR_LSTAR   0xC0000082  /* SYSCALL entry point (64-bit) */
 #define MSR_SFMASK  0xC0000084  /* RFLAGS mask for SYSCALL */
+#define MSR_FS_BASE 0xC0000100  /* FS segment base: user TLS pointer (ADR-0002) */
 
 /* EFER bits */
 #define EFER_SCE    (1ULL << 0) /* System Call Extensions enable */

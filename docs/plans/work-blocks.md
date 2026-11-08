@@ -85,8 +85,8 @@ Start every block with `/os/implement-block <ID>`. These rules are what keep ses
 | M0-02 | QEMU test harness | M | R | I | M0-01 | `ctest -L qemu` passes in the cloud and in CI; failures named | done |
 | M0-03 | Archive outside sources and test models | M | R | I | M0-01 | Every component pinned by SHA-256 and fetched from Michael's GitHub | done |
 | M0-04 | Syscall inventory | S | R | U | M0-03 | Exact syscalls, ioctls and files used by musl, C++, SQLite, zstd, llama.cpp | done |
-| M0-05 | Move syscalls to Linux numbers | M | D | K | M0-02, M0-04 | No old numbers left; shell and coreutils pass | review (#8) |
-| M0-06 | Linux process start + musl hello | M | D | K | M0-05 | Programs built with stock `musl-gcc -static` run in QEMU | todo |
+| M0-05 | Move syscalls to Linux numbers | M | D | K | M0-02, M0-04 | No old numbers left; shell and coreutils pass | done |
+| M0-06 | Linux process start + musl hello | M | D | K | M0-05 | Programs built with stock `musl-gcc -static` run in QEMU | review (#10) |
 | M0-07 | Manifest schemas | S | R | C | — | Schemas and examples validated in CI | todo |
 | M0-08 | Budget checks in the QEMU harness | S | R | I | M0-02 | A size or count past its limit fails CI, named (ADR-0019) | todo |
 | M0-09 | Code hygiene checks | S | R | I | M0-08 | Duplicates, copied helpers, x86 includes outside arch, long functions and untracked TODOs can't grow (ADR-0020) | todo |
@@ -275,7 +275,7 @@ Parallel sessions shorten the calendar; they don't save compute.
 | 2 | Cloud sessions can't reach ftp.gnu.org, musl.libc.org, download.kiwix.org or huggingface.co | M0-01/M0-03: GitHub Actions fetches and archives; big content and models on the laptop |
 | 3 | `scratchpad*.md` is gitignored and cloud containers are thrown away | §3 rule 7: handoff in the block's Notes, committed |
 | 4 | Cross-compiler path is hard-coded to `$HOME/opt/cross` | M0-01: `ARC_CROSS_PREFIX` |
-| 5 | Kernel built without `-mgeneral-regs-only`: GCC may use SSE in kernel code, and user SSE state is never saved | M1-01, first M1 block |
+| 5 | Kernel built without `-mgeneral-regs-only`: GCC may use SSE in kernel code, and user SSE state is never saved | M0-06 (stock musl needs SSE before `main`: `-mgeneral-regs-only`, user SSE, FXSAVE per thread; Michael's OK 2026-11-08); M1-01 moves to XSAVE/AVX |
 | 6 | `MAX_CPUS` is 16; the laptop has exactly 16 CPUs and desktops have more | M1-03: 256 |
 | 7 | The Core Ultra laptop's firmware may hand over in x2APIC mode | M1-03 |
 | 8 | No log file is possible before storage drivers exist (M4) | M1-04: framebuffer log, panic screen and boot report; log file on disk after M4 |

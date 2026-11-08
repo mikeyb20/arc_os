@@ -48,6 +48,15 @@ void vmm_unmap_page_in(uint64_t pml4, uint64_t virt);
 /* Get the physical address for a virtual address in a specific address space. */
 uint64_t vmm_get_phys_in(uint64_t pml4, uint64_t virt);
 
+/* VMM_FLAG_* of a mapped 4 KiB page in a specific address space, or -1 if
+ * the page is not mapped. */
+int vmm_get_flags_in(uint64_t pml4, uint64_t virt);
+
+/* Check that user code could access virt in this address space: present and
+ * user at every level (no huge pages), and writable too when write != 0.
+ * Returns 1 if so. Used by the user copy helpers (user_access.h). */
+int vmm_user_access_ok(uint64_t pml4, uint64_t virt, int write);
+
 /* Fork a user address space: create new PML4, copy all user-half pages.
  * Returns new PML4 physical address, or 0 on failure. */
 uint64_t vmm_fork_address_space(uint64_t src_pml4_phys);

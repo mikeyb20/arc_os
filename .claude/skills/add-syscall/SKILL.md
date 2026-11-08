@@ -25,6 +25,8 @@ these steps, in this order, in one PR.
   `_Static_assert`s, and get a line in `tests/abi_layout_list.h` (also add the `__NR_` there). `test_abi_layout`
   compares every line with the host's Linux headers.
 - Validate every user pointer (`user_access.h`), copy in/out explicitly, never dereference user memory directly.
+  New code uses the fault-free helpers `copy_from_user`, `copy_to_user` and `strncpy_from_user` (M0-06): they
+  check the pages are mapped for user access, since the kernel has no page-fault fixups yet (M1-19).
 - Return `-errno` using Linux errno values. Unsupported flags → `-EINVAL`; unsupported feature → `-ENOSYS` or
   `-EOPNOTSUPP` exactly as Linux would.
 - Structs crossing the boundary must match Linux layout byte for byte: add a `_Static_assert` on `sizeof` and key
@@ -34,8 +36,8 @@ these steps, in this order, in one PR.
 - libarc wrapper in `libc/src/` with the POSIX/Linux prototype, using the private raw helpers in
   `libc/src/syscall_arch.h` (`syscallN(__NR_<name>, ...)`, then `syscall_ret()` to set `errno`). User programs
   never make raw syscalls; only `userland/testprogs/abi_check.c` does, to check the raw `-errno`.
-- libarc and user programs are built without user-mode SSE until M1-01: avoid `= { 0 }` struct initializers and
-  struct copies in libc and test code (GCC emits SSE stores for them; the result is `#UD`).
+- User-mode SSE is on since M0-06 (FXSAVE per thread; M1-01 moves to XSAVE/AVX). The kernel is built with
+  `-mgeneral-regs-only` and must never touch x87/SSE/AVX registers: they hold the running thread's user state.
 - If the call replaces an old arc_os syscall, migrate every caller in `userland/` in the same PR and delete the old
   number.
 

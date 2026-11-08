@@ -8,6 +8,8 @@
 #define ARCHOS_LIB_KPRINTF_H
 #define ARCHOS_MM_KMALLOC_H
 #define ARCHOS_LIB_MEM_H        /* Use libc memset/memcpy */
+#define ARCHOS_ARCH_HAL_H        /* hal.h: only fpu.h is used, stubbed below */
+#define ARCHOS_ARCH_X86_64_FPU_H  /* fpu.h: stubbed below */
 
 /* Stub kprintf */
 static inline void kprintf(const char *fmt, ...) { (void)fmt; }
@@ -45,6 +47,9 @@ typedef struct Thread {
     uint64_t        kernel_stack_top;
     thread_entry_t  entry;
     void           *arg;
+    void           *fpu_state;
+    uint64_t        fs_base;
+    uint64_t        clear_child_tid;
     struct Thread  *next;
 } Thread;
 
@@ -75,6 +80,11 @@ static void kfree(void *ptr) {
     kfree_call_count++;
     free(ptr);
 }
+
+/* fpu.h stubs: the save area comes from kmalloc, as in the kernel */
+static int fpu_free_calls;
+static void *fpu_state_alloc(void) { return kmalloc(512, 0); }
+static void fpu_state_free(void *s) { if (s != NULL) { fpu_free_calls++; kfree(s); } }
 
 /* Stub context_switch — never actually called from thread.c, but declared extern */
 void context_switch(ThreadContext *old, ThreadContext *new_ctx) {
@@ -237,6 +247,32 @@ static int test_thread_create_stack_kmalloc_failure(void) {
     return 0;
 }
 
+static int test_thread_create_fpu_kmalloc_failure(void) {
+    reset_thread_state();
+    thread_init();  /* call 1: boot TCB */
+
+    /* Fail the FPU save area (init=1, TCB=2, stack=3, FPU area=4) */
+    kmalloc_force_fail = 4;
+    kfree_call_count = 0;
+    Thread *t = thread_create((thread_entry_t)0xDEAD, NULL);
+    ASSERT_TRUE(t == NULL);
+    ASSERT_EQ(kfree_call_count, 2);   /* stack and TCB */
+    return 0;
+}
+
+static int test_thread_create_has_fpu_area(void) {
+    reset_thread_state();
+    thread_init();
+    ASSERT_TRUE(current_thread->fpu_state == NULL);   /* boot thread: none */
+    Thread *t = thread_create((thread_entry_t)0xDEAD, NULL);
+    ASSERT_TRUE(t != NULL);
+    ASSERT_TRUE(t->fpu_state != NULL);
+    ASSERT_EQ(t->fs_base, 0);
+    ASSERT_EQ(t->clear_child_tid, 0);
+    thread_destroy(t);
+    return 0;
+}
+
 static int test_thread_destroy_frees_resources(void) {
     reset_thread_state();
     thread_init();
@@ -246,8 +282,8 @@ static int test_thread_destroy_frees_resources(void) {
 
     kfree_call_count = 0;
     thread_destroy(t);
-    /* Should free stack + TCB = 2 calls */
-    ASSERT_EQ(kfree_call_count, 2);
+    /* Should free stack + FPU area + TCB = 3 calls */
+    ASSERT_EQ(kfree_call_count, 3);
     return 0;
 }
 
@@ -286,6 +322,8 @@ TestCase thread_tests[] = {
     { "create_tid_sequence",         test_thread_create_tid_sequence },
     { "create_kmalloc_failure",      test_thread_create_kmalloc_failure },
     { "create_stack_alloc_failure",  test_thread_create_stack_kmalloc_failure },
+    { "create_fpu_alloc_failure",    test_thread_create_fpu_kmalloc_failure },
+    { "create_has_fpu_area",         test_thread_create_has_fpu_area },
     { "destroy_frees_resources",     test_thread_destroy_frees_resources },
     { "destroy_null_safe",           test_thread_destroy_null_safe },
     { "set_current_get_current",     test_thread_set_current_get_current },

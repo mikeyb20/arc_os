@@ -5,6 +5,9 @@
 ;   RSP = user stack (not swapped by hardware)
 ;   RAX = syscall number
 ;   RDI, RSI, RDX, R10, R8, R9 = args 0-5
+;
+; Linux ABI: every register except RAX (result), RCX and R11 is preserved,
+; including the argument registers (musl's inline syscalls rely on it).
 
 section .text
 global syscall_entry
@@ -41,6 +44,20 @@ syscall_entry:
     mov [rel syscall_saved_user_r13], r13
     mov [rel syscall_saved_user_r14], r14
     mov [rel syscall_saved_user_r15], r15
+    mov [rel syscall_saved_user_rdi], rdi
+    mov [rel syscall_saved_user_rsi], rsi
+    mov [rel syscall_saved_user_rdx], rdx
+    mov [rel syscall_saved_user_r10], r10
+    mov [rel syscall_saved_user_r8], r8
+    mov [rel syscall_saved_user_r9], r9
+
+    ; Argument registers, restored on return (below the SyscallFrame)
+    push rdi
+    push rsi
+    push rdx
+    push r10
+    push r8
+    push r9
 
     ; Shuffle registers for C calling convention:
     ;   syscall_dispatch(num, a0, a1, a2, a3, a4, a5)
@@ -59,13 +76,25 @@ syscall_entry:
     add rsp, 8              ; pop 7th arg
 
     ; --- Signal delivery check ---
-    ; sig_maybe_deliver(frame_ptr=rsp, syscall_ret=rax)
-    mov rdi, rsp            ; SyscallFrame pointer
+    ; sig_maybe_deliver(frame_ptr, syscall_ret=rax)
+    lea rdi, [rsp + 48]     ; SyscallFrame pointer (above the 6 argument regs)
     mov rsi, rax            ; syscall return value
     mov qword [rel sig_pending_arg], 0
     call sig_maybe_deliver
     ; RAX = (possibly modified) return value
     ; sig_pending_arg = signo for handler RDI, or 0
+
+    pop r9
+    pop r8
+    pop r10
+    pop rdx
+    pop rsi
+    pop rdi
+    ; Entering a signal handler: RDI = signo (M1-01 adds siginfo/ucontext)
+    cmp qword [rel sig_pending_arg], 0
+    je .no_signal
+    mov rdi, [rel sig_pending_arg]
+.no_signal:
 
     ; Restore callee-saved registers and user context
     pop r15
@@ -76,9 +105,6 @@ syscall_entry:
     pop rbx
     pop rcx                 ; user RIP
     pop r11                 ; user RFLAGS
-
-    ; Load signal handler arg into RDI (0 if no signal)
-    mov rdi, [rel sig_pending_arg]
 
     pop rsp                 ; user RSP
 
@@ -96,6 +122,12 @@ global syscall_saved_user_r12
 global syscall_saved_user_r13
 global syscall_saved_user_r14
 global syscall_saved_user_r15
+global syscall_saved_user_rdi
+global syscall_saved_user_rsi
+global syscall_saved_user_rdx
+global syscall_saved_user_r10
+global syscall_saved_user_r8
+global syscall_saved_user_r9
 syscall_saved_user_rip:    resq 1
 syscall_saved_user_rsp:    resq 1
 syscall_saved_user_rflags: resq 1
@@ -105,3 +137,9 @@ syscall_saved_user_r12:    resq 1
 syscall_saved_user_r13:    resq 1
 syscall_saved_user_r14:    resq 1
 syscall_saved_user_r15:    resq 1
+syscall_saved_user_rdi:    resq 1
+syscall_saved_user_rsi:    resq 1
+syscall_saved_user_rdx:    resq 1
+syscall_saved_user_r10:    resq 1
+syscall_saved_user_r8:     resq 1
+syscall_saved_user_r9:     resq 1

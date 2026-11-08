@@ -232,6 +232,25 @@ uint64_t vmm_get_phys_in(uint64_t pml4_phys, uint64_t virt) {
     return (*pte & PTE_ADDR_MASK) + (virt & PAGE_OFFSET_MASK);
 }
 
+int vmm_get_flags_in(uint64_t pml4_phys, uint64_t virt) {
+    uint64_t *pte = walk_to_pt_entry(pml4_phys, virt);
+    if (pte == NULL || !(*pte & PTE_PRESENT)) return -1;
+    return (int)pte_to_vmm_flags(*pte);
+}
+
+int vmm_user_access_ok(uint64_t pml4_phys, uint64_t virt, int write) {
+    uint64_t need = PTE_PRESENT | PTE_USER | (write ? PTE_WRITABLE : 0);
+    uint64_t *table = (uint64_t *)phys_to_virt(pml4_phys);
+    const int idx[4] = { PML4_INDEX(virt), PDPT_INDEX(virt), PD_INDEX(virt), PT_INDEX(virt) };
+    for (int level = 0; level < 4; level++) {
+        uint64_t e = table[idx[level]];
+        if ((e & need) != need) return 0;
+        if (level < 3 && (e & PTE_HUGE)) return 0;   /* user memory uses 4 KiB pages */
+        if (level < 3) table = (uint64_t *)phys_to_virt(e & PTE_ADDR_MASK);
+    }
+    return 1;
+}
+
 /* --- Address space fork/teardown --- */
 
 /* Copy a single user page and map the copy into the destination address space.

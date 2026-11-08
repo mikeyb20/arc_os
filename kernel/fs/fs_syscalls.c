@@ -1,8 +1,9 @@
 /* arc_os — file and directory syscalls (Linux x86_64 numbers, ADR-0001).
  *
- * Moved out of arch/x86_64/syscall.c by M0-05. Every handler validates user
- * pointers with user_ptr_valid (range check only; M1-19 adds fault-safe copies)
- * and returns -errno on failure. */
+ * Moved out of arch/x86_64/syscall.c by M0-05. Handlers return -errno on
+ * failure. Paths, iovecs and termios structs are copied with the page-checked
+ * helpers (copy_from_user etc., M0-06); older handlers still only range-check
+ * buffers with user_ptr_valid until M1-19 adds page-fault fixups. */
 
 #include "fs/fs_syscalls.h"
 #include "fs/vfs.h"
@@ -22,6 +23,7 @@
 #include "uapi/stat.h"
 #include "uapi/dirent.h"
 #include "uapi/termios.h"
+#include "uapi/uio.h"
 
 /* Standard file descriptor numbers: with no fd-table entry they mean the TTY */
 #define FD_STDIN   0
@@ -37,8 +39,9 @@
 #define GETDENTS_MAX_ENTRIES 256
 
 int fs_user_path(uint64_t path_addr, char *abs, size_t size) {
-    if (!user_ptr_valid((const void *)path_addr, 1)) return -EFAULT;
-    const char *path = (const char *)path_addr;
+    char path[PATH_MAX];
+    long len = strncpy_from_user(path, (const char *)path_addr, sizeof(path));
+    if (len < 0) return (int)len;   /* -EFAULT or -ENAMETOOLONG */
     Process *p = proc_current();
     const char *cwd = (p != NULL) ? p->cwd : "/";
     return path_normalize(cwd, path, abs, size);
@@ -87,6 +90,54 @@ static int64_t sys_write(uint64_t fd, uint64_t buf_addr, uint64_t count,
     /* stdout/stderr with no fd-table entry write to the TTY */
     if (fd == FD_STDOUT || fd == FD_STDERR) return tty_write((const void *)buf_addr, (uint32_t)count);
     return -EBADF;
+}
+
+/* readv/writev: at most this many iovecs (Linux UIO_MAXIOV) */
+#define IOV_MAX_COUNT 1024
+/* iovecs copied in per batch (kernel stack: 32 x 16 B) */
+#define IOV_BATCH 32
+
+/* Shared body of readv and writev: one read/write per iovec, in order. Stops
+ * at the first error or short transfer; returns the bytes moved, or the error
+ * if nothing moved (Linux semantics for blocking files). */
+static int64_t do_rw_vector(uint64_t fd, uint64_t iov_addr, uint64_t iovcnt, int write) {
+    if ((int64_t)iovcnt < 0 || iovcnt > IOV_MAX_COUNT) return -EINVAL;
+    struct iovec iov[IOV_BATCH];
+    int64_t total = 0;
+    for (uint64_t done = 0; done < iovcnt; ) {
+        uint64_t n = iovcnt - done;
+        if (n > IOV_BATCH) n = IOV_BATCH;
+        if (copy_from_user(iov, (const void *)(iov_addr + done * sizeof(struct iovec)),
+                           n * sizeof(struct iovec)) != 0)
+            return total > 0 ? total : -EFAULT;
+        for (uint64_t i = 0; i < n; i++) {
+            uint64_t len = iov[i].iov_len;
+            if (len == 0) continue;
+            /* VFS counts are 32-bit (M1-11): move at most 1 GiB per call */
+            if (len > 0x40000000ULL) len = 0x40000000ULL;
+            int64_t r = write ? sys_write(fd, (uint64_t)iov[i].iov_base, len, 0, 0, 0)
+                              : sys_read(fd, (uint64_t)iov[i].iov_base, len, 0, 0, 0);
+            if (r < 0) return total > 0 ? total : r;
+            total += r;
+            if ((uint64_t)r < len) return total;
+        }
+        done += n;
+    }
+    return total;
+}
+
+/* readv(fd, iov, iovcnt) — 19 */
+static int64_t sys_readv(uint64_t fd, uint64_t iov_addr, uint64_t iovcnt,
+                         uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a3; (void)a4; (void)a5;
+    return do_rw_vector(fd, iov_addr, iovcnt, 0);
+}
+
+/* writev(fd, iov, iovcnt) — 20. musl's stdio writes through this. */
+static int64_t sys_writev(uint64_t fd, uint64_t iov_addr, uint64_t iovcnt,
+                          uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a3; (void)a4; (void)a5;
+    return do_rw_vector(fd, iov_addr, iovcnt, 1);
 }
 
 /* open(path, flags, mode) — 2. mode is ignored: new files get 0666 & ~umask. */
@@ -198,8 +249,10 @@ static int64_t sys_lseek(uint64_t fd, uint64_t offset, uint64_t whence,
     return vfs_seek(file, (int64_t)offset, (int)whence);
 }
 
-/* ioctl(fd, request, arg) — 16. Only the terminal job-control requests exist
- * so far (TIOCSPGRP/TIOCGPGRP, which replace the old tcsetpgrp syscall). */
+/* ioctl(fd, request, arg) — 16. Terminal requests only: job control
+ * (TIOCSPGRP/TIOCGPGRP), termios (TCGETS, TCSETS, TCSETSW, TCSETSF; stored,
+ * not yet applied) and window size. Anything else, or a non-terminal fd,
+ * gets -ENOTTY. */
 static int64_t sys_ioctl(uint64_t fd, uint64_t request, uint64_t arg,
                          uint64_t a3, uint64_t a4, uint64_t a5) {
     (void)a3; (void)a4; (void)a5;
@@ -225,6 +278,31 @@ static int64_t sys_ioctl(uint64_t fd, uint64_t request, uint64_t arg,
         if (!user_ptr_valid((void *)arg, sizeof(int32_t))) return -EFAULT;
         *(int32_t *)arg = (int32_t)tty_get_fg_pgid();
         return 0;
+    case TCGETS: {
+        struct termios t;
+        tty_get_termios(&t);
+        return copy_to_user((void *)arg, &t, sizeof(t));
+    }
+    case TCSETS:
+    case TCSETSW:     /* output is written synchronously: nothing to drain */
+    case TCSETSF: {
+        struct termios t;
+        if (copy_from_user(&t, (const void *)arg, sizeof(t)) != 0) return -EFAULT;
+        if (request == TCSETSF) tty_flush_input();
+        tty_set_termios(&t);
+        return 0;
+    }
+    case TIOCGWINSZ: {
+        struct winsize ws;
+        tty_get_winsize(&ws);
+        return copy_to_user((void *)arg, &ws, sizeof(ws));
+    }
+    case TIOCSWINSZ: {
+        struct winsize ws;
+        if (copy_from_user(&ws, (const void *)arg, sizeof(ws)) != 0) return -EFAULT;
+        tty_set_winsize(&ws);
+        return 0;
+    }
     default:
         return -ENOTTY;
     }
@@ -493,6 +571,8 @@ static int64_t sys_getdents64(uint64_t fd, uint64_t dirp, uint64_t count,
 void fs_syscalls_init(void) {
     syscall_register(__NR_read,       sys_read);
     syscall_register(__NR_write,      sys_write);
+    syscall_register(__NR_readv,      sys_readv);
+    syscall_register(__NR_writev,     sys_writev);
     syscall_register(__NR_open,       sys_open);
     syscall_register(__NR_close,      sys_close);
     syscall_register(__NR_stat,       sys_stat);

@@ -2,6 +2,7 @@
 #include "mm/kmalloc.h"
 #include "lib/kprintf.h"
 #include "lib/mem.h"
+#include "arch/hal.h"
 
 static Thread *current_thread = NULL;
 static tid_t next_tid = 0;
@@ -45,6 +46,14 @@ Thread *thread_create(thread_entry_t entry, void *arg) {
         return NULL;
     }
 
+    /* Every thread may enter user mode: give it a clean FPU/SSE image */
+    t->fpu_state = fpu_state_alloc();
+    if (t->fpu_state == NULL) {
+        kfree(t->stack_base);
+        kfree(t);
+        return NULL;
+    }
+
     t->tid = next_tid++;
     t->state = THREAD_READY;
     t->stack_size = THREAD_STACK_SIZE;
@@ -73,6 +82,7 @@ void thread_destroy(Thread *t) {
     if (t->stack_base != NULL) {
         kfree(t->stack_base);
     }
+    fpu_state_free(t->fpu_state);
     kfree(t);
 }
 

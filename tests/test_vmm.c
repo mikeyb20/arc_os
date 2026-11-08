@@ -404,6 +404,31 @@ TEST(init_sets_pml4) {
     return 0;
 }
 
+/* M0-06: user copy checks and per-page flags */
+TEST(user_access_ok_checks_user_and_write) {
+    reset_vmm_state();
+    uint64_t pml4 = kernel_pml4_phys;
+    vmm_map_page_in(pml4, 0x400000, 0xA000, VMM_FLAG_USER);                     /* r-- user */
+    vmm_map_page_in(pml4, 0x401000, 0xB000, VMM_FLAG_USER | VMM_FLAG_WRITABLE); /* rw- user */
+    vmm_map_page_in(pml4, 0x402000, 0xC000, VMM_FLAG_WRITABLE);                 /* kernel only */
+    ASSERT_EQ(vmm_user_access_ok(pml4, 0x400000, 0), 1);
+    ASSERT_EQ(vmm_user_access_ok(pml4, 0x400000, 1), 0);   /* read-only */
+    ASSERT_EQ(vmm_user_access_ok(pml4, 0x401000, 1), 1);
+    ASSERT_EQ(vmm_user_access_ok(pml4, 0x402000, 0), 0);   /* not a user page */
+    ASSERT_EQ(vmm_user_access_ok(pml4, 0x403000, 0), 0);   /* unmapped */
+    ASSERT_EQ(vmm_user_access_ok(pml4, 0x7FFF00000000ULL, 0), 0);  /* no tables */
+    return 0;
+}
+
+TEST(get_flags_in_round_trips) {
+    reset_vmm_state();
+    uint64_t pml4 = kernel_pml4_phys;
+    vmm_map_page_in(pml4, 0x400000, 0xA000, VMM_FLAG_USER | VMM_FLAG_NOEXEC);
+    ASSERT_EQ(vmm_get_flags_in(pml4, 0x400000), VMM_FLAG_USER | VMM_FLAG_NOEXEC);
+    ASSERT_EQ(vmm_get_flags_in(pml4, 0x401000), -1);
+    return 0;
+}
+
 TEST(remap_after_unmap) {
     reset_vmm_state();
     vmm_map_page(0x1000000, 0xA000, VMM_FLAG_WRITABLE);
@@ -445,6 +470,8 @@ TestCase vmm_tests[] = {
     TEST_ENTRY(different_pml4_entries),
     TEST_ENTRY(get_phys_preserves_offset),
     TEST_ENTRY(get_phys_last_byte_of_page),
+    TEST_ENTRY(user_access_ok_checks_user_and_write),
+    TEST_ENTRY(get_flags_in_round_trips),
     TEST_ENTRY(get_kernel_pml4),
     TEST_ENTRY(get_hhdm_offset),
     TEST_ENTRY(init_sets_pml4),
