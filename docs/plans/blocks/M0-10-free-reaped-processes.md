@@ -31,7 +31,9 @@ found that every exited process leaks about 54 pages and 40 KB of kernel heap.
 - [ ] `pages_leaked` and `heap_leaked_bytes` are 0 on every QEMU suite, and their limits are 0.
 
 **Cost.** Reaping walks the child's page tables once (proportional to what it mapped) and frees O(1) kernel
-objects; `proc_list` gets shorter, which helps every scan that still walks it.
+objects; `proc_list` gets shorter, which helps every scan that still walks it. (As built: exit walks `proc_list` once to
+re-parent children, O(processes) like wait4's existing scans; exit is not a hot path. Socket close is O(1) plus
+the listener's backlog, at most 8.)
 
 **Watch out.**
 - Freeing the address space while the child's CR3 is still loaded on some CPU. Single CPU today, but write it so
