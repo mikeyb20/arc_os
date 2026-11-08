@@ -67,3 +67,6 @@ scratchpad*.md
 # Archived outside components, fetched by tools/fetch-archived.sh (M0-03)
 third_party/src/
 third_party/cache/
+
+# Python
+__pycache__/
