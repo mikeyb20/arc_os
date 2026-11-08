@@ -87,7 +87,7 @@ Start every block with `/os/implement-block <ID>`. These rules are what keep ses
 | M0-04 | Syscall inventory | S | R | U | M0-03 | Exact syscalls, ioctls and files used by musl, C++, SQLite, zstd, llama.cpp | done |
 | M0-05 | Move syscalls to Linux numbers | M | D | K | M0-02, M0-04 | No old numbers left; shell and coreutils pass | done |
 | M0-06 | Linux process start + musl hello | M | D | K | M0-05 | Programs built with stock `musl-gcc -static` run in QEMU | done |
-| M0-07 | Manifest schemas | S | R | C | — | Schemas and examples validated in CI | in progress |
+| M0-07 | Manifest schemas | S | R | C | — | Schemas and examples validated in CI | review (#14) |
 | M0-08 | Budget checks in the QEMU harness | S | R | I | M0-02 | A size or count past its limit fails CI, named (ADR-0019) | done |
 | M0-09 | Code hygiene checks | S | R | I | M0-08 | Duplicates, copied helpers, x86 includes outside arch, long functions and untracked TODOs can't grow (ADR-0020) | done |
 | M0-10 | Free reaped processes | M | D | K | M0-09 | `pages_leaked` and `heap_leaked_bytes` budgets are 0 on every QEMU suite | done |
