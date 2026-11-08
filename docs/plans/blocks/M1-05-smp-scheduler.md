@@ -31,6 +31,8 @@ written lock ordering that debug builds check at runtime.
 **Done when.**
 - [ ] Tests pass in TCG and in CI.
 - [ ] `docs/kernel/locking.md` exists and matches what the checker enforces.
+- [ ] Files this block rewrites outside `kernel/arch/` include `arch/hal.h` or arch-neutral headers, not
+  `arch/x86_64/`; the `arch_includes_outside_arch` limit in the budgets file is lowered to match (ADR-0020).
 
 **Cost.** Picking the next thread O(1) from the local queue; choosing a wakeup CPU at most O(CPUs); no global lock in `schedule`; a context switch does no lookup by ID (thread points to its process and mm).
 
