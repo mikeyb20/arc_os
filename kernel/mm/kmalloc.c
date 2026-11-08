@@ -40,6 +40,7 @@ static Spinlock heap_lock = SPINLOCK_INIT;
 
 static BlockHeader *heap_start_block;
 static uint64_t heap_current_end;  /* Current end of mapped heap */
+static size_t   heap_walk_max;     /* Most blocks one kmalloc walked (budget, ADR-0019) */
 
 /* Grow the heap by mapping more pages */
 static int heap_grow(size_t min_bytes) {
@@ -179,17 +180,20 @@ static void *kmalloc_locked(size_t size, uint32_t flags) {
 
     /* First-fit search */
     BlockHeader *block = heap_start_block;
+    size_t walked = 0;
     while (block != NULL) {
         if (block->magic != BLOCK_MAGIC) {
             kprintf("[HEAP] CORRUPTION: invalid magic at %p\n", (void *)block);
             KERNEL_PANIC();
         }
-
+        walked++;
         if (block->free && block->size >= size) {
+            if (walked > heap_walk_max) heap_walk_max = walked;
             return block_allocate(block, size, flags);
         }
         block = block->next;
     }
+    if (walked > heap_walk_max) heap_walk_max = walked;
 
     /* No block found — grow the heap */
     block = heap_grow_for(size);
@@ -340,4 +344,11 @@ void kmalloc_get_stats(HeapStats *out) {
 
     out->heap_mapped = heap_current_end - HEAP_START;
     spinlock_release(&heap_lock);
+}
+
+size_t kmalloc_max_walk(void) {
+    spinlock_acquire(&heap_lock);
+    size_t n = heap_walk_max;
+    spinlock_release(&heap_lock);
+    return n;
 }

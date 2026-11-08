@@ -124,6 +124,33 @@ TEST(init_exit_ignored_outside_test_mode) {
     return 0;
 }
 
+static int end_hook_calls;
+static void count_end_hook(void) { end_hook_calls++; }
+
+TEST(end_hook_runs_once_before_exit) {
+    testmode_init("arc.test=smoke");
+    testmode_set_init_pid(1);
+    testmode_set_end_hook(count_end_hook);
+    end_hook_calls = 0;
+    exit_called = 0;
+    if (setjmp(exit_jmp) == 0) {
+        testmode_process_exited(2, 0);   /* not init: no hook */
+        ASSERT_EQ(end_hook_calls, 0);
+        testmode_process_exited(1, 0);
+    }
+    ASSERT_EQ(end_hook_calls, 1);
+    ASSERT_EQ(exit_called, 1);
+    /* A panic ends the run without the hook */
+    end_hook_calls = 0;
+    if (setjmp(exit_jmp) == 0) {
+        kernel_panic_halt();
+    }
+    ASSERT_EQ(end_hook_calls, 0);
+    testmode_set_end_hook(NULL);
+    testmode_init("");
+    return 0;
+}
+
 TEST(panic_exits_with_panic_code) {
     testmode_init("arc.test=smoke");
     exit_called = 0;
@@ -148,6 +175,7 @@ TestCase cmdline_tests[] = {
     TEST_ENTRY(init_exit_ends_run),
     TEST_ENTRY(init_exit_status_clamped),
     TEST_ENTRY(init_exit_ignored_outside_test_mode),
+    TEST_ENTRY(end_hook_runs_once_before_exit),
     TEST_ENTRY(panic_exits_with_panic_code),
 };
 int cmdline_test_count = sizeof(cmdline_tests) / sizeof(cmdline_tests[0]);

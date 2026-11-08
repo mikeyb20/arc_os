@@ -303,6 +303,22 @@ static int test_lock_taken_once_per_call(void) {
     return 0;
 }
 
+/* kmalloc_max_walk() records the longest first-fit walk (budget metric) */
+static int test_max_walk_counts_blocks(void) {
+    setup_heap();
+    heap_walk_max = 0;
+    void *a = kmalloc(64, GFP_KERNEL);          /* walks 1 block */
+    ASSERT_EQ(kmalloc_max_walk(), 1);
+    void *b = kmalloc(64, GFP_KERNEL);          /* a (used), then the rest: 2 */
+    void *c = kmalloc(64, GFP_KERNEL);          /* a, b, rest: 3 */
+    ASSERT_EQ(kmalloc_max_walk(), 3);
+    kfree(a);
+    void *d = kmalloc(32, GFP_KERNEL);          /* reuses a's block: 1, max stays 3 */
+    ASSERT_EQ(kmalloc_max_walk(), 3);
+    kfree(b); kfree(c); kfree(d);
+    return 0;
+}
+
 /* --- Test suite export --- */
 
 TestCase kmalloc_tests[] = {
@@ -321,6 +337,7 @@ TestCase kmalloc_tests[] = {
     { "canary_survives_normal",     test_canary_survives_normal_use },
     { "split_block_no_underflow",   test_split_block_no_underflow },
     { "lock_taken_once_per_call",   test_lock_taken_once_per_call },
+    { "max_walk_counts_blocks",     test_max_walk_counts_blocks },
 };
 
 int kmalloc_test_count = sizeof(kmalloc_tests) / sizeof(kmalloc_tests[0]);

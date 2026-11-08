@@ -36,4 +36,8 @@ typedef struct {
 /* Collect heap statistics into 'out'. */
 void kmalloc_get_stats(HeapStats *out);
 
+/* Most heap blocks a single kmalloc has walked since boot (first-fit cost,
+ * reported as a budget; M1-02b's slab replaces the walk). */
+size_t kmalloc_max_walk(void);
+
 #endif /* ARCHOS_MM_KMALLOC_H */

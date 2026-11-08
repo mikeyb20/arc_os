@@ -27,7 +27,11 @@ oversized function or an untracked TODO, measured against limits frozen at today
    +10%: these only go down). The checker's "warn when 20% better" prompts tightening.
 3. `.clang-format` matching CLAUDE.md (K&R braces, 4 spaces, no tabs). A CI step runs `git clang-format --diff`
    against the PR's merge base and fails on changed lines only. Install `clang-format` in `tools/dev-setup.sh`.
-4. CI: run `tools/hygiene.py` in the build job (no QEMU needed) and feed its lines to the M0-08 checker.
+4. CI: run `tools/hygiene.py` in the build job (no QEMU needed) and feed its lines to the M0-08 checker
+   (`tools/budget-check.py`). Its budgets-file lines need a source: write the output to a log the checker reads
+   (e.g. `build/hygiene.log`) and add a `hygiene` source next to `build`, suite name and `*`
+   (`docs/kernel/budgets.md`). The checker fails on a metric nobody reports, so the build job runs the checker
+   on the hygiene lines only, or the QEMU-sourced metrics are skipped there.
 5. `docs/kernel/helpers.md`: one table, job → canonical helper → header (phys↔virt, user copy, locks, lists,
    string/mem in `kernel/lib`, libarc on the user side). Name the current duplicates as known debt with the block
    expected to remove each, as a `tidy:` commit (HHDM helpers: the first block that edits `kernel/mm/pmm.c` or

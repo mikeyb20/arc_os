@@ -34,6 +34,7 @@
 #include "fs/procfs.h"
 #include "lib/cmdline.h"
 #include "lib/testmode.h"
+#include "lib/budget.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -65,6 +66,11 @@ static const char *memmap_type_name(uint32_t type) {
     case MEMMAP_FRAMEBUFFER:        return "Framebuffer";
     default:                        return "Unknown";
     }
+}
+
+/* Test mode: budgets measured when init exits (testmode end hook) */
+static void report_end_budgets(void) {
+    ARC_BUDGET("kmalloc_walk_max", kmalloc_max_walk());
 }
 
 static void test_thread_entry(void *arg) {
@@ -435,6 +441,15 @@ void kmain(void) {
     if (testmode_active() && strcmp(testmode_suite(), "kpanic") == 0) {
         kprintf("[TEST] kpanic suite: panicking on purpose\n");
         KERNEL_PANIC();
+    }
+
+    /* Boot budgets (ADR-0019): memory left for user space and what the kernel took */
+    if (testmode_active()) {
+        HeapStats hs;
+        kmalloc_get_stats(&hs);
+        ARC_BUDGET("boot_free_bytes", pmm_get_free_pages() * PAGE_SIZE);
+        ARC_BUDGET("kernel_heap_bytes", hs.total_used);
+        testmode_set_end_hook(report_end_budgets);
     }
 
     /* Launch init process from boot module */

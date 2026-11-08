@@ -25,6 +25,10 @@ const char *testmode_suite(void);
 /* Record the PID of init, so testmode_process_exited can recognise it. */
 void testmode_set_init_pid(int pid);
 
+/* Register a function run once when init exits, just before the run ends
+ * (end-of-run budget metrics). Not run on a panic. NULL clears it. */
+void testmode_set_end_hook(void (*fn)(void));
+
 /* Called when any process exits (normally or by signal) with its status.
  * In test mode, init exiting ends the run: QEMU exits with init's status
  * (clamped to 0..0x3e; 0 = pass). Otherwise does nothing. */
