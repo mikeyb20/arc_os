@@ -1,0 +1,74 @@
+# Syscall inventory (M0-04): build the target programs, the SQLite shell, the
+# zstd CLI and llama.cpp statically against musl (Alpine container) from the
+# archived sources, run each under strace and merge the logs into
+# docs/plans/syscall-inventory.md. On a branch other than master the updated
+# doc is committed back to the branch; the raw logs are an artifact.
+name: inventory
+
+on:
+  workflow_dispatch:
+  push:
+    branches-ignore: [master]
+    paths:
+      - tests/target/**
+      - tools/inventory/**
+      - tools/syscall-inventory.py
+      - .github/workflows/inventory.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: inventory-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  inventory:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      TBL: third_party/src/linux-uapi-ref/arch/x86/entry/syscalls/syscall_64.tbl
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0     # full history, so the doc commit can rebase
+
+      - name: Fetch archived sources and test models
+        run: tools/fetch-archived.sh llama.cpp sqlite zstd linux-uapi-ref tiny-chat-model tiny-embed-model
+
+      - name: Build and strace in Alpine (musl)
+        run: |
+          docker run --rm --cap-add SYS_PTRACE --security-opt seccomp=unconfined \
+            -v "$PWD:/work" -w /work alpine:3.20 sh tools/inventory/run-in-alpine.sh
+          sudo chown -R "$(id -u):$(id -g)" build third_party
+
+      - name: Merge logs into the inventory
+        run: |
+          python3 tools/syscall-inventory.py --logs build/inventory/logs --tbl "$TBL" \
+            --table .claude/skills/arc-os-architecture/reference/syscall-table.md \
+            --status build/inventory/status.txt --out docs/plans/syscall-inventory.md
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: syscall-inventory-logs
+          path: |
+            build/inventory/logs
+            build/inventory/status.txt
+          retention-days: 30
+
+      - name: Commit the inventory
+        if: github.ref != 'refs/heads/master'
+        run: |
+          if git diff --quiet -- docs/plans/syscall-inventory.md && \
+             ! git ls-files --others --exclude-standard -- docs/plans/syscall-inventory.md | grep -q .; then
+            echo "inventory unchanged"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/plans/syscall-inventory.md
+          git commit -m "inventory: regenerate docs/plans/syscall-inventory.md"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
