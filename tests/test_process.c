@@ -144,18 +144,28 @@ typedef struct Process {
 /* VMM stubs: count address spaces freed */
 static int vmm_free_calls;
 static uint64_t vmm_free_last;
-static uint64_t vmm_create_user_pml4(void) { return 0x300000; }
+static uint64_t vmm_create_user_pml4(void) {
+    return 0x300000;
+}
 static uint64_t vmm_fork_address_space(uint64_t src) { (void)src; return 0x400000; }
-static void vmm_free_user_pages(uint64_t pml4) { vmm_free_calls++; vmm_free_last = pml4; }
+static void vmm_free_user_pages(uint64_t pml4) {
+    vmm_free_calls++;
+    vmm_free_last = pml4;
+}
 
 /* FD stubs: fork's table copy is a real allocation, so reaping must free it */
-struct FdTable { int dummy; };
+struct FdTable {
+    int dummy;
+};
 static void *kmalloc(size_t size, uint32_t flags);
 static FdTable *fd_table_dup(const FdTable *src) {
     return src != NULL ? kmalloc(sizeof(FdTable), 0) : NULL;
 }
 static int release_fds_calls;
-static void proc_release_fds(Process *p) { (void)p; release_fds_calls++; }
+static void proc_release_fds(Process *p) {
+    (void)p;
+    release_fds_calls++;
+}
 
 /* Arch stubs */
 static void gdt_set_kernel_stack(uint64_t rsp0) { (void)rsp0; }
@@ -235,7 +245,10 @@ static Thread *thread_create(thread_entry_t entry, void *arg) {
 /* thread_destroy stub: records which threads were freed */
 static int thread_destroy_calls;
 static Thread *thread_destroy_last;
-static void thread_destroy(Thread *t) { thread_destroy_calls++; thread_destroy_last = t; }
+static void thread_destroy(Thread *t) {
+    thread_destroy_calls++;
+    thread_destroy_last = t;
+}
 
 /* Tracking sched_add_thread stub (static to avoid linker clash) */
 static int sched_add_call_count;
@@ -687,28 +700,28 @@ static int test_proc_fork_copies_fpu_and_fs_base(void) {
 }
 
 TestCase process_tests[] = {
-    { "fork_copies_fpu_and_fs_base", test_proc_fork_copies_fpu_and_fs_base },
-    { "init_creates_boot_process",  test_proc_init_creates_boot_process },
-    { "init_pid_sequence",          test_proc_init_pid_sequence },
-    { "create_basic",               test_proc_create_basic },
-    { "create_links_in_list",       test_proc_create_links_in_list },
-    { "create_thread_failure",      test_proc_create_thread_failure },
-    { "create_kmalloc_failure",     test_proc_create_kmalloc_failure },
-    { "current_returns_boot",       test_proc_current_returns_boot },
-    { "create_pid_sequence",        test_proc_create_pid_sequence },
-    { "threads_point_at_process",   test_threads_point_at_process },
-    { "current_with_large_tid",     test_current_with_large_tid },
-    { "reap_frees_everything",      test_reap_frees_everything },
-    { "reap_unlinks_head_middle_tail", test_reap_unlinks_head_middle_tail },
-    { "reap_rejects_live_child",    test_reap_rejects_live_child },
-    { "reparent_to_init",           test_reparent_to_init },
-    { "reparent_when_init_exits",   test_reparent_when_init_exits },
-    { "fork_failure_unlinks_and_frees", test_fork_failure_unlinks_and_frees },
-    { "state_alive_to_zombie",      test_state_alive_to_zombie },
-    { "state_values_distinct",      test_state_values_distinct },
-    { "max_processes_boundary",     test_max_processes_boundary },
-    { "parent_null_by_default",     test_parent_null_by_default },
-    { "current_after_thread_switch", test_current_after_thread_switch },
+    {"fork_copies_fpu_and_fs_base", test_proc_fork_copies_fpu_and_fs_base},
+    {"init_creates_boot_process", test_proc_init_creates_boot_process},
+    {"init_pid_sequence", test_proc_init_pid_sequence},
+    {"create_basic", test_proc_create_basic},
+    {"create_links_in_list", test_proc_create_links_in_list},
+    {"create_thread_failure", test_proc_create_thread_failure},
+    {"create_kmalloc_failure", test_proc_create_kmalloc_failure},
+    {"current_returns_boot", test_proc_current_returns_boot},
+    {"create_pid_sequence", test_proc_create_pid_sequence},
+    {"threads_point_at_process", test_threads_point_at_process},
+    {"current_with_large_tid", test_current_with_large_tid},
+    {"reap_frees_everything", test_reap_frees_everything},
+    {"reap_unlinks_head_middle_tail", test_reap_unlinks_head_middle_tail},
+    {"reap_rejects_live_child", test_reap_rejects_live_child},
+    {"reparent_to_init", test_reparent_to_init},
+    {"reparent_when_init_exits", test_reparent_when_init_exits},
+    {"fork_failure_unlinks_and_frees", test_fork_failure_unlinks_and_frees},
+    {"state_alive_to_zombie", test_state_alive_to_zombie},
+    {"state_values_distinct", test_state_values_distinct},
+    {"max_processes_boundary", test_max_processes_boundary},
+    {"parent_null_by_default", test_parent_null_by_default},
+    {"current_after_thread_switch", test_current_after_thread_switch},
 };
 
 int process_test_count = sizeof(process_tests) / sizeof(process_tests[0]);

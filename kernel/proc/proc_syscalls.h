@@ -30,7 +30,6 @@ void proc_release_fds(struct Process *p);
  * hand its children to init, become a zombie with this status (term_signal
  * nonzero = killed by that signal), wake the parent and send it SIGCHLD, and
  * switch away for good. The parent's wait4 frees everything. Does not return. */
-__attribute__((noreturn))
-void proc_exit(struct Process *p, int32_t exit_status, uint8_t term_signal);
+__attribute__((noreturn)) void proc_exit(struct Process *p, int32_t exit_status, uint8_t term_signal);
 
 #endif /* ARCHOS_PROC_PROC_SYSCALLS_H */

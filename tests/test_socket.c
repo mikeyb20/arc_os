@@ -61,7 +61,10 @@ static void *kmalloc(size_t size, uint32_t flags) {
     return p;
 }
 static int kfree_count;
-static void kfree(void *ptr) { if (ptr) kfree_count++; free(ptr); }
+static void kfree(void *ptr) {
+    if (ptr) kfree_count++;
+    free(ptr);
+}
 
 /* Spinlock stub (no-op for single-threaded tests) */
 typedef struct { volatile uint32_t locked; uint64_t saved_flags; } Spinlock;
@@ -143,7 +146,10 @@ static int tcp_send(NetIf *nif, uint32_t src_ip, uint16_t src_port,
                     uint32_t seq, uint32_t ack, uint8_t flags,
                     const void *payload, uint32_t payload_len) {
     (void)nif; (void)src_ip; (void)src_port; (void)dst_ip; (void)dst_port;
-    (void)seq; (void)ack; (void)payload; (void)payload_len;
+    (void)seq;
+    (void)ack;
+    (void)payload;
+    (void)payload_len;
     tcp_send_last_flags = flags;
     tcp_send_count++;
     return 0;

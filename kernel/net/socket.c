@@ -74,8 +74,8 @@ static void socket_reset_peer(Socket *sk) {
     case SOCK_STATE_CLOSE_WAIT: {
         NetIf *nif = netif_get_default();
         if (nif != NULL) {
-            tcp_send(nif, sk->local_ip, sk->local_port, sk->remote_ip, sk->remote_port,
-                     sk->snd_nxt, sk->rcv_nxt, TCP_RST | TCP_ACK, NULL, 0);
+            tcp_send(nif, sk->local_ip, sk->local_port, sk->remote_ip, sk->remote_port, sk->snd_nxt, sk->rcv_nxt,
+                     TCP_RST | TCP_ACK, NULL, 0);
         }
         break;
     }

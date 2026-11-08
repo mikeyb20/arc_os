@@ -74,9 +74,12 @@ void proc_exit(Process *p, int32_t exit_status, uint8_t term_signal) {
 }
 
 /* exit(status) — 60: terminate the current process */
-static int64_t sys_exit(uint64_t status, uint64_t a1, uint64_t a2,
-                        uint64_t a3, uint64_t a4, uint64_t a5) {
-    (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+static int64_t sys_exit(uint64_t status, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a1;
+    (void)a2;
+    (void)a3;
+    (void)a4;
+    (void)a5;
     Process *p = proc_current();
     kprintf("[SYSCALL] exit(%lu) from pid=%u\n", status & 0xFF, p->pid);
     /* Only the low 8 bits of the status reach the parent (Linux) */

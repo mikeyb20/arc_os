@@ -22,14 +22,18 @@
 #include <uapi/unistd.h>
 #include <uapi/socket.h>
 
-#define CHILDREN    200
-#define SPIN_LIMIT  5000000   /* getppid() calls before giving up on adoption */
+#define CHILDREN   200
+#define SPIN_LIMIT 5000000   /* getppid() calls before giving up on adoption */
 
 static int failures;
 
-#define CHECK(cond) do { \
-    if (!(cond)) { printf("FAIL forkreap:%d: %s\n", __LINE__, #cond); failures++; } \
-} while (0)
+#define CHECK(cond)                                            \
+    do {                                                       \
+        if (!(cond)) {                                         \
+            printf("FAIL forkreap:%d: %s\n", __LINE__, #cond); \
+            failures++;                                        \
+        }                                                      \
+    } while (0)
 
 static void fork_and_reap(void) {
     for (int i = 0; i < CHILDREN; i++) {
@@ -110,8 +114,10 @@ static void orphan_zombie(void) {
  * at the last close, which the leak budget checks) */
 static void socket_shared(void) {
     long ret;     /* libc has no socket(): raw syscall, as in abi_check */
-    __asm__ volatile ("syscall" : "=a"(ret) : "a"((long)__NR_socket), "D"((long)AF_INET),
-                      "S"((long)SOCK_DGRAM), "d"(0L) : "rcx", "r11", "memory");
+    __asm__ volatile("syscall"
+                     : "=a"(ret)
+                     : "a"((long)__NR_socket), "D"((long)AF_INET), "S"((long)SOCK_DGRAM), "d"(0L)
+                     : "rcx", "r11", "memory");
     int s = (int)ret;
     CHECK(s >= 0);
     if (s < 0) return;

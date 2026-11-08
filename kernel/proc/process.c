@@ -21,8 +21,10 @@ static pid_t next_pid = 0;
 static Process *init_proc = NULL;
 
 static void proc_unlink(Process *p) {
-    if (p->prev != NULL) p->prev->next = p->next;
-    else proc_list = p->next;
+    if (p->prev != NULL)
+        p->prev->next = p->next;
+    else
+        proc_list = p->next;
     if (p->next != NULL) p->next->prev = p->prev;
     p->next = p->prev = NULL;
 }
