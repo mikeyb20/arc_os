@@ -149,8 +149,8 @@ static int run_test(char *line) {
 
 typedef struct {
     long free_kb;       /* MemFree */
-    long heap_used;     /* HeapUsed (bytes of live kmalloc blocks) */
-    long heap_mapped;   /* HeapMapped (bytes of pages the kernel heap holds) */
+    long heap_used;     /* HeapUsed + HeapLarge (bytes of live kmalloc blocks) */
+    long heap_mapped;   /* HeapMapped + HeapLarge (bytes of pages the kernel heap holds) */
 } MemSnap;
 
 /* Value after "<key>:" in a /proc/meminfo text, or -1 */
@@ -165,12 +165,18 @@ static long meminfo_field(const char *text, const char *key) {
 }
 
 static int mem_snap(MemSnap *m) {
-    char text[256];
+    char text[512];
     if (read_file("/proc/meminfo", text, sizeof(text)) <= 0) return -1;
     m->free_kb = meminfo_field(text, "MemFree");
     m->heap_used = meminfo_field(text, "HeapUsed");
     m->heap_mapped = meminfo_field(text, "HeapMapped");
-    return (m->free_kb < 0 || m->heap_used < 0 || m->heap_mapped < 0) ? -1 : 0;
+    /* Large kmalloc blocks (8 KiB-4 MiB, M1-02) come straight from the page
+     * allocator: they are live heap bytes and pages the heap holds */
+    long large = meminfo_field(text, "HeapLarge");
+    if (m->free_kb < 0 || m->heap_used < 0 || m->heap_mapped < 0 || large < 0) return -1;
+    m->heap_used += large;
+    m->heap_mapped += large;
+    return 0;
 }
 
 /* Pages that left the free pool for good (pages the kernel heap grew by are

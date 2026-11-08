@@ -68,6 +68,7 @@ typedef struct {
     size_t free_blocks;
     size_t largest_free;
     size_t heap_mapped;
+    size_t large_bytes;
 } HeapStats;
 
 /* Process states */
@@ -99,6 +100,7 @@ static HeapStats stub_heap_stats = {
     .free_blocks = 2,
     .largest_free = 8192,
     .heap_mapped = 16384,
+    .large_bytes = 32768,
 };
 
 /* Test processes */
@@ -134,6 +136,9 @@ static void setup_test_procs(void) {
 
 static uint64_t pmm_get_total_pages(void) { return stub_total_pages; }
 static uint64_t pmm_get_free_pages(void) { return stub_free_pages; }
+static uint64_t pmm_get_descriptor_bytes(void) {
+    return 1024 * 1024;
+}
 static uint64_t pit_get_uptime_ms(void) { return stub_uptime_ms; }
 
 /* CPU queries (arch/hal.h -> cpu.h): CPUs 0 (P-core) and 2 (E-core) online */
@@ -248,6 +253,8 @@ TEST(meminfo_content) {
     ASSERT_TRUE(strstr(buf, "MemTotal:") != NULL);
     ASSERT_TRUE(strstr(buf, "MemFree:") != NULL);
     ASSERT_TRUE(strstr(buf, "HeapUsed:") != NULL);
+    ASSERT_TRUE(strstr(buf, "PageDescriptors: 1024 kB") != NULL);
+    ASSERT_TRUE(strstr(buf, "HeapLarge: 32768 B") != NULL);
     return 0;
 }
 

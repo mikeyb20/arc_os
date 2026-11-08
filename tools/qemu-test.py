@@ -63,7 +63,7 @@ def build_iso(args, iso):
         modules.append(path)
 
     cmd = ["bash", os.path.join(ROOT, "tools", "make-iso.sh"),
-           "-o", iso, "-c", f"arc.test={args.suite}"] + modules
+           "-o", iso, "-c", " ".join([f"arc.test={args.suite}"] + args.cmdline)] + modules
     res = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
     if res.returncode != 0:
         log("make-iso.sh failed:")
@@ -111,7 +111,11 @@ def main():
     ap.add_argument("--expect-panic", action="store_true",
                     help="the run passes only if the kernel panics (harness self-check)")
     ap.add_argument("--timeout", type=float, default=120, help="seconds")
-    ap.add_argument("--memory", default="256M")
+    ap.add_argument("--memory", default="4G",
+                    help="guest RAM; 4G is the dev target (q35 puts 2 GiB above 4 GiB)")
+    ap.add_argument("--cmdline", action="append", default=[],
+                    help="extra kernel command-line word, e.g. arc.mem=4G")
+    ap.add_argument("--name", help="name for the ISO and serial log (default: the suite)")
     ap.add_argument("--smp", type=int, default=2)
     ap.add_argument("--qemu", default="qemu-system-x86_64")
     ap.add_argument("--no-kvm", action="store_true", help="force TCG")
@@ -128,8 +132,9 @@ def main():
 
     out_dir = os.path.join(args.build_dir, "qemu-test")
     os.makedirs(out_dir, exist_ok=True)
-    iso = os.path.join(out_dir, f"{args.suite}.iso")
-    serial_log = os.path.join(out_dir, f"{args.suite}.serial.log")
+    name = args.name or args.suite
+    iso = os.path.join(out_dir, f"{name}.iso")
+    serial_log = os.path.join(out_dir, f"{name}.serial.log")
     if os.path.exists(serial_log):
         os.remove(serial_log)
 

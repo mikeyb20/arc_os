@@ -18,7 +18,10 @@ Kernel and user space are separate worlds: the same function in `kernel/lib` and
 | Path clean-up (`.`, `..`, cwd) | `path_normalize` | `kernel/fs/path.h` |
 | Physical ↔ virtual (HHDM) | `vmm_get_hhdm_offset()` (+ phys) | `kernel/mm/vmm.h` |
 | Page mapping, address spaces | `vmm_map_page[_in]`, `vmm_get_phys[_in]`, `vmm_create_user_pml4`, ... | `kernel/mm/vmm.h` |
-| Physical pages | `pmm_alloc_page`, `pmm_free_page`, `pmm_alloc_contiguous` | `kernel/mm/pmm.h` |
+| Physical pages (buddy, 4 KiB-4 MiB blocks, `GFP_DMA32`) | `alloc_pages`, `free_pages`; wrappers `pmm_alloc_page`, `pmm_free_page`, `pmm_alloc_contiguous` | `kernel/mm/pmm.h` |
+| Page descriptors (`struct page`), PFN / phys / HHDM conversions | `pfn_to_page`, `page_to_pfn`, `page_to_phys`, `page_to_virt`, `virt_to_page`, `pfn_valid` | `kernel/mm/page.h` |
+| Allocation flags | `GFP_KERNEL`, `GFP_ZERO`, `GFP_DMA32` | `kernel/mm/gfp.h` |
+| Size strings (`4G`, `512M`) | `pmm_parse_size` | `kernel/mm/pmm.h` |
 | Kernel heap | `kmalloc`, `kfree`, `krealloc` (slab from M1-02b) | `kernel/mm/kmalloc.h` |
 | User memory | `copy_from_user`, `copy_to_user`, `strncpy_from_user` | `kernel/include/user_access.h` |
 | Spinlock (IRQ-safe) | `spinlock_acquire`, `spinlock_release` | `kernel/proc/spinlock.h` |
@@ -42,7 +45,7 @@ Removed in a `tidy:` commit by the first block that edits the file anyway; that 
 
 | Duplicate | Where | Removed by |
 |---|---|---|
-| `phys_to_virt` (static) and a private `hhdm_offset` | `kernel/mm/vmm.c`, `kernel/drivers/acpi.c`, `kernel/mm/pmm.c` | first block that edits `pmm.c` or `vmm.c` (likely M1-02): one inline in `vmm.h` |
+| `phys_to_virt` (static) and a private `hhdm_offset` | `kernel/mm/vmm.c`, `kernel/drivers/acpi.c` (`pmm.c`'s copy went in M1-02; `mm/page.h` now holds `pmm_hhdm_offset`) | first block that edits `vmm.c` (likely M1-07): one `phys_to_virt` inline in `mm/page.h` on `pmm_hhdm_offset`, and `vmm.c`'s private offset goes |
 | `mode_to_rwx` | `userland/coreutils/ls.c`, `userland/shell/shell.c` | next block that edits `ls` or the shell |
 | Repeated code regions (12) | `python3 tools/hygiene.py` lists them | the block that rewrites each file |
 | `irq_save` vs `hal_save_irq_state` (the HAL one doesn't disable interrupts) | `kernel/proc/spinlock.h`, `kernel/arch/hal.h` | M1-05 (lock rework) |
