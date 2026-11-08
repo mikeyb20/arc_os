@@ -70,6 +70,9 @@ static inline void spinlock_release(Spinlock *lock) {
     lock->locked = 0;
 }
 
+static inline uint64_t irq_save(void) { return 0; }
+static inline void irq_restore(uint64_t flags) { (void)flags; }
+
 /* thread_current/thread_set_current stubs (static to avoid linker clash) */
 static Thread *test_current_thread = NULL;
 
@@ -135,7 +138,6 @@ static void reset_sched_state(void) {
     queue_head = NULL;
     queue_tail = NULL;
     idle_thread = NULL;
-    sched_lock = (Spinlock)SPINLOCK_INIT;
     test_current_thread = NULL;
     ctx_switch_count = 0;
     ctx_switch_old = NULL;
@@ -372,9 +374,6 @@ static int test_sched_yield_calls_schedule(void) {
     sched_add_thread(b);
 
     sched_yield();
-
-    /* Lock should have been acquired and released */
-    ASSERT_EQ(sched_lock.locked, 0);
 
     /* Schedule should have run — B is current */
     ASSERT_TRUE(test_current_thread == b);

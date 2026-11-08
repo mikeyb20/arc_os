@@ -10,6 +10,7 @@ extern volatile struct limine_framebuffer_request     framebuffer_request;
 extern volatile struct limine_kernel_address_request  kernel_address_request;
 extern volatile struct limine_rsdp_request            rsdp_request;
 extern volatile struct limine_module_request          module_request;
+extern volatile struct limine_kernel_file_request     kernel_file_request;
 
 static BootInfo g_boot_info;
 
@@ -91,6 +92,15 @@ const BootInfo *bootinfo_init(void) {
             }
         }
         g_boot_info.module_count = mod_count;
+    }
+
+    /* Kernel command line */
+    g_boot_info.cmdline[0] = '\0';
+    struct limine_kernel_file_response *kf = kernel_file_request.response;
+    if (kf != NULL && kf->kernel_file != NULL && kf->kernel_file->cmdline != NULL) {
+        strncpy(g_boot_info.cmdline, kf->kernel_file->cmdline,
+                sizeof(g_boot_info.cmdline) - 1);
+        g_boot_info.cmdline[sizeof(g_boot_info.cmdline) - 1] = '\0';
     }
 
     return &g_boot_info;

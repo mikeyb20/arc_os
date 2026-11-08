@@ -29,7 +29,7 @@ uint64_t vmm_get_hhdm_offset(void);
 
 /* User-space address space constants */
 #define USER_STACK_TOP    0x00007FFFFFFFE000ULL
-#define USER_STACK_PAGES  4   /* 16 KB */
+#define USER_STACK_PAGES  16  /* 64 KB; ls keeps 64 dir entries (~17 KB) on its stack */
 #define USER_BASE         0x0000000000400000ULL  /* Default ELF load address */
 #define USER_HEAP_BASE    0x0000000010000000ULL
 

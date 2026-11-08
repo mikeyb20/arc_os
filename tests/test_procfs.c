@@ -18,6 +18,9 @@
 #define ARCHOS_PROC_SPINLOCK_H
 #define ARCHOS_LIB_MEM_H
 #define ARCHOS_LIB_STRING_H
+#define ARCHOS_LIB_CMDLINE_H
+
+static const char *cmdline_raw(void) { return "arc.test=smoke"; }
 
 /* VFS types (inline — match vfs.h) */
 #define VFS_FILE      0
@@ -258,6 +261,17 @@ TEST(uptime_content) {
     return 0;
 }
 
+TEST(cmdline_content) {
+    VfsNode *root = procfs_init();
+    VfsNode *n = root->ops->lookup(root, "cmdline");
+    ASSERT_TRUE(n != NULL);
+    char buf[64] = {0};
+    int rd = n->ops->read(n, buf, 0, sizeof(buf) - 1);
+    ASSERT_TRUE(rd > 0);
+    ASSERT_STR_EQ(buf, "arc.test=smoke\n");
+    return 0;
+}
+
 TEST(pid_status_content) {
     setup_test_procs();
     VfsNode *root = procfs_init();
@@ -284,10 +298,11 @@ TEST(readdir_root) {
     VfsNode *root = procfs_init();
     VfsDirEntry entries[16];
     int count = root->ops->readdir(root, entries, 16);
-    /* meminfo + uptime + 3 non-terminated PIDs (0, 1, 2) */
-    ASSERT_EQ(count, 5);
+    /* meminfo + uptime + cmdline + 3 non-terminated PIDs (0, 1, 2) */
+    ASSERT_EQ(count, 6);
     ASSERT_STR_EQ(entries[0].name, "meminfo");
     ASSERT_STR_EQ(entries[1].name, "uptime");
+    ASSERT_STR_EQ(entries[2].name, "cmdline");
     return 0;
 }
 
@@ -324,6 +339,7 @@ TestCase procfs_tests[] = {
     TEST_ENTRY(meminfo_content),
     TEST_ENTRY(meminfo_partial_read),
     TEST_ENTRY(uptime_content),
+    TEST_ENTRY(cmdline_content),
     TEST_ENTRY(pid_status_content),
     TEST_ENTRY(readdir_root),
     TEST_ENTRY(readdir_pid_dir),

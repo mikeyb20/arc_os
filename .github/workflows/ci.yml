@@ -1,5 +1,5 @@
-# Cross build (kernel, libc, userland, ISO) and host unit tests.
-# QEMU boot tests join in M0-02 (`ctest -L qemu`).
+# Cross build (kernel, libc, userland, ISO) and host unit tests, then the
+# QEMU boot tests (`ctest -L qemu`, M0-02) in their own job.
 name: ci
 
 on:
@@ -58,3 +58,58 @@ jobs:
           path: build/arc_os.iso
           if-no-files-found: error
           retention-days: 14
+
+      # kernel.elf and the user programs, for the qemu job (top-level files only)
+      - name: Pack cross build outputs
+        run: find build -maxdepth 1 -type f ! -name '.*' ! -name '*.iso' ! -name '*.ninja' ! -name '*.txt' ! -name '*.cmake' -print0 | tar --null -cf cross-build.tar -T -
+
+      - name: Upload cross build outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: cross-build
+          path: cross-build.tar
+          if-no-files-found: error
+          retention-days: 3
+
+  qemu:
+    needs: build-and-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dev setup (apt, Limine)
+        run: |
+          bash tools/dev-setup.sh apt
+          bash tools/dev-setup.sh limine
+
+      # Hosted runners have /dev/kvm but only root can open it by default.
+      - name: Enable KVM if present
+        run: |
+          if [ -e /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger --name-match=kvm
+            ls -l /dev/kvm
+          else
+            echo "no /dev/kvm: QEMU tests run under TCG"
+          fi
+
+      - name: Download cross build outputs
+        uses: actions/download-artifact@v4
+        with:
+          name: cross-build
+
+      - name: QEMU tests
+        run: |
+          tar -xf cross-build.tar
+          cmake -B build-tests -G Ninja
+          ctest --test-dir build-tests -L qemu --output-on-failure
+
+      - name: Upload serial logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-serial-logs
+          path: build/qemu-test/*.serial.log
+          retention-days: 7

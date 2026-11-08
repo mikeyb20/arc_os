@@ -23,6 +23,9 @@ set(KERNEL_C_SOURCES
     lib/mem.c
     lib/string.c
     lib/kprintf.c
+    lib/cmdline.c
+    lib/testmode.c
+    arch/x86_64/debug_exit.c
     arch/x86_64/serial.c
     arch/x86_64/gdt.c
     arch/x86_64/idt.c

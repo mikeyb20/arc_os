@@ -11,7 +11,6 @@
 static Thread *queue_head = NULL;
 static Thread *queue_tail = NULL;
 static Thread *idle_thread = NULL;
-static Spinlock sched_lock = SPINLOCK_INIT;
 
 static void queue_push(Thread *t) {
     t->next = NULL;
@@ -114,9 +113,15 @@ void sched_schedule(void) {
 }
 
 void sched_yield(void) {
-    spinlock_acquire(&sched_lock);
+    /* One run queue, driven by the BSP: disabling interrupts is what protects
+     * it (the timer path calls sched_schedule() the same way). Holding
+     * sched_lock across context_switch() deadlocked: a thread resumed through
+     * the timer path, or starting fresh, never released it, so the next
+     * sched_yield() spun forever with interrupts off. Real SMP locking comes
+     * with the per-CPU scheduler (M1-05). */
+    uint64_t flags = irq_save();
     sched_schedule();
-    spinlock_release(&sched_lock);
+    irq_restore(flags);
 }
 
 void sched_set_idle_thread(Thread *t) {

@@ -5,6 +5,7 @@
 #include "proc/process.h"
 #include "lib/mem.h"
 #include "lib/string.h"
+#include "lib/cmdline.h"
 
 /* Scratch buffer for content generation */
 #define PROCFS_SCRATCH_SIZE 512
@@ -85,6 +86,13 @@ static int gen_uptime(char *buf, int bufsz, void *ctx) {
     return pos;
 }
 
+/* /proc/cmdline: the kernel command line plus a newline, as on Linux */
+static int gen_cmdline(char *buf, int bufsz, void *ctx) {
+    (void)ctx;
+    int pos = procfs_append_str(buf, 0, bufsz, cmdline_raw());
+    return procfs_append_str(buf, pos, bufsz, "\n");
+}
+
 static int gen_pid_status(char *buf, int bufsz, void *ctx) {
     uint32_t pid = (uint32_t)(uintptr_t)ctx;
     Process *p = proc_get_by_pid(pid);
@@ -157,6 +165,7 @@ static const VfsOps procfs_file_ops = {
 
 static ProcfsFileNode meminfo_node;
 static ProcfsFileNode uptime_node;
+static ProcfsFileNode cmdline_node;
 
 #define PROCFS_PID_POOL 8
 static ProcfsDirNode pid_dirs[PROCFS_PID_POOL];
@@ -221,6 +230,7 @@ static VfsNode *procfs_root_lookup(VfsNode *dir, const char *name) {
     (void)dir;
     if (strcmp(name, "meminfo") == 0) return &meminfo_node.vnode;
     if (strcmp(name, "uptime") == 0) return &uptime_node.vnode;
+    if (strcmp(name, "cmdline") == 0) return &cmdline_node.vnode;
 
     uint32_t pid;
     if (procfs_parse_uint(name, &pid) != 0) return NULL;
@@ -299,6 +309,13 @@ static int procfs_root_readdir(VfsNode *dir, VfsDirEntry *entries, uint32_t max)
         entries[count].type = VFS_FILE;
         count++;
     }
+    if (count < max) {
+        strncpy(entries[count].name, "cmdline", VFS_NAME_MAX - 1);
+        entries[count].name[VFS_NAME_MAX - 1] = '\0';
+        entries[count].inode_num = cmdline_node.vnode.inode_num;
+        entries[count].type = VFS_FILE;
+        count++;
+    }
 
     struct procfs_readdir_ctx ctx = { entries, max, count };
     proc_foreach(procfs_enum_pid, &ctx);
@@ -336,6 +353,8 @@ VfsNode *procfs_init(void) {
 
     procfs_init_file(&meminfo_node, 2001, gen_meminfo, NULL);
     procfs_init_file(&uptime_node, 2002, gen_uptime, NULL);
+    /* 1999: below the 2000+pid range used by /proc/<pid> directories */
+    procfs_init_file(&cmdline_node, 1999, gen_cmdline, NULL);
 
     pid_dirs_next = 0;
     pid_status_next = 0;

@@ -46,4 +46,5 @@ kernel; TLB shootdown works across CPUs (ADR-0004).
 - L block: a clean stopping point is after steps 1–4 with their tests passing.
 
 **Notes.**
--
+- From M0-02: a user page fault still halts the kernel (no SIGSEGV), and the user stack is a fixed 64 KiB
+  (`USER_STACK_PAGES` 16). Growable stacks and fault-kills belong here or in M1-01.

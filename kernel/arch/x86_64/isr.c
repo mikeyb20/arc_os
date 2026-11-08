@@ -2,6 +2,7 @@
 #include "arch/x86_64/pic.h"
 #include "arch/x86_64/lapic.h"
 #include "lib/kprintf.h"
+#include "lib/testmode.h"
 #include <stddef.h>
 
 static isr_handler_t handlers[ISR_COUNT];
@@ -76,9 +77,7 @@ static void default_exception_handler(InterruptFrame *frame) {
     }
 
     kprintf("!!! System halted.\n");
-    for (;;) {
-        __asm__ volatile ("cli; hlt");
-    }
+    kernel_panic_halt();
 }
 
 void isr_dispatch(InterruptFrame *frame) {

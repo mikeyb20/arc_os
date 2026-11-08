@@ -5,7 +5,7 @@
 #include <stdbool.h>
 
 /* Maximum memory map entries we can store (no heap yet). */
-#define BOOTINFO_MAX_MEMMAP_ENTRIES 64
+#define BOOTINFO_MAX_MEMMAP_ENTRIES 256  /* q35 + UEFI maps exceed 64 entries */
 
 /* Memory map region types (bootloader-agnostic). */
 #define MEMMAP_USABLE              0
@@ -48,6 +48,9 @@ typedef struct {
 
 #define BOOTINFO_MAX_MODULES 32
 
+/* Kernel command line buffer size, including the NUL. */
+#define BOOTINFO_CMDLINE_MAX 256
+
 /* Bootloader-agnostic boot information. */
 typedef struct {
     MemoryMapEntry memory_map[BOOTINFO_MAX_MEMMAP_ENTRIES];
@@ -60,6 +63,7 @@ typedef struct {
     uint64_t       hhdm_offset;
     BootModule     modules[BOOTINFO_MAX_MODULES];
     uint64_t       module_count;
+    char           cmdline[BOOTINFO_CMDLINE_MAX];  /* Kernel command line ("" if none) */
 } BootInfo;
 
 /* Parse bootloader data into a BootInfo struct.

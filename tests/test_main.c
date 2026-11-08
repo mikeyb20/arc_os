@@ -8,6 +8,8 @@ static int tests_passed = 0;
 static int tests_failed = 0;
 
 /* Collect tests from test files */
+extern TestCase cmdline_tests[];
+extern int cmdline_test_count;
 extern TestCase mem_tests[];
 extern int mem_test_count;
 extern TestCase pmm_tests[];
@@ -172,6 +174,7 @@ int main(int argc, char **argv) {
         { "arc_string",   arc_string_tests,   &arc_string_test_count },
         { "arc_printf",   arc_printf_tests,   &arc_printf_test_count },
         { "ansi",         ansi_tests,         &ansi_test_count },
+        { "cmdline",      cmdline_tests,      &cmdline_test_count },
     };
     int suite_count = (int)(sizeof(suites) / sizeof(suites[0]));
 

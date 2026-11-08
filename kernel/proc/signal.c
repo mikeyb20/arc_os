@@ -7,6 +7,7 @@
 #include "fs/vfs.h"
 #include "lib/mem.h"
 #include "user_access.h"
+#include "lib/testmode.h"
 
 /* Global: RDI value to pass to signal handler (signo). Set by
  * sig_maybe_deliver, loaded by syscall_entry.asm before SYSRET. */
@@ -106,6 +107,7 @@ static void sig_continue(Process *p) {
 static void sig_terminate(Process *p, int signo) {
     p->exit_status = 128 + signo;
     p->state = PROC_ZOMBIE;
+    testmode_process_exited((int)p->pid, p->exit_status);
     p->main_thread->state = THREAD_DEAD;
     sched_schedule();
 }

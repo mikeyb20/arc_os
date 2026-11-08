@@ -40,4 +40,5 @@ written lock ordering that debug builds check at runtime.
 - L block: if the session runs long, stop after per-CPU queues + AP scheduling pass their tests, and hand off.
 
 **Notes.**
--
+- From M0-02: `sched_yield()` no longer takes `sched_lock` (holding it across `context_switch` deadlocked);
+  it only disables interrupts. Per-CPU queue locking replaces it here.

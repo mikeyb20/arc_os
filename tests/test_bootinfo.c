@@ -28,6 +28,7 @@ volatile struct limine_framebuffer_request    framebuffer_request;
 volatile struct limine_kernel_address_request kernel_address_request;
 volatile struct limine_rsdp_request           rsdp_request;
 volatile struct limine_module_request        module_request;
+volatile struct limine_kernel_file_request   kernel_file_request;
 
 /* Include the real limine.c */
 #include "../kernel/boot/limine.c"
@@ -36,8 +37,8 @@ volatile struct limine_module_request        module_request;
 
 static struct limine_hhdm_response test_hhdm_resp;
 static struct limine_memmap_response test_mmap_resp;
-static struct limine_memmap_entry test_mmap_entries[80];
-static struct limine_memmap_entry *test_mmap_entry_ptrs[80];
+static struct limine_memmap_entry test_mmap_entries[BOOTINFO_MAX_MEMMAP_ENTRIES + 16];
+static struct limine_memmap_entry *test_mmap_entry_ptrs[BOOTINFO_MAX_MEMMAP_ENTRIES + 16];
 static struct limine_framebuffer_response test_fb_resp;
 static struct limine_framebuffer test_fb;
 static struct limine_framebuffer *test_fb_ptr;
@@ -68,6 +69,7 @@ static void reset_bootinfo_state(void) {
     kernel_address_request.response = NULL;
     rsdp_request.response = NULL;
     module_request.response = NULL;
+    kernel_file_request.response = NULL;
 }
 
 static void setup_mmap_entries(int count) {
@@ -120,17 +122,17 @@ TEST(valid_memmap) {
 
 TEST(entry_count_clamped) {
     reset_bootinfo_state();
-    /* Create 80 entries — should be clamped to 64 */
-    for (int i = 0; i < 80; i++) {
+    /* Create more entries than fit — should be clamped to the maximum */
+    for (int i = 0; i < BOOTINFO_MAX_MEMMAP_ENTRIES + 16; i++) {
         test_mmap_entries[i].base = (uint64_t)i * 0x1000;
         test_mmap_entries[i].length = 0x1000;
         test_mmap_entries[i].type = 0;
     }
-    setup_mmap_entries(80);
+    setup_mmap_entries(BOOTINFO_MAX_MEMMAP_ENTRIES + 16);
 
     const BootInfo *info = bootinfo_init();
     ASSERT_TRUE(info != NULL);
-    ASSERT_EQ(info->memory_map_count, 64);
+    ASSERT_EQ(info->memory_map_count, BOOTINFO_MAX_MEMMAP_ENTRIES);
     return 0;
 }
 
@@ -263,6 +265,31 @@ TEST(memmap_single_entry) {
     return 0;
 }
 
+TEST(cmdline_absent_is_empty) {
+    reset_bootinfo_state();
+    setup_mmap_entries(0);
+    const BootInfo *info = bootinfo_init();
+    ASSERT_TRUE(info != NULL);
+    ASSERT_STR_EQ(info->cmdline, "");
+    return 0;
+}
+
+TEST(cmdline_copied) {
+    reset_bootinfo_state();
+    setup_mmap_entries(0);
+    static struct limine_file kfile;
+    static struct limine_kernel_file_response kresp;
+    static char line[] = "arc.test=smoke quiet";
+    memset(&kfile, 0, sizeof(kfile));
+    kfile.cmdline = line;
+    kresp.kernel_file = &kfile;
+    kernel_file_request.response = &kresp;
+    const BootInfo *info = bootinfo_init();
+    ASSERT_TRUE(info != NULL);
+    ASSERT_STR_EQ(info->cmdline, "arc.test=smoke quiet");
+    return 0;
+}
+
 /* --- Test suite export --- */
 
 TestCase bootinfo_tests[] = {
@@ -279,6 +306,8 @@ TestCase bootinfo_tests[] = {
     TEST_ENTRY(rsdp_absent),
     TEST_ENTRY(hhdm_offset_propagated),
     TEST_ENTRY(memmap_single_entry),
+    TEST_ENTRY(cmdline_absent_is_empty),
+    TEST_ENTRY(cmdline_copied),
 };
 
 int bootinfo_test_count = sizeof(bootinfo_tests) / sizeof(bootinfo_tests[0]);

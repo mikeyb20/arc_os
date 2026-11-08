@@ -49,6 +49,7 @@ add_executable(test_runner
     test_arc_string.c
     test_arc_printf.c
     test_ansi.c
+    test_cmdline.c
 )
 
 # Include kernel source root for "lib/mem.h" etc, but NOT kernel/include
@@ -122,6 +123,7 @@ add_test(NAME test_socket_net  COMMAND test_runner --suite socket_net)
 add_test(NAME test_arc_string  COMMAND test_runner --suite arc_string)
 add_test(NAME test_arc_printf  COMMAND test_runner --suite arc_printf)
 add_test(NAME test_ansi        COMMAND test_runner --suite ansi)
+add_test(NAME test_cmdline     COMMAND test_runner --suite cmdline)
 set_tests_properties(test_fat32 PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 set_tests_properties(arc_os_tests PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 
@@ -138,3 +140,6 @@ set_tests_properties(test_fat32 arc_os_tests PROPERTIES FIXTURES_REQUIRED fat32_
 # QEMU boot tests (M0-02) carry the `qemu` label instead.
 get_property(_host_tests DIRECTORY PROPERTY TESTS)
 set_tests_properties(${_host_tests} PROPERTIES LABELS host)
+
+# QEMU boot tests live in their own directory so they are not labelled `host`.
+add_subdirectory(qemu)

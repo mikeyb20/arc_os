@@ -22,6 +22,7 @@
 #include "proc/waitqueue.h"
 #include "lib/string.h"
 #include "net/socket.h"
+#include "lib/testmode.h"
 
 /* Exported from syscall_entry.asm: user context saved during SYSCALL */
 extern uint64_t syscall_saved_user_rip;
@@ -100,6 +101,9 @@ static int64_t sys_exit(uint64_t status, uint64_t a1, uint64_t a2,
     /* Set exit status and mark as zombie for parent to reap */
     p->exit_status = (int32_t)status;
     p->state = PROC_ZOMBIE;
+
+    /* Kernel test mode: init exiting ends the QEMU run with its status */
+    testmode_process_exited((int)p->pid, (int)status);
 
     /* Notify parent of child exit */
     if (p->parent != NULL) {
@@ -336,9 +340,11 @@ static int32_t wait_encode_stopped(int signo) {
 /* SYS_WAIT: wait for a child to exit or stop, return child PID */
 static Spinlock wait_lock = SPINLOCK_INIT;
 
-static int64_t sys_wait(uint64_t status_addr, uint64_t flags, uint64_t a2,
+/* Arguments follow libc's waitpid(pid, status, options) (the wait4 order).
+ * pid is not yet used: any child is reaped (pid filtering comes with M0-05). */
+static int64_t sys_wait(uint64_t pid, uint64_t status_addr, uint64_t flags,
                         uint64_t a3, uint64_t a4, uint64_t a5) {
-    (void)a2; (void)a3; (void)a4; (void)a5;
+    (void)pid; (void)a3; (void)a4; (void)a5;
     Process *p = proc_current();
     if (p == NULL) return -ENOSYS;
 
