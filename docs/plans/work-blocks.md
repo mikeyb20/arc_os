@@ -12,20 +12,21 @@
 |---|---|---|---|
 | M0 Lock-in decisions | 10 | 8.0 | 10.5 |
 | M1 Compute kernel | 23 | 29.0 | 41.7 |
-| M2 Toolchain + first LLM | 7 | 7.0 | 9.4 |
-| M3 Knowledge layer | 12 | 12.0 | 16.1 |
+| M2 Toolchain + first LLM | 9 | 8.0 | 9.7 |
+| M3 Knowledge layer | 13 | 12.0 | 15.6 |
 | M4 Real hardware | 15 | 16.0 | 21.1 |
-| M5 Packages + installer | 7 | 7.5 | 9.8 |
-| **Total** | **74** | **79.5** | **108.6** |
+| M5 Packages + installer | 7 | 7.5 | 9.6 |
+| **Total** | **77** | **80.5** | **108.3** |
 
-- **74 blocks**: 11 small, 52 medium, 11 large. The 35 deep (D) blocks carry
-  44.0 of the 79.5 session units.
+- **77 blocks**: 15 small, 51 medium, 11 large. The 37 deep (D) blocks carry
+  44.5 of the 80.5 session units.
 - **Session units:** S = 0.5, M = 1, L = 2. "With allowance" adds debugging and rework: D blocks × 1.5, R blocks
-  × 1.2. That allowance is an estimate, not a measurement; recheck it after M1, the first milestone with real
-  numbers. Budget about **108 sessions**.
+  × 1.2; Linux-first blocks (lane L) × 1.2 and × 1.1, because they are debugged natively on Linux instead of in
+  QEMU under TCG. That allowance is an estimate, not a measurement; recheck it after M1, the first milestone with
+  real numbers. Budget about **108 sessions**.
 - **M1 is the big one:** 23 blocks and 29 units, 17 of them deep. It gives the kernel virtual memory, SMP, threads,
   a page cache and ext2.
-- **Critical path:** 35 blocks, 40 units (§5). Running lanes in parallel shortens the calendar, not the compute.
+- **Critical path:** 35 blocks, 36.5 units (§5). Running lanes in parallel shortens the calendar, not the compute.
 
 ## 2. How blocks work
 
@@ -36,9 +37,11 @@
 - **Tier:** **R** = routine; a faster, cheaper model is enough and Michael skims the PR. **D** = deep; use the
   strongest model, and Michael reads the header/interface diff and the tests.
 - **Lane:** **K** kernel · **U** user space and ports · **C** content pipeline on a Linux host · **I** infra and
-  integration · **H** needs Michael with real hardware · **P** planning.
+  integration · **H** needs Michael with real hardware · **P** planning · **L** Linux-first user space (§5).
 - **Specs:** M0 and M1 have full specs in [`blocks/`](blocks/). M2–M5 get theirs from a planning block
-  (`M2-00` … `M5-00`) run just before the milestone, because they depend on what M1 and M2 measure.
+  (`M2-00` … `M5-00`) run just before the milestone, because they depend on what M1 and M2 measure. The
+  Linux-first lane is the exception: `M2-00a` writes its specs right after M0, because those blocks depend only
+  on the Linux ABI, the syscall inventory and the M0-07 schemas.
 - **Status values:** `todo` · `doing` · `review` (PR open, number in the row) · `done`.
 
 ## 3. Session protocol (the compute rules)
@@ -120,19 +123,21 @@ Start every block with `/os/implement-block <ID>`. These rules are what keep ses
 | M1-21 | Power base: idle states, HWP, RAPL | M | R | K | M1-06 | MWAIT/HLT idle; EPP by profile; energy readout | todo |
 | M1-22 | M1 done-test + second hardware boot | M | R | K+H | M1-04, M1-08, M1-15, M1-19, M1-20, M1-21 | 10 GB ext2 mmap test passes; both machines reach the shell | todo |
 
-### M2 — Toolchain and first LLM (specs from M2-00)
+### M2 — Toolchain and first LLM (specs from M2-00a and M2-00)
 
 | ID | Block | Size | Tier | Lane | Needs | Done when | Status |
 |---|---|---|---|---|---|---|---|
-| M2-00 | Plan M2 | S | D | P | M1-22 | M2 block specs written | todo |
-| M2-01 | musl cross toolchain, ports layout, C++ test | M | R | U | M2-00, M0-03 | GCC + libstdc++ for `x86_64-linux-musl` archived; C++ test runs in QEMU | todo |
-| M2-02 | Port zstd + SQLite (FTS5) | M | R | U | M2-01 | Round-trip and FTS5 query tests pass in QEMU | todo |
-| M2-03 | Port llama.cpp (CPU, static, x86-64-v3) | M | D | U | M2-01 | Greedy output in QEMU matches the same build on Linux | todo |
-| M2-04 | `arc-llm` service | L | D | U | M2-03 | generate, embed, tokenize, list_models over AF_UNIX; roles; fit check | todo |
-| M2-05 | `ask` command + M2 done-test | S | R | U | M2-04 | `ask "what is hypothermia"` answers in QEMU (4 CPUs, 4 GB) | todo |
+| M2-00a | Plan the Linux-first lane | S | D | P | M0-04, M0-07 | Specs for M2-01…M2-04, M3-02, M3-06a and M5-02 written; syscall check added to the inventory workflow | todo |
+| M2-00 | Plan M2 | S | D | P | M1-22 | Specs for M2-04b, M2-05 and M2-06 written; lane specs corrected from M1's results | todo |
+| M2-01 | musl cross toolchain, ports layout, C++ test | M | R | L | M2-00a, M0-03 | GCC + libstdc++ for `x86_64-linux-musl` archived; C++ test passes on Linux inside the syscall inventory | todo |
+| M2-02 | Port zstd + SQLite (FTS5) | M | R | L | M2-01 | Round-trip and FTS5 query tests pass on Linux inside the syscall inventory | todo |
+| M2-03 | Port llama.cpp (CPU, static, x86-64-v3) | M | D | L | M2-01 | Greedy output of our static build matches the reference build on Linux; inside the syscall inventory | todo |
+| M2-04 | `arc-llm` service | L | D | L | M2-03 | generate, embed, tokenize, list_models over AF_UNIX on Linux; roles; fit check; inside the syscall inventory | todo |
+| M2-04b | Linux-first stack on arc_os | S | R | U | M2-00, M2-04 | M2-01…M2-04 tests pass in QEMU with the same results as on Linux | todo |
+| M2-05 | `ask` command + M2 done-test | S | R | U | M2-04b | `ask "what is hypothermia"` answers in QEMU (4 CPUs, 4 GB) | todo |
 | M2-06 | Measure on the laptop, shortlist models | M | R | H | M2-05 | Tokens/s and RAM per tier recorded; mmap vs 2 MiB anonymous loading compared and chosen (ADR-0019); plan §4 updated | todo |
 
-### M3 — Knowledge layer (specs from M3-00)
+### M3 — Knowledge layer (specs from M3-00; M3-02 and M3-06a from M2-00a)
 
 M3-00 sets the smallest supported screen at 1366×768, common on the low-tier reference laptops: the reader,
 assistant and viewers lay out from the framebuffer size, never a fixed one.
@@ -141,11 +146,12 @@ assistant and viewers lay out from the framebuffer size, never a fixed one.
 |---|---|---|---|---|---|---|---|
 | M3-00 | Plan M3 | S | D | P | M2-06 | M3 block specs written | todo |
 | M3-01 | Content selection, licences, size budget | M | R | C | M3-00, M0-07 | Source list per category and tier approved by Michael | todo |
-| M3-02 | `libarcpack`: doc store, chunks, manifests | M | D | U | M3-00, M2-02 | One library reads packs on Linux and on arc_os | todo |
+| M3-02 | `libarcpack`: doc store, chunks, manifests | M | D | L | M2-00a, M2-02, M0-07 | One library reads packs on Linux inside the syscall inventory (on arc_os from M3-07) | todo |
 | M3-03 | ZIM → doc store + chunks (host) | M | R | C | M3-01, M3-02 | Medical pack built with stable chunk IDs | todo |
 | M3-04 | FTS5, embeddings, tier selector, `.arcpkg` (host) | M | R | C | M3-03 | 32 GB pack set built and sized | todo |
 | M3-05 | UTF-8 console, PSF2, `/dev/input`, `/dev/fb0` | M | D | K | M3-00 | fbdev `mmap` and `input_event` work from user space | todo |
-| M3-06 | Retriever library | M | D | U | M3-02 | Keyword search + vector rerank; keyword-only without `arc-llm` | todo |
+| M3-06a | Retriever I: keyword search | S | D | L | M3-02 | FTS5 keyword search over packs on Linux; works with no `arc-llm` | todo |
+| M3-06 | Retriever II: vector rerank | S | D | U | M3-00, M3-06a | Vector rerank with the embedder chosen in M2-06; keyword-only still works without `arc-llm` | todo |
 | M3-07 | Library reader (no LLM) | M | R | U | M3-05, M3-06 | Search, open, follow links, bookmarks | todo |
 | M3-08 | Image viewer | S | R | U | M3-05 | Article images show on the framebuffer | todo |
 | M3-09 | Assistant with citations and tools | L | D | U | M3-06 | Cited answers; "not found in library" when retrieval is empty | todo |
@@ -178,7 +184,7 @@ xHCI quirk does, or a USB key on those machines stays invisible.
 | M4-13 | Maps part 2: map viewer | M | R | U | M4-03 | Pre-rendered tiles; pan and zoom by keyboard or mouse | todo |
 | M4-14 | Hardware test campaign | M | R | H | M4-04, M4-06, M4-07, M4-09, M4-10, M4-12, M4-13 | M3's test passes on both machines with and without a cable; watts per profile | todo |
 
-### M5 — Packages and installer (specs from M5-00)
+### M5 — Packages and installer (specs from M5-00; M5-02 from M2-00a)
 
 M5 follows ADR-0018: the key builder writes the portable layout straight onto the stick, sized to fill it; the
 installer copies the same layout to an internal disk only where a machine allows it; `e2fsck` runs at boot after
@@ -188,7 +194,7 @@ an unclean shutdown.
 |---|---|---|---|---|---|---|---|
 | M5-00 | Plan M5 | S | D | P | M4-14 | M5 block specs written | todo |
 | M5-01 | Port e2fsprogs (`mke2fs`, `e2fsck`) | M | R | U | M5-00 | Both run on arc_os against real partitions | todo |
-| M5-02 | `arcpkg` tool | M | R | U | M5-00 | install, remove, list, verify, switch role; offline | todo |
+| M5-02 | `arcpkg` tool | M | R | L | M2-00a, M2-02, M0-07 | install, remove, list, verify, switch role; offline; tested on Linux in a temporary root (on arc_os from M5-03) | todo |
 | M5-03 | Installer | L | D | U | M5-01, M5-02 | Disk detected, GPT written, system copied, tier and models chosen | todo |
 | M5-04 | USB key image builder (host) | M | R | I | M5-03 | One image with installer, packages, packs, models, sources | todo |
 | M5-05 | GGUF wrapper + recovery | M | R | U | M5-02 | Any GGUF becomes an `.arcpkg`; `arcpkg verify` repairs from the key | todo |
@@ -199,10 +205,10 @@ an unclean shutdown.
 **Default order:** one block at a time, top to bottom in §4. A block starts only when everything in its Needs is
 `done`.
 
-**Critical path** (the longest dependency chain: 35 blocks, 40 session units):
+**Critical path** (the longest dependency chain: 35 blocks, 36.5 session units):
 
 M0-01 → M0-03 → M0-04 → M0-05 → M0-06 → M1-03 → M1-05 → M1-07 → M1-12 → M1-13 → M1-14 → M1-15 → M1-22 →
-M2-00 → M2-01 → M2-03 → M2-04 → M2-05 → M2-06 → M3-00 → M3-02 → M3-06 → M3-09 → M3-11 → M4-00 → M4-01 →
+M2-00 → M2-04b → M2-05 → M2-06 → M3-00 → M3-01 → M3-03 → M3-04 → M3-10 → M3-11 → M4-00 → M4-01 →
 M4-02 → M4-03 → M4-13 → M4-14 → M5-00 → M5-01 → M5-03 → M5-04 → M5-06
 
 Inside M1 the chain is per-CPU entry → SMP scheduler → VMAs → page cache → ext2 read → reclaim → ext2 write →
@@ -215,6 +221,26 @@ done-test (12 of M1's 28 units). The other M1 blocks hang off that chain and slo
 - M4's kernel drivers only need M1. Running M4-00 right after M1-22 would let them go ahead of M2 and M3 if the
   hardware becomes the bottleneck (M4-03 still waits for M3-05).
 - The content lane (M3-01, M3-03, M3-04) runs on a Linux host and can start early once M3-00 is written.
+
+**Linux-first lane (L).** arc_os uses the Linux x86_64 syscall ABI (ADR-0001), so a static musl program built
+and tested on Linux runs unchanged on arc_os. The user-space blocks that need nothing from the kernel beyond
+that ABI are built and debugged on Linux while M1 is still in progress, then run on arc_os in one small block:
+
+- **Lane blocks:** M2-01 → M2-02 → M2-03 → M2-04, M3-02 → M3-06a, and M5-02, with specs from M2-00a (run right
+  after M0). They start when their Needs are done and run beside the M1 kernel blocks, which keep their strict
+  order. They touch only the ports and user-space trees and the inventory workflow, never `kernel/`.
+- **Syscall check:** every lane block runs its tests under `strace -f` in the inventory workflow (M0-04's
+  `.github/workflows/inventory.yml` and `tools/syscall-inventory.py`). A syscall, ioctl or file not in
+  [`syscall-inventory.md`](syscall-inventory.md) fails CI, so nothing reaches arc_os that the kernel plan doesn't
+  provide. Adding one is a deliberate change: a new inventory row with the M1 block that owns it.
+- **On arc_os:** M2-04b runs M2-01…M2-04 in QEMU after M1-22. M3-02 and M3-06a reach arc_os through M3-07 and
+  M3-11; M5-02 through M5-03. A difference from Linux there is a kernel bug, not an app bug.
+- **What stays later:** the vector half of the retriever (M3-06) waits for the embedder chosen in M2-06; anything
+  that needs `/dev/fb0` or `/dev/input` waits for M3-05.
+
+The lane takes 7.5 session units off the critical path. It saves little compute (native debugging is cheaper,
+and the planning and bring-up blocks cost about as much back); it shortens the calendar and finds app bugs
+before kernel bugs can hide them.
 
 Parallel sessions shorten the calendar; they don't save compute.
 
@@ -301,6 +327,7 @@ Parallel sessions shorten the calendar; they don't save compute.
 | 27 | No object allocator was planned; kmalloc is a first-fit list | M1-02b (ADR-0019) |
 | 28 | CI can't time code (TCG), and nothing checked efficiency before M2-06 | M0-08 budgets on counts and sizes; `arc-bench` at M1-04, M1-22, M4-14, M5-06 (ADR-0019) |
 | 29 | Duplicate helpers, 44 x86 includes in 8 subsystems outside `kernel/arch/`, and no check on either | M0-09 freezes the counts; M1-03, M1-05, M1-06, M1-07, M1-09 move the includes they touch behind `arch/hal.h` (ADR-0020) |
+| 30 | Linux hides some differences: musl reads the clock through the vDSO, so `clock_gettime` barely appears under strace, and Linux allows syscalls arc_os won't have | Lane L syscall check (§5); M2-04b runs the lane in QEMU, where arc_os has no vDSO (M1-06 provides the syscalls) |
 
 ## 9. Later: compatibility track (not counted)
 
@@ -333,3 +360,7 @@ Secure Boot through a signed shim and our own key.
   leak budgets at today's level until then. M0 order from here: M0-08, M0-09, M0-10, then M0-07.
 - **2026-11-08** — M0-10 grows from S to M: closing a socket never freed it (the last leak once reaped processes
   were freed), and Michael chose to fix it in M0-10 (socket refcounts, free on last close, RST to the peer).
+- **2026-11-08** — Linux-first user-space lane (Michael approved): new blocks M2-00a (plan the lane, right after
+  M0) and M2-04b (run the lane on arc_os after M1-22); M3-06 split into M3-06a (keyword, lane L) and M3-06 (vector
+  rerank, after M2-06); M2-01…M2-04, M3-02 and M5-02 move to lane L, tested on Linux inside the syscall inventory.
+  Kernel order unchanged. Critical path 40 → 36.5 units; compute about the same.

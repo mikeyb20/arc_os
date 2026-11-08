@@ -4,7 +4,7 @@ Run one work block from `docs/plans/work-blocks.md`, from spec to pull request, 
 The rules behind each step are in `docs/plans/work-blocks.md` §3.
 
 ## 1. Find the block
-- `ls docs/plans/blocks/<ID>-*.md`. No file means the milestone's planning block (`M2-00` … `M5-00`) hasn't run
+- `ls docs/plans/blocks/<ID>-*.md`. No file means the milestone's planning block (`M2-00a`, `M2-00` … `M5-00`) hasn't run
   yet: stop and say so.
 - In the §4 table of `docs/plans/work-blocks.md`, check that every block in Needs is `done`. If not, stop and say
   which one is missing.
