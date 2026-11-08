@@ -27,6 +27,18 @@ add_test(NAME qemu.smoke COMMAND ${_qemu_test} --suite smoke --memory 4G
     --expect "exited with status 0"
     --expect "uid=0 gid=0")
 
+# M1-02: the buddy allocator hands out an aligned 2 MiB block after boot (-m 4G default)
+add_test(NAME qemu.mem.buddy COMMAND ${_qemu_test} --suite smoke --name mem-buddy
+    --module tests/qemu/suites/smoke.sh
+    --expect "\\[PMM\\] Free blocks per order: 0:"
+    --expect "\\[PMM\\] Self-test passed: 2 MiB block")
+
+# M1-02: arc.mem=4G on a 6 GiB guest uses exactly 4 GiB (low-tier floor on a bigger machine)
+add_test(NAME qemu.mem.cap COMMAND ${_qemu_test} --suite smoke --name mem-cap
+    --module tests/qemu/suites/smoke.sh --memory 6G --cmdline arc.mem=4G
+    --expect "\\[PMM\\] arc.mem: using 4096 MiB of RAM"
+    --expect "\\[PMM\\] Self-test passed")
+
 # Every existing user program, run once
 add_test(NAME qemu.userland COMMAND ${_qemu_test} --suite userland)
 
@@ -62,7 +74,7 @@ set_tests_properties(qemu.selftest.fail PROPERTIES
     PASS_REGULAR_EXPRESSION "FAIL testfail exit=3")
 add_test(NAME qemu.selftest.panic COMMAND ${_qemu_test} --suite kpanic --expect-panic --timeout 30)
 
-set_tests_properties(qemu.smoke qemu.userland qemu.abi qemu.musl qemu.fpu qemu.cpufloor
+set_tests_properties(qemu.smoke qemu.mem.buddy qemu.mem.cap qemu.userland qemu.abi qemu.musl qemu.fpu qemu.cpufloor
     qemu.selftest.fail qemu.selftest.panic
     PROPERTIES LABELS qemu TIMEOUT 180 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     FIXTURES_SETUP qemu_logs)

@@ -54,12 +54,16 @@ static int gen_meminfo(char *buf, int bufsz, void *ctx) {
     pos = procfs_append_u64(buf, pos, bufsz, total_kb);
     pos = procfs_append_str(buf, pos, bufsz, " kB\nMemFree: ");
     pos = procfs_append_u64(buf, pos, bufsz, free_kb);
+    pos = procfs_append_str(buf, pos, bufsz, " kB\nPageDescriptors: ");
+    pos = procfs_append_u64(buf, pos, bufsz, pmm_get_descriptor_bytes() / 1024);
     pos = procfs_append_str(buf, pos, bufsz, " kB\nHeapUsed: ");
     pos = procfs_append_u64(buf, pos, bufsz, hs.total_used);
     pos = procfs_append_str(buf, pos, bufsz, " B\nHeapFree: ");
     pos = procfs_append_u64(buf, pos, bufsz, hs.total_free);
     pos = procfs_append_str(buf, pos, bufsz, " B\nHeapMapped: ");
     pos = procfs_append_u64(buf, pos, bufsz, hs.heap_mapped);
+    pos = procfs_append_str(buf, pos, bufsz, " B\nHeapLarge: ");
+    pos = procfs_append_u64(buf, pos, bufsz, hs.large_bytes);
     pos = procfs_append_str(buf, pos, bufsz, " B\n");
 
     return pos;

@@ -48,8 +48,9 @@ it (raise it). Raising a limit needs the reason in the PR body (ADR-0019).
 |---|---|---|---|
 | `kernel_image_bytes` | build | M0-08 | `.text + .rodata + .data + .bss` of `kernel.elf` |
 | `boot_free_bytes` | smoke (`-m 4G`) | M0-08 | free memory when init starts (min) |
-| `kernel_heap_bytes` | smoke | M0-08 | live kmalloc bytes when init starts |
-| `pages_leaked` | every suite | M0-10 | free pages lost between a suite's first and last test, minus kernel heap growth (limit 0) |
+| `kernel_heap_bytes` | smoke | M0-08 | live kmalloc bytes when init starts, large (`alloc_pages`) blocks included |
+| `page_descriptor_bytes` | smoke (`-m 4G`) | M1-02 | size of the `struct page` array (32 B per PFN up to the highest usable one) |
+| `pages_leaked` | every suite | M0-10 | free pages lost between a suite's first and last test, minus kernel heap growth, large blocks included (limit 0) |
 | `heap_leaked_bytes` | every suite | M0-10 | live kmalloc bytes gained over the same span (limit 0: a suite must remove files it creates) |
 | `kmalloc_walk_max` | every suite | M1-02b | most heap blocks one kmalloc walked (first fit) |
 | `idle_timer_irqs_5s` | off | M1-06 | timer interrupts on an idle CPU over 5 s |

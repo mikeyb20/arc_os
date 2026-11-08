@@ -145,6 +145,47 @@ static void heap_self_test(void) {
     kmalloc_dump_stats();
 }
 
+/* Check the buddy allocator after boot (M1-02): a 2 MiB block, a page below
+ * 4 GiB, and a large kmalloc, all returned without leaking a page. */
+static void pmm_self_test(void) {
+    uint64_t free_before = pmm_get_free_pages();
+
+    struct page *huge = alloc_pages(PAGE_ORDER_2MB, GFP_ZERO);
+    if (huge == NULL || (page_to_phys(huge) & (0x200000ULL - 1)) != 0) {
+        kprintf("[PMM] FAIL: no aligned 2 MiB block\n");
+        KERNEL_PANIC();
+    }
+    uint8_t *bytes = page_to_virt(huge);
+    if (bytes[0] != 0 || bytes[0x1FFFFF] != 0) {
+        kprintf("[PMM] FAIL: 2 MiB block not zeroed\n");
+        KERNEL_PANIC();
+    }
+    bytes[0] = 0x5A;
+    bytes[0x1FFFFF] = 0xA5;
+    uint64_t huge_phys = page_to_phys(huge);
+    free_pages(huge, PAGE_ORDER_2MB);
+
+    struct page *low = alloc_pages(0, GFP_DMA32);
+    if (low == NULL || page_to_phys(low) >= 0x100000000ULL) {
+        kprintf("[PMM] FAIL: GFP_DMA32 page missing or above 4 GiB\n");
+        KERNEL_PANIC();
+    }
+    free_pages(low, 0);
+
+    void *big = kmalloc(64 * 1024, GFP_ZERO);
+    if (big == NULL) {
+        kprintf("[PMM] FAIL: 64 KiB kmalloc\n");
+        KERNEL_PANIC();
+    }
+    kfree(big);
+
+    if (pmm_get_free_pages() != free_before) {
+        kprintf("[PMM] FAIL: self-test leaked %ld pages\n", (int64_t)(free_before - pmm_get_free_pages()));
+        KERNEL_PANIC();
+    }
+    kprintf("[PMM] Self-test passed: 2 MiB block at 0x%lx\n", huge_phys);
+}
+
 /* Initialize VFS with ramfs, load boot modules, create /etc/hostname. */
 static void vfs_setup(const BootInfo *info) {
     vfs_init();
@@ -344,6 +385,7 @@ void kmain(void) {
     serial_puts("[BOOT] stage: heap\n");
     kmalloc_init();
     heap_self_test();
+    pmm_self_test();
     /* Initialize framebuffer console if available */
     if (info->fb_present) {
         if (fb_console_init(&info->framebuffer) == 0) {
@@ -470,7 +512,8 @@ void kmain(void) {
         HeapStats hs;
         kmalloc_get_stats(&hs);
         ARC_BUDGET("boot_free_bytes", pmm_get_free_pages() * PAGE_SIZE);
-        ARC_BUDGET("kernel_heap_bytes", hs.total_used);
+        ARC_BUDGET("kernel_heap_bytes", hs.total_used + hs.large_bytes);
+        ARC_BUDGET("page_descriptor_bytes", pmm_get_descriptor_bytes());
         testmode_set_end_hook(report_end_budgets);
     }
 

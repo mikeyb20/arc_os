@@ -1,5 +1,6 @@
 #include "mm/kmalloc.h"
 #include "mm/pmm.h"
+#include "mm/page.h"
 #include "mm/vmm.h"
 #include "lib/mem.h"
 #include "lib/kprintf.h"
@@ -7,7 +8,7 @@
 
 /* Heap starts at 0xFFFFFFFFC0000000 (kernel heap region) */
 #define HEAP_START       0xFFFFFFFFC0000000ULL
-#define HEAP_SIZE_MAX    (512ULL * 1024 * 1024)   /* 512 MB max heap */
+#define HEAP_SIZE_MAX    KMALLOC_CAP_BYTES        /* 512 MB, shared with large allocations */
 #define HEAP_MAX         (HEAP_START + HEAP_SIZE_MAX)
 
 /* Block header magic canary */
@@ -41,6 +42,20 @@ static Spinlock heap_lock = SPINLOCK_INIT;
 static BlockHeader *heap_start_block;
 static uint64_t heap_current_end;  /* Current end of mapped heap */
 static size_t   heap_walk_max;     /* Most blocks one kmalloc walked (budget, ADR-0019) */
+static uint64_t large_bytes;       /* Bytes in large (alloc_pages) allocations */
+
+/* Bytes mapped for the first-fit heap. */
+static inline uint64_t heap_mapped_bytes(void) {
+    return heap_current_end - (uint64_t)(uintptr_t)heap_start_block;
+}
+
+/* True if ptr is in the first-fit heap rather than a large allocation. The
+ * heap only grows, so a pointer it returned is always below the current end;
+ * reading the end without the lock is safe (aligned 64-bit load). */
+static inline int in_heap(const void *ptr) {
+    uint64_t a = (uint64_t)(uintptr_t)ptr;
+    return a >= (uint64_t)(uintptr_t)heap_start_block && a < __atomic_load_n(&heap_current_end, __ATOMIC_RELAXED);
+}
 
 /* Grow the heap by mapping more pages */
 static int heap_grow(size_t min_bytes) {
@@ -49,6 +64,8 @@ static int heap_grow(size_t min_bytes) {
 
     for (size_t i = 0; i < pages; i++) {
         if (heap_current_end >= HEAP_MAX) return -1;  /* Hit limit */
+        /* One 512 MB cap covers the heap and large allocations (ADR-0016) */
+        if (heap_mapped_bytes() + PAGE_SIZE + large_bytes > HEAP_SIZE_MAX) return -1;
 
         uint64_t phys = pmm_alloc_page();
         if (phys == 0) return -1;
@@ -67,6 +84,7 @@ static size_t align_up(size_t size) {
 
 void kmalloc_init(void) {
     heap_current_end = HEAP_START;
+    heap_start_block = (BlockHeader *)HEAP_START;   /* heap_grow measures from here */
 
     /* Map initial heap pages (16 KB) */
     if (heap_grow(HEAP_INIT_PAGES * PAGE_SIZE) != 0) {
@@ -201,7 +219,59 @@ static void *kmalloc_locked(size_t size, uint32_t flags) {
     return block_allocate(block, size, flags);
 }
 
+/* Order of the smallest block holding `size` bytes. */
+static unsigned large_order(size_t size) {
+    unsigned order = 0;
+    while (((size_t)PAGE_SIZE << order) < size) order++;
+    return order;
+}
+
+/* Large allocation straight from the page allocator. The budget is reserved
+ * under the heap lock; the page allocator and zeroing run without it. */
+static void *kmalloc_large(size_t size, uint32_t flags) {
+    unsigned order = large_order(size);
+    uint64_t bytes = (uint64_t)PAGE_SIZE << order;
+
+    spinlock_acquire(&heap_lock);
+    if (heap_mapped_bytes() + large_bytes + bytes > HEAP_SIZE_MAX) {
+        spinlock_release(&heap_lock);
+        return NULL;
+    }
+    large_bytes += bytes;
+    spinlock_release(&heap_lock);
+
+    struct page *pg = alloc_pages(order, flags & GFP_ZERO);
+    if (pg == NULL) {
+        spinlock_acquire(&heap_lock);
+        large_bytes -= bytes;
+        spinlock_release(&heap_lock);
+        return NULL;
+    }
+    pg->flags |= PG_KMALLOC;   /* we own the block: no lock needed */
+    return page_to_virt(pg);
+}
+
+static void kfree_large(void *ptr) {
+    struct page *pg = virt_to_page(ptr);
+    if (((uint64_t)(uintptr_t)ptr & (PAGE_SIZE - 1)) != 0 || !pfn_valid(page_to_pfn(pg)) || !(pg->flags & PG_KMALLOC) ||
+        pg->refcount != 1) {
+        kprintf("[HEAP] CORRUPTION: kfree of bad pointer %p\n", ptr);
+        KERNEL_PANIC();
+        return;
+    }
+    unsigned order = page_order(pg);
+    free_pages(pg, order);
+    spinlock_acquire(&heap_lock);
+    large_bytes -= (uint64_t)PAGE_SIZE << order;
+    spinlock_release(&heap_lock);
+}
+
+static inline int is_large_size(size_t size) {
+    return size >= KMALLOC_LARGE_MIN && size <= KMALLOC_LARGE_MAX;
+}
+
 void *kmalloc(size_t size, uint32_t flags) {
+    if (is_large_size(size)) return kmalloc_large(size, flags);
     spinlock_acquire(&heap_lock);
     void *ptr = kmalloc_locked(size, flags);
     spinlock_release(&heap_lock);
@@ -238,6 +308,10 @@ static void kfree_locked(void *ptr) {
 
 void kfree(void *ptr) {
     if (ptr == NULL) return;
+    if (!in_heap(ptr)) {
+        kfree_large(ptr);
+        return;
+    }
     spinlock_acquire(&heap_lock);
     kfree_locked(ptr);
     spinlock_release(&heap_lock);
@@ -283,7 +357,32 @@ static void *krealloc_locked(void *ptr, size_t new_size) {
     return new_ptr;
 }
 
+/* krealloc where the old or new block is a large allocation: allocate, copy,
+ * free, without holding the heap lock across the calls. */
+static void *krealloc_slow(void *ptr, size_t new_size) {
+    size_t old_size;
+    if (in_heap(ptr)) {
+        old_size = ((BlockHeader *)((uint8_t *)ptr - HEADER_SIZE))->size;
+    } else {
+        old_size = (size_t)PAGE_SIZE << page_order(virt_to_page(ptr));
+        if (is_large_size(new_size) && new_size <= old_size) return ptr;
+    }
+    void *new_ptr = kmalloc(new_size, GFP_KERNEL);
+    if (new_ptr == NULL) return NULL;
+    memcpy(new_ptr, ptr, old_size < new_size ? old_size : new_size);
+    kfree(ptr);
+    return new_ptr;
+}
+
 void *krealloc(void *ptr, size_t new_size) {
+    if (ptr == NULL) return kmalloc(new_size, GFP_KERNEL);
+    if (new_size == 0) {
+        kfree(ptr);
+        return NULL;
+    }
+    if (!in_heap(ptr) || is_large_size(new_size)) {
+        return krealloc_slow(ptr, new_size);
+    }
     spinlock_acquire(&heap_lock);
     void *new_ptr = krealloc_locked(ptr, new_size);
     spinlock_release(&heap_lock);
@@ -316,9 +415,8 @@ void kmalloc_dump_stats(void) {
             (uint64_t)total_blocks, (uint64_t)free_blocks,
             (uint64_t)total_used, (uint64_t)total_free,
             (uint64_t)largest_free);
-    kprintf("[HEAP] Heap range: 0x%lx - 0x%lx (%lu KB mapped)\n",
-            HEAP_START, mapped_end,
-            (mapped_end - HEAP_START) / 1024);
+    kprintf("[HEAP] Heap range: 0x%lx - 0x%lx (%lu KB mapped, %lu KB large)\n", HEAP_START, mapped_end,
+            (mapped_end - HEAP_START) / 1024, large_bytes / 1024);
 }
 
 void kmalloc_get_stats(HeapStats *out) {
@@ -342,7 +440,8 @@ void kmalloc_get_stats(HeapStats *out) {
         block = block->next;
     }
 
-    out->heap_mapped = heap_current_end - HEAP_START;
+    out->heap_mapped = heap_mapped_bytes();
+    out->large_bytes = large_bytes;
     spinlock_release(&heap_lock);
 }
 
