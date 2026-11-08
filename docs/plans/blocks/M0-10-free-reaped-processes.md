@@ -2,7 +2,7 @@
 
 | Size | Tier | Lane | Needs | Unblocks |
 |---|---|---|---|---|
-| S | D | K | M0-09 | — |
+| M (was S) | D | K | M0-09 | — |
 
 **Goal.** A process that has exited and been reaped gives back everything it held, so the M0-08 leak budgets
 (`pages_leaked`, `heap_leaked_bytes`) drop to 0. Added 2026-11-08 with Michael's OK, after M0-08's leak check
@@ -39,4 +39,24 @@ objects; `proc_list` gets shorter, which helps every scan that still walks it.
 - PID reuse: a freed PID must not match a stale reference (process group, fg pgid in the tty).
 
 **Notes.**
--
+- 2026-11-08 (built). `proc_reap` frees the user pages and page tables (`vmm_free_user_pages`), the fd table, the
+  main thread (`thread_destroy`) and the PCB, and unlinks it. `proc_list` is now doubly linked (O(1) unlink).
+  `exit`, `exit_group` and fatal signals share one exit path, `proc_exit` (proc_syscalls.c): close fds, hand
+  children to init (`proc_reparent_children`; init is woken and gets SIGCHLD when it adopts a zombie), zombie,
+  thread DEAD before any wake-up, notify the parent, switch away.
+- The tid-indexed `proc_table[64]` is gone: `Thread.proc` points at the owner. The table silently returned NULL
+  for tid >= 64 (every process after the 64th thread had no `proc_current()`), which the 200-child test would hit.
+- Freeing is safe because syscalls run with interrupts off on one CPU: the child switches away before anything
+  else runs, and the reaper runs on its own CR3. **M1-05 (SMP)** must add an "off every CPU" check before
+  `proc_reap` frees the thread and address space, and take the socket table lock in `find_socket`.
+- Sockets (Michael's choice, grows the block to M): closing a socket never freed it. Sockets now carry `refs`
+  (fd-table entries); `fd_close` / `fd_file_addref` (proc/fd.c) are the one place that drops or takes a pipe or
+  socket reference, used by close, dup, dup2, fork and exit. The last close frees the socket; a connected TCP
+  socket sends RST (no lingering FIN/TIME_WAIT yet) and a listener's unaccepted connections are reset and freed.
+- Also fixed: fork's failure paths leaked the copied pages (`vmm_destroy_user_pml4` frees tables only), the pipe
+  references and a freed PCB still on `proc_list`.
+- The leak check counts any heap a suite keeps, so `/tmp` now exists at boot (a suite creating it read as 33 KB
+  leaked) and the userland suite removes the files it makes. Test-mode init reaps orphans after each test. In
+  normal mode init execs login, so the shell (pid 1) reaps orphans with its `waitpid(-1, WNOHANG)` per prompt.
+- `forkreap` (abi suite): 200 children (every tenth killed by SIGKILL), both orphan cases, a socket shared by
+  fork and dup. All five suites report `pages_leaked 0` and `heap_leaked_bytes 0`; both limits are 0.

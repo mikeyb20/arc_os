@@ -12,7 +12,6 @@
 #include "proc/waitqueue.h"
 #include "proc/spinlock.h"
 #include "fs/vfs.h"
-#include "fs/pipe.h"
 #include "fs/fs_syscalls.h"
 #include "mm/vmm.h"
 #include "mm/kmalloc.h"
@@ -40,13 +39,7 @@
 void proc_release_fds(Process *p) {
     if (p->fd_table == NULL) return;
     for (int i = 0; i < MAX_FDS; i++) {
-        if (p->fd_table->entries[i].in_use) {
-            VfsFile *f = &p->fd_table->entries[i].file;
-            if (f->node && f->node->type == VFS_PIPE) {
-                pipe_close(f->node);
-            }
-            p->fd_table->entries[i].in_use = 0;
-        }
+        fd_close(p->fd_table, i);
     }
 }
 

@@ -47,15 +47,6 @@ int fs_user_path(uint64_t path_addr, char *abs, size_t size) {
     return path_normalize(cwd, path, abs, size);
 }
 
-/* Close what fd refers to (pipe end refcount) and free the slot. */
-static void fd_release(FdTable *ft, int fd) {
-    VfsFile *f = fd_get(ft, fd);
-    if (f == NULL) return;
-    if (f->node && f->node->type == VFS_PIPE) pipe_close(f->node);
-    vfs_close(f);
-    fd_free(ft, fd);
-}
-
 /* read(fd, buf, count) — 0 */
 static int64_t sys_read(uint64_t fd, uint64_t buf_addr, uint64_t count,
                         uint64_t a3, uint64_t a4, uint64_t a5) {
@@ -169,7 +160,7 @@ static int64_t sys_close(uint64_t fd, uint64_t a1, uint64_t a2,
     Process *p = proc_current();
     if (p == NULL || p->fd_table == NULL) return -EBADF;
     if (fd_get(p->fd_table, (int)fd) == NULL) return -EBADF;
-    fd_release(p->fd_table, (int)fd);
+    fd_close(p->fd_table, (int)fd);
     return 0;
 }
 
@@ -367,9 +358,7 @@ static int64_t sys_dup(uint64_t oldfd, uint64_t a1, uint64_t a2,
 
     FdEntry *dst_entry = &p->fd_table->entries[newfd];
     dst_entry->file = *src;
-    if (dst_entry->file.node && dst_entry->file.node->type == VFS_PIPE) {
-        pipe_addref(dst_entry->file.node);
-    }
+    fd_file_addref(&dst_entry->file);
     return (int64_t)newfd;
 }
 
@@ -385,20 +374,13 @@ static int64_t sys_dup2(uint64_t oldfd, uint64_t newfd, uint64_t a2,
     if (src == NULL) return -EBADF;
     if (oldfd == newfd) return (int64_t)newfd;
 
-    /* If newfd is open, close it first */
-    FdEntry *dst_entry = &p->fd_table->entries[newfd];
-    if (dst_entry->in_use) {
-        if (dst_entry->file.node && dst_entry->file.node->type == VFS_PIPE) {
-            pipe_close(dst_entry->file.node);
-        }
-        dst_entry->in_use = 0;
-    }
+    /* If newfd is open, close it first. src stays valid: oldfd != newfd. */
+    fd_close(p->fd_table, (int)newfd);
 
+    FdEntry *dst_entry = &p->fd_table->entries[newfd];
     dst_entry->file = *src;
     dst_entry->in_use = 1;
-    if (dst_entry->file.node && dst_entry->file.node->type == VFS_PIPE) {
-        pipe_addref(dst_entry->file.node);
-    }
+    fd_file_addref(&dst_entry->file);
     return (int64_t)newfd;
 }
 

@@ -82,6 +82,7 @@ typedef struct Socket {
     int accept_tail;
 
     int closed;           /* Set when socket is being shut down */
+    int refs;             /* fd-table entries that refer to it (syscalls only) */
 } Socket;
 
 /* Maximum number of active sockets */
@@ -93,8 +94,17 @@ int socket_create(uint16_t family, uint16_t type, uint16_t protocol);
 /* Get socket by index.  Returns NULL if invalid. */
 Socket *socket_get(int idx);
 
-/* Free a socket by index. */
+/* Free a socket by index now, whatever its refs (creation failure paths).
+ * A connected TCP socket sends RST to its peer; a listener's unaccepted
+ * connections are reset and freed too. */
 void socket_free(int idx);
+
+/* One more fd-table entry refers to socket idx (dup, dup2, fork). */
+void socket_addref(int idx);
+
+/* An fd-table entry referring to socket idx went away (close, exit, dup2
+ * over it); the last one frees the socket (socket_free). */
+void socket_release(int idx);
 
 /* Bind a socket to a local address. */
 int socket_bind(Socket *sk, uint32_t ip, uint16_t port);

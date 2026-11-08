@@ -22,7 +22,7 @@ __attribute__((noreturn))
 void proc_enter_user(struct Process *p, const ElfLoadResult *elf, ExecStrings *strings,
                      const char *execfn, uint8_t *stack_buf);
 
-/* Close every open fd of p (pipe ends drop their refcount, so readers see EOF).
+/* Close every open fd of p (fd_close: pipe ends and sockets drop a reference).
  * Used when a process exits or is killed by a signal. */
 void proc_release_fds(struct Process *p);
 

@@ -7,6 +7,7 @@
  *     getppid() turn into init's pid;
  *   - a child exits while its own child is already a zombie: init adopts the
  *     zombie and reaps it.
+ * A socket shared by fork and dup stays open until its last fd closes.
  * init reaps the orphans after this program exits; the suite's leak budgets
  * (pages_leaked, heap_leaked_bytes, both 0) show that every process, reaped
  * by its parent or by init, gave back all its memory.
@@ -17,6 +18,9 @@
 #include <unistd.h>
 #include <signal.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
+#include <uapi/unistd.h>
+#include <uapi/socket.h>
 
 #define CHILDREN    200
 #define SPIN_LIMIT  5000000   /* getppid() calls before giving up on adoption */
@@ -102,11 +106,38 @@ static void orphan_zombie(void) {
     CHECK(waitpid(mid, &status, 0) == mid && WIFEXITED(status) && WEXITSTATUS(status) == 0);
 }
 
+/* fork and dup copy a socket fd; each copy holds it open (the kernel frees it
+ * at the last close, which the leak budget checks) */
+static void socket_shared(void) {
+    long ret;     /* libc has no socket(): raw syscall, as in abi_check */
+    __asm__ volatile ("syscall" : "=a"(ret) : "a"((long)__NR_socket), "D"((long)AF_INET),
+                      "S"((long)SOCK_DGRAM), "d"(0L) : "rcx", "r11", "memory");
+    int s = (int)ret;
+    CHECK(s >= 0);
+    if (s < 0) return;
+    int d = dup(s);
+    CHECK(d >= 0);
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(s);
+        close(d);
+        _exit(0);
+    }
+    int status = 0;
+    CHECK(waitpid(pid, &status, 0) == pid && WIFEXITED(status));
+    struct stat st;
+    CHECK(fstat(s, &st) == 0 && S_ISSOCK(st.st_mode));   /* child's close kept it */
+    close(s);
+    CHECK(fstat(d, &st) == 0 && S_ISSOCK(st.st_mode));   /* dup still holds it */
+    close(d);
+}
+
 int main(void) {
     pid_t init_pid = getppid();                   /* init runs this program */
     fork_and_reap();
     orphan_running(init_pid);
     orphan_zombie();
+    socket_shared();
     /* The orphans belong to init now, not to us */
     CHECK(waitpid(-1, NULL, WNOHANG) < 0);
     printf("forkreap: %d children reaped, %d failures\n", CHILDREN, failures);

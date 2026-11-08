@@ -17,11 +17,10 @@ boot_free_bytes        3830000000  min  bytes  M0-08  smoke
 kernel_heap_bytes      2290000     max  bytes  M0-08  smoke
 
 # Leak check: free pages and kmalloc bytes lost between the first and last test
-# of a suite (printed by init; worst suite counts). M0-10 frees reaped processes,
-# so both are 0 except for one socket: closing a socket never frees it (8400
-# bytes, the socket qemu.abi opens), left to M1-18's socket rework.
+# of a suite (printed by init; worst suite counts). M0-10 frees reaped processes
+# and closed sockets: both are 0, and any leak fails.
 pages_leaked           0           max  pages  M0-10  *
-heap_leaked_bytes      8400        max  bytes  M1-18  *
+heap_leaked_bytes      0           max  bytes  M0-10  *
 
 # Most heap blocks one kmalloc walked (first fit; measured worst 148 in abi after
 # M0-10, 215 before). M1-02b's slab replaces it with slab steps.
