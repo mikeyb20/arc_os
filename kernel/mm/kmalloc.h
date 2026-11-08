@@ -3,10 +3,18 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "mm/gfp.h"
 
-/* Allocation flags */
-#define GFP_KERNEL  0x00  /* Normal kernel allocation */
-#define GFP_ZERO    0x01  /* Zero the allocation */
+/* Kernel heap (ADR-0016: capped at 512 MB, counting both paths below).
+ *  - Requests under KMALLOC_LARGE_MIN, or over KMALLOC_LARGE_MAX, come from the
+ *    first-fit heap at HEAP_START (virtually contiguous, built page by page).
+ *  - Requests from KMALLOC_LARGE_MIN to KMALLOC_LARGE_MAX go straight to
+ *    alloc_pages() and live in the HHDM, rounded up to a power-of-two block.
+ * GFP_DMA32 is ignored: DMA buffers come from alloc_pages(). The slab allocator
+ * (M1-02b) replaces the small-object path. */
+#define KMALLOC_LARGE_MIN (2u * 4096u)            /* 8 KiB */
+#define KMALLOC_LARGE_MAX (4096u << 10)           /* 4 MiB, PAGE_MAX_ORDER */
+#define KMALLOC_CAP_BYTES (512ull * 1024 * 1024)  /* ADR-0016 */
 
 /* Initialize the kernel heap allocator. Must be called after vmm_init(). */
 void kmalloc_init(void);
@@ -31,6 +39,7 @@ typedef struct {
     size_t free_blocks;
     size_t largest_free;
     size_t heap_mapped;
+    size_t large_bytes;   /* bytes held by large (alloc_pages) allocations */
 } HeapStats;
 
 /* Collect heap statistics into 'out'. */

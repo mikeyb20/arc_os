@@ -16,6 +16,11 @@ The serial log is parsed for ARC_TEST markers written by init:
     ARC_TEST DONE pass=N fail=M
     ARC_TEST PANIC suite=<suite>          (written by the kernel)
 
+--cpu picks the QEMU CPU model (default: host under KVM, max under TCG).
+--expect-exit N makes the run pass only if QEMU's debug-exit value is N (the
+kernel ends the run itself, e.g. 0x7e when the CPU is below the x86-64-v3
+floor); the --expect patterns must still match.
+
 Exit status of this script: 0 = suite passed, 1 = failed, 2 = harness error.
 Python 3 standard library only.
 """
@@ -58,7 +63,7 @@ def build_iso(args, iso):
         modules.append(path)
 
     cmd = ["bash", os.path.join(ROOT, "tools", "make-iso.sh"),
-           "-o", iso, "-c", f"arc.test={args.suite}"] + modules
+           "-o", iso, "-c", " ".join([f"arc.test={args.suite}"] + args.cmdline)] + modules
     res = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
     if res.returncode != 0:
         log("make-iso.sh failed:")
@@ -77,10 +82,10 @@ def qemu_command(args, iso, serial_log):
            "-no-reboot",
            "-boot", "d",
            "-cdrom", iso]
-    if kvm_usable() and not args.no_kvm:
+    if kvm_usable() and not args.no_kvm and args.cpu is None:
         cmd += ["-accel", "kvm", "-cpu", "host"]
     else:
-        cmd += ["-accel", "tcg,thread=multi", "-cpu", "max"]
+        cmd += ["-accel", "tcg,thread=multi", "-cpu", args.cpu or "max"]
     return cmd
 
 
@@ -106,10 +111,18 @@ def main():
     ap.add_argument("--expect-panic", action="store_true",
                     help="the run passes only if the kernel panics (harness self-check)")
     ap.add_argument("--timeout", type=float, default=120, help="seconds")
-    ap.add_argument("--memory", default="256M")
+    ap.add_argument("--memory", default="4G",
+                    help="guest RAM; 4G is the dev target (q35 puts 2 GiB above 4 GiB)")
+    ap.add_argument("--cmdline", action="append", default=[],
+                    help="extra kernel command-line word, e.g. arc.mem=4G")
+    ap.add_argument("--name", help="name for the ISO and serial log (default: the suite)")
     ap.add_argument("--smp", type=int, default=2)
     ap.add_argument("--qemu", default="qemu-system-x86_64")
     ap.add_argument("--no-kvm", action="store_true", help="force TCG")
+    ap.add_argument("--cpu", default=None,
+                    help="QEMU CPU model, run under TCG (default: host with KVM, else max)")
+    ap.add_argument("--expect-exit", type=lambda v: int(v, 0), default=None,
+                    help="pass only if the kernel ends the run with this debug-exit value")
     args = ap.parse_args()
     args.build_dir = os.path.abspath(args.build_dir)
 
@@ -119,8 +132,9 @@ def main():
 
     out_dir = os.path.join(args.build_dir, "qemu-test")
     os.makedirs(out_dir, exist_ok=True)
-    iso = os.path.join(out_dir, f"{args.suite}.iso")
-    serial_log = os.path.join(out_dir, f"{args.suite}.serial.log")
+    name = args.name or args.suite
+    iso = os.path.join(out_dir, f"{name}.iso")
+    serial_log = os.path.join(out_dir, f"{name}.serial.log")
     if os.path.exists(serial_log):
         os.remove(serial_log)
 
@@ -154,7 +168,17 @@ def main():
 
     head = f"suite {args.suite} ({accel}, {elapsed:.1f}s)"
     problems = []
-    if args.expect_panic:
+    if args.expect_exit is not None:
+        if timed_out:
+            problems.append(f"timeout after {args.timeout:.0f}s")
+        elif debug_value != args.expect_exit:
+            problems.append(f"expected debug-exit value {args.expect_exit:#x}, got "
+                            f"{'none' if debug_value is None else hex(debug_value)}")
+        problems.extend(f"expected output not found: /{rx}/" for rx in missing)
+        if not problems:
+            log(f"{head}: PASS (exit value {args.expect_exit:#x})")
+            return 0
+    elif args.expect_panic:
         if panicked:
             log(f"{head}: kernel panic after {elapsed:.1f}s, as expected")
             return 0

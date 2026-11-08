@@ -32,6 +32,12 @@ threads, per-thread masks, CPU affinity and the CPU description files llama.cpp 
 **Watch out.**
 - Futex waits must recheck the value under the hash-bucket lock, or wakeups get lost.
 - Timeouts use the per-CPU timer queues from M1-06; no polling loops.
+- From M1-01: `SigState` (proc/signal.h) already has the blocked mask, full `struct kernel_sigaction` per
+  signal and the sender's pid/uid, all per process; move the mask and a pending set to the thread. Signals are
+  still delivered only at syscall exit (`sig_maybe_deliver` on the `SyscallFrame`), so a thread spinning in
+  user code never sees one; `SA_RESTART`/`SA_ONSTACK` are stored but not acted on.
 
 **Notes.**
--
+- From M1-01: `SA_RESTART`, `SA_ONSTACK` and `SA_NOCLDSTOP`/`SA_NOCLDWAIT` are stored in `SigState` but not
+  acted on; sigaltstack is not implemented (`uc_stack` is filled as disabled). Kernel-sent SIGCHLD carries
+  `si_code = SI_USER` and the sender's pid; Linux uses `CLD_EXITED`/`CLD_KILLED` with status fields.

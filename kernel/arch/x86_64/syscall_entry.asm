@@ -14,7 +14,6 @@ global syscall_entry
 extern syscall_dispatch
 extern syscall_kernel_rsp
 extern sig_maybe_deliver
-extern sig_pending_arg
 
 syscall_entry:
     ; Save user RSP to scratch space (can't trust user stack)
@@ -51,7 +50,8 @@ syscall_entry:
     mov [rel syscall_saved_user_r8], r8
     mov [rel syscall_saved_user_r9], r9
 
-    ; Argument registers, restored on return (below the SyscallFrame)
+    ; Argument registers, restored on return: with the pushes above they form
+    ; the SyscallFrame (proc/signal.h), r9 at the lowest address
     push rdi
     push rsi
     push rdx
@@ -75,14 +75,13 @@ syscall_entry:
     call syscall_dispatch
     add rsp, 8              ; pop 7th arg
 
-    ; --- Signal delivery check ---
-    ; sig_maybe_deliver(frame_ptr, syscall_ret=rax)
-    lea rdi, [rsp + 48]     ; SyscallFrame pointer (above the 6 argument regs)
+    ; --- Signal delivery and rt_sigreturn ---
+    ; sig_maybe_deliver(frame, syscall_ret) may rewrite any frame field
+    ; (handler entry: RIP, RSP, RDI/RSI/RDX; sigreturn: every register)
+    mov rdi, rsp            ; SyscallFrame pointer
     mov rsi, rax            ; syscall return value
-    mov qword [rel sig_pending_arg], 0
     call sig_maybe_deliver
-    ; RAX = (possibly modified) return value
-    ; sig_pending_arg = signo for handler RDI, or 0
+    ; RAX = value for user RAX
 
     pop r9
     pop r8
@@ -90,11 +89,6 @@ syscall_entry:
     pop rdx
     pop rsi
     pop rdi
-    ; Entering a signal handler: RDI = signo (M1-01 adds siginfo/ucontext)
-    cmp qword [rel sig_pending_arg], 0
-    je .no_signal
-    mov rdi, [rel sig_pending_arg]
-.no_signal:
 
     ; Restore callee-saved registers and user context
     pop r15

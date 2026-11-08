@@ -8,7 +8,7 @@
 
 #define EXEC_PLATFORM "x86_64"
 #define EXEC_PAGE_SIZE 4096
-#define AUX_PAIRS 18     /* entries written below, AT_NULL included */
+#define AUX_PAIRS      19     /* entries written below, AT_NULL included */
 
 void exec_strings_init(ExecStrings *s) {
     s->argc = 0;
@@ -84,24 +84,25 @@ uint64_t exec_build_stack(uint8_t *buf, size_t buf_size, uint64_t stack_top,
     *w++ = 0;
 
     const uint64_t auxv[AUX_PAIRS][2] = {
-        { AT_PHDR,     aux->phdr },
-        { AT_PHENT,    aux->phent },
-        { AT_PHNUM,    aux->phnum },
-        { AT_PAGESZ,   EXEC_PAGE_SIZE },
-        { AT_BASE,     0 },               /* static programs have no interpreter */
-        { AT_FLAGS,    0 },
-        { AT_ENTRY,    aux->entry },
-        { AT_UID,      aux->uid },
-        { AT_EUID,     aux->euid },
-        { AT_GID,      aux->gid },
-        { AT_EGID,     aux->egid },
-        { AT_SECURE,   aux->secure },
-        { AT_RANDOM,   random_addr },
-        { AT_HWCAP,    aux->hwcap },
-        { AT_HWCAP2,   0 },
-        { AT_EXECFN,   execfn_addr },
-        { AT_PLATFORM, platform_addr },
-        { AT_NULL,     0 },
+        {AT_PHDR, aux->phdr},
+        {AT_PHENT, aux->phent},
+        {AT_PHNUM, aux->phnum},
+        {AT_PAGESZ, EXEC_PAGE_SIZE},
+        {AT_BASE, 0},               /* static programs have no interpreter */
+        {AT_FLAGS, 0},
+        {AT_ENTRY, aux->entry},
+        {AT_UID, aux->uid},
+        {AT_EUID, aux->euid},
+        {AT_GID, aux->gid},
+        {AT_EGID, aux->egid},
+        {AT_SECURE, aux->secure},
+        {AT_RANDOM, random_addr},
+        {AT_HWCAP, aux->hwcap},
+        {AT_HWCAP2, aux->hwcap2},
+        {AT_MINSIGSTKSZ, aux->minsigstksz},
+        {AT_EXECFN, execfn_addr},
+        {AT_PLATFORM, platform_addr},
+        {AT_NULL, 0},
     };
     for (int i = 0; i < AUX_PAIRS; i++) {
         *w++ = auxv[i][0];

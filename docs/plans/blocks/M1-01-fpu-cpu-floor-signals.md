@@ -43,8 +43,8 @@ argument registers (RDI–R10) too: today a handler return loses them.
 9. ctest `kernel.no_simd`: `objdump -d kernel.elf` has no `xmm`/`ymm`/`zmm` registers outside the XSAVE helpers.
 
 **Done when.**
-- [ ] All tests above pass in TCG and in CI.
-- [ ] `kernel.no_simd` passes.
+- [x] All tests above pass in TCG and in CI.
+- [x] `kernel.no_simd` passes.
 
 **Watch out.**
 - XSAVE faults on an area that isn't 64-byte aligned.
@@ -52,4 +52,17 @@ argument registers (RDI–R10) too: today a handler return loses them.
 - Struct copies in the kernel get slower without SSE; that is expected.
 
 **Notes.**
--
+- Signal state (`SigState`) holds one mask and the full `kernel_sigaction` per process; fork now copies the
+  handlers (before this block the child lost them, a latent bug). Exec resets handlers to default but keeps IGN.
+- Like Linux, a handler without `SA_RESTORER` gets SIGSEGV; libc's `signal()` sets `__arc_restore_rt`.
+  `SA_RESTART`, `SA_ONSTACK` and `SA_NOCLD*` are stored but not acted on yet (M1-17).
+- `rt_sigreturn` rejects a non-canonical or kernel RIP (SYSRET #GP), a bad XSAVE header or MXCSR, and a frame
+  it can't read: SIGSEGV. TF and AC are not restorable from the frame because a user #DB/#AC still panics.
+- Fixed latent bugs: the old frame was written without checking the stack was mapped, and an unchecked handler
+  address could reach SYSRET.
+- Open for later blocks: any user CPU exception panics the kernel (M1-07); signals are delivered only on
+  syscall return, not after an interrupt (M1-07); NMI window between `pop rsp` and `sysretq` (M1-03);
+  kernel-sent SIGCHLD uses `SI_USER` instead of `CLD_*` codes (M1-17); procfs inode 2001 (meminfo) collides with
+  `/proc/1` (M1-11).
+- Test asm lives in `userland/testprogs/fpu_test.S` so the hygiene duplicate counter (which blanks string
+  literals) doesn't count inline-asm blocks as copies.

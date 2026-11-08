@@ -101,6 +101,15 @@ static void sig_init(SigState *ss) {
     for (int i = 0; i < NSIG; i++) ss->handlers[i] = SIG_DFL;
 }
 
+/* Stub of signal.c's: the real one (linked from test_signal.c) has another
+ * SigState layout */
+static const SigState *sig_fork_copy_from;
+static void sig_fork_copy(SigState *child, const SigState *parent) {
+    sig_fork_copy_from = parent;
+    *child = *parent;
+    child->pending = 0;
+}
+
 /* WaitQueue stub */
 typedef struct WaitQueue { int dummy; } WaitQueue;
 static void wq_init(WaitQueue *wq) { (void)wq; }
@@ -696,6 +705,7 @@ static int test_proc_fork_copies_fpu_and_fs_base(void) {
     ASSERT_EQ(ct->fs_base, 0x7000123450ULL);
     ASSERT_EQ(fpu_save_calls, 1);
     ASSERT_TRUE(fpu_save_last == ct->fpu_state);
+    ASSERT_TRUE(sig_fork_copy_from == &parent->sig);   /* handlers and mask inherited */
     return 0;
 }
 

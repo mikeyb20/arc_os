@@ -27,6 +27,18 @@ add_test(NAME qemu.smoke COMMAND ${_qemu_test} --suite smoke --memory 4G
     --expect "exited with status 0"
     --expect "uid=0 gid=0")
 
+# M1-02: the buddy allocator hands out an aligned 2 MiB block after boot (-m 4G default)
+add_test(NAME qemu.mem.buddy COMMAND ${_qemu_test} --suite smoke --name mem-buddy
+    --module tests/qemu/suites/smoke.sh
+    --expect "\\[PMM\\] Free blocks per order: 0:"
+    --expect "\\[PMM\\] Self-test passed: 2 MiB block")
+
+# M1-02: arc.mem=4G on a 6 GiB guest uses exactly 4 GiB (low-tier floor on a bigger machine)
+add_test(NAME qemu.mem.cap COMMAND ${_qemu_test} --suite smoke --name mem-cap
+    --module tests/qemu/suites/smoke.sh --memory 6G --cmdline arc.mem=4G
+    --expect "\\[PMM\\] arc.mem: using 4096 MiB of RAM"
+    --expect "\\[PMM\\] Self-test passed")
+
 # Every existing user program, run once
 add_test(NAME qemu.userland COMMAND ${_qemu_test} --suite userland)
 
@@ -43,6 +55,18 @@ add_test(NAME qemu.musl COMMAND ${_qemu_test} --suite musl
     --expect "start_basic\\(libarc\\): PASS"
     --expect "writev ok")
 
+# FPU state and signal frames (M1-01, ADR-0003): AVX2 registers survive
+# preemption and signals; Linux rt_sigframe with musl's sigaction
+add_test(NAME qemu.fpu COMMAND ${_qemu_test} --suite fpu --module sig_fpu --module fpu_avx
+    --expect "sig_fpu: 0 failures"
+    --expect "fpu_avx: 0 failures"
+    --expect "\\[FPU\\] XSAVE on")
+
+# CPU floor (M1-01): on a CPU without AVX2 the kernel says why and stops
+add_test(NAME qemu.cpufloor COMMAND ${_qemu_test} --suite cpufloor --cpu Nehalem
+    --expect-exit 0x7e --timeout 60
+    --expect "CPU floor: this CPU lacks: .*AVX2")
+
 # Harness self-checks: a failing program is reported by name and reason,
 # and a kernel panic ends the run within seconds instead of at the timeout.
 add_test(NAME qemu.selftest.fail COMMAND ${_qemu_test} --suite selftest --module testfail)
@@ -50,7 +74,8 @@ set_tests_properties(qemu.selftest.fail PROPERTIES
     PASS_REGULAR_EXPRESSION "FAIL testfail exit=3")
 add_test(NAME qemu.selftest.panic COMMAND ${_qemu_test} --suite kpanic --expect-panic --timeout 30)
 
-set_tests_properties(qemu.smoke qemu.userland qemu.abi qemu.musl qemu.selftest.fail qemu.selftest.panic
+set_tests_properties(qemu.smoke qemu.mem.buddy qemu.mem.cap qemu.userland qemu.abi qemu.musl qemu.fpu qemu.cpufloor
+    qemu.selftest.fail qemu.selftest.panic
     PROPERTIES LABELS qemu TIMEOUT 180 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     FIXTURES_SETUP qemu_logs)
 
@@ -68,3 +93,9 @@ add_test(NAME qemu.budgets.selftest COMMAND ${_budget_check}
 set_tests_properties(qemu.budgets qemu.budgets.selftest
     PROPERTIES LABELS qemu TIMEOUT 30 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     FIXTURES_REQUIRED qemu_logs)
+
+# kernel.no_simd (M1-01, ADR-0003): no instruction in kernel.elf names an
+# XMM/YMM/ZMM or mask register. Needs only the cross build, no boot.
+add_test(NAME kernel.no_simd COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/no-simd-check.py
+    ${ARC_CROSS_BUILD_DIR}/kernel.elf)
+set_tests_properties(kernel.no_simd PROPERTIES LABELS qemu TIMEOUT 60)

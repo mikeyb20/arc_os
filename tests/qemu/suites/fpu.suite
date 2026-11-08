@@ -1,0 +1,4 @@
+# qemu.fpu (M1-01): XSAVE state per thread. Both built with stock musl; exit
+# status = failed checks.
+sig_fpu  /boot/sig_fpu
+fpu_avx  /boot/fpu_avx

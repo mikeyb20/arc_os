@@ -44,7 +44,7 @@ typedef struct Thread {
     uint64_t        kernel_stack_top; /* Top of kernel stack for TSS.rsp0 / SYSCALL */
     thread_entry_t  entry;
     void           *arg;
-    void           *fpu_state;      /* FXSAVE area (arch/x86_64/fpu.h); NULL for the boot thread */
+    void *fpu_state;      /* XSAVE area, 64-byte aligned (fpu.h); NULL for the boot thread */
     uint64_t        fs_base;        /* User TLS pointer (arch_prctl ARCH_SET_FS) */
     uint64_t        clear_child_tid; /* set_tid_address pointer; used by M1-16 thread exit */
     struct Process *proc;           /* Owning process; NULL for a thread with none (idle) */
