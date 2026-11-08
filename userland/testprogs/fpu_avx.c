@@ -20,7 +20,7 @@
 #include <sys/wait.h>
 
 #define PREEMPTIONS_WANTED 20
-#define MAX_ROUNDS         400000   /* give up: preemption never happened */
+#define GIVE_UP_TSC        30000000000ULL   /* ~10 s of TSC: preemption isn't happening */
 #define SPIN               2000     /* general-register loop per round */
 #define GAP_FACTOR         50       /* a round this many times the fastest = switched out */
 
@@ -68,10 +68,12 @@ static int other_done(int id, pid_t child) {
 static int worker(int id, pid_t child) {
     static struct round r;
     int failures = 0, gaps = 0;
-    uint64_t fastest = UINT64_MAX;
+    uint64_t fastest = UINT64_MAX, start = rdtsc();
     long rounds;
     r.mxcsr_in = id ? (0x1F80 | 0x8000 | 0x0040) : 0x1F80;   /* child: FZ and DAZ */
-    for (rounds = 0; rounds < MAX_ROUNDS || gaps >= PREEMPTIONS_WANTED; rounds++) {
+    /* Give up by TSC, not by round count: a round takes ~1 us under KVM and
+     * ~60 us under TCG, while preemptions come at timer rate either way */
+    for (rounds = 0; rdtsc() - start < GIVE_UP_TSC || gaps >= PREEMPTIONS_WANTED; rounds++) {
         if (gaps == PREEMPTIONS_WANTED && !id && !parent_done) {
             kill(child, SIGUSR1);
             parent_done = 1;   /* parent: "told" */
