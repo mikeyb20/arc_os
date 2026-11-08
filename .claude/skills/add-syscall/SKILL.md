@@ -15,7 +15,11 @@ these steps, in this order, in one PR.
 - Check `.claude/skills/arc-os-architecture/reference/syscall-table.md` for current status and who needs it.
 
 ## 2. Kernel side
-- Handler `sys_<name>()` in the subsystem that owns it (fs, proc, mm, net...), not in `syscall.c`.
+- Handler `sys_<name>()` in the subsystem that owns it (fs, proc, mm, net...), not in `syscall.c`. Existing
+  handlers still in `syscall.c` move to their subsystem when a block touches them; `syscall.c` ends up holding only
+  dispatch and registration.
+- Struct definitions go in `kernel/include/uapi/` (shared with libarc) and get a row in `tests/test_abi_layout.c`,
+  which compares them with the host's Linux headers.
 - Register it under the Linux number in the syscall table; nothing else may use that slot.
 - Validate every user pointer (`user_access.h`), copy in/out explicitly, never dereference user memory directly.
 - Return `-errno` using Linux errno values. Unsupported flags → `-EINVAL`; unsupported feature → `-ENOSYS` or

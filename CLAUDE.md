@@ -20,6 +20,7 @@ arc_os is a custom x86_64 operating system built from scratch. Monolithic kernel
 - Programs, models and packs ship as `.arcpkg`; apps reach models only through `arc-llm`. (ADR-0010, 0011, 0012)
 - Search and reading must work without the LLM. (ADR-0015)
 - Power is first-class: no periodic tick assumptions, no busy-wait idle or endless polling; every driver has suspend/resume hooks. (ADR-0017)
+- Portable mode: the USB key is an ordinary arc_os disk; mount only arc_os partitions, from the disk Limine booted from; never write to a disk arc_os didn't create except through the installer. (ADR-0018)
 - No scope beyond the plan without Michael's OK. Flag any choice that would force a later rewrite **before** building on it.
 - Changing a locked decision = new superseding ADR + Michael's explicit OK + plan update.
 
@@ -112,16 +113,17 @@ arc_os/
 
 ## Milestone Tracking
 
-Progress is tracked as milestones M0–M5 in `docs/plans/knowledge-os.md` (§8). Each milestone gets its own implementation plan in `docs/plans/` (written with `/plan` before work starts), split into PR-sized tasks: header/interface first, then code, then tests. Every milestone ends with an automated QEMU or real-hardware test. `overview.md` phases 0–12 are history.
+Progress is tracked as milestones M0–M5 in `docs/plans/knowledge-os.md` (§8), built as **work blocks** listed in `docs/plans/work-blocks.md` (order, size, status). One block = one session = one PR; specs live in `docs/plans/blocks/` (M2–M5 specs are written by each milestone's planning block). Start a block with `/os/implement-block <ID>`, read only what its spec lists, and follow the session rules in work-blocks.md §3. Every milestone ends with an automated QEMU or real-hardware test. `overview.md` phases 0–12 are history.
 
 ## Key Docs
 
 - **Master plan:** `docs/plans/knowledge-os.md`
-- **Decisions (binding):** `docs/decisions/` (ADR-0001 … ADR-0017)
+- **Build order and block status:** `docs/plans/work-blocks.md` (`/os/block-status`)
+- **Decisions (binding):** `docs/decisions/` (ADR-0001 … ADR-0018)
 - Skills for repeated work: `add-syscall`, `driver-bringup`, `port-package` (in `.claude/skills/`)
 
 - Workflow philosophy: `docs/WORKFLOW.md`
 - Skill specifications: `docs/SKILL-MAP.md`
 - Development plans: `docs/plans/`
 - Architecture decisions: `docs/decisions/`
-- Session state: `scratchpad.md`
+- Session handoff: the Notes section of the block file (`scratchpad*.md` is gitignored and lost when a cloud session ends)

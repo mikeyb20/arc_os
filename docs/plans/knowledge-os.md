@@ -2,6 +2,7 @@
 
 > **Status: APPROVED (2026-11-07).** This file is the roadmap for arc_os. It replaces the phase list in
 > `overview.md`, which is kept as history for phases 0–12.
+> The build order (work blocks, sizes, status) is in [`work-blocks.md`](work-blocks.md).
 > Changing anything under "Locked technical spec" or "Lock-in decisions" needs Michael's explicit OK
 > **and** a new or superseding ADR in `docs/decisions/`. Everything else (task lists, order inside a
 > milestone) may be refined as work proceeds, as long as the change is recorded here.
@@ -20,12 +21,12 @@ Michael. Any choice that would force a later rewrite is flagged before code is w
 
 | # | Milestone | Done when |
 |---|---|---|
-| M0 | Lock-in decisions | ADRs 0001–0017 written; syscalls migrated to the Linux ABI; schemas, dev container, CI and QEMU test harness in place |
+| M0 | Lock-in decisions | ADRs 0001–0018 written; syscalls migrated to the Linux ABI; schemas, dev container, CI and QEMU test harness in place |
 | M1 | Compute kernel | A 4-thread AVX2 program runs on 4 CPUs and memory-maps a 10 GB ext2 file with 4 GB RAM in QEMU; arc_os boots to the shell on both real test machines |
 | M2 | Toolchain + first LLM | `ask "what is hypothermia"` answers inside arc_os in QEMU (4 CPUs, 4 GB); tokens/sec and RAM budget recorded |
 | M3 | Knowledge layer | A medical, a food and a repair question each get a cited answer from the 32 GB pack set; the library is usable with no LLM |
 | M4 | Real hardware | M3's test passes on both test machines, with and without a network cable |
-| M5 | Packages + installer | A blank machine becomes a working system from one USB key, with no network |
+| M5 | Packages + installer | A blank machine becomes a working system from one USB key, with no network; the same key runs the full system on a machine whose internal disk stays untouched |
 
 M0–M3 run in QEMU so the LLM answers before real-hardware drivers are written. M1 includes an early
 real-hardware boot so hardware surprises show up before the kernel design is built upon.
@@ -68,6 +69,7 @@ This section mirrors the project instructions. Each item links to its ADR.
 - GPT disks: ESP (FAT32, Limine) + system (ext2) + data (ext2); sizes fixed in M5. ([ADR-0008](../decisions/0008-disk-layout-and-filesystem.md))
 - ext2 rev 1, 4 KiB blocks, `large_file`, read/write; journaling later. Durable updates = write temp file, `fsync`, `rename`.
 - Directory layout: `/system` (OS, read-only) `/apps` `/models` `/packs` `/home` `/var`. ([ADR-0009](../decisions/0009-directory-layout.md))
+- Portable mode: the USB key is an ordinary arc_os disk with the same layout. arc_os runs entirely from it, mounts only its own partitions from the disk it booted from, and never writes to a disk it didn't create. ([ADR-0018](../decisions/0018-portable-usb-mode.md))
 
 ### 3.6 Devices and network
 - In scope: PS/2 keyboard and mouse, xHCI + USB HID + mass storage, NVMe, AHCI, Intel e1000/e1000e (I219), Realtek RTL8111/8168, virtio-blk/net, Limine/UEFI framebuffer. ([ADR-0006](../decisions/0006-driver-model.md))
@@ -92,12 +94,24 @@ This section mirrors the project instructions. Each item links to its ADR.
 
 Model sizes are approximate and get confirmed by measurement in M2.
 
+**Low-tier reference machine** (Michael, 2026-11-07): a standard used business laptop of the kind sold for about
+$150–300 CAD on Facebook Marketplace or Kijiji. If arc_os works there, it works on most Intel machines from about
+2015 on. Typical parts: Core i5 of the 6th–10th generation, 8 GB run at 4 GB (`arc.mem=4G`), SATA or NVMe SSD,
+Intel xHCI, Intel I219 Ethernet on most models, PS/2 keyboard, PS/2 or I2C touchpad, often a 1366×768 screen, UEFI
+with a Secure Boot switch. Examples: Dell Latitude 5490/7490, Lenovo ThinkPad T480, HP EliteBook 840 G5 (parts and
+examples are a reading of that market, not checked model by model).
+
+- Buying check: Core i3/i5/i7, not Celeron or Pentium (those usually lack AVX2 and fall below the CPU floor); no
+  BIOS password set (it blocks turning Secure Boot off); an Intel or Realtek Ethernet port if a wired network matters.
+- Gaps until the compatibility track ([`work-blocks.md`](work-blocks.md) §9): AMD power management, I2C touchpads, USB
+  Ethernet adapters, network chips beyond Intel and Realtek.
+
 ### Test machines
 
 | Role | Machine | Key hardware | Notes |
 |---|---|---|---|
 | High | Michael's laptop ("scrubtop") | Intel Core Ultra 7 255H (16 cores, hybrid P/E, AVX2 + AVX-VNNI, no AVX-512), 32 GB, Crucial P3 1 TB NVMe, Intel Ethernet `8086:550a` (I219 family, unverified), Intel xHCI, Intel integrated graphics | Keyboard is PS/2 (works with today's driver). Touchpad is I2C (out of scope); a USB wireless mouse is used. **No serial port.** Secure Boot already off. Wi-Fi `8086:272b` out of scope. |
-| Low | Used business mini PC (to buy) | Lenovo ThinkCentre M710q/M720q Tiny class, 7th/8th-gen Core i3 (AVX2), run at 4 GB, SATA SSD, Intel I219 Ethernet | Same Ethernet driver family as the laptop; exercises AHCI |
+| Low | Michael's old work computer (owned) | Stands in for the low-tier reference machine above; its exact parts are recorded from the M1-04 boot report, not collected up front. CPU must meet x86-64-v3 (Intel 4th-gen Core or newer). Run at 4 GB (capped in software if it has more) | Its internal disk must stay as it is, so arc_os runs only from the USB key ([ADR-0018](../decisions/0018-portable-usb-mode.md)). Its firmware must allow a USB boot with Secure Boot off; a BIOS password left by the former employer would block that. With no internal disk in use, AHCI writes are tested only in QEMU |
 
 ### Storage tiers
 
@@ -130,6 +144,7 @@ Cheap now, expensive later. Each has an ADR in `docs/decisions/`.
 | 15 | Library works without the LLM | [0015](../decisions/0015-library-without-llm.md) |
 | 16 | Per-page metadata from the PMM at boot | [0016](../decisions/0016-kernel-memory-sizing.md) |
 | 17 | Power management first-class: tickless, C-states, HWP, profiles, battery, driver suspend/resume hooks | [0017](../decisions/0017-power-management.md) |
+| 18 | Portable mode: runs entirely from the USB key; own partition types; never writes to host disks | [0018](../decisions/0018-portable-usb-mode.md) |
 
 ## 6. Data design
 
@@ -168,23 +183,24 @@ without reprocessing the library. Details and exact formats: [ADR-0011](../decis
 ## 8. Milestones in detail
 
 Every milestone ends with an automated test (QEMU or real hardware) checked over serial or the log
-channel, on top of host-side unit tests. Each milestone gets its own implementation plan in
-`docs/plans/` (written with `/plan` just before the milestone starts), broken into PR-sized tasks.
+channel, on top of host-side unit tests. The work is split into PR-sized blocks in
+[`work-blocks.md`](work-blocks.md). M0 and M1 have full specs in `docs/plans/blocks/`; each later milestone
+starts with a planning block that writes its specs.
 
 ### M0 — Lock-in decisions
-- [x] ADRs 0001–0017
+- [x] ADRs 0001–0018
 - [ ] Syscall inventory: run llama.cpp, SQLite and our test programs under `strace` on Linux; record the exact syscall list M1/M2 must provide
 - [ ] Migrate syscalls to Linux x86_64 numbers and semantics in one pass with libarc, userland and tests together
 - [ ] JSON schemas for pack, model and `.arcpkg` manifests, each with `schema_version`
 - [ ] Reproducible dev container with pinned versions of both toolchains; GitHub Actions running unit and QEMU tests
 - [ ] QEMU integration-test harness (boot, run a program, check serial output)
 - [ ] Archive the exact source of every outside component (§3.4) in repos Michael owns
-- [ ] M1 implementation plan: PR-sized tasks, dependency order, SMP lock-ordering rules
+- [x] M1 implementation plan: PR-sized tasks, dependency order, SMP lock-ordering rules ([`work-blocks.md`](work-blocks.md) §4 and §7, `docs/plans/blocks/M1-*`)
 
 ### M1 — Compute kernel
 - [ ] Per-page descriptor array from the PMM at boot (ADR-0016)
-- [ ] Eager XSAVE/XRSTOR, CPUID-sized save area; SSE/AVX enabled for user space
-- [ ] Per-CPU SYSCALL kernel stack fix; per-CPU run queues
+- [ ] Eager XSAVE/XRSTOR, CPUID-sized save area; SSE/AVX enabled for user space; kernel built with `-mgeneral-regs-only`
+- [ ] Per-CPU SYSCALL kernel stack fix; per-CPU run queues; x2APIC mode; up to 256 CPUs
 - [ ] Hybrid CPU awareness: core type from CPUID; inference threads can pin to P-cores
 - [ ] Threads: `clone`, `futex`, `arch_prctl`, `set_tid_address`, `exit_group`, `sched_setaffinity`, `rt_sigprocmask`
 - [ ] Memory: COW fork, demand paging, `mmap`/`munmap`/`mprotect`/`madvise`, page cache shared with `read()`, clean-page eviction, 2 MiB pages
@@ -192,9 +208,9 @@ channel, on top of host-side unit tests. Each milestone gets its own implementat
 - [ ] Hardening: SMEP, SMAP, NX enforced
 - [ ] Power base: tickless idle, MWAIT idle states, Intel HWP/EPP, RAPL energy counters (ADR-0017)
 - [ ] Block layer: async request queue with interrupts; virtio-blk moved onto it
-- [ ] VFS inode refactor; GPT parsing; ext2 rev 1 read/write with large files
-- [ ] AF_UNIX sockets; MSI/MSI-X
-- [ ] Real-hardware debug channel: logs to framebuffer and a log file on the ESP/USB stick (the laptop has no serial port); UDP log later
+- [ ] VFS inode refactor with 64-bit offsets; GPT parsing; ext2 rev 1 read/write with large files; one data partition mounted as `/apps /models /packs /home /var`; system and data mounted from the disk Limine booted from (ADR-0018)
+- [ ] AF_UNIX sockets and poll/select; driver model with MSI/MSI-X
+- [ ] Real-hardware debug channel: framebuffer log with scrollback, panic screen and a boot report to photograph (the laptop has no serial port). A log file needs a disk driver, so it moves to M4; UDP log later
 - [ ] **Done when:** a 4-thread AVX2 test program runs on 4 CPUs and memory-maps a 10 GB ext2 file with 4 GB RAM in QEMU, and arc_os boots to the shell on both real test machines
 
 ### M2 — Toolchain and first LLM
@@ -218,22 +234,23 @@ channel, on top of host-side unit tests. Each milestone gets its own implementat
 - [ ] **Done when:** a medical, a food and a repair question each get a cited answer from the 32 GB pack set, and the same library is searchable and readable with `arc-llm` stopped
 
 ### M4 — Real hardware
-- [ ] USB: xHCI, HID keyboard and mouse, mass storage (BOT)
-- [ ] Storage: NVMe (laptop), AHCI (mini PC)
+- [ ] USB: xHCI, HID keyboard and mouse, mass storage (BOT). Mass storage is essential: portable mode depends on it (ADR-0018)
+- [ ] Storage: NVMe (laptop), AHCI (tested in QEMU; neither test machine uses SATA now)
 - [ ] Input: PS/2 mouse; all input through `/dev/input`
 - [ ] Network (optional at runtime): Intel e1000e/I219 first, then Realtek RTL8111/8168; DHCP, DNS
 - [ ] Power: ACPI power-off and reboot via uACPI; battery %, AC adapter, lid and power button; low-battery warning and clean shutdown at critical level; power profiles wired to EPP and `arc-llm` thread count; screen blanking and backlight control; NVMe APST; `power` command showing battery, profile and watts
-- [ ] Maps, part 2: framebuffer map viewer with pre-rendered tiles, mouse pan and zoom
+- [ ] Maps, part 2: framebuffer map viewer with pre-rendered tiles; pan and zoom by keyboard or mouse (I2C touchpads are out of scope)
+- [ ] Kernel log kept in a file under `/var/log` (moved from M1: needs the NVMe/AHCI drivers)
 - [ ] **Done when:** M3's test passes on both test machines, with and without a network cable; idle and inference power are recorded per profile on both machines
 
 ### M5 — Packages and installer
 - [ ] `arcpkg`: install, remove, list, verify, switch model role; offline from USB or disk
-- [ ] Installer: detect disks, create GPT layout, format, copy system, pick storage tier by disk size and models by RAM
-- [ ] Host script that builds the USB image (Limine, UEFI + legacy BIOS)
+- [ ] Installer: detect disks, create GPT layout, format, copy system, pick storage tier by disk size and models by RAM (`mke2fs`/`e2fsck` ported from e2fsprogs; the ESP is written from a prebuilt FAT32 image)
+- [ ] Host script that builds the USB key: the portable layout (ADR-0018) written straight onto the stick and sized to fill it (Limine, UEFI + legacy BIOS)
 - [ ] Host tool that wraps any GGUF into an `.arcpkg`
 - [ ] Full offline copy of arc_os source, archived outside sources and toolchains on the key
 - [ ] Recovery: the install key doubles as a repair key; `arcpkg verify` restores damaged packs/models from it
-- [ ] **Done when:** a blank machine becomes a working system from one USB key with no network
+- [ ] **Done when:** a blank machine becomes a working system from one USB key with no network, and the same key runs the full system on the USB-only test machine without touching its internal disk
 
 ## 9. Out of scope (first build)
 
@@ -246,12 +263,13 @@ Static Linux programs may run thanks to the ABI, but that is not a goal.
 | Risk | Impact | Plan |
 |---|---|---|
 | Small models make things up, including medical answers | Safety | Answers only from retrieved sources, always cited; "not found in library" when retrieval is empty; source one keystroke away |
-| Many laptops have only Wi-Fi | No network on those machines | Wired or USB Ethernet; the system works offline anyway |
-| Secure Boot blocks the unsigned bootloader | Won't boot | Install docs say to turn it off; signing later |
+| Many laptops have only Wi-Fi | No network on those machines | The system works offline anyway; wired Ethernet where the machine has a port. USB Ethernet adapters need their own driver (compatibility track) |
+| Secure Boot blocks the unsigned bootloader | Won't boot | Install docs say to turn it off. Where it can't be turned off, the known path is a Microsoft-signed shim plus our own enrolled key (ADR-0018); a separate decision when needed |
+| USB keys are slow at random reads and wear out with writes | Slow search; a worn key | Read-only system partition, no access-time updates, batched writeback (ADR-0018); recommend a USB 3 stick with good random reads or a USB SSD; measured in M4-14 |
 | ext2 has no journal | Power loss can damage files being written | Write temp, verify checksum, `fsync`, `rename`; journal later |
 | Real-hardware driver variety | M4 drags on | Support the two test machines first; early boot check in M1 |
 | Running on battery or solar | Shorter uptime | Power is first-class (ADR-0017): tickless idle, profiles, critical-battery shutdown, measured watts |
-| No serial port on the laptop | Hard to debug real-hardware boots | Framebuffer + log file channel in M1 |
+| No serial port on the laptop | Hard to debug real-hardware boots | Framebuffer log, panic screen and boot report in M1; log file on disk in M4 |
 | Embedding a large library is slow | Pack build time | Strongest host available; packs may ship keyword-only and add vectors later |
 | Content and model licenses | Matters if copies are shared | Every manifest records license and source |
 | arc_os repo is public | Plans and manifests are visible | Fine for code; private material goes in a separate private repo |
@@ -262,4 +280,7 @@ Static Linux programs may run thanks to the ABI, but that is not a goal.
 - **2026-11-07 — Six-reviewer pass** (junior coder, senior coder, product user, tech enthusiast, OS expert, off-grid operator). Added lock-ins 13–16; syscall inventory, dev container, CI; library reader and images; GGUF wrapping tool; battery awareness; verify-and-repair.
 - **2026-11-07 — Final read-over before committing.** Fixed: battery display contradicted "battery management out of scope" (now only suspend/hibernate is out); COW fork, TSC, SMEP/SMAP and PSF2 fonts from the approved spec were missing from milestone tasks; uACPI missing from the archive list; M1 done-test wording aligned.
 - **2026-11-07 — Power management added** at Michael's request (ADR-0017). Battery and power saving are in scope; system suspend stays later because the laptop likely needs S0ix.
+- **2026-11-07 — Work-block plan** ([`work-blocks.md`](work-blocks.md)): 70 blocks, full specs for M0 and M1, session rules to keep compute down, lock order. Code inspection added to M1: `-mgeneral-regs-only` (live bug), x2APIC and 256 CPUs, 64-bit VFS offsets, poll/select, one data partition for five directories. The M1 log file moved to M4 (no disk driver on real hardware before then). M5 installer needs an e2fsprogs port. Proposed: defer the Realtek driver (neither test machine has one); Michael kept it on 2026-11-08.
+- **2026-11-07 — Portable mode added at Michael's request** (ADR-0018). The low-tier machine is his old work computer, which can't keep installs, so arc_os runs entirely from the USB key like Tails. The key uses the normal disk layout; the kernel mounts from the disk it booted from; host disks are never written. Built inside existing blocks (M1-02, M1-10, M1-13, M1-15, M4-04, M5); more drivers for other people's machines come in a later compatibility track.
+- **2026-11-07 — Low-tier reference machine** set by Michael: a standard used business laptop (about $150–300 CAD); the 4 GB floor stays. The old work computer stands in for that class, and its parts come from the M1-04 boot report instead of being collected up front. Follow-ups: buying check, map panning by keyboard, 1366×768 as the smallest screen, and the USB Ethernet mitigation corrected (no driver for it is planned).
 - **2026-11-07 — Decisions by Michael:** Linux syscall ABI (yes); test machines (laptop + used ThinkCentre Tiny i3); Secure Boot off; project instructions approved.

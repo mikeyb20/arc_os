@@ -7,6 +7,15 @@ eliminates all ambiguity before implementation begins. Every architectural
 decision must be made explicitly in this plan — the implementation agent should
 never need to guess.
 
+**Check first:** a block in `docs/plans/work-blocks.md` that already has a spec in
+`docs/plans/blocks/` needs no plan — run `/os/implement-block <ID>`. Use `/plan`
+for a milestone planning block (`M2-00` … `M5-00`), which writes block specs in
+the format of `docs/plans/blocks/README.md`, and for work outside the block list
+(which needs Michael's OK first). For a planning block, skip the sub-agents in
+Step 2 and read `work-blocks.md`, the milestone's part of
+`docs/plans/knowledge-os.md`, its ADRs and the previous milestone's block Notes
+directly.
+
 ## Step 1: Assess Tier
 
 Determine the scope by analyzing the user's description:
@@ -27,8 +36,9 @@ Launch three sub-agents **simultaneously** using the Agent tool.
 You are gathering architectural context for planning a new arc_os kernel feature: [FEATURE NAME].
 
 ## Instructions
-1. Read `overview.md` — find the phase and chunk this feature belongs to, its description,
-   design decisions, and dependencies on prior phases
+1. Read `docs/plans/knowledge-os.md` and `docs/plans/work-blocks.md` — find the milestone
+   and block this feature belongs to, its Needs, and the ADRs in `docs/decisions/` it
+   depends on; read those ADRs (`overview.md` is history, don't use it)
 2. Read `CLAUDE.md` — extract naming conventions, abstraction boundary rules, and directory structure
 3. Read `.claude/skills/arc-os-architecture/reference/memory-layout.md` and
    `.claude/skills/arc-os-architecture/reference/hal-interface.md` if the feature touches
@@ -36,12 +46,12 @@ You are gathering architectural context for planning a new arc_os kernel feature
 
 ## Output
 Return a structured summary:
-- **Phase & chunk**: Which phase/chunk this belongs to
+- **Milestone & block**: Which milestone/block this belongs to
 - **Layer placement**: Which directory (arch/, mm/, proc/, fs/, drivers/, etc.)
 - **Dependencies (downward only)**: Which existing subsystems this feature calls into
 - **Consumers (upward)**: Which future subsystems will use this feature
 - **Layer hierarchy position**: Where it sits in the layer stack (lib < boot < arch < mm < drivers < proc < fs/ipc/net < security)
-- **Key design decisions from overview.md**: Relevant architectural choices already made
+- **Binding decisions**: The ADRs and master-plan rules that apply
 ```
 
 ### Agent B: Codebase State

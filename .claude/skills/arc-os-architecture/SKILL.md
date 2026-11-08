@@ -42,11 +42,11 @@ arc_os uses the **Abstraction Boundary Model**: the OS is a stack of replaceable
 4. Kernel never knows which bootloader was used — reads `BootInfo`
 5. User programs link against libc, never call syscalls directly
 6. Syscalls follow the **Linux x86_64 ABI** (ADR-0001). Never invent a number.
-7. Binding decisions live in `docs/decisions/` (ADR-0001…0017). Code that contradicts an ADR is a bug.
+7. Binding decisions live in `docs/decisions/` (ADR-0001…0018). Code that contradicts an ADR is a bug.
 
 ## Roadmap Status
 
-The roadmap is `docs/plans/knowledge-os.md` (milestones M0–M5). `overview.md` phases 0–12 are history and are complete or mostly complete.
+The roadmap is `docs/plans/knowledge-os.md` (milestones M0–M5); the build order, block specs and status are in `docs/plans/work-blocks.md` and `docs/plans/blocks/`. `overview.md` phases 0–12 are history and are complete or mostly complete.
 
 **Current state (2026-11-07)**: phases 0–12 done; M0 (lock-in decisions) in progress. Known gaps vs the plan: no FPU/XSAVE save, no mmap/page cache, no user threads, VirtIO-only drivers, read-only FAT32, arc_os-specific syscall numbers (being migrated).
 
