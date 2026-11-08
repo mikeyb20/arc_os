@@ -13,7 +13,9 @@ always the same bytes (ADR-0004, ADR-0016).
 - `docs/plans/work-blocks.md` §7 (lock order)
 
 **Build.**
-1. `struct address_space` per inode: page index → page (radix tree), a lock, page count, ops (`readpage`,
+1. `struct address_space` per inode: page index → page (radix tree; lookups return a page plus the offset inside
+   it and never assume order 0, so 2 MiB file pages can come later without a rewrite; build order 0 only,
+   ADR-0019), a lock, page count, ops (`readpage`,
    `readpages`, `writepage`, dirty marking), and the list of VMAs that map it (used by reclaim in M1-14).
 2. Generic file read/write through the cache: find or create the page, fill it through the ops (async block I/O
    for disk filesystems), copy to or from user space following §7 (prefault, copy with faults disabled, retry on a
@@ -30,6 +32,8 @@ always the same bytes (ADR-0004, ADR-0016).
 
 **Done when.**
 - [ ] Tests pass; FAT32 reads go through the cache.
+
+**Cost.** Page lookup at most 4 radix levels (64 slots each covers 64 GiB files); a mapped-file fault copies nothing; readahead issues I/O in batches of at least 128 KiB; tree nodes from a slab cache.
 
 **Watch out.**
 - Lock order (§7): inode → mm → page → mapping-tree → page-table → page-cache index. Never take the mm lock while

@@ -13,7 +13,8 @@ screen, so hardware surprises show up before the rest of M1 is built on top.
 - `docs/decisions/0018-portable-usb-mode.md` (this image is its RAM mode), Notes of M1-01, M1-02, M1-03
 
 **Build.**
-1. Kernel log ring buffer (256 KiB) behind kprintf; framebuffer scrollback (PgUp/PgDn when a keyboard works);
+1. Kernel log ring buffer (256 KiB) behind kprintf, with log levels; the serial and screen consoles drain it
+   without blocking the caller, and hot paths log at debug level only (ADR-0019); framebuffer scrollback (PgUp/PgDn when a keyboard works);
    `/proc/kmsg`-style read.
 2. Panic screen: reason, registers, CR2, CPU index, symbolised backtrace (symbol table generated at build time and
    linked in or loaded as a Limine module), in a colour block that photographs well.
@@ -28,7 +29,10 @@ screen, so hardware surprises show up before the rest of M1 is built on top.
    `docs/hardware/bringup.md`: how to write the stick (`dd` or Etcher), firmware settings (UEFI on, Secure Boot
    off, legacy USB support on where offered), what to photograph, and the buying check for a low-tier machine
    (knowledge-os.md §4).
-6. QEMU tests: a forced panic (test-only command line flag) shows the panic markers on serial; the boot report
+6. `arc.bench=1` (ADR-0019): TSC-timed runs of the hot paths that exist (4 KiB and 2 MiB page allocation,
+   kmalloc, context switch), printed as one table. Later blocks add their hot path (page fault, read, mmap fault).
+   The photographed result goes in `docs/perf/<date>-<machine>.md`.
+7. QEMU tests: a forced panic (test-only command line flag) shows the panic markers on serial; the boot report
    markers are present.
 
 **Done when.**

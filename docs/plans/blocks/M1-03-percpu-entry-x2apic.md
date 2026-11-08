@@ -30,6 +30,8 @@ works in xAPIC or x2APIC mode with 32-bit APIC IDs and up to 256 CPUs.
 - [ ] Suites pass with `-smp 4` in both APIC modes.
 - [ ] No global syscall stack remains.
 
+**Cost.** `this_cpu()` is one GS-relative load; no lock on per-CPU data; syscall entry touches no shared cache line.
+
 **Watch out.**
 - `swapgs` must come before any GS-relative access on every path, including NMI.
 - Application CPUs still don't run threads; M1-05 does that. Keep them in HLT.

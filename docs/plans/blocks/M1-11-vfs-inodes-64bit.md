@@ -35,6 +35,8 @@ cache and ext2. Today's `VfsNode` read/write take 32-bit offsets, which caps fil
 **Done when.**
 - [ ] Suites pass; no `uint32_t` offsets or sizes remain in `kernel/fs/`.
 
+**Cost.** Path lookup O(components) through a hashed dentry cache; inode, dentry and file from slab caches with size asserts; no scan of the mount table per component beyond mount points.
+
 **Watch out.**
 - Path resolution stays in one place (`path.c`); no filesystem parses paths itself.
 - L block: a clean stopping point is after the core types + ramfs + devfs + pipe + tty are converted and passing.

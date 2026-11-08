@@ -2,7 +2,7 @@
 
 | Size | Tier | Lane | Needs | Unblocks |
 |---|---|---|---|---|
-| L | D | K | M1-03 | M1-06, M1-07, M1-09, M1-16 |
+| L | D | K | M1-03, M1-02b | M1-06, M1-07, M1-09, M1-16 |
 
 **Goal.** All CPUs run user and kernel threads from per-CPU run queues, with balancing, affinity masks and
 written lock ordering that debug builds check at runtime.
@@ -31,6 +31,8 @@ written lock ordering that debug builds check at runtime.
 **Done when.**
 - [ ] Tests pass in TCG and in CI.
 - [ ] `docs/kernel/locking.md` exists and matches what the checker enforces.
+
+**Cost.** Picking the next thread O(1) from the local queue; choosing a wakeup CPU at most O(CPUs); no global lock in `schedule`; a context switch does no lookup by ID (thread points to its process and mm).
 
 **Watch out.**
 - Wait queues and mutexes must take the target CPU's run-queue lock when waking a thread.

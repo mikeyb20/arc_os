@@ -31,6 +31,8 @@ GPT partitions, and every later storage driver plugs into the same queue (ADR-00
 **Done when.**
 - [ ] Suites pass; no code outside drivers calls a driver's block functions directly.
 
+**Cost.** Submit O(1) plus a merge check against the queue tail only; completion in IRQ allocates nothing (requests come from a slab cache at submit); segments carry pages, never copies.
+
 **Watch out.**
 - Completions run in interrupt context: no sleeping; wake the waiters instead.
 - Requests carry pages, because the page cache (M1-12) hands pages straight to the block layer.

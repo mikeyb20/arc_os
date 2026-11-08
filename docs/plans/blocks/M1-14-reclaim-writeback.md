@@ -29,6 +29,8 @@ reach the disk without periodic polling (ADR-0004, ADR-0016, ADR-0017).
 **Done when.**
 - [ ] Tests pass.
 
+**Cost.** Reclaim work is proportional to pages scanned, never to total RAM, and stops at the high watermark; reverse mapping walks only the VMAs that map the file; no timer while nothing is dirty.
+
 **Watch out.**
 - Never evict a locked page or one under I/O.
 - Reclaim may unmap pages of a process running on another CPU; it must use the shootdown, not a local flush.

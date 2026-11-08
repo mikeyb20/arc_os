@@ -20,6 +20,8 @@ the milestone starts, because they depend on what M1 and M2 measure.
 
 **Done when.** Checkable items. CI green is always implied.
 
+**Cost.** (D blocks) Hot paths added, their target complexity, and bytes per object (ADR-0019).
+
 **Watch out.** Known traps.
 
 **Notes.** Filled in by the session: what was done, decisions taken, surprises, the exact next step if

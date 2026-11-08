@@ -6,24 +6,24 @@
 
 ## 1. Summary
 
-<!-- Totals computed by script from the §4 tables on 2026-11-07. Recompute when blocks change. -->
+<!-- Totals computed by script from the §4 tables on 2026-11-08. Recompute when blocks change. -->
 
 | Milestone | Blocks | Session units | With allowance |
 |---|---|---|---|
-| M0 Lock-in decisions | 7 | 6.0 | 7.8 |
-| M1 Compute kernel | 22 | 28.0 | 40.2 |
+| M0 Lock-in decisions | 8 | 6.5 | 8.4 |
+| M1 Compute kernel | 23 | 29.0 | 41.7 |
 | M2 Toolchain + first LLM | 7 | 7.0 | 9.4 |
 | M3 Knowledge layer | 12 | 12.0 | 16.1 |
 | M4 Real hardware | 15 | 16.0 | 21.1 |
 | M5 Packages + installer | 7 | 7.5 | 9.8 |
-| **Total** | **70** | **76.5** | **104.4** |
+| **Total** | **72** | **78.0** | **106.5** |
 
-- **70 blocks**: 9 small, 50 medium, 11 large. The 33 deep (D) blocks carry
-  42 of the 76.5 session units.
+- **72 blocks**: 10 small, 51 medium, 11 large. The 34 deep (D) blocks carry
+  43 of the 78 session units.
 - **Session units:** S = 0.5, M = 1, L = 2. "With allowance" adds debugging and rework: D blocks × 1.5, R blocks
   × 1.2. That allowance is an estimate, not a measurement; recheck it after M1, the first milestone with real
-  numbers. Budget about **105 sessions**.
-- **M1 is the big one:** 22 blocks and 28 units, 16 of them deep. It gives the kernel virtual memory, SMP, threads,
+  numbers. Budget about **107 sessions**.
+- **M1 is the big one:** 23 blocks and 29 units, 17 of them deep. It gives the kernel virtual memory, SMP, threads,
   a page cache and ext2.
 - **Critical path:** 35 blocks, 40 units (§5). Running lanes in parallel shortens the calendar, not the compute.
 
@@ -85,6 +85,7 @@ Start every block with `/os/implement-block <ID>`. These rules are what keep ses
 | M0-05 | Move syscalls to Linux numbers | M | D | K | M0-02, M0-04 | No old numbers left; shell and coreutils pass | todo |
 | M0-06 | Linux process start + musl hello | M | D | K | M0-05 | Programs built with stock `musl-gcc -static` run in QEMU | todo |
 | M0-07 | Manifest schemas | S | R | C | — | Schemas and examples validated in CI | todo |
+| M0-08 | Budget checks in the QEMU harness | S | R | I | M0-02 | A size or count past its limit fails CI, named (ADR-0019) | todo |
 
 ### M1 — Compute kernel
 
@@ -92,9 +93,10 @@ Start every block with `/os/implement-block <ID>`. These rules are what keep ses
 |---|---|---|---|---|---|---|---|
 | M1-01 | FPU state, CPU floor, Linux signal frames | M | D | K | M0-06 | AVX2 state survives switches and signals; no SIMD in the kernel | todo |
 | M1-02 | Page descriptors + buddy allocator | M | D | K | M0-02 | Descriptor array from the PMM; 2 MiB blocks available | todo |
+| M1-02b | Slab allocator | M | D | K | M1-02 | kmalloc/kfree O(1) from slab caches; first-fit heap gone (ADR-0019) | todo |
 | M1-03 | Per-CPU entry paths + x2APIC | M | D | K | M0-06 | `-smp 4` in xAPIC and x2APIC modes; no global syscall stack | todo |
 | M1-04 | Hardware bring-up kit + first hardware boot | M | R | K+H | M1-01, M1-02, M1-03 | Both machines boot from USB; boot report photographed | todo |
-| M1-05 | SMP scheduler | L | D | K | M1-03 | Threads run on all CPUs; lock order checked at runtime | todo |
+| M1-05 | SMP scheduler | L | D | K | M1-03, M1-02b | Threads run on all CPUs; lock order checked at runtime | todo |
 | M1-06 | Clocks, timers, tickless idle | M | D | K | M1-05 | `clock_gettime`, `nanosleep`; idle CPUs get no timer interrupts | todo |
 | M1-07 | VMAs, demand paging, anonymous mmap | L | D | K | M1-02, M1-05 | musl malloc works; bad pointers give `-EFAULT`; TLB shootdown | todo |
 | M1-08 | Copy-on-write fork + 2 MiB pages | M | D | K | M1-07 | COW fork; huge pages for large anonymous memory | todo |
@@ -123,7 +125,7 @@ Start every block with `/os/implement-block <ID>`. These rules are what keep ses
 | M2-03 | Port llama.cpp (CPU, static, x86-64-v3) | M | D | U | M2-01 | Greedy output in QEMU matches the same build on Linux | todo |
 | M2-04 | `arc-llm` service | L | D | U | M2-03 | generate, embed, tokenize, list_models over AF_UNIX; roles; fit check | todo |
 | M2-05 | `ask` command + M2 done-test | S | R | U | M2-04 | `ask "what is hypothermia"` answers in QEMU (4 CPUs, 4 GB) | todo |
-| M2-06 | Measure on the laptop, shortlist models | M | R | H | M2-05 | Tokens/s and RAM per tier recorded; plan §4 updated | todo |
+| M2-06 | Measure on the laptop, shortlist models | M | R | H | M2-05 | Tokens/s and RAM per tier recorded; mmap vs 2 MiB anonymous loading compared and chosen (ADR-0019); plan §4 updated | todo |
 
 ### M3 — Knowledge layer (specs from M3-00)
 
@@ -147,7 +149,8 @@ assistant and viewers lay out from the framebuffer size, never a fixed one.
 
 ### M4 — Real hardware (specs from M4-00)
 
-M4-00 also places the kernel log file under `/var/log`, moved here from M1 because real hardware has no disk
+M4-00 also moves network receive processing out of the hard interrupt into a kernel thread the IRQ wakes (ADR-0019),
+and places the kernel log file under `/var/log`, moved here from M1 because real hardware has no disk
 driver before M4. Portable mode (ADR-0018) makes M4-04 essential: pulling the key must give I/O errors, never a
 crash. M4-01 must switch the USB ports of older Intel chipsets (7- and 8-series) from EHCI to xHCI, as Linux's
 xHCI quirk does, or a USB key on those machines stays invisible.
@@ -232,6 +235,10 @@ Parallel sessions shorten the calendar; they don't save compute.
 - **Per-CPU state** goes through GS (`this_cpu()`); no new globals for "the current" anything.
 - **No periodic timers.** A timer is armed only for a real deadline (ADR-0017).
 - **Drivers** use the bus, IRQ and DMA helpers from M1-09.
+- **Efficiency** (ADR-0019): no scan of a global list or array in allocate, free, fault, schedule, lookup or
+  interrupt paths; any lock an interrupt handler takes is IRQ-safe; no allocation in hard-IRQ context once M1-09
+  lands; hot structures carry a `_Static_assert` on their size; hot paths log at debug level only. Each D block's
+  **Cost.** section is checked in review, and new metrics go in the budgets file (M0-08).
 - **ABI structs** live in `kernel/include/uapi/`, carry `_Static_assert`s, and `tests/test_abi_layout.c` checks
   them against the host's Linux headers.
 - **Lock order**, outermost first. Debug builds check it from M1-05; M1-05 copies this into
@@ -279,6 +286,9 @@ Parallel sessions shorten the calendar; they don't save compute.
 | 23 | No test machine writes to a SATA disk | AHCI writes tested in QEMU only; if the old work computer's disk is SATA, M4-14 covers AHCI reads (read-only, ADR-0018) |
 | 24 | A machine with Secure Boot locked on can't boot unsigned Limine | Off for now; shim + own enrolled key is the known path (ADR-0018), a separate decision |
 | 25 | Neither test machine nor QEMU has a Realtek RTL8111/8168 | M4-10 ships untested on hardware; M4-14 tests it if a Realtek machine is available by then |
+| 26 | The kernel heap had no lock, but the virtio-net IRQ path allocates from it | Fixed with ADR-0019 (IRQ-safe heap lock + host test) |
+| 27 | No object allocator was planned; kmalloc is a first-fit list | M1-02b (ADR-0019) |
+| 28 | CI can't time code (TCG), and nothing checked efficiency before M2-06 | M0-08 budgets on counts and sizes; `arc-bench` at M1-04, M1-22, M4-14, M5-06 (ADR-0019) |
 
 ## 9. Later: compatibility track (not counted)
 
@@ -299,3 +309,7 @@ Secure Boot through a signed shim and our own key.
   too; M3-00 plans for 1366×768 screens; USB Ethernet adapters and I2C touchpads listed in the compatibility track.
 - **2026-11-08** — Michael kept the Realtek driver (M4-10): the OS ships Intel and Realtek Ethernet drivers; more
   chips later if wanted. Network stays optional; models and packs never need it.
+- **2026-11-08** — Efficiency review (ADR-0019, Michael approved): new blocks M0-08 (budget checks) and M1-02b
+  (slab allocator, before M1-05); 32-byte page descriptors (M1-02); order-agnostic page-cache lookups (M1-12); log
+  levels (M1-04); network rx out of hard IRQ (M4-00); M2-06 compares mmap with 2 MiB anonymous loading; **Cost.**
+  sections on M1 D blocks; efficiency rules in §7; `arc-bench` runs at the hardware checkpoints.

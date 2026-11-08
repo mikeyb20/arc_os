@@ -40,6 +40,8 @@ kernel; TLB shootdown works across CPUs (ADR-0004).
 - [ ] Tests pass.
 - [ ] No syscall path dereferences a user pointer directly (review now; SMAP enforces it from M1-19).
 
+**Cost.** VMA lookup O(log n); faults take the mm lock for reading only; `struct vma` from its slab cache with a size assert; empty page-table pages freed on unmap.
+
 **Watch out.**
 - Lock order (§7): mm lock before the page-table lock; never take a fault while holding a page lock.
 - Allow overcommit. When memory runs out, kill the largest process with a clear log; never panic.
