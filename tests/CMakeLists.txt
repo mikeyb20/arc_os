@@ -124,3 +124,17 @@ add_test(NAME test_arc_printf  COMMAND test_runner --suite arc_printf)
 add_test(NAME test_ansi        COMMAND test_runner --suite ansi)
 set_tests_properties(test_fat32 PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 set_tests_properties(arc_os_tests PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+
+# The FAT32 suite reads tests/fat32_test.img (gitignored); build it first.
+# Needs mkfs.fat (dosfstools) and mtools, both installed by tools/dev-setup.sh.
+add_test(NAME fat32_test_image
+    COMMAND bash ${CMAKE_SOURCE_DIR}/tools/make-fat32-test-disk.sh tests/fat32_test.img)
+set_tests_properties(fat32_test_image PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    FIXTURES_SETUP fat32_image)
+set_tests_properties(test_fat32 arc_os_tests PROPERTIES FIXTURES_REQUIRED fat32_image)
+
+# Every test in this directory runs on the build host: `ctest -L host`.
+# QEMU boot tests (M0-02) carry the `qemu` label instead.
+get_property(_host_tests DIRECTORY PROPERTY TESTS)
+set_tests_properties(${_host_tests} PROPERTIES LABELS host)

@@ -1,0 +1,60 @@
+# Cross build (kernel, libc, userland, ISO) and host unit tests.
+# QEMU boot tests join in M0-02 (`ctest -L qemu`).
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/opt/cross
+          key: toolchain-${{ runner.os }}-${{ hashFiles('tools/toolchain.lock') }}
+
+      - name: Dev setup (apt, toolchain, Limine)
+        run: bash tools/dev-setup.sh
+
+      - name: Record tool versions
+        run: |
+          ~/opt/cross/bin/x86_64-elf-gcc --version | head -1
+          nasm -v
+          qemu-system-x86_64 --version | head -1
+          cmake --version | head -1
+
+      - name: Cross build (kernel, libc, userland)
+        run: |
+          cmake -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=toolchain-x86_64.cmake
+          cmake --build build
+
+      - name: ISO
+        run: cmake --build build --target iso
+
+      - name: Host tests
+        run: |
+          cmake -B build-tests -G Ninja
+          cmake --build build-tests
+          ctest --test-dir build-tests -L host --output-on-failure
+
+      - name: Upload ISO
+        uses: actions/upload-artifact@v4
+        with:
+          name: arc_os-iso
+          path: build/arc_os.iso
+          if-no-files-found: error
+          retention-days: 14

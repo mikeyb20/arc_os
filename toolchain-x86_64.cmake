@@ -3,8 +3,21 @@
 set(CMAKE_SYSTEM_NAME Generic)
 set(CMAKE_SYSTEM_PROCESSOR x86_64)
 
-# Cross-compiler toolchain paths
-set(CROSS_PREFIX "$ENV{HOME}/opt/cross/bin/x86_64-elf-")
+# Cross-compiler toolchain paths.
+# ARC_CROSS_PREFIX (cache variable, else environment variable) is the path prefix of the
+# x86_64-elf tools, e.g. /opt/cross/bin/x86_64-elf-. Default: $HOME/opt/cross/bin/x86_64-elf-,
+# where tools/dev-setup.sh installs the pinned toolchain.
+if(NOT DEFINED ARC_CROSS_PREFIX)
+    if(DEFINED ENV{ARC_CROSS_PREFIX})
+        set(ARC_CROSS_PREFIX "$ENV{ARC_CROSS_PREFIX}")
+    else()
+        set(ARC_CROSS_PREFIX "$ENV{HOME}/opt/cross/bin/x86_64-elf-")
+    endif()
+endif()
+set(ARC_CROSS_PREFIX "${ARC_CROSS_PREFIX}" CACHE STRING "Path prefix of the x86_64-elf cross tools")
+# CMake re-reads the toolchain file in try_compile projects; pass the prefix through.
+list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES ARC_CROSS_PREFIX)
+set(CROSS_PREFIX "${ARC_CROSS_PREFIX}")
 
 set(CMAKE_C_COMPILER "${CROSS_PREFIX}gcc")
 set(CMAKE_ASM_NASM_COMPILER nasm)

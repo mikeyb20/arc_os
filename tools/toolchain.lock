@@ -1,0 +1,29 @@
+# arc_os pinned toolchain (sourced by tools/dev-setup.sh and .github/workflows/toolchain.yml).
+#
+# Sources: GNU release tarballs, checked by SHA-256 before anything is built. GCC's in-tree
+# prerequisites (GMP, MPFR, MPC, ISL) come from contrib/download_prerequisites, which checks
+# them against contrib/prerequisites.sha512 inside the pinned GCC tarball.
+#
+# Binary: built once by the "toolchain" workflow on ubuntu-24.04 and published as a release
+# asset of mikeyb20/arc_os. Bump TOOLCHAIN_RELEASE (toolchain-v2, ...) whenever a version or a
+# configure flag changes; never replace an asset in place.
+
+BINUTILS_VERSION=2.42
+BINUTILS_URL=https://ftp.gnu.org/gnu/binutils/binutils-2.42.tar.xz
+BINUTILS_SHA256=f6e4d41fd5fc778b06b7891457b3620da5ecea1006c6a4a41ae998109f85a800
+
+GCC_VERSION=14.1.0
+GCC_URL=https://ftp.gnu.org/gnu/gcc/gcc-14.1.0/gcc-14.1.0.tar.xz
+GCC_SHA256=e283c654987afe3de9d8080bc0bd79534b5ca0d681a73a11ff2b5d3767426840
+
+TOOLCHAIN_TARGET=x86_64-elf
+TOOLCHAIN_RELEASE=toolchain-v1
+TOOLCHAIN_ASSET=x86_64-elf-toolchain-14.1.0-2.42.tar.zst
+TOOLCHAIN_URL=https://github.com/mikeyb20/arc_os/releases/download/toolchain-v1/x86_64-elf-toolchain-14.1.0-2.42.tar.zst
+# Filled in from the workflow's output after the first build (the asset's .sha256 file).
+TOOLCHAIN_SHA256=
+
+# Limine binary release, pinned by commit (tag v8.7.0-binary).
+LIMINE_REPO=https://github.com/limine-bootloader/limine.git
+LIMINE_TAG=v8.7.0-binary
+LIMINE_COMMIT=aad3edd370955449717a334f0289dee10e2c5f01
