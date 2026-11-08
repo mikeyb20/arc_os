@@ -8,8 +8,8 @@ decisions: [ADR-0010](../docs/decisions/0010-arcpkg-format.md) (`.arcpkg`),
 | Schema | Describes | Lives at |
 |---|---|---|
 | `arcpkg.schema.json` | `manifest.json`, first member of every `<name>-<version>.arcpkg` | inside the package; recorded in `/var/lib/arcpkg` |
-| `pack.schema.json` | a knowledge pack; also the `pack` object of a pack package | `/packs/<name>/manifest.json` |
-| `model.schema.json` | one GGUF model; also the `model` object of a model package | `/models/<name>/model.json` |
+| `pack.schema.json` | a knowledge pack; also the `pack` object of a pack package | `/packs/<name>/<version>/manifest.json` |
+| `model.schema.json` | one GGUF model; also the `model` object of a model package | `/models/<name>/<version>/model.json` |
 | `model-roles.schema.json` | which installed model fills `chat`, `embed`, `router`, `expert:<domain>` | `/models/roles.json` |
 | `common.schema.json` | shared pieces: ids, semver, SHA-256, relative paths, roles | — |
 

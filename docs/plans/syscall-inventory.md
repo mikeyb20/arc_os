@@ -66,9 +66,9 @@ Build and run status:
 | 5 | fstat | partial (times and st_dev are 0) | 21 | cxx_basic, libc_basic, sqlite3, zstd-compress, zstd-decompress |  |
 | 6 | lstat | missing | 5 | sqlite3 |  |
 | 8 | lseek | done | 42 | libc_basic, llama-completion, llama-embedding, sqlite3 | `whence: SEEK_CUR`, `whence: SEEK_END`, `whence: SEEK_SET` |
-| 9 | mmap | missing | 1571 | cxx_basic, libc_basic, llama-completion, llama-embedding, pthread_basic, sqlite3, zstd-compress, zstd-decompress | `flags: MAP_ANONYMOUS`, `flags: MAP_FIXED`, `flags: MAP_POPULATE`, `flags: MAP_PRIVATE`, `flags: MAP_SHARED`, `prot: PROT_NONE`, `prot: PROT_READ`, `prot: PROT_WRITE` |
+| 9 | mmap | missing | 1659 | cxx_basic, libc_basic, llama-completion, llama-embedding, pthread_basic, sqlite3, zstd-compress, zstd-decompress | `flags: MAP_ANONYMOUS`, `flags: MAP_FIXED`, `flags: MAP_POPULATE`, `flags: MAP_PRIVATE`, `flags: MAP_SHARED`, `prot: PROT_NONE`, `prot: PROT_READ`, `prot: PROT_WRITE` |
 | 10 | mprotect | missing | 27 | cxx_basic, libc_basic, llama-completion, llama-embedding, pthread_basic, zstd-compress, zstd-decompress | `prot: PROT_READ`, `prot: PROT_WRITE` |
-| 11 | munmap | missing | 1499 | cxx_basic, libc_basic, llama-completion, llama-embedding, pthread_basic, sqlite3, zstd-compress, zstd-decompress |  |
+| 11 | munmap | missing | 1588 | cxx_basic, libc_basic, llama-completion, llama-embedding, pthread_basic, sqlite3, zstd-compress, zstd-decompress |  |
 | 12 | brk | done | 78 | cxx_basic, libc_basic, llama-completion, llama-embedding, sqlite3, zstd-compress, zstd-decompress |  |
 | 13 | rt_sigaction | partial (SA_RESTORER, SA_NODEFER, SA_RESETHAND and sa_mask act; SA_RESTART, SA_ONSTACK, SA_NOCLD* stored, act in M1-17) | 9 | libc_basic, llama-completion, sqlite3, zstd-compress, zstd-decompress | `signal: SIGHUP`, `signal: SIGINT`, `signal: SIGTERM`, `signal: SIGUSR1` |
 | 14 | rt_sigprocmask | missing | 121 | cxx_basic, libc_basic, llama-completion, llama-embedding, pthread_basic, sqlite3, zstd-compress, zstd-decompress | `how: SIG_BLOCK`, `how: SIG_SETMASK`, `how: SIG_UNBLOCK` |
@@ -107,7 +107,7 @@ Build and run status:
 | 110 | getppid | done | 1 | libc_basic |  |
 | 158 | arch_prctl | partial (ARCH_SET_FS / ARCH_GET_FS only) | 9 | cxx_basic, libc_basic, llama-completion, llama-embedding, pthread_basic, sqlite3, zstd-compress, zstd-decompress | `code: ARCH_SET_FS` |
 | 200 | tkill | missing | 1 | libc_basic | `signal: SIGUSR1` |
-| 202 | futex | missing | 371 | cxx_basic, llama-completion, llama-embedding, pthread_basic, zstd-compress, zstd-decompress | `op: FUTEX_REQUEUE_PRIVATE`, `op: FUTEX_WAIT_PRIVATE`, `op: FUTEX_WAIT`, `op: FUTEX_WAKE_PRIVATE`, `op: FUTEX_WAKE` |
+| 202 | futex | missing | 372 | cxx_basic, llama-completion, llama-embedding, pthread_basic, zstd-compress, zstd-decompress | `op: FUTEX_REQUEUE_PRIVATE`, `op: FUTEX_WAIT_PRIVATE`, `op: FUTEX_WAIT`, `op: FUTEX_WAKE_PRIVATE`, `op: FUTEX_WAKE` |
 | 204 | sched_getaffinity | missing | 3 | cxx_basic, llama-completion, llama-embedding |  |
 | 217 | getdents64 | partial (at most 256 entries per directory; M1-11) | 16 | cxx_basic, libc_basic |  |
 | 218 | set_tid_address | partial (pointer stored; cleared on thread exit from M1-16) | 11 | cxx_basic, libc_basic, llama-completion, llama-embedding, pthread_basic, sqlite3, zstd-compress, zstd-decompress |  |
@@ -129,3 +129,18 @@ Build and run status:
 | `/proc/cpuinfo` | llama-completion, llama-embedding |
 
 <!-- END GENERATED -->
+
+## Lane additions (hand-written)
+
+The Linux-first lane (work-blocks.md §5) runs its tests under `strace -f` and checks the logs with
+`tools/syscall-inventory.py --check`: every syscall, recorded detail (`label: VALUE`, as in the generated table) and
+file must appear in a table row of this doc. The generated table above covers what the M0-04 programs use; a lane
+program that needs more gets a row here, in the PR that needs it, naming the M1 block that provides it (and the
+same row in `syscall-table.md` if the syscall has none). Rows here are never generated and survive re-runs. Once the
+generated table lists something (for example after a port bump), its row here may be deleted.
+
+| # | Syscall | Details | Owner | Why |
+|---|---|---|---|---|
+
+| Path | Owner | Why |
+|---|---|---|

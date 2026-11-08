@@ -127,7 +127,7 @@ Start every block with `/os/implement-block <ID>`. These rules are what keep ses
 
 | ID | Block | Size | Tier | Lane | Needs | Done when | Status |
 |---|---|---|---|---|---|---|---|
-| M2-00a | Plan the Linux-first lane | S | D | P | M0-04, M0-07 | Specs for M2-01…M2-04, M3-02, M3-06a and M5-02 written; syscall check added to the inventory workflow | todo |
+| M2-00a | Plan the Linux-first lane | S | D | P | M0-04, M0-07 | Specs for M2-01…M2-04, M3-02, M3-06a and M5-02 written; syscall check added to the inventory workflow | review (#16) |
 | M2-00 | Plan M2 | S | D | P | M1-22 | Specs for M2-04b, M2-05 and M2-06 written; lane specs corrected from M1's results | todo |
 | M2-01 | musl cross toolchain, ports layout, C++ test | M | R | L | M2-00a, M0-03 | GCC + libstdc++ for `x86_64-linux-musl` archived; C++ test passes on Linux inside the syscall inventory | todo |
 | M2-02 | Port zstd + SQLite (FTS5) | M | R | L | M2-01 | Round-trip and FTS5 query tests pass on Linux inside the syscall inventory | todo |
@@ -146,7 +146,7 @@ assistant and viewers lay out from the framebuffer size, never a fixed one.
 |---|---|---|---|---|---|---|---|
 | M3-00 | Plan M3 | S | D | P | M2-06 | M3 block specs written | todo |
 | M3-01 | Content selection, licences, size budget | M | R | C | M3-00, M0-07 | Source list per category and tier approved by Michael | todo |
-| M3-02 | `libarcpack`: doc store, chunks, manifests | M | D | L | M2-00a, M2-02, M0-07 | One library reads packs on Linux inside the syscall inventory (on arc_os from M3-07) | todo |
+| M3-02 | `libarcpack`: doc store, chunks, manifests | M | D | L | M2-00a, M2-02, M2-04, M0-07 | One library reads packs on Linux inside the syscall inventory (on arc_os from M3-07) | todo |
 | M3-03 | ZIM → doc store + chunks (host) | M | R | C | M3-01, M3-02 | Medical pack built with stable chunk IDs | todo |
 | M3-04 | FTS5, embeddings, tier selector, `.arcpkg` (host) | M | R | C | M3-03 | 32 GB pack set built and sized | todo |
 | M3-05 | UTF-8 console, PSF2, `/dev/input`, `/dev/fb0` | M | D | K | M3-00 | fbdev `mmap` and `input_event` work from user space | todo |
@@ -194,7 +194,7 @@ an unclean shutdown.
 |---|---|---|---|---|---|---|---|
 | M5-00 | Plan M5 | S | D | P | M4-14 | M5 block specs written | todo |
 | M5-01 | Port e2fsprogs (`mke2fs`, `e2fsck`) | M | R | U | M5-00 | Both run on arc_os against real partitions | todo |
-| M5-02 | `arcpkg` tool | M | R | L | M2-00a, M2-02, M0-07 | install, remove, list, verify, switch role; offline; tested on Linux in a temporary root (on arc_os from M5-03) | todo |
+| M5-02 | `arcpkg` tool | M | R | L | M2-00a, M2-02, M2-04, M0-07 | install, remove, list, verify, switch role; offline; tested on Linux in a temporary root (on arc_os from M5-03) | todo |
 | M5-03 | Installer | L | D | U | M5-01, M5-02 | Disk detected, GPT written, system copied, tier and models chosen | todo |
 | M5-04 | USB key image builder (host) | M | R | I | M5-03 | One image with installer, packages, packs, models, sources | todo |
 | M5-05 | GGUF wrapper + recovery | M | R | U | M5-02 | Any GGUF becomes an `.arcpkg`; `arcpkg verify` repairs from the key | todo |
@@ -229,10 +229,13 @@ that ABI are built and debugged on Linux while M1 is still in progress, then run
 - **Lane blocks:** M2-01 → M2-02 → M2-03 → M2-04, M3-02 → M3-06a, and M5-02, with specs from M2-00a (run right
   after M0). They start when their Needs are done and run beside the M1 kernel blocks, which keep their strict
   order. They touch only the ports and user-space trees and the inventory workflow, never `kernel/`.
-- **Syscall check:** every lane block runs its tests under `strace -f` in the inventory workflow (M0-04's
-  `.github/workflows/inventory.yml` and `tools/syscall-inventory.py`). A syscall, ioctl or file not in
-  [`syscall-inventory.md`](syscall-inventory.md) fails CI, so nothing reaches arc_os that the kernel plan doesn't
-  provide. Adding one is a deliberate change: a new inventory row with the M1 block that owns it.
+- **Syscall check:** every lane block runs its tests under `strace -f` (`lane.yml`, from M2-01) and checks the
+  logs with `tools/syscall-inventory.py --check`, the same check the inventory workflow (M0-04) now runs on its own
+  programs. A syscall, flag, ioctl or file not in a table row of [`syscall-inventory.md`](syscall-inventory.md)
+  fails CI, so nothing reaches arc_os that the kernel plan doesn't provide. Adding one is a deliberate change: a
+  row in its "Lane additions" tables with the M1 block that owns it.
+- **Conventions:** [`lane-l.md`](lane-l.md) (tree, `--root`, installed paths, tests, 4 GB rules). M2-04 writes the
+  stack's JSON library, so M3-02 and M5-02 need M2-04.
 - **On arc_os:** M2-04b runs M2-01…M2-04 in QEMU after M1-22. M3-02 and M3-06a reach arc_os through M3-07 and
   M3-11; M5-02 through M5-03. A difference from Linux there is a kernel bug, not an app bug.
 - **What stays later:** the vector half of the retriever (M3-06) waits for the embedder chosen in M2-06; anything
@@ -328,6 +331,8 @@ Parallel sessions shorten the calendar; they don't save compute.
 | 28 | CI can't time code (TCG), and nothing checked efficiency before M2-06 | M0-08 budgets on counts and sizes; `arc-bench` at M1-04, M1-22, M4-14, M5-06 (ADR-0019) |
 | 29 | Duplicate helpers, 44 x86 includes in 8 subsystems outside `kernel/arch/`, and no check on either | M0-09 freezes the counts; M1-03, M1-05, M1-06, M1-07, M1-09 move the includes they touch behind `arch/hal.h` (ADR-0020) |
 | 30 | Linux hides some differences: musl reads the clock through the vDSO, so `clock_gettime` barely appears under strace, and Linux allows syscalls arc_os won't have | Lane L syscall check (§5); M2-04b runs the lane in QEMU, where arc_os has no vDSO (M1-06 provides the syscalls) |
+| 31 | The archived musl-cross-make commit knows GCC 14.2/14.3 and binutils 2.44, not our pins (14.1.0, 2.42), and downloads `config.sub` and Linux headers | M2-01: our own hash files, the GCC 14.2.0 patches carried to 14.1.0, `config.sub` from the archived GCC, no kernel headers, downloads disabled |
+| 32 | A package's `install_root` has no version, but models install side by side (roles name a version) | M2-00a: payload goes to `<install_root>/<version>/` ([`lane-l.md`](lane-l.md)); M5-02 |
 
 ## 9. Later: compatibility track (not counted)
 
@@ -364,3 +369,7 @@ Secure Boot through a signed shim and our own key.
   M0) and M2-04b (run the lane on arc_os after M1-22); M3-06 split into M3-06a (keyword, lane L) and M3-06 (vector
   rerank, after M2-06); M2-01…M2-04, M3-02 and M5-02 move to lane L, tested on Linux inside the syscall inventory.
   Kernel order unchanged. Critical path 40 → 36.5 units; compute about the same.
+- **2026-11-08** — M2-00a: specs for the seven lane blocks and [`lane-l.md`](lane-l.md); syscall check
+  (`syscall-inventory.py --check`) in the inventory workflow; installed paths get a version directory; M3-02 and
+  M5-02 now need M2-04 (JSON library); the lane check runs in its own workflow from M2-01 instead of the inventory
+  workflow, so lane pushes don't rebuild the M0-04 programs.

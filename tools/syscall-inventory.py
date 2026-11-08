@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Merge strace logs into the syscall inventory (M0-04).
+"""Merge strace logs into the syscall inventory (M0-04), or check logs against it (M2-00a).
 
     syscall-inventory.py --logs build/inventory/logs --tbl <syscall_64.tbl> \
         --table .claude/skills/arc-os-architecture/reference/syscall-table.md \
         --status build/inventory/status.txt --out docs/plans/syscall-inventory.md
+
+    syscall-inventory.py --check --logs build/lane/logs --tbl <syscall_64.tbl> \
+        --allow docs/plans/syscall-inventory.md
 
 Reads every <program>.strace in --logs (strace -f -qq output) and writes one
 table: syscall, Linux number (from the archived syscall_64.tbl), the programs
@@ -11,6 +14,13 @@ that used it, call count, and the flags, ioctl requests, fcntl commands, socket
 families and similar details seen; then the files opened under /proc, /sys,
 /dev and /etc. The generated part of --out sits between BEGIN/END markers, so
 hand-written text around it (the summary) survives a re-run.
+
+--check (the lane L syscall check, work-blocks.md section 5) parses the same logs
+and fails if any syscall, any recorded detail (flag, ioctl request, fcntl
+command, socket family, ...) or any /proc, /sys, /dev, /etc file is missing
+from --allow. The allowed set is every table row in that doc: the generated
+table plus the hand-written "Lane additions" tables, so adding a row there is
+the one deliberate way to let a program use something new.
 """
 
 import argparse
@@ -216,6 +226,49 @@ def write_doc(path, generated):
         f.write(text)
 
 
+ALLOW_SYSCALL_RE = re.compile(r"^\|\s*\d+\s*\|\s*([a-z_][a-z0-9_]*)\s*\|(.*)$")
+ALLOW_FILE_RE = re.compile(r"^\|\s*`(/[^`]+)`\s*\|")
+ALLOW_DETAIL_RE = re.compile(r"`([a-z_]+: [^`]+)`")
+
+
+def load_allow(path):
+    """Allowed syscalls, (syscall, detail) pairs and files: every table row of the inventory doc.
+
+    A syscall row is '| <number> | <name> | ... |'; its details are the backticked 'label: VALUE'
+    tokens anywhere in the row. A file row starts with a backticked absolute path.
+    """
+    syscalls, details, files = set(), set(), set()
+    with open(path) as f:
+        for line in f:
+            m = ALLOW_SYSCALL_RE.match(line)
+            if m:
+                syscalls.add(m.group(1))
+                for d in ALLOW_DETAIL_RE.findall(m.group(2)):
+                    details.add((m.group(1), d))
+                continue
+            m = ALLOW_FILE_RE.match(line)
+            if m:
+                files.add(m.group(1))
+    return syscalls, details, files
+
+
+def check(calls, details, files, allow):
+    """Return one line per thing the logs use that the allow set doesn't list."""
+    a_sys, a_det, a_files = allow
+    bad = []
+    for name in sorted(calls):
+        if name not in a_sys:
+            bad.append(f"syscall {name} (used by {', '.join(sorted(calls[name]))})")
+            continue
+        for d in sorted(details.get(name, {})):
+            if (name, d) not in a_det:
+                bad.append(f"{name} {d} (used by {', '.join(sorted(details[name][d]))})")
+    for p in sorted(files):
+        if p not in a_files:
+            bad.append(f"file {p} (used by {', '.join(sorted(files[p]))})")
+    return bad
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -223,8 +276,14 @@ def main():
     ap.add_argument("--tbl", required=True)
     ap.add_argument("--table", help="syscall-table.md, for the 'arc_os today' column")
     ap.add_argument("--status", help="status.txt from run-in-alpine.sh")
-    ap.add_argument("--out", required=True)
+    ap.add_argument("--out", help="inventory doc to write (merge mode)")
+    ap.add_argument("--check", action="store_true", help="check the logs against --allow instead of merging")
+    ap.add_argument("--allow", help="inventory doc whose table rows are the allowed set (with --check)")
     args = ap.parse_args()
+    if args.check and not args.allow:
+        ap.error("--check needs --allow")
+    if not args.check and not args.out:
+        ap.error("--out is required unless --check is given")
 
     calls = collections.defaultdict(collections.Counter)
     details = collections.defaultdict(lambda: collections.defaultdict(set))
@@ -240,6 +299,16 @@ def main():
         return 1
 
     tbl = load_tbl(args.tbl)
+    if args.check:
+        bad = check(calls, details, files, load_allow(args.allow))
+        for b in bad:
+            print(f"syscall-check: not in the inventory: {b}", file=sys.stderr)
+        if bad:
+            print(f"syscall-check: FAILED, {len(bad)} item(s). Add a row to the 'Lane additions' tables of "
+                  f"{args.allow} with the M1 block that provides it (work-blocks.md section 5).", file=sys.stderr)
+            return 1
+        print(f"syscall-check: ok, {len(programs)} runs, {len(calls)} syscalls, {len(files)} files, all in {args.allow}")
+        return 0
     unknown = sorted(n for n in calls if n not in tbl)
     build_status = []
     if args.status and os.path.exists(args.status):

@@ -3,7 +3,8 @@
 One file per work block. The block list, order and status live in [`../work-blocks.md`](../work-blocks.md).
 M0 and M1 have full specs here. M2–M5 get theirs from their planning block (`M2-00` … `M5-00`) just before
 the milestone starts, because they depend on what M1 and M2 measure. The Linux-first lane (lane L in
-work-blocks.md §5: M2-01…M2-04, M3-02, M3-06a, M5-02) gets its specs earlier, from `M2-00a`.
+work-blocks.md §5: M2-01…M2-04, M3-02, M3-06a, M5-02) gets its specs earlier, from `M2-00a`, and shares the
+conventions in [`../lane-l.md`](../lane-l.md).
 
 ## Template
 

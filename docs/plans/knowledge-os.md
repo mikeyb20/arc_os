@@ -60,7 +60,7 @@ This section mirrors the project instructions. Each item links to its ADR.
 
 ### 3.4 Toolchains and outside code
 - Kernel: `x86_64-elf-gcc`. User space: `x86_64-linux-musl` GCC + libstdc++, static. Pinned versions in a reproducible dev container.
-- In-house programs link **libarc**; ported software links **musl**.
+- In-house programs link **libarc**; ported software links **musl**. An in-house program that embeds a ported library (llama.cpp, SQLite, zstd: `arc-llm`, `search`, `arcpkg`) links **musl** too, since one static binary can't hold two C libraries. The base OS (init, login, shell, coreutils) stays on libarc, which we keep building ourselves (Michael, 2026-11-08).
 - The exact source of every outside component (GCC, binutils, musl, Limine, llama.cpp, SQLite, zstd, uACPI) is archived in Michael's repos and on the install key. No build may need a third-party server.
 
 ### 3.5 Storage
@@ -155,7 +155,7 @@ every model works off chunk IDs, so a better embedder, a new index or an MoE exp
 without reprocessing the library. Details and exact formats: [ADR-0011](../decisions/0011-data-contract.md).
 
 ```
-/packs/<pack-id>/
+/packs/<name>/<version>/
   manifest.json        name, version, schema_version, category, priority, size, license, source, checksums, provides (schemas/pack.schema.json)
   content/             full documents in our own zstd-compressed store keyed by document ID (maps: pre-rendered tiles)
   chunks/              plain-text passages of ~300-500 tokens, one fixed-size index record each
