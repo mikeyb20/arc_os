@@ -37,6 +37,21 @@ jobs:
           qemu-system-x86_64 --version | head -1
           cmake --version | head -1
 
+      # M0-09 (ADR-0020): clang-format on the lines this PR changes, never on
+      # untouched code. The checkout is the merge commit, so diffing it against
+      # the base branch tip covers exactly the PR's changes.
+      - name: Format check (changed lines only)
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+          out=$(git clang-format --diff --extensions c,h "origin/${{ github.base_ref }}" -- kernel libc userland tests || true)
+          if printf '%s\n' "$out" | grep -q '^diff '; then
+            printf '%s\n' "$out"
+            echo "::error::Changed lines are not clang-formatted (.clang-format). Fix: git clang-format origin/${{ github.base_ref }}"
+            exit 1
+          fi
+          echo "format ok: ${out:-no C changes}"
+
       - name: Cross build (kernel, libc, userland)
         run: |
           cmake -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=toolchain-x86_64.cmake

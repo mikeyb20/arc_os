@@ -1,0 +1,36 @@
+# arc_os C style (CLAUDE.md "Code Style"): K&R braces on the same line, 4-space
+# indentation, no tabs. CI checks only the lines a PR changes (git clang-format
+# against the merge base, M0-09); existing code is never reformatted in bulk.
+Language: Cpp
+BasedOnStyle: LLVM
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 120
+BreakBeforeBraces: Attach
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortLoopsOnASingleLine: true
+AllowShortBlocksOnASingleLine: Never
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortEnumsOnASingleLine: true
+IndentCaseLabels: false
+PointerAlignment: Right
+SpaceAfterCStyleCast: false
+AlignConsecutiveMacros: AcrossComments
+AlignConsecutiveAssignments: None
+AlignConsecutiveDeclarations: None
+AlignTrailingComments:
+  Kind: Leave
+AlignAfterOpenBracket: Align
+AlignEscapedNewlines: Left
+BinPackParameters: true
+BinPackArguments: true
+SortIncludes: Never
+IncludeBlocks: Preserve
+ReflowComments: false
+SpacesBeforeTrailingComments: 1
+MaxEmptyLinesToKeep: 2
+IndentPPDirectives: None
+KeepEmptyLinesAtTheStartOfBlocks: true
+InsertNewlineAtEOF: true

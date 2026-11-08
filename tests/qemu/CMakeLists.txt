@@ -11,9 +11,6 @@ if(NOT Python3_Interpreter_FOUND)
     return()
 endif()
 
-set(ARC_CROSS_BUILD_DIR "${CMAKE_SOURCE_DIR}/build" CACHE PATH
-    "Cross build directory (kernel.elf, user programs) used by the QEMU tests")
-
 set(_qemu_test ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/qemu-test.py
     --build-dir ${ARC_CROSS_BUILD_DIR})
 
@@ -60,7 +57,8 @@ set_tests_properties(qemu.smoke qemu.userland qemu.abi qemu.musl qemu.selftest.f
 # suites above (fixture); no extra boot.
 set(_budget_check ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/budget-check.py
     --build-dir ${ARC_CROSS_BUILD_DIR})
-add_test(NAME qemu.budgets COMMAND ${_budget_check})
+# Hygiene counts are checked by the host test `hygiene` (no QEMU needed)
+add_test(NAME qemu.budgets COMMAND ${_budget_check} --skip-source hygiene)
 # Self-check: deliberately wrong limits fail, each by name
 add_test(NAME qemu.budgets.selftest COMMAND ${_budget_check}
     --budgets tests/budgets-selftest.txt

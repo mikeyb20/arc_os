@@ -46,7 +46,7 @@ oversized function or an untracked TODO, measured against limits frozen at today
 
 **Done when.**
 - [ ] CI fails, naming the metric, on a test branch that adds a duplicated function and an `arch/x86_64/` include.
-- [ ] The first limits equal the counts measured on master; `docs/kernel/budgets.md` says these limits only go down.
+- [x] The first limits equal the counts measured on master; `docs/kernel/budgets.md` says these limits only go down.
 
 **Cost.** One pass over about 20k lines in CI, seconds; no extra QEMU boot.
 
@@ -57,4 +57,21 @@ oversized function or an untracked TODO, measured against limits frozen at today
 - The format check must never touch unchanged lines.
 
 **Notes.**
--
+- Done 2026-11-08. `tools/hygiene.py` (0.4 s on the tree) prints the five counts plus every location; host test
+  `hygiene` writes `build/hygiene.log` and runs `tools/budget-check.py --only-source hygiene`, so CI's build job
+  fails on a rise without QEMU (`qemu.budgets` now uses `--skip-source hygiene`). `tools_hygiene` is the fixture
+  test (one instance of each pattern, temp tree) plus checker tests.
+- Measured on master cb25815: dup_windows 12, dup_static_names 2 (`phys_to_virt`, `mode_to_rwx`),
+  arch_includes_outside_arch 44 (matches ADR-0020), long_functions 3 (`kmain`, `vfs_setup`,
+  `socket_tcp_deliver`), untracked_todos 0. Limits = these counts.
+- Decisions: hygiene counts are exact ratchets in the checker (source `hygiene` gets no 5% margin; with 5%, 44
+  would allow 46). Duplicates are counted as regions (merged runs of duplicate 10-line windows), per side
+  (kernel vs libc+userland); `#include` lines and lone braces are ignored so shared include lists don't count.
+  The `static` allow-list is empty: kernel/libc pairs are on different sides already.
+- `.clang-format`: LLVM base, 4 spaces, 120 columns, K&R, includes not sorted, comments not reflowed. CI runs
+  `git clang-format --diff` against the base branch tip on pull requests only (kernel, libc, userland, tests).
+  Formatting the whole tree would change ~2400 of 21400 lines (aligned `#define`s and assignments, `asm volatile (`
+  spacing), which is why only changed lines are checked. `clang-format` added to `tools/dev-setup.sh`.
+- Syscall-table check: the 47 `syscall_register` handlers match the done/partial rows exactly.
+- `hal-interface.md` and `memory-layout.md` were stale (claimed no `hal.h`, a fixed HHDM offset); now pointer
+  tables. `docs/kernel/helpers.md` lists canonical helpers and the known duplicates with the block removing each.
