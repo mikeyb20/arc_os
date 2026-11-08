@@ -63,3 +63,7 @@ limine/
 # Workflow state
 scratchpad*.md
 .claude/scope.txt
+
+# Archived outside components, fetched by tools/fetch-archived.sh (M0-03)
+third_party/src/
+third_party/cache/
