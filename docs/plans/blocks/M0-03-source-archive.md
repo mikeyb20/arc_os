@@ -27,8 +27,8 @@ fetch it without reaching a third-party server (knowledge-os.md §3.4).
    or inside arc_os).
 
 **Done when.**
-- [ ] The archive workflow is green and every lock entry has a hash and an archive URL.
-- [ ] In a cloud session, `tools/fetch-archived.sh llama.cpp sqlite tiny-chat-model` works with no third-party host.
+- [x] The archive workflow is green and every lock entry has a hash and an archive URL.
+- [x] In a cloud session, `tools/fetch-archived.sh llama.cpp sqlite tiny-chat-model` works with no third-party host.
 
 **Watch out.**
 - Default archive location: release assets on arc_os (public), for openly licensed material only. Content
@@ -37,4 +37,22 @@ fetch it without reaching a third-party server (knowledge-os.md §3.4).
 - Linux UAPI files are reference material for layout checks. Never `#include` them in arc_os code (GPL).
 
 **Notes.**
--
+- 2026-11-08 (M0-03 PR): 21 components in `third_party/SOURCES.lock`, archived to the release
+  `archive-20261108`. `tools/archive.py` does the work (`mirror` for the workflow, `fetch` for sessions,
+  `check` offline); `tools/fetch-archived.sh` wraps `fetch`. Host test: `tests/tools/test_archive.py`
+  (ctest `tools_archive`, file:// URLs only).
+- The workflow runs on pushes to non-master branches that touch the lock file, and by hand. It commits the
+  recorded hashes back to the branch (rebasing first); on master it only uploads the lock as an artifact.
+  Pushes made with GITHUB_TOKEN don't start CI, so push one more commit after the bot's.
+- Hashes pinned before the first run: binutils, GCC (from toolchain.lock), Limine source, zstd (matches
+  upstream's .sha256), stb_image, Spleen and the 28 Linux UAPI files (downloaded in the session). The rest
+  were recorded on first download (trust on first use over HTTPS); gmp and musl match known published values.
+- Linux UAPI reference = 28 files from v6.12 packed into one reproducible tarball (fixed order, mtime 0).
+- GitHub `archive/<ref>.tar.gz` tarballs (musl-cross-make, limine-binary, llama.cpp, uACPI) are not
+  guaranteed byte-stable upstream; that only matters if an entry is re-archived. Fetches use our copy.
+- Versions chosen: llama.cpp b12198, SQLite 3.54.1, uACPI 7.0.0, e2fsprogs 1.47.4, Spleen 2.2.0 (BSD-2,
+  ships PSF2 `.psfu`), musl 1.2.5 (newest release the session could confirm), GCC prerequisites from
+  gcc-14.1.0's `download_prerequisites`. Test models: SmolLM2-135M-Instruct Q8_0 (bartowski's GGUF repo)
+  and nomic-embed-text-v1.5 Q8_0, both Apache-2.0.
+- Not done here (follow-ups): `tools/build-cross-compiler.sh` and the toolchain workflow still download
+  GNU sources from upstream; switching them to the archive belongs with M2-01's musl toolchain.

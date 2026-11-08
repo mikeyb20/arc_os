@@ -1,0 +1,383 @@
+{
+  "schema_version": 1,
+  "_comment": "Pinned outside components (M0-03). To add or bump one, edit its entry with sha256 and archive_url empty; the archive workflow fills both. Never change a hash to make a mismatch go away.",
+  "archive_repo": "mikeyb20/arc_os",
+  "components": [
+    {
+      "name": "binutils",
+      "version": "2.42",
+      "kind": "source",
+      "license": "GPL-3.0-or-later",
+      "ships": "build-host",
+      "purpose": "Assembler and linker for both cross toolchains (same pin as tools/toolchain.lock)",
+      "upstream_url": "https://ftp.gnu.org/gnu/binutils/binutils-2.42.tar.xz",
+      "sha256": "f6e4d41fd5fc778b06b7891457b3620da5ecea1006c6a4a41ae998109f85a800",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/binutils-2.42.tar.xz"
+    },
+    {
+      "name": "gcc",
+      "version": "14.1.0",
+      "kind": "source",
+      "license": "GPL-3.0-or-later WITH GCC-exception-3.1",
+      "ships": "build-host",
+      "purpose": "C/C++ compilers and libstdc++ (same pin as tools/toolchain.lock)",
+      "upstream_url": "https://ftp.gnu.org/gnu/gcc/gcc-14.1.0/gcc-14.1.0.tar.xz",
+      "sha256": "e283c654987afe3de9d8080bc0bd79534b5ca0d681a73a11ff2b5d3767426840",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/gcc-14.1.0.tar.xz"
+    },
+    {
+      "name": "gmp",
+      "version": "6.2.1",
+      "kind": "source",
+      "license": "LGPL-3.0-or-later OR GPL-2.0-or-later",
+      "ships": "build-host",
+      "purpose": "GCC prerequisite (version from gcc-14.1.0 contrib/download_prerequisites)",
+      "upstream_url": "https://gcc.gnu.org/pub/gcc/infrastructure/gmp-6.2.1.tar.bz2",
+      "sha256": "eae9326beb4158c386e39a356818031bd28f3124cf915f8c5b1dc4c7a36b4d7c",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/gmp-6.2.1.tar.bz2"
+    },
+    {
+      "name": "mpfr",
+      "version": "4.1.0",
+      "kind": "source",
+      "license": "LGPL-3.0-or-later",
+      "ships": "build-host",
+      "purpose": "GCC prerequisite (version from gcc-14.1.0 contrib/download_prerequisites)",
+      "upstream_url": "https://gcc.gnu.org/pub/gcc/infrastructure/mpfr-4.1.0.tar.bz2",
+      "sha256": "feced2d430dd5a97805fa289fed3fc8ff2b094c02d05287fd6133e7f1f0ec926",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/mpfr-4.1.0.tar.bz2"
+    },
+    {
+      "name": "mpc",
+      "version": "1.2.1",
+      "kind": "source",
+      "license": "LGPL-3.0-or-later",
+      "ships": "build-host",
+      "purpose": "GCC prerequisite (version from gcc-14.1.0 contrib/download_prerequisites)",
+      "upstream_url": "https://gcc.gnu.org/pub/gcc/infrastructure/mpc-1.2.1.tar.gz",
+      "sha256": "17503d2c395dfcf106b622dc142683c1199431d095367c6aacba6eec30340459",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/mpc-1.2.1.tar.gz"
+    },
+    {
+      "name": "isl",
+      "version": "0.24",
+      "kind": "source",
+      "license": "MIT",
+      "ships": "build-host",
+      "purpose": "GCC prerequisite (version from gcc-14.1.0 contrib/download_prerequisites)",
+      "upstream_url": "https://gcc.gnu.org/pub/gcc/infrastructure/isl-0.24.tar.bz2",
+      "sha256": "fcf78dd9656c10eb8cf9fbd5f59a0b6b01386205fe1934b3b287a0a1898145c0",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/isl-0.24.tar.bz2"
+    },
+    {
+      "name": "musl",
+      "version": "1.2.5",
+      "kind": "source",
+      "license": "MIT",
+      "ships": "inside-arc_os",
+      "purpose": "C library for ported software (linked statically into arc_os programs)",
+      "upstream_url": "https://musl.libc.org/releases/musl-1.2.5.tar.gz",
+      "sha256": "a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/musl-1.2.5.tar.gz"
+    },
+    {
+      "name": "musl-cross-make",
+      "version": "5e8042e63de29f8473fc3b0b831a587ba284e1a8",
+      "kind": "source",
+      "license": "MIT",
+      "ships": "build-host",
+      "purpose": "Build recipe for the x86_64-linux-musl cross toolchain (M2-01)",
+      "upstream_url": "https://github.com/richfelker/musl-cross-make/archive/5e8042e63de29f8473fc3b0b831a587ba284e1a8.tar.gz",
+      "commit": "5e8042e63de29f8473fc3b0b831a587ba284e1a8",
+      "sha256": "c4553b236d4acb4e7990860597421f51bfb6ba2a7942f97388af335774397b7e",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/musl-cross-make-5e8042e63de29f8473fc3b0b831a587ba284e1a8.tar.gz"
+    },
+    {
+      "name": "limine-binary",
+      "version": "8.7.0",
+      "kind": "binary",
+      "license": "BSD-2-Clause",
+      "ships": "install-key",
+      "purpose": "Bootloader binaries used by tools/make-iso.sh (tag v8.7.0-binary, same commit as tools/toolchain.lock)",
+      "upstream_url": "https://github.com/limine-bootloader/limine/archive/aad3edd370955449717a334f0289dee10e2c5f01.tar.gz",
+      "commit": "aad3edd370955449717a334f0289dee10e2c5f01",
+      "sha256": "9c23ca261778cbe015041c02220ce26f45e05f38fe3e0c9913be71961f9023e5",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/limine-binary-8.7.0.tar.gz"
+    },
+    {
+      "name": "limine",
+      "version": "8.7.0",
+      "kind": "source",
+      "license": "BSD-2-Clause",
+      "ships": "install-key",
+      "purpose": "Bootloader source matching the binary release",
+      "upstream_url": "https://github.com/limine-bootloader/limine/releases/download/v8.7.0/limine-8.7.0.tar.xz",
+      "sha256": "e30c14c35063cbd79b69ed9e05a2843a4ee1d6543424aae8515ad90b7c6e0e70",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/limine-8.7.0.tar.xz"
+    },
+    {
+      "name": "llama.cpp",
+      "version": "b12198",
+      "kind": "source",
+      "license": "MIT",
+      "ships": "inside-arc_os",
+      "purpose": "CPU inference engine behind arc-llm (M2-03)",
+      "upstream_url": "https://github.com/ggml-org/llama.cpp/archive/refs/tags/b12198.tar.gz",
+      "sha256": "253cb3ef6f4ff66162989910268ce56965d2b161a63b523c8e2e8df4c4cfb1ae",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/llama.cpp-b12198.tar.gz"
+    },
+    {
+      "name": "sqlite",
+      "version": "3.54.1",
+      "kind": "source",
+      "license": "blessing (public domain)",
+      "ships": "inside-arc_os",
+      "purpose": "SQLite amalgamation; FTS5 is built in with -DSQLITE_ENABLE_FTS5 (M2-02)",
+      "upstream_url": "https://www.sqlite.org/2026/sqlite-amalgamation-3540100.zip",
+      "sha256": "0a9c8e34352dad46006aa82836d5383bff9dc6bc9ce5a60553c05aa30e6ad1f9",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/sqlite-3.54.1.zip"
+    },
+    {
+      "name": "zstd",
+      "version": "1.5.7",
+      "kind": "source",
+      "license": "BSD-3-Clause OR GPL-2.0-only",
+      "ships": "inside-arc_os",
+      "purpose": "Compression for .arcpkg and pack doc stores (hash matches upstream .sha256 file)",
+      "upstream_url": "https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz",
+      "sha256": "eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/zstd-1.5.7.tar.gz"
+    },
+    {
+      "name": "uacpi",
+      "version": "7.0.0",
+      "kind": "source",
+      "license": "MIT",
+      "ships": "inside-arc_os",
+      "purpose": "ACPI/AML interpreter (M4-11)",
+      "upstream_url": "https://github.com/uACPI/uACPI/archive/refs/tags/7.0.0.tar.gz",
+      "sha256": "4ccdb4c06d06c54116920eb861adf3a87efd3285c762e2e6f3529b52c6d20fa5",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/uacpi-7.0.0.tar.gz"
+    },
+    {
+      "name": "e2fsprogs",
+      "version": "1.47.4",
+      "kind": "source",
+      "license": "GPL-2.0-only (libext2fs LGPL-2.0-only)",
+      "ships": "inside-arc_os",
+      "purpose": "mke2fs and e2fsck port (M5-01); host-side image building",
+      "upstream_url": "https://mirrors.edge.kernel.org/pub/linux/kernel/people/tytso/e2fsprogs/v1.47.4/e2fsprogs-1.47.4.tar.xz",
+      "sha256": "fd5bf388cbdbe006a3d3b318d983b2948382440acc85a87f1e7d108653e8db0b",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/e2fsprogs-1.47.4.tar.xz"
+    },
+    {
+      "name": "stb_image",
+      "version": "4e9b368b",
+      "kind": "source",
+      "license": "MIT OR Unlicense",
+      "ships": "inside-arc_os",
+      "purpose": "Image decoding for the image viewer (M3-08)",
+      "upstream_url": "https://raw.githubusercontent.com/nothings/stb/4e9b368bfc071e97206ea5c6adba68dd0cbf8897/stb_image.h",
+      "commit": "4e9b368bfc071e97206ea5c6adba68dd0cbf8897",
+      "sha256": "594c2fe35d49488b4382dbfaec8f98366defca819d916ac95becf3e75f4200b3",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/stb_image-4e9b368b.h"
+    },
+    {
+      "name": "spleen",
+      "version": "2.2.0",
+      "kind": "source",
+      "license": "BSD-2-Clause",
+      "ships": "inside-arc_os",
+      "purpose": "Bitmap console fonts; ships ready-made PSF2 (.psfu) files (M3-05)",
+      "upstream_url": "https://github.com/fcambus/spleen/releases/download/2.2.0/spleen-2.2.0.tar.gz",
+      "sha256": "ec42925c6b56d2138c862b2f97147c872e472f674bf03423417d827a08d69a89",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/spleen-2.2.0.tar.gz"
+    },
+    {
+      "name": "linux-uapi-ref",
+      "version": "6.12",
+      "kind": "reference",
+      "license": "GPL-2.0 WITH Linux-syscall-note",
+      "ships": "build-host",
+      "purpose": "Reference only for syscall numbers and struct layouts (ADR-0001). Never #include in arc_os code.",
+      "upstream_url": "https://github.com/torvalds/linux/tree/v6.12",
+      "files": [
+        {
+          "path": "arch/x86/entry/syscalls/syscall_64.tbl",
+          "url": "https://raw.githubusercontent.com/torvalds/linux/v6.12/arch/x86/entry/syscalls/syscall_64.tbl",
+          "sha256": "980ce3115028c71c5618e7864d262017bde8103bcfe7b413147a14fd312c92ac"
+        },
+        {
+          "path": "include/uapi/asm-generic/errno-base.h",
+          "url": "https://raw.githubusercontent.com/torvalds/linux/v6.12/include/uapi/asm-generic/errno-base.h",
+          "sha256": "2c148e92b8318deeb767fabd60822113e575ee664ff09a1873aed8f7a495793c"
+        },
+        {
+          "path": "include/uapi/asm-generic/errno.h",
+          "url": "https://raw.githubusercontent.com/torvalds/linux/v6.12/include/uapi/asm-generic/errno.h",
+          "sha256": "fb7b5a504015f3a9074c641e7371b250d867d751d90e4a22a8ac17fced3d50af"
+        },
+        {
+          "path": "arch/x86/include/uapi/asm/stat.h",
+          "url": "https://raw.githubusercontent.com/torvalds/linux/v6.12/arch/x86/include/uapi/asm/stat.h",
+          "sha256": "5cca0ba1e1a55cfa1e853e326eaf4a69f48c1d0caf2d3724ee41917fff042ca6"
+        },
+        {
+          "path": "arch/x86/include/uapi/asm/signal.h",
+          "url": "https://raw.githubusercontent.com/torvalds/linux/v6.12/arch/x86/include/uapi/asm/signal.h",
+          "sha256": "171b0432693e710fb10e0da7c4dfbd7037b632ca645a11fb3030b15a49809586"
+        },
+        {
+          "path": "arch/x86/include/uapi/asm/sigcontext.h",
+          "url": "https://raw.githubusercontent.com/torvalds/linux/v6.12/arch/x86/include/uapi/asm/sigcontext.h",
+          "sha256": "84e2cf444ec6a539a4bc0b46717775cb1fd1f591301b7469ba143e56f43afc0c"
+        },
+        {
+          "path": "arch/x86/include/uapi/asm/auxvec.h",
+          "url": "https://raw.githubusercontent.com/torvalds/linux/v6.12/arch/x86/include/uapi/asm/auxvec.h",
+          "sha256": "da5d1b557176a2b5df3c76749608c68f76cbb19f823265258f90d12f4cdf5446"
+        },
+        {
+          "path": "arch/x86/include/uapi/asm/mman.h",
+          "url": "https://raw.githubusercontent.com/torvalds/linux/v6.12/arch/x86/include/uapi/asm/mman.h",
+          "sha256": "39852a0045f6d1b75383c1377a5497de177445111c4fdb4ada5247b8896d0cc1"
+        },
+        {
+          "path": "include/uapi/linux/auxvec.h",
+          "url": "https://raw.githubusercontent.com/torvalds/linux/v6.12/include/uapi/linux/auxvec.h",
+          "sha256": "8dadb9bdd5f00bbcbb6439086f5a9d429b4eff457a61b11ce08941d1dd8d60fa"
+        },
+        {
+          "path": "include/uapi/linux/input.h",
+          "url": "https://raw.githubusercontent.com/torvalds/linux/v6.12/include/uapi/linux/input.h",
+          "sha256": "0a5f1fff18970a9e535eacad80677bb4b06e90cec4fc6eb0894d5d5ced51301b"
+        },
+        {
+          "path": "include/uapi/linux/input-event-codes.h",
+          "url": "https://raw.githubusercontent.com/torvalds/linux/v6.12/include/uapi/linux/input-event-codes.h",
+          "sha256": "f9889a73d7d4f7e303d2d346a3622657169c5e8d7d354cb7a030ff47a7fdfdee"
+        },
+        {
+          "path": "include/uapi/linux/fb.h",
+          "url": "https://raw.githubusercontent.com/torvalds/linux/v6.12/include/uapi/linux/fb.h",
+          "sha256": "138c439d86ebbe2ffa7b85dabe509ee9555bf86fa8861e5ae9c5827b942bfcdd"
+        },
+        {
+          "path": "include/uapi/linux/time_types.h",
+          "url": "https://raw.githubusercontent.com/torvalds/linux/v6.12/include/uapi/linux/time_types.h",
+          "sha256": "92b128baf91fbd346bc881e3e32aaa3f3385867fa6d3deff4850a28b499d29d8"
+        },
+        {
+          "path": "include/uapi/linux/futex.h",
+          "url": "https://raw.githubusercontent.com/torvalds/linux/v6.12/include/uapi/linux/futex.h",
+          "sha256": "8482b5e9522268e617e155fd85e1fad3137eb4c0e6672ebb34c07c4c322d5438"
+        },
+        {
+          "path": "include/uapi/linux/sched.h",
+          "url": "https://raw.githubusercontent.com/torvalds/linux/v6.12/include/uapi/linux/sched.h",
+          "sha256": "2081b07cee6adab443e4ba320d0ccb13db4c97bed64f3eefafbfde2f25c833a4"
+        },
+        {
+          "path": "include/uapi/linux/stat.h",
+          "url": "https://raw.githubusercontent.com/torvalds/linux/v6.12/include/uapi/linux/stat.h",
+          "sha256": "74682cc2c75d6680f51800d28b21cca27f19fef021d02d206adeec851832b0fe"
+        },
+        {
+          "path": "include/uapi/asm-generic/fcntl.h",
+          "url": "https://raw.githubusercontent.com/torvalds/linux/v6.12/include/uapi/asm-generic/fcntl.h",
+          "sha256": "0908276bc4c3da9314d4986bd07c19f9ce8f403f602d40a8be0599249db95515"
+        },
+        {
+          "path": "include/uapi/asm-generic/ioctls.h",
+          "url": "https://raw.githubusercontent.com/torvalds/linux/v6.12/include/uapi/asm-generic/ioctls.h",
+          "sha256": "867644cd4a20815b7d8be14902b594bb6e30a81ea159aa5c67f24212c92cbab6"
+        },
+        {
+          "path": "include/uapi/asm-generic/ioctl.h",
+          "url": "https://raw.githubusercontent.com/torvalds/linux/v6.12/include/uapi/asm-generic/ioctl.h",
+          "sha256": "5764a3378f017c826ab55382386c5e477c8c8d34ff026cc9e02cff10f2a23bdb"
+        },
+        {
+          "path": "include/uapi/asm-generic/termbits.h",
+          "url": "https://raw.githubusercontent.com/torvalds/linux/v6.12/include/uapi/asm-generic/termbits.h",
+          "sha256": "6769d652b4178463ed74ac4848a851abe5e457ee0623eb56f331d77c1e1863b9"
+        },
+        {
+          "path": "include/uapi/asm-generic/termbits-common.h",
+          "url": "https://raw.githubusercontent.com/torvalds/linux/v6.12/include/uapi/asm-generic/termbits-common.h",
+          "sha256": "b022fb7a77f70ad67237b4f2091d17e0189ea7cc6c7d6632c1030326f887949c"
+        },
+        {
+          "path": "include/uapi/asm-generic/poll.h",
+          "url": "https://raw.githubusercontent.com/torvalds/linux/v6.12/include/uapi/asm-generic/poll.h",
+          "sha256": "800ec73ce21e427587fda77b35a804f522d9e4a18eef87d516e10d1b28fc8b90"
+        },
+        {
+          "path": "include/uapi/asm-generic/mman-common.h",
+          "url": "https://raw.githubusercontent.com/torvalds/linux/v6.12/include/uapi/asm-generic/mman-common.h",
+          "sha256": "bc57ba898adce4b1659d93715f4de1279ae3b82ffbefb04d0d3f565771dedd9a"
+        },
+        {
+          "path": "include/uapi/asm-generic/signal-defs.h",
+          "url": "https://raw.githubusercontent.com/torvalds/linux/v6.12/include/uapi/asm-generic/signal-defs.h",
+          "sha256": "6b3e6cb49936df8565f3adce214586d423cc9e5cba4af5ba29b90d3e1f9d9c31"
+        },
+        {
+          "path": "include/uapi/asm-generic/siginfo.h",
+          "url": "https://raw.githubusercontent.com/torvalds/linux/v6.12/include/uapi/asm-generic/siginfo.h",
+          "sha256": "18625c075e9ee00c53f0389f50bfca3b85da648bb994383acfc106c5dde5dce0"
+        },
+        {
+          "path": "include/uapi/asm-generic/resource.h",
+          "url": "https://raw.githubusercontent.com/torvalds/linux/v6.12/include/uapi/asm-generic/resource.h",
+          "sha256": "ff487485f1e1b56fa1f4199272288f9984956b9f6b33e56a88544bf87093284d"
+        },
+        {
+          "path": "include/uapi/linux/resource.h",
+          "url": "https://raw.githubusercontent.com/torvalds/linux/v6.12/include/uapi/linux/resource.h",
+          "sha256": "42f158b8dbdb7ad125a7d8c294e58a7f1a0a14107522fbaa2bb7fd92f1ba1922"
+        },
+        {
+          "path": "include/uapi/linux/utsname.h",
+          "url": "https://raw.githubusercontent.com/torvalds/linux/v6.12/include/uapi/linux/utsname.h",
+          "sha256": "e6a7aeffebf22a2d74b5e671ab5ff8bb99b0655cefb544bfca0acc22aa396c2a"
+        }
+      ],
+      "sha256": "17028d6f48133d476732eca2987c770e2ece4c116653b973d03733cafd3a3cb7",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/linux-uapi-ref-6.12.tar.gz"
+    },
+    {
+      "name": "ext2-doc",
+      "version": "2019",
+      "kind": "reference",
+      "license": "GFDL-1.2-or-later",
+      "ships": "build-host",
+      "purpose": "The Second Extended File System layout spec by Dave Poirier (M1-13, M1-15)",
+      "upstream_url": "https://www.nongnu.org/ext2-doc/ext2.html",
+      "sha256": "54bba53b54d8c4576e403be540a532cff7085d32b4963b6a5935b867c9735314",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/ext2-doc-2019.html"
+    },
+    {
+      "name": "tiny-chat-model",
+      "version": "smollm2-135m-instruct-q8_0",
+      "kind": "test-model",
+      "license": "Apache-2.0",
+      "ships": "tests-only",
+      "purpose": "Tiny GGUF chat model (SmolLM2-135M-Instruct, Q8_0) for QEMU and CI tests (M2)",
+      "upstream_url": "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q8_0.gguf",
+      "sha256": "5a1395716f7913741cc51d98581b9b1228d80987a9f7d3664106742eb06bba83",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/tiny-chat-model-smollm2-135m-instruct-q8_0.gguf"
+    },
+    {
+      "name": "tiny-embed-model",
+      "version": "nomic-embed-text-v1.5-q8_0",
+      "kind": "test-model",
+      "license": "Apache-2.0",
+      "ships": "tests-only",
+      "purpose": "Tiny GGUF embedder for retrieval tests (M3)",
+      "upstream_url": "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.Q8_0.gguf",
+      "sha256": "3e24342164b3d94991ba9692fdc0dd08e3fd7362e0aacc396a9a5c54a544c3b7",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/tiny-embed-model-nomic-embed-text-v1.5-q8_0.gguf"
+    }
+  ]
+}

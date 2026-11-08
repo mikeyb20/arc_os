@@ -1,0 +1,68 @@
+# Archive outside components (M0-03, knowledge-os.md §3.4).
+#
+# For every entry in third_party/SOURCES.lock without an archive URL: download it
+# from upstream, check its SHA-256 (a missing hash is recorded, a mismatch fails
+# the job), upload it to the release archive-YYYYMMDD of this repository and
+# record the archive URL. On a branch other than master the updated lock file is
+# committed back to that branch; on master it is only uploaded as an artifact
+# (open a PR with it). Entries that are already archived are skipped, so a re-run
+# only does new work. Assets are never replaced in place.
+name: archive
+
+on:
+  workflow_dispatch:
+  push:
+    branches-ignore: [master]
+    paths:
+      - third_party/SOURCES.lock
+      - tools/archive.py
+      - .github/workflows/archive.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: archive
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0     # full history, so the lock-file commit can rebase
+
+      - name: Check the lock file
+        run: python3 tools/archive.py check
+
+      - name: Download, verify and upload
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 tools/archive.py mirror --repo "${{ github.repository }}" --target "${{ github.sha }}"
+
+      - name: Lock file diff
+        if: always()
+        run: git diff --stat -- third_party/SOURCES.lock && git diff -- third_party/SOURCES.lock | head -200
+
+      - name: Commit recorded hashes and URLs
+        if: always() && github.ref != 'refs/heads/master'
+        run: |
+          if git diff --quiet -- third_party/SOURCES.lock; then
+            echo "nothing new to record"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "archive: record hashes and archive URLs" -- third_party/SOURCES.lock
+          # The branch may have moved on while this ran: rebase onto it first
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Upload lock file
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SOURCES.lock
+          path: third_party/SOURCES.lock

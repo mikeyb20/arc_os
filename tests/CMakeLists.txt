@@ -136,6 +136,12 @@ set_tests_properties(fat32_test_image PROPERTIES
     FIXTURES_SETUP fat32_image)
 set_tests_properties(test_fat32 arc_os_tests PROPERTIES FIXTURES_REQUIRED fat32_image)
 
+# M0-03: tools/archive.py (lock-file checks, bundles, fetch) with file:// URLs only
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME tools_archive COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/tools/test_archive.py)
+endif()
+
 # Every test in this directory runs on the build host: `ctest -L host`.
 # QEMU boot tests (M0-02) carry the `qemu` label instead.
 get_property(_host_tests DIRECTORY PROPERTY TESTS)
