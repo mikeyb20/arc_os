@@ -173,6 +173,9 @@ if(Python3_Interpreter_FOUND)
         COMMAND sh -c "\"$0\" tools/hygiene.py --out \"$1/hygiene.log\" && \"$0\" tools/budget-check.py --build-dir \"$1\" --only-source hygiene"
             ${Python3_EXECUTABLE} ${ARC_CROSS_BUILD_DIR})
     set_tests_properties(hygiene PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    # M0-07: manifest schemas (schemas/) — valid examples pass, invalid ones
+    # fail for the reason their name gives. Needs python3-jsonschema.
+    add_test(NAME schemas COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/schemas/validate.py)
 endif()
 
 # Every test in this directory runs on the build host: `ctest -L host`.

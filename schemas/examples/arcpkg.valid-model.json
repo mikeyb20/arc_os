@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "kind": "model",
+  "name": "qwen2-5-3b-instruct",
+  "version": "1.0.0",
+  "arch": "any",
+  "requires": {
+    "ram_mb": 2600,
+    "disk_bytes": 1930000000
+  },
+  "install_root": "/models/qwen2-5-3b-instruct",
+  "license": "Apache-2.0",
+  "source": "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF (2024-09)",
+  "files": [
+    {
+      "path": "qwen2.5-3b-instruct-q4_k_m.gguf",
+      "size": 1000,
+      "sha256": "c16140800eb9c970781caee821fe1b207c1be16fb1726707d816a69a040fc01b"
+    },
+    {
+      "path": "model.json",
+      "size": 1001,
+      "sha256": "08449dfe8b6c265b9ec864ad13b8d86e7503428f935b9f3d01edab200f0eabd6"
+    }
+  ],
+  "model": {
+    "schema_version": 1,
+    "name": "qwen2-5-3b-instruct",
+    "version": "1.0.0",
+    "roles": [
+      "chat",
+      "router"
+    ],
+    "file": "qwen2.5-3b-instruct-q4_k_m.gguf",
+    "sha256": "ba624b97fc94f14a929b9bc3504d83b0c67a92a845e3c42dbc74238140b63245",
+    "parameter_count": 3090000000,
+    "quantization": "Q4_K_M",
+    "ram_mb": 2600,
+    "context_length": 8192,
+    "chat_template": "{% for message in messages %}<|im_start|>{{ message.role }}\n{{ message.content }}<|im_end|>\n{% endfor %}<|im_start|>assistant\n",
+    "license": "Apache-2.0",
+    "source": "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF (2024-09)"
+  }
+}

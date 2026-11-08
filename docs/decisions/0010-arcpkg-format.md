@@ -6,7 +6,7 @@
 ## Decision
 - One format for programs, models and knowledge packs: `<name>-<version>.arcpkg` = a **zstd-compressed POSIX ustar**
   archive. The first member is `manifest.json`; the payload sits under `files/`.
-- `manifest.json` (JSON schema in `schemas/`, versioned by `schema_version`):
+- `manifest.json` (JSON schema [`schemas/arcpkg.schema.json`](../../schemas/arcpkg.schema.json), versioned by `schema_version`):
   `schema_version`, `kind` (`program` | `model` | `pack`), `name`, `version`, `arch`, `cpu_level` (e.g. `x86-64-v3`),
   `requires` (`ram_mb`, `disk_bytes`, other packages), `install_root` (per ADR-0009), `license`, `source`,
   `files` (`path`, `size`, `sha256` for every file), plus kind-specific fields (model role/quantization/context/template;

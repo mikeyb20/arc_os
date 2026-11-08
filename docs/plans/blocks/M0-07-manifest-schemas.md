@@ -32,4 +32,16 @@
 - IDs are lowercase `[a-z0-9-]`; versions are semver strings.
 
 **Notes.**
--
+- 2026-11-08 (built). Five schemas in `schemas/` (the four above plus `common.schema.json` for shared ids, semver,
+  SHA-256, relative paths and roles), `schemas/README.md`, 16 examples, `tests/schemas/validate.py` as host test
+  `schemas` (python3-jsonschema added to dev-setup; works with Ubuntu's 4.10 and with 4.18+).
+- Field names follow ADR-0010 where this spec differed: `name` (not `id`, also for packs; it is the pack id in
+  chunk IDs), `requires.disk_bytes` (not `disk_mb`), `arch` + `cpu_level`, `install_root`, `requires.packages`.
+  The spec's `cpu_features` and `provides` are kept as optional fields. knowledge-os.md §6 now says `name`.
+- Kind-specific fields: a model or pack package embeds the full model or pack manifest (`model` / `pack`),
+  whose name and version must equal the package's; `validate.py` checks that (a schema cannot).
+- No `additionalProperties: false`: "additive only within a version" means an older reader must accept newer
+  optional fields. Typos are caught by required fields and types, not by unknown-field rejection.
+- `pack.provides` must include `fts` (search works without the LLM, ADR-0015). `model-roles` maps a role to a
+  model name **and version**, since upgrade installs a new version beside the old one (ADR-0012).
+- Invalid examples must fail for the reason in their name (`EXPECTED` in validate.py), not by accident.

@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "roles": {
+    "chat": {
+      "name": "qwen2-5-3b-instruct",
+      "version": "1.0.0"
+    },
+    "embed": {
+      "name": "bge-small-en",
+      "version": "1.5.0"
+    },
+    "expert:medicine": {
+      "name": "qwen2-5-3b-instruct",
+      "version": "1.0.0"
+    }
+  }
+}

@@ -8,7 +8,7 @@ LLMs must iterate the library fast, and future embedders, indexes or MoE expert 
 reprocessing content.
 
 ## Decision
-- Pack layout: `manifest.json`, `content/` (zstd document store keyed by document ID; maps as pre-rendered tiles),
+- Pack layout: `manifest.json` (schema [`schemas/pack.schema.json`](../../schemas/pack.schema.json)), `content/` (zstd document store keyed by document ID; maps as pre-rendered tiles),
   `chunks/`, `fts/` (SQLite FTS5), `vectors/<embedder-id>/`.
 - **Chunk ID** = `pack:document:chunk-number`, stable within a pack version. Every derived index records the pack
   version and the chunk count it was built from.
