@@ -45,7 +45,7 @@ oversized function or an untracked TODO, measured against limits frozen at today
    checks every count.
 
 **Done when.**
-- [ ] CI fails, naming the metric, on a test branch that adds a duplicated function and an `arch/x86_64/` include.
+- [x] CI fails, naming the metric, on a test branch that adds a duplicated function and an `arch/x86_64/` include.
 - [x] The first limits equal the counts measured on master; `docs/kernel/budgets.md` says these limits only go down.
 
 **Cost.** One pass over about 20k lines in CI, seconds; no extra QEMU boot.
@@ -75,3 +75,6 @@ oversized function or an untracked TODO, measured against limits frozen at today
 - Syscall-table check: the 47 `syscall_register` handlers match the done/partial rows exactly.
 - `hal-interface.md` and `memory-layout.md` were stale (claimed no `hal.h`, a fixed HHDM offset); now pointer
   tables. `docs/kernel/helpers.md` lists canonical helpers and the known duplicates with the block removing each.
+- Done-when check: PR #12's commit bb3ba97 copied `mode_to_rwx` into `stat_cmd.c` and added an `arch/x86_64/io.h`
+  include to `vfs.c`; CI run 42488853310 failed in the build job's `hygiene` test with `dup_windows = 13`,
+  `dup_static_names = 3` and `arch_includes_outside_arch = 45`, each by name. The next commit reverted it.
