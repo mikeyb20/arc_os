@@ -7,7 +7,7 @@
 #include "arch/x86_64/gdt.h"
 #include "arch/x86_64/syscall.h"
 #include "arch/x86_64/paging.h"
-#include "arch/x86_64/fpu.h"
+#include "arch/hal.h"
 #include "lib/kprintf.h"
 #include "lib/string.h"
 

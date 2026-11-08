@@ -1,6 +1,6 @@
+#include "arch/hal.h"
 #include "arch/x86_64/serial.h"
 #include "arch/x86_64/gdt.h"
-#include "arch/x86_64/fpu.h"
 #include "uapi/termios.h"
 #include "arch/x86_64/idt.h"
 #include "arch/x86_64/pic.h"

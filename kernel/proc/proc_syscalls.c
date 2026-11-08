@@ -29,8 +29,7 @@
 #include "uapi/prctl.h"
 #include "proc/exec_stack.h"
 #include "fs/path.h"
-#include "arch/x86_64/fpu.h"
-#include "arch/x86_64/cpuid.h"
+#include "arch/hal.h"
 
 /* Maximum ELF binary size for execve */
 #define MAX_ELF_SIZE  (16 * 1024 * 1024)  /* 16 MB */

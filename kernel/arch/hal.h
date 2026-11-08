@@ -8,8 +8,8 @@
  * by function rather than by hardware unit. All functions delegate to the
  * underlying x86_64 implementations.
  *
- * Callers SHOULD prefer this header over including arch/x86_64/*.h directly.
- * Existing direct includes remain valid and are not deprecated yet. */
+ * Code outside kernel/arch/ includes this header, never the arch/x86_64/
+ * headers directly (ADR-0020); old direct includes move as blocks rewrite them. */
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -24,6 +24,8 @@
 #include "arch/x86_64/io.h"
 #include "arch/x86_64/serial.h"
 #include "arch/x86_64/msr.h"
+#include "arch/x86_64/fpu.h"     /* fpu_*, arch_thread_switch, arch_set_fs_base */
+#include "arch/x86_64/cpuid.h"   /* cpu_hwcap, cpu_random_fill */
 
 /* ==================================================================
  * CPU Initialization & Control

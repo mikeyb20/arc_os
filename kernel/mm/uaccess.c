@@ -3,14 +3,14 @@
 #include "user_access.h"
 #include "mm/vmm.h"
 #include "mm/pmm.h"
-#include "arch/x86_64/paging.h"
+#include "arch/hal.h"
 #include "lib/mem.h"
 #include "uapi/errno.h"
 
 /* Every page of [addr, addr+len) is mapped for user access (write if asked) */
 static int user_range_ok(uint64_t addr, size_t len, int write) {
     if (!user_ptr_valid((const void *)addr, len)) return 0;
-    uint64_t pml4 = paging_read_cr3() & PTE_ADDR_MASK;
+    uint64_t pml4 = hal_get_address_space() & PTE_ADDR_MASK;
     uint64_t end = addr + len;
     for (uint64_t page = PAGE_ALIGN_DOWN(addr); page < end; page += PAGE_SIZE) {
         if (!vmm_user_access_ok(pml4, page, write)) return 0;

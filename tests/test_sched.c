@@ -15,6 +15,7 @@
 #define ARCHOS_ARCH_X86_64_PAGING_H
 #define ARCHOS_MM_VMM_H
 #define ARCHOS_BOOT_BOOTINFO_H
+#define ARCHOS_ARCH_HAL_H        /* hal.h: only fpu.h is used, stubbed below */
 #define ARCHOS_ARCH_X86_64_FPU_H
 
 /* Stub kprintf */

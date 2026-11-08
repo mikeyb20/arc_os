@@ -8,6 +8,7 @@
 #define ARCHOS_LIB_KPRINTF_H
 #define ARCHOS_MM_KMALLOC_H
 #define ARCHOS_LIB_MEM_H        /* Use libc memset/memcpy */
+#define ARCHOS_ARCH_HAL_H        /* hal.h: only fpu.h is used, stubbed below */
 #define ARCHOS_ARCH_X86_64_FPU_H  /* fpu.h: stubbed below */
 
 /* Stub kprintf */

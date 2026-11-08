@@ -2,7 +2,7 @@
 #include "mm/kmalloc.h"
 #include "lib/kprintf.h"
 #include "lib/mem.h"
-#include "arch/x86_64/fpu.h"
+#include "arch/hal.h"
 
 static Thread *current_thread = NULL;
 static tid_t next_tid = 0;

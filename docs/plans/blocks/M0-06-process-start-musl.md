@@ -119,6 +119,10 @@ M1-01 swaps FXSAVE for XSAVE behind the same `kernel/arch/x86_64/fpu.h` calls. T
 - AT_RANDOM uses RDRAND when present, otherwise a TSC splitmix: fine for musl's canary, not for keys.
 - The syscall entry still uses globals and one kernel stack. M1-03 makes them per-CPU.
 
+*Block review (ADR-0020, run after master gained it)*
+- The 8 new x86 includes this block added outside `kernel/arch/` now go through `arch/hal.h`, which includes `fpu.h` and `cpuid.h`. `hal.h`'s own comment had a `/*` inside a comment, so `-Werror` broke any file that included it; fixed. The count of direct includes outside arch equals master's.
+- `cpu_random_fill` has its own `rdtsc`, as `security/hardening.c` does. Left alone (hardening.c is outside this block); M1-06's TSC clocksource is the natural shared helper.
+
 *Costs (ADR-0019)*
 - Per thread: 512 B more, plus FXSAVE/FXRSTOR (about 100 cycles each) on every switch; `wrmsr` only when FS bases differ.
 - Per syscall: 6 pushes, 6 pops and 6 global stores.

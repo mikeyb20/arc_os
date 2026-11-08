@@ -19,6 +19,7 @@
 #define ARCHOS_ARCH_X86_64_SYSCALL_H
 #define ARCHOS_ARCH_X86_64_PAGING_H
 #define ARCHOS_FS_PATH_H
+#define ARCHOS_ARCH_HAL_H        /* hal.h: only fpu.h is used, stubbed below */
 #define ARCHOS_ARCH_X86_64_FPU_H  /* fpu.h: stubbed below */
 
 /* Stub kprintf */
