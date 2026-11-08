@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mikeyb20/arc_os/schemas/model-roles.schema.json",
+  "title": "arc_os model roles (/models/roles.json)",
+  "description": "Which installed model fills each role (ADR-0012, ADR-0009). Written when the user picks a model; read by arc-llm. Upgrade = install the new version beside the old one and point the role at it; rollback = point it back.",
+  "type": "object",
+  "required": ["schema_version", "roles"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "roles": {
+      "description": "Role -> installed model (name and version, since two versions of a model can be installed side by side). A role with no entry is unassigned.",
+      "type": "object",
+      "propertyNames": { "$ref": "common.schema.json#/$defs/role" },
+      "additionalProperties": {
+        "type": "object",
+        "required": ["name", "version"],
+        "properties": {
+          "name": { "$ref": "common.schema.json#/$defs/id" },
+          "version": { "$ref": "common.schema.json#/$defs/semver" }
+        }
+      }
+    }
+  }
+}

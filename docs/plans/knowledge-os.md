@@ -156,7 +156,7 @@ without reprocessing the library. Details and exact formats: [ADR-0011](../decis
 
 ```
 /packs/<pack-id>/
-  manifest.json        id, version, schema_version, category, priority, size, license, source, checksums, provides
+  manifest.json        name, version, schema_version, category, priority, size, license, source, checksums, provides (schemas/pack.schema.json)
   content/             full documents in our own zstd-compressed store keyed by document ID (maps: pre-rendered tiles)
   chunks/              plain-text passages of ~300-500 tokens, one fixed-size index record each
   fts/                 SQLite FTS5 keyword (BM25) index over the chunks
@@ -193,11 +193,11 @@ starts with a planning block that writes its specs.
 - [x] ADRs 0001–0020
 - [x] Syscall inventory: run llama.cpp, SQLite and our test programs under `strace` on Linux; record the exact syscall list M1/M2 must provide
 - [x] Migrate syscalls to Linux x86_64 numbers and semantics in one pass with libarc, userland and tests together
-- [ ] JSON schemas for pack, model and `.arcpkg` manifests, each with `schema_version`
+- [x] JSON schemas for pack, model and `.arcpkg` manifests, each with `schema_version` (M0-07, `schemas/`)
 - [x] Reproducible dev container with pinned versions of both toolchains; GitHub Actions running unit and QEMU tests
 - [x] QEMU integration-test harness (boot, run a program, check serial output)
 - [x] Linux process start (System V stack, auxv, TLS): stock static musl programs run in QEMU (M0-06)
-- [ ] Code hygiene checks in CI: counts of duplicates, copied helpers, x86 includes outside the HAL, long functions and untracked TODOs never rise (ADR-0020)
+- [x] Code hygiene checks in CI: counts of duplicates, copied helpers, x86 includes outside the HAL, long functions and untracked TODOs never rise (ADR-0020)
 - [x] Archive the exact source of every outside component (§3.4) in repos Michael owns
 - [x] M1 implementation plan: PR-sized tasks, dependency order, SMP lock-ordering rules ([`work-blocks.md`](work-blocks.md) §4 and §7, `docs/plans/blocks/M1-*`)
 

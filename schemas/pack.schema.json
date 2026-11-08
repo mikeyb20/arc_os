@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mikeyb20/arc_os/schemas/pack.schema.json",
+  "title": "arc_os knowledge pack manifest",
+  "description": "/packs/<name>/manifest.json (ADR-0011, knowledge-os.md section 6), written by the host pipeline. It is also the `pack` object of a pack .arcpkg manifest. The pack name is the first part of every chunk ID (pack:document:chunk-number).",
+  "type": "object",
+  "required": ["schema_version", "name", "version", "category", "priority", "size_bytes", "license",
+               "source", "checksums", "provides", "chunking", "chunk_count", "domain_tags"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "name": { "$ref": "common.schema.json#/$defs/id" },
+    "version": {
+      "$ref": "common.schema.json#/$defs/semver",
+      "description": "Chunk IDs are stable within a pack version; every derived index records the version it was built from."
+    },
+    "title": { "description": "Human-readable name.", "type": "string" },
+    "category": {
+      "description": "Library section the pack belongs to (e.g. medical, repair, encyclopedia).",
+      "$ref": "common.schema.json#/$defs/id"
+    },
+    "priority": {
+      "description": "Install and search order when space or time is short: lower comes first.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "size_bytes": { "description": "Installed size of the pack directory.", "type": "integer", "minimum": 0 },
+    "license": { "$ref": "common.schema.json#/$defs/license" },
+    "source": { "$ref": "common.schema.json#/$defs/source" },
+    "checksums": {
+      "description": "SHA-256 of every file in the pack, by path relative to the pack directory.",
+      "type": "object",
+      "propertyNames": { "$ref": "common.schema.json#/$defs/relpath" },
+      "additionalProperties": { "$ref": "common.schema.json#/$defs/sha256" },
+      "minProperties": 1
+    },
+    "provides": {
+      "description": "Indexes the pack ships: `fts` (fts/, SQLite FTS5) and one `vectors/<embedder-id>` per embedder (ADR-0011). `fts` is required: search works without the LLM (ADR-0015).",
+      "type": "array",
+      "items": { "type": "string", "pattern": "^(fts|vectors/[a-z0-9][a-z0-9-]*)$" },
+      "contains": { "const": "fts" },
+      "uniqueItems": true
+    },
+    "chunking": {
+      "description": "How the documents were cut into chunks (ADR-0011: ~300-500 tokens of plain UTF-8 text).",
+      "type": "object",
+      "required": ["tokenizer", "target_tokens", "max_tokens", "overlap_tokens"],
+      "properties": {
+        "tokenizer": { "description": "Tokenizer the token counts use.", "type": "string", "minLength": 1 },
+        "target_tokens": { "type": "integer", "minimum": 1 },
+        "max_tokens": { "type": "integer", "minimum": 1 },
+        "overlap_tokens": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "document_count": { "type": "integer", "minimum": 0 },
+    "chunk_count": {
+      "description": "Chunks in this pack version; every derived index records the count it was built from.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "domain_tags": {
+      "description": "Domain tags in bit order: tag i is bit i of each chunk record's domain-tag bitmask (64 bits). Routers use them to pick an expert model.",
+      "type": "array",
+      "items": { "$ref": "common.schema.json#/$defs/id" },
+      "maxItems": 64,
+      "uniqueItems": true
+    }
+  }
+}

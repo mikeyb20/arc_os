@@ -8,6 +8,8 @@
 - Transport: AF_UNIX socket `/var/run/arc-llm.sock`; HTTP/1.1 with OpenAI-style JSON
   (`/v1/chat/completions`, `/v1/embeddings`, `/v1/models`) plus `/v1/tokenize`. Streaming via chunked responses.
 - Roles (`chat`, `embed`, `router`, `expert:<domain>`) map to installed models in `/models/roles.json`, chosen by the user.
+  Schemas: [`schemas/model.schema.json`](../../schemas/model.schema.json) (each model's manifest) and
+  [`schemas/model-roles.schema.json`](../../schemas/model-roles.schema.json) (`roles.json`).
 - Install refuses or warns when a model's `ram_mb` exceeds what the machine can give it.
 - Upgrade = install beside, switch role, keep the old model until removed.
 - Assistant tool calls use a versioned tool list (`search_packs`, `open_source`, `read_file`, `list_dir`,

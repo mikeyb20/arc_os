@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "name": "qwen2-5-3b-instruct",
+  "version": "1.0.0",
+  "roles": [
+    "chat",
+    "router"
+  ],
+  "file": "qwen2.5-3b-instruct-q4_k_m.gguf",
+  "sha256": "ba624b97fc94f14a929b9bc3504d83b0c67a92a845e3c42dbc74238140b63245",
+  "parameter_count": 3090000000,
+  "quantization": "Q4_K_M",
+  "ram_mb": 2600,
+  "context_length": 8192,
+  "chat_template": "{% for message in messages %}<|im_start|>{{ message.role }}\n{{ message.content }}<|im_end|>\n{% endfor %}<|im_start|>assistant\n",
+  "license": "Apache-2.0",
+  "source": "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF (2024-09)"
+}

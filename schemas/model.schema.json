@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mikeyb20/arc_os/schemas/model.schema.json",
+  "title": "arc_os model manifest",
+  "description": "Describes one GGUF model (ADR-0012, knowledge-os.md section 7). It is the `model` object of a model .arcpkg manifest. arc-llm reads it to load the model and to check that the machine has the RAM.",
+  "type": "object",
+  "required": ["schema_version", "name", "version", "roles", "file", "sha256", "parameter_count",
+               "quantization", "ram_mb", "context_length", "license", "source"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "name": { "$ref": "common.schema.json#/$defs/id" },
+    "version": { "$ref": "common.schema.json#/$defs/semver" },
+    "roles": {
+      "description": "Roles this model can fill. The user picks which installed model fills each role (model-roles.schema.json).",
+      "type": "array",
+      "items": { "$ref": "common.schema.json#/$defs/role" },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "file": {
+      "description": "The GGUF weights, relative to the model's install directory.",
+      "allOf": [{ "$ref": "common.schema.json#/$defs/relpath" }],
+      "pattern": "\\.gguf$"
+    },
+    "sha256": { "$ref": "common.schema.json#/$defs/sha256", "description": "SHA-256 of the GGUF file." },
+    "parameter_count": { "description": "Number of parameters.", "type": "integer", "minimum": 1 },
+    "quantization": {
+      "description": "GGUF quantization type as llama.cpp names it (e.g. Q4_K_M, Q8_0, F16).",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_]+$"
+    },
+    "ram_mb": {
+      "description": "RAM the model needs loaded at context_length, in MiB. Install refuses or warns when the machine cannot give it (ADR-0012).",
+      "type": "integer",
+      "minimum": 1
+    },
+    "context_length": { "description": "Context window in tokens.", "type": "integer", "minimum": 1 },
+    "chat_template": {
+      "description": "Chat template (Jinja, as in the GGUF metadata). Required for models that can fill `chat`, `router` or `expert:*`.",
+      "type": "string",
+      "minLength": 1
+    },
+    "embedder": {
+      "description": "For `embed` models: the embedder id that names a pack's vectors/<embedder-id>/ folder, and the vector size. A pack's vectors work only with this embedder.",
+      "type": "object",
+      "required": ["id", "dimensions"],
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/id" },
+        "dimensions": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "license": { "$ref": "common.schema.json#/$defs/license" },
+    "source": { "$ref": "common.schema.json#/$defs/source" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "roles": { "contains": { "const": "embed" } } } },
+      "then": { "required": ["embedder"] },
+      "else": { "not": { "required": ["embedder"] } }
+    },
+    {
+      "if": { "properties": { "roles": { "contains": { "pattern": "^(chat|router|expert:.*)$" } } } },
+      "then": { "required": ["chat_template"] }
+    }
+  ]
+}

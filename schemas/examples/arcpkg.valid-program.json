@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "kind": "program",
+  "name": "arc-search",
+  "version": "0.1.0",
+  "description": "Search installed packs from the shell",
+  "arch": "x86_64",
+  "cpu_level": "x86-64-v2",
+  "requires": {
+    "ram_mb": 64,
+    "disk_bytes": 2097152
+  },
+  "install_root": "/apps/arc-search",
+  "license": "MIT",
+  "source": "https://github.com/mikeyb20/arc_os",
+  "files": [
+    {
+      "path": "bin/arc-search",
+      "size": 1000,
+      "sha256": "efc3a0e7824a4b1f7c1aa8819f09f94605007ce9aa132113efafcbb14471af52"
+    }
+  ],
+  "provides": [
+    "arc-search"
+  ]
+}

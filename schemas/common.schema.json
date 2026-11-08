@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mikeyb20/arc_os/schemas/common.schema.json",
+  "title": "arc_os manifest building blocks",
+  "description": "Shared definitions for the arc_os manifest schemas (M0-07). Not a manifest by itself.",
+  "$defs": {
+    "schema_version": {
+      "description": "Version of the manifest schema the document follows. An integer starting at 1; within a version, changes are additive only.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "id": {
+      "description": "Lowercase identifier: a-z, 0-9 and '-', starting with a letter or digit.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "maxLength": 64
+    },
+    "semver": {
+      "description": "Semantic version (semver.org 2.0.0).",
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-((?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?$"
+    },
+    "sha256": {
+      "description": "SHA-256 digest, 64 lowercase hex digits.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "license": {
+      "description": "License of the contents: an SPDX expression (e.g. MIT, CC-BY-SA-4.0) or LicenseRef-<name> for anything else.",
+      "type": "string",
+      "minLength": 1
+    },
+    "source": {
+      "description": "Where the contents came from: upstream URL and/or a description of the source and its date.",
+      "type": "string",
+      "minLength": 1
+    },
+    "relpath": {
+      "description": "Relative path inside the package or pack: '/'-separated, no leading or trailing '/', no empty, '.' or '..' components.",
+      "type": "string",
+      "pattern": "^(?!(.*/)?\\.\\.?(/|$))[^/\\u0000]+(/[^/\\u0000]+)*$"
+    },
+    "role": {
+      "description": "Model role (ADR-0012): chat, embed, router, or expert:<domain>.",
+      "type": "string",
+      "pattern": "^(chat|embed|router|expert:[a-z0-9][a-z0-9-]*)$"
+    }
+  }
+}

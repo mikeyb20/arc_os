@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "kind": "pack",
+  "name": "wikimed-en",
+  "version": "2026.11.0",
+  "arch": "any",
+  "requires": {
+    "ram_mb": 0,
+    "disk_bytes": 1932735283,
+    "packages": [
+      {
+        "name": "bge-small-en",
+        "min_version": "1.5.0"
+      }
+    ]
+  },
+  "install_root": "/packs/wikimed-en",
+  "license": "CC-BY-SA-4.0",
+  "source": "Kiwix wikipedia_en_medicine_maxi_2026-10.zim",
+  "files": [
+    {
+      "path": "manifest.json",
+      "size": 1000,
+      "sha256": "ffa5b716b5a57837f7929dfcca4b4dfdeb97210a7fd5a12d2f1978846d6f1743"
+    },
+    {
+      "path": "content/docs.zst",
+      "size": 1001,
+      "sha256": "5de06abae8f6d83c7a1e4a838636731ed3f394bdf92390c4a3a1805723b74f53"
+    },
+    {
+      "path": "chunks/chunks.bin",
+      "size": 1002,
+      "sha256": "fb6f795c592be6f60f1f49df18296d67c8adc35e903e9736eec31bba5191bf79"
+    },
+    {
+      "path": "fts/fts.sqlite",
+      "size": 1003,
+      "sha256": "f24be0c65798b6e96ee745ed075a0de3040a56317ceab40fe520617d785170bd"
+    }
+  ],
+  "pack": {
+    "schema_version": 1,
+    "name": "wikimed-en",
+    "version": "2026.11.0",
+    "title": "WikiProject Medicine (English)",
+    "category": "medical",
+    "priority": 10,
+    "size_bytes": 1932735283,
+    "license": "CC-BY-SA-4.0",
+    "source": "Kiwix wikipedia_en_medicine_maxi_2026-10.zim",
+    "checksums": {
+      "content/docs.zst": "46b42b4229cd7a39c564e780bb665a8bde4fdf722007e8473f167fe53ed4b995",
+      "chunks/chunks.bin": "903998a13c26111438bcdf5ccf829e38beea39f5c240f35fb2f398d206dedd10",
+      "fts/fts.sqlite": "dd8f6640e1c144ff8cb56e681948ad4690c9333e62121f8fb8395feb04769ad0",
+      "vectors/bge-small-en-v1-5/vectors.bin": "38a4fdfc27ed7703b383ee995758eba4e628f02be5b1da70570a89768671438a"
+    },
+    "provides": [
+      "fts",
+      "vectors/bge-small-en-v1-5"
+    ],
+    "chunking": {
+      "tokenizer": "bge-small-en-v1-5",
+      "target_tokens": 400,
+      "max_tokens": 500,
+      "overlap_tokens": 50
+    },
+    "document_count": 71000,
+    "chunk_count": 1250000,
+    "domain_tags": [
+      "medicine",
+      "pharmacology",
+      "first-aid"
+    ]
+  }
+}
