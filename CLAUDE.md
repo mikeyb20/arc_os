@@ -22,6 +22,7 @@ arc_os is a custom x86_64 operating system built from scratch. Monolithic kernel
 - Power is first-class: no periodic tick assumptions, no busy-wait idle or endless polling; every driver has suspend/resume hooks. (ADR-0017)
 - Portable mode: the USB key is an ordinary arc_os disk; mount only arc_os partitions, from the disk Limine booted from; never write to a disk arc_os didn't create except through the installer. (ADR-0018)
 - Efficiency (ADR-0019): no O(n) scans in hot paths; IRQ-safe locks for anything an interrupt touches; each D block states its costs; CI budgets check counts and sizes, never time.
+- Hygiene (ADR-0020): one home per helper (`docs/kernel/helpers.md`; search before writing one, never a second copy); code outside `kernel/arch/` never includes `arch/x86_64/` directly, only `arch/hal.h` or arch-neutral headers; cleanup only in files the block already edits, in a separate `tidy:` commit; CI hygiene counts never rise; run the `block-review` skill before every PR.
 - No scope beyond the plan without Michael's OK. Flag any choice that would force a later rewrite **before** building on it.
 - Changing a locked decision = new superseding ADR + Michael's explicit OK + plan update.
 
@@ -120,8 +121,8 @@ Progress is tracked as milestones M0–M5 in `docs/plans/knowledge-os.md` (§8),
 
 - **Master plan:** `docs/plans/knowledge-os.md`
 - **Build order and block status:** `docs/plans/work-blocks.md` (`/os/block-status`)
-- **Decisions (binding):** `docs/decisions/` (ADR-0001 … ADR-0019)
-- Skills for repeated work: `add-syscall`, `driver-bringup`, `port-package` (in `.claude/skills/`)
+- **Decisions (binding):** `docs/decisions/` (ADR-0001 … ADR-0020)
+- Skills for repeated work: `add-syscall`, `driver-bringup`, `port-package`, `block-review` (in `.claude/skills/`)
 
 - Workflow philosophy: `docs/WORKFLOW.md`
 - Skill specifications: `docs/SKILL-MAP.md`

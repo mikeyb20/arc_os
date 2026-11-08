@@ -10,19 +10,19 @@
 
 | Milestone | Blocks | Session units | With allowance |
 |---|---|---|---|
-| M0 Lock-in decisions | 8 | 6.5 | 8.4 |
+| M0 Lock-in decisions | 9 | 7.0 | 9.0 |
 | M1 Compute kernel | 23 | 29.0 | 41.7 |
 | M2 Toolchain + first LLM | 7 | 7.0 | 9.4 |
 | M3 Knowledge layer | 12 | 12.0 | 16.1 |
 | M4 Real hardware | 15 | 16.0 | 21.1 |
 | M5 Packages + installer | 7 | 7.5 | 9.8 |
-| **Total** | **72** | **78.0** | **106.5** |
+| **Total** | **73** | **78.5** | **107.1** |
 
-- **72 blocks**: 10 small, 51 medium, 11 large. The 34 deep (D) blocks carry
-  43 of the 78 session units.
+- **73 blocks**: 11 small, 51 medium, 11 large. The 34 deep (D) blocks carry
+  43 of the 78.5 session units.
 - **Session units:** S = 0.5, M = 1, L = 2. "With allowance" adds debugging and rework: D blocks × 1.5, R blocks
   × 1.2. That allowance is an estimate, not a measurement; recheck it after M1, the first milestone with real
-  numbers. Budget about **107 sessions**.
+  numbers. Budget about **108 sessions**.
 - **M1 is the big one:** 23 blocks and 29 units, 17 of them deep. It gives the kernel virtual memory, SMP, threads,
   a page cache and ext2.
 - **Critical path:** 35 blocks, 40 units (§5). Running lanes in parallel shortens the calendar, not the compute.
@@ -71,6 +71,9 @@ Start every block with `/os/implement-block <ID>`. These rules are what keep ses
     continues on the default while he decides.
 12. **Review effort follows the tier.** R: CI green plus a skim. D: interfaces and tests read closely.
     `/validate/review` at low or medium effort for D blocks only.
+13. **Run the block review before the PR.** The `block-review` skill (`.claude/skills/block-review/`) is the same
+    checklist every block runs: scope, reuse, boundaries, §7 rules, tests, hygiene counts, docs. Its result goes in
+    the PR body (ADR-0020).
 
 ## 4. Block list
 
@@ -86,6 +89,7 @@ Start every block with `/os/implement-block <ID>`. These rules are what keep ses
 | M0-06 | Linux process start + musl hello | M | D | K | M0-05 | Programs built with stock `musl-gcc -static` run in QEMU | doing |
 | M0-07 | Manifest schemas | S | R | C | — | Schemas and examples validated in CI | todo |
 | M0-08 | Budget checks in the QEMU harness | S | R | I | M0-02 | A size or count past its limit fails CI, named (ADR-0019) | todo |
+| M0-09 | Code hygiene checks | S | R | I | M0-08 | Duplicates, copied helpers, x86 includes outside arch, long functions and untracked TODOs can't grow (ADR-0020) | todo |
 
 ### M1 — Compute kernel
 
@@ -239,6 +243,12 @@ Parallel sessions shorten the calendar; they don't save compute.
   interrupt paths; any lock an interrupt handler takes is IRQ-safe; no allocation in hard-IRQ context once M1-09
   lands; hot structures carry a `_Static_assert` on their size; hot paths log at debug level only. Each D block's
   **Cost.** section is checked in review, and new metrics go in the budgets file (M0-08).
+- **Code hygiene** (ADR-0020): search `docs/kernel/helpers.md` and the tree before writing a helper; a second copy
+  of a kernel helper is promoted to the shared header in the same PR. Code outside `kernel/arch/` includes
+  `arch/hal.h` or arch-neutral headers, never `arch/x86_64/` directly; a block that rewrites such a call site moves
+  it behind the HAL and lowers the limit. New public functions get a doc comment; a new or rewritten `.c` file opens
+  with what it owns, its invariants and its locks. Cleanup only in files the block already edits, in a separate
+  `tidy:` commit. The hygiene counts (M0-09) never rise.
 - **ABI structs** live in `kernel/include/uapi/`, carry `_Static_assert`s, and `tests/test_abi_layout.c` checks
   them against the host's Linux headers.
 - **Lock order**, outermost first. Debug builds check it from M1-05; M1-05 copies this into
@@ -289,6 +299,7 @@ Parallel sessions shorten the calendar; they don't save compute.
 | 26 | The kernel heap had no lock, but the virtio-net IRQ path allocates from it | Fixed with ADR-0019 (IRQ-safe heap lock + host test) |
 | 27 | No object allocator was planned; kmalloc is a first-fit list | M1-02b (ADR-0019) |
 | 28 | CI can't time code (TCG), and nothing checked efficiency before M2-06 | M0-08 budgets on counts and sizes; `arc-bench` at M1-04, M1-22, M4-14, M5-06 (ADR-0019) |
+| 29 | Duplicate helpers, 44 x86 includes in 8 subsystems outside `kernel/arch/`, and no check on either | M0-09 freezes the counts; M1-03, M1-05, M1-06, M1-07, M1-09 move the includes they touch behind `arch/hal.h` (ADR-0020) |
 
 ## 9. Later: compatibility track (not counted)
 
@@ -313,3 +324,6 @@ Secure Boot through a signed shim and our own key.
   (slab allocator, before M1-05); 32-byte page descriptors (M1-02); order-agnostic page-cache lookups (M1-12); log
   levels (M1-04); network rx out of hard IRQ (M4-00); M2-06 compares mmap with 2 MiB anonymous loading; **Cost.**
   sections on M1 D blocks; efficiency rules in §7; `arc-bench` runs at the hardware checkpoints.
+- **2026-11-08** — Maintainability review (ADR-0020, Michael approved): new block M0-09 (hygiene ratchets in CI);
+  §3 rule 13 (block review before every PR); code-hygiene rules in §7; HAL include moves added to M1-03, M1-05,
+  M1-06, M1-07 and M1-09; hygiene pass in M1-22.

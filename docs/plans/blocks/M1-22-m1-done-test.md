@@ -21,11 +21,14 @@ RAM; on both real machines, arc_os boots to the shell.
    low-tier machine, typing with a USB keyboard waits for M4) and run the self-test; on the laptop, read idle
    watts from `/proc/arc/power`.
 5. Tick the M1 boxes in knowledge-os.md §8 and record findings in its review history.
+6. Hygiene pass (ADR-0020): read the `tools/hygiene.py` report, tighten every limit that has fallen, and list what
+   is left (with the M2–M5 block expected to remove it) in Notes. Revisit GCC `-fanalyzer` and record the decision.
 
 **Done when.**
 - [ ] `arc.bench=1` results from both machines are in `docs/perf/` and compared with M1-04's (ADR-0019).
 - [ ] `qemu.m1_done` passes in CI (or locally if the CI disk is too small; say so in Notes).
 - [ ] Michael's photos or notes from both machines are in the PR.
+- [ ] Hygiene limits equal the measured counts; the remaining debt is listed in Notes.
 
 **Watch out.**
 - Keep the image sparse; CI runners have about 14 GB of free disk.

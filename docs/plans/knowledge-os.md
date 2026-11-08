@@ -146,6 +146,7 @@ Cheap now, expensive later. Each has an ADR in `docs/decisions/`.
 | 17 | Power management first-class: tickless, C-states, HWP, profiles, battery, driver suspend/resume hooks | [0017](../decisions/0017-power-management.md) |
 | 18 | Portable mode: runs entirely from the USB key; own partition types; never writes to host disks | [0018](../decisions/0018-portable-usb-mode.md) |
 | 19 | Efficiency: cost lines per block, hot-path rules, CI budgets (counts and sizes), slab allocator, 32-byte page descriptors, page cache ready for large pages | [0019](../decisions/0019-efficiency-budgets-and-allocators.md) |
+| 20 | Code hygiene: CI ratchets on duplicates, copied helpers, x86 includes outside the HAL, long functions and untracked TODOs; one home per helper; block review before every PR | [0020](../decisions/0020-code-hygiene-ratchets.md) |
 
 ## 6. Data design
 
@@ -189,14 +190,15 @@ channel, on top of host-side unit tests. The work is split into PR-sized blocks 
 starts with a planning block that writes its specs.
 
 ### M0 — Lock-in decisions
-- [x] ADRs 0001–0019
+- [x] ADRs 0001–0020
 - [x] Syscall inventory: run llama.cpp, SQLite and our test programs under `strace` on Linux; record the exact syscall list M1/M2 must provide
 - [x] Migrate syscalls to Linux x86_64 numbers and semantics in one pass with libarc, userland and tests together
 - [ ] JSON schemas for pack, model and `.arcpkg` manifests, each with `schema_version`
 - [x] Reproducible dev container with pinned versions of both toolchains; GitHub Actions running unit and QEMU tests
 - [x] QEMU integration-test harness (boot, run a program, check serial output)
-- [x] Archive the exact source of every outside component (§3.4) in repos Michael owns
 - [x] Linux process start (System V stack, auxv, TLS): stock static musl programs run in QEMU (M0-06)
+- [ ] Code hygiene checks in CI: counts of duplicates, copied helpers, x86 includes outside the HAL, long functions and untracked TODOs never rise (ADR-0020)
+- [x] Archive the exact source of every outside component (§3.4) in repos Michael owns
 - [x] M1 implementation plan: PR-sized tasks, dependency order, SMP lock-ordering rules ([`work-blocks.md`](work-blocks.md) §4 and §7, `docs/plans/blocks/M1-*`)
 
 ### M1 — Compute kernel
@@ -278,6 +280,7 @@ Static Linux programs may run thanks to the ABI, but that is not a goal.
 
 ## 11. Review history
 
+- **2026-11-08 — Maintainability review** (ADR-0020, approved by Michael). Found duplicated kernel helpers (HHDM address conversion), 44 direct x86 includes in 8 subsystems despite the HAL rule, no format check and no shared review checklist. Added CI ratchets that freeze those counts (new block M0-09), a block-review skill run before every PR, one home per helper, and HAL include moves inside the M1 blocks that already rewrite those call sites. No standalone refactor.
 - **2026-11-08 — Efficiency review** (ADR-0019, approved by Michael). Found an unlocked kernel heap reachable from an interrupt (fixed), no object allocator in the plan (new block M1-02b), a 64-byte vs 32-byte page-descriptor conflict (32 kept), and a 4 KiB-only page-cache design (API made order-agnostic). Added cost lines, hot-path rules and CI budgets on counts and sizes (new block M0-08); real timing stays on hardware checkpoints.
 - **2026-11-07 — Architect review.** Added per-page metadata and eviction; keyword-first retrieval with vector rerank; own doc store instead of a libzim port; early real-hardware boot and MSI-X in M1; Linux semantics (not just numbers); low tier set to 1–2B models.
 - **2026-11-07 — Six-reviewer pass** (junior coder, senior coder, product user, tech enthusiast, OS expert, off-grid operator). Added lock-ins 13–16; syscall inventory, dev container, CI; library reader and images; GGUF wrapping tool; battery awareness; verify-and-repair.
