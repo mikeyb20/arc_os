@@ -1,0 +1,78 @@
+# Lane L (docs/plans/lane-l.md, M2-01): build the ports and the stack/ project with the
+# pinned musl toolchain, run the lane tests on Linux under strace, then
+#   - the syscall check: every syscall, flag and file they use must be in
+#     docs/plans/syscall-inventory.md (tools/syscall-inventory.py --check), and
+#   - the lane budgets (stack/budgets.txt).
+name: lane
+
+on:
+  pull_request:
+    paths:
+      - stack/**
+      - ports/**
+      - tools/lane/**
+      - toolchain-musl.cmake
+      - tests/target/**
+      - tools/syscall-inventory.py
+      - tools/budget-check.py
+      - docs/plans/syscall-inventory.md
+      - tools/toolchain.lock
+      - .github/workflows/lane.yml
+  push:
+    branches: [master]
+    paths:
+      - stack/**
+      - ports/**
+      - tools/lane/**
+      - toolchain-musl.cmake
+      - .github/workflows/lane.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lane-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lane:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      ARC_LANE_LOGS: ${{ github.workspace }}/build-lane/logs
+      TBL: third_party/src/linux-uapi-ref/arch/x86/entry/syscalls/syscall_64.tbl
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dev setup (apt, musl toolchain)
+        run: |
+          bash tools/dev-setup.sh apt
+          bash tools/dev-setup.sh musl
+
+      - name: Fetch archived reference files
+        run: tools/fetch-archived.sh linux-uapi-ref
+
+      - name: Build ports and stack
+        run: tools/lane/build.sh
+
+      - name: Lane tests (under strace)
+        run: ctest --test-dir build-lane/stack -L lane --output-on-failure
+
+      - name: Syscall check
+        run: |
+          python3 tools/syscall-inventory.py --check --logs "$ARC_LANE_LOGS" --tbl "$TBL" \
+            --allow docs/plans/syscall-inventory.md
+
+      - name: Lane budgets
+        run: python3 tools/budget-check.py --budgets stack/budgets.txt --log-dir build-lane/stack/budgets
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lane-logs
+          path: |
+            build-lane/logs
+            build-lane/stack/Testing/Temporary/LastTest.log
+          retention-days: 7

@@ -27,3 +27,14 @@ TOOLCHAIN_SHA256=3ad83334c3b8def4defcdf7827af4610e4ad2e2c59faec4a16dcb718a5948cf
 LIMINE_REPO=https://github.com/limine-bootloader/limine.git
 LIMINE_TAG=v8.7.0-binary
 LIMINE_COMMIT=aad3edd370955449717a334f0289dee10e2c5f01
+
+# User-space toolchain (M2-01): GCC 14.1.0 (C, C++, libstdc++) + binutils 2.42 + musl 1.2.5,
+# built offline from the archive by ports/musl-cross-make/build.sh (job "musl" of the
+# toolchain workflow) and installed by `tools/dev-setup.sh musl` into $HOME/opt/cross-musl.
+# Bump MUSL_TOOLCHAIN_RELEASE whenever a version, a patch or config.mak changes.
+MUSL_TOOLCHAIN_TARGET=x86_64-linux-musl
+MUSL_TOOLCHAIN_RELEASE=toolchain-musl-v1
+MUSL_TOOLCHAIN_ASSET=x86_64-linux-musl-toolchain-14.1.0-2.42-1.2.5.tar.zst
+MUSL_TOOLCHAIN_URL=https://github.com/mikeyb20/arc_os/releases/download/toolchain-musl-v1/x86_64-linux-musl-toolchain-14.1.0-2.42-1.2.5.tar.zst
+# Filled in from the workflow's output after the first build.
+MUSL_TOOLCHAIN_SHA256=

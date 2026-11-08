@@ -9,7 +9,8 @@ Limits live in tests/budgets.txt, one metric per line:
     build      measured here from the cross build (kernel.elf)
     hygiene    the lines tools/hygiene.py wrote to <build-dir>/hygiene.log
     <suite>    the `ARC_TEST budget <name> <value>` line in that QEMU suite's
-               serial log (build/qemu-test/<suite>.serial.log)
+               serial log (build/qemu-test/<suite>.serial.log), or in a lane
+               test's <suite>.budget.log (--log-dir build-lane/stack/budgets, M2-01)
     *          every suite log that reports it; the worst value counts
 `off` lists a metric that is not measured yet (shown, never checked).
 
@@ -87,11 +88,16 @@ def build_values(build_dir):
     return {"kernel_image_bytes": elf_alloc_bytes(kernel)}
 
 
+LOG_SUFFIXES = (".serial.log", ".budget.log")
+
+
 def log_values(log_dir):
-    """{suite: {name: value}} from every <suite>.serial.log in log_dir."""
+    """{suite: {name: value}} from every <suite>.serial.log or <suite>.budget.log in log_dir."""
     out = {}
-    for path in sorted(glob.glob(os.path.join(log_dir, "*.serial.log"))):
-        suite = os.path.basename(path)[:-len(".serial.log")]
+    paths = sorted(p for sfx in LOG_SUFFIXES for p in glob.glob(os.path.join(log_dir, "*" + sfx)))
+    for path in paths:
+        base = os.path.basename(path)
+        suite = next(base[:-len(s)] for s in LOG_SUFFIXES if base.endswith(s))
         vals = {}
         with open(path, errors="replace") as f:
             for line in f:

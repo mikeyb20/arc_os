@@ -15,14 +15,14 @@ target programs, built with it, pass on Linux inside the syscall inventory.
 - `.claude/skills/port-package/SKILL.md`, `tests/target/` (the three programs), Notes of M0-03 and M0-04
 
 **Build.**
-1. `ports/musl-cross-make/`: `PORT.md`, `config.mak` and the files the archived musl-cross-make commit lacks.
-   That commit knows GCC 14.2/14.3 and binutils 2.44, not our pins, so add `hashes/*.sha1` for the archived
-   gcc-14.1.0, binutils-2.42, gmp-6.2.1, mpfr-4.1.0 and mpc-1.2.1 tarballs (SHA-1 of our archived files), and
-   `patches/gcc-14.1.0/` = the x86_64-relevant patches of its `patches/gcc-14.2.0/` (`0001-ssp_nonshared`,
-   `0002-posix_memalign`, `0004-static-pie`, `0006-cow-libstdc++v3`; record any that don't apply). musl 1.2.5 uses
-   the commit's own hash and CVE patches. `config.mak`: `TARGET = x86_64-linux-musl`, the five versions, `LINUX_VER =`
-   (empty: no kernel headers), `GCC_CONFIG += --enable-languages=c,c++ --disable-multilib`,
-   `COMMON_CONFIG += CFLAGS="-g0 -O2" CXXFLAGS="-g0 -O2"`, and `DL_CMD = false` so any download attempt fails.
+1. `ports/musl-cross-make/`: `PORT.md`, `config.mak` and `build.sh`. The archived musl-cross-make commit knows
+   GCC 14.2/14.3 and binutils 2.44, not our pins, so `build.sh` writes the `hashes/*.sha1` it expects from our
+   SHA-256-verified tarballs (generated at build time, not committed: the SHA-256 in `SOURCES.lock` is the trust
+   anchor) and copies its `patches/gcc-14.2.0/` to `patches/gcc-14.1.0/` (all 10 apply to 14.1.0 unchanged;
+   `PORT.md` says which matter on x86_64). musl 1.2.5 uses the commit's own patches. `config.mak`:
+   `TARGET = x86_64-linux-musl`, the six versions, `LINUX_VER =` (empty: no kernel headers),
+   `GCC_CONFIG += --enable-languages=c,c++ --disable-multilib`, `-g0 -O2`, and `DL_CMD = false` so any download
+   attempt fails. `tools/archive.py fetch --cache-only` verifies tarballs without unpacking them.
 2. `tools/toolchain.lock`: `MUSL_TOOLCHAIN_TARGET`, `MUSL_TOOLCHAIN_RELEASE=toolchain-musl-v1`, `_ASSET`, `_URL`,
    `_SHA256` (filled from the workflow's output). `.github/workflows/toolchain.yml` gets a second job, `musl`, in
    the same pattern as the existing one (skip if the asset exists, build, relocated smoke test with a C and a C++
@@ -32,9 +32,11 @@ target programs, built with it, pass on Linux inside the syscall inventory.
 3. `tools/dev-setup.sh musl`: installs the asset into `$HOME/opt/cross-musl` with the same stamp-and-verify logic as
    the elf toolchain (one function with parameters, not a copy). `all` includes it.
 4. `toolchain-musl.cmake` (`-march=x86-64-v3`, `-static`, `CMAKE_FIND_ROOT_PATH` set to `build-lane/ports`),
-   `stack/CMakeLists.txt` with a `lane_test(NAME … COMMAND …)` function (label `lane`; the command goes through
-   `tools/lane/run.sh`), `stack/README.md` (the libraries table from lane-l.md, empty rows for now),
-   `stack/budgets.txt`, `ports/README.md` (one paragraph pointing at the port-package skill and lane-l.md).
+   `stack/CMakeLists.txt` with `lane_test(NAME … COMMAND …)` (label `lane`; the command goes through
+   `tools/lane/run.sh`) and `lane_driver_test()` for drivers, `stack/README.md` (the libraries table from
+   lane-l.md, empty rows for now), `stack/budgets.txt`, `ports/README.md` (one paragraph pointing at the
+   port-package skill and lane-l.md). `tools/budget-check.py` also reads `<suite>.budget.log` files, and
+   `tools/lane/sizes.py` writes binary sizes in that format.
 5. `tools/lane/run.sh <log-name> <cmd…>`: `exec "$@"` normally; with `ARC_LANE_LOGS` set,
    `strace -f -qq -s 200 -o "$ARC_LANE_LOGS/<log-name>.strace" -- "$@"`, keeping the exit status.
    `tools/lane/build.sh`: fetch the archived sources the ports need, run each `ports/*/build.sh` that exists (none

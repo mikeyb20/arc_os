@@ -110,12 +110,20 @@ class BundleTests(Base):
 
 
 class FetchTests(Base):
-    def run_fetch(self, comps, names):
+    def run_fetch(self, comps, names, cache_only=False):
         lock = os.path.join(self.dir, "SOURCES.lock")
         archive.save_lock(lock, {"schema_version": 1, "components": comps})
         dest = os.path.join(self.dir, "src")
-        args = type("A", (), {"lock": lock, "names": names, "dest": dest})
+        args = type("A", (), {"lock": lock, "names": names, "dest": dest, "cache_only": cache_only})
         return archive.fetch(args), dest
+
+    def test_cache_only_verifies_without_unpacking(self):
+        t = self.tarball("x.tar.gz", {"x-1/README": b"hi"})
+        rc, dest = self.run_fetch([comp(sha256=sha(rd(t)), archive_url="file://" + t)], ["x"], cache_only=True)
+        self.assertEqual(rc, 0)
+        self.assertFalse(os.path.exists(os.path.join(dest, "x")))
+        rc, _ = self.run_fetch([comp(sha256="0" * 64, archive_url="file://" + t)], ["x"], cache_only=True)
+        self.assertEqual(rc, 1)
 
     def test_tarball_unpacks_without_top_dir(self):
         t = self.tarball("x.tar.gz", {"x-1/README": b"hi", "x-1/src/a.c": b"int a;"})

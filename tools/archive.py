@@ -337,6 +337,9 @@ def fetch(args):
                 os.remove(path)
                 rc = 1
                 continue
+        if getattr(args, "cache_only", False):
+            log(f"{name} {comp['version']}: verified, kept as {os.path.relpath(path, ROOT)}")
+            continue
         dest = os.path.join(args.dest, name)
         unpack(path, dest, comp)
         log(f"{name} {comp['version']}: verified, unpacked to {os.path.relpath(dest, ROOT)}")
@@ -356,6 +359,8 @@ def main():
     f = sub.add_parser("fetch")
     f.add_argument("names", nargs="+")
     f.add_argument("--dest", default=os.path.join(ROOT, "third_party", "src"))
+    f.add_argument("--cache-only", action="store_true",
+                   help="verify into third_party/cache/ but don't unpack (tools that want the tarball)")
     sub.add_parser("check")
     args = ap.parse_args()
 

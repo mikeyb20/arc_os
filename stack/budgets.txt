@@ -1,0 +1,10 @@
+# arc_os — lane L budgets (ADR-0019, M2-01). Same format and rules as tests/budgets.txt;
+# checked in lane.yml by
+#   tools/budget-check.py --budgets stack/budgets.txt --log-dir build-lane/stack/budgets
+# Values come from the lane tests' <suite>.budget.log files. Counts and sizes only, never time.
+#
+# name                 limit       kind unit   owner  source    [off]
+
+# Static C++ binary (cxx_basic: exceptions, threads, filesystem, iostream): loaded ELF
+# bytes, the floor every C++ program pays for static libstdc++ (measured TBD)
+cxx_basic_bytes        0           max  bytes  M2-01  sizes

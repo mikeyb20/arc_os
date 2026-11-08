@@ -127,9 +127,9 @@ Start every block with `/os/implement-block <ID>`. These rules are what keep ses
 
 | ID | Block | Size | Tier | Lane | Needs | Done when | Status |
 |---|---|---|---|---|---|---|---|
-| M2-00a | Plan the Linux-first lane | S | D | P | M0-04, M0-07 | Specs for M2-01…M2-04, M3-02, M3-06a and M5-02 written; syscall check added to the inventory workflow | review (#16) |
+| M2-00a | Plan the Linux-first lane | S | D | P | M0-04, M0-07 | Specs for M2-01…M2-04, M3-02, M3-06a and M5-02 written; syscall check added to the inventory workflow | done |
 | M2-00 | Plan M2 | S | D | P | M1-22 | Specs for M2-04b, M2-05 and M2-06 written; lane specs corrected from M1's results | todo |
-| M2-01 | musl cross toolchain, ports layout, C++ test | M | R | L | M2-00a, M0-03 | GCC + libstdc++ for `x86_64-linux-musl` archived; C++ test passes on Linux inside the syscall inventory | todo |
+| M2-01 | musl cross toolchain, ports layout, C++ test | M | R | L | M2-00a, M0-03 | GCC + libstdc++ for `x86_64-linux-musl` archived; C++ test passes on Linux inside the syscall inventory | doing |
 | M2-02 | Port zstd + SQLite (FTS5) | M | R | L | M2-01 | Round-trip and FTS5 query tests pass on Linux inside the syscall inventory | todo |
 | M2-03 | Port llama.cpp (CPU, static, x86-64-v3) | M | D | L | M2-01 | Greedy output of our static build matches the reference build on Linux; inside the syscall inventory | todo |
 | M2-04 | `arc-llm` service | L | D | L | M2-03 | generate, embed, tokenize, list_models over AF_UNIX on Linux; roles; fit check; inside the syscall inventory | todo |

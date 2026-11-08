@@ -62,7 +62,9 @@ separate CMake project because it uses the other toolchain. Build outputs go to 
 - Lane tests are ctest tests in `stack/` with the label `lane`, registered with `lane_test()`. They run on Linux on
   the musl binaries we built. `ctest --test-dir build-lane/stack -L lane` is the whole lane suite.
 - A test that starts an arc_os-bound binary starts it through `tools/lane/run.sh <log-name> <command…>`. Drivers
-  (shell, Python, `curl`) run untraced: they never reach arc_os.
+  (shell, Python, `curl`) run untraced: they never reach arc_os. In `stack/`, `lane_test()` registers a program that
+  is the whole test (run through `run.sh` for you); `lane_driver_test()` registers a driver, which finds `run.sh`
+  in `$ARC_LANE_RUN` and writes budget lines to `$ARC_LANE_BUDGET_DIR/<suite>.budget.log`.
 - `lane.yml` sets `ARC_LANE_LOGS`, runs the suite, then
   `tools/syscall-inventory.py --check --logs $ARC_LANE_LOGS --tbl <syscall_64.tbl> --allow docs/plans/syscall-inventory.md`.
   Anything not in a table row of `syscall-inventory.md` fails, named. The fix is either code that doesn't need it,
@@ -70,9 +72,10 @@ separate CMake project because it uses the other toolchain. Build outputs go to 
   syscall has none). Never filter a log to make the check pass.
 - musl reads the clock through the vDSO on Linux, so `clock_gettime` is invisible here; on arc_os it is a syscall
   (M1-06). Linux also allows things arc_os may implement later than the lane needs; M2-04b finds those.
-- Sizes and counts go in `stack/budgets.txt` (ADR-0019), checked by `tools/budget-check.py --budgets` in `lane.yml`.
-  Tests print `ARC_TEST budget <name> <value>` lines; peak memory comes from the driver (`ru_maxrss` of the child).
-  Never time.
+- Sizes and counts go in `stack/budgets.txt` (ADR-0019), checked in `lane.yml` by
+  `tools/budget-check.py --budgets stack/budgets.txt --log-dir build-lane/stack/budgets`. Tests write
+  `ARC_TEST budget <name> <value>` lines to `<suite>.budget.log` there (the metric's source is `<suite>`); binary
+  sizes come from `tools/lane/sizes.py`, peak memory from the driver (`ru_maxrss` of the child). Never time.
 
 ## Light enough for 4 GB
 
