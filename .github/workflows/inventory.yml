@@ -3,6 +3,10 @@
 # archived sources, run each under strace and merge the logs into
 # docs/plans/syscall-inventory.md. On a branch other than master the updated
 # doc is committed back to the branch; the raw logs are an artifact.
+# Before merging, the logs are checked against the committed doc (M2-00a): a
+# syscall, flag, ioctl or file the doc doesn't list fails the run, so a new one
+# is always a deliberate row (work-blocks.md section 5). Lane L programs are
+# checked the same way by their own workflow from M2-01.
 name: inventory
 
 on:
@@ -41,6 +45,11 @@ jobs:
           docker run --rm --cap-add SYS_PTRACE --security-opt seccomp=unconfined \
             -v "$PWD:/work" -w /work alpine:3.20 sh tools/inventory/run-in-alpine.sh
           sudo chown -R "$(id -u):$(id -g)" build third_party
+
+      - name: Syscall check (logs against the committed inventory)
+        run: |
+          python3 tools/syscall-inventory.py --check --logs build/inventory/logs --tbl "$TBL" \
+            --allow docs/plans/syscall-inventory.md
 
       - name: Merge logs into the inventory
         run: |

@@ -45,7 +45,9 @@ class SplitArgsTests(unittest.TestCase):
         self.assertEqual(inv.symbols("flags=CLONE_VM|CLONE_FS"), ["CLONE_VM", "CLONE_FS"])
 
 
-class ParseTests(unittest.TestCase):
+class LogFixture(unittest.TestCase):
+    """One strace log and a small syscall_64.tbl in a temporary directory."""
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.logs = os.path.join(self.tmp.name, "logs")
@@ -72,6 +74,8 @@ class ParseTests(unittest.TestCase):
         inv.parse_log(os.path.join(self.logs, "prog.strace"), "prog", calls, details, files)
         return calls, details, files
 
+
+class ParseTests(LogFixture):
     def test_counts_call_starts_only(self):
         calls, _, _ = self.parse()
         self.assertEqual(calls["futex"]["prog"], 2)       # resumed line not counted again
@@ -112,6 +116,90 @@ class ParseTests(unittest.TestCase):
         self.assertIn("| 257 | openat | missing |", text)
         # Rows sorted by syscall number
         self.assertLess(text.index("| 1 | write"), text.index("| 257 | openat"))
+
+
+ALLOW_DOC = """\
+# Inventory
+
+Prose with `flags: O_TRUNC` outside a table row is not an allowance.
+
+""" + inv.BEGIN + """
+| # | Syscall | arc_os today | Calls | Programs | Flags, requests and arguments seen |
+|---|---|---|---|---|---|
+| 59 | execve | done | 1 | prog |  |
+| 158 | arch_prctl | partial | 1 | prog | `code: ARCH_SET_FS` |
+| 218 | set_tid_address | partial | 1 | prog |  |
+| 257 | openat | missing | 1 | prog | `flags: O_CLOEXEC`, `flags: O_RDONLY` |
+| 2 | open | partial | 1 | prog | `flags: O_LARGEFILE`, `flags: O_RDONLY` |
+| 16 | ioctl | partial | 1 | prog | `request: TIOCGWINSZ` |
+| 9 | mmap | missing | 1 | prog | `flags: MAP_ANONYMOUS`, `flags: MAP_PRIVATE`, `prot: PROT_READ`, `prot: PROT_WRITE` |
+| 56 | clone | missing | 1 | prog | `flags: CLONE_FS`, `flags: CLONE_SETTLS`, `flags: CLONE_THREAD`, `flags: CLONE_VM` |
+| 202 | futex | missing | 2 | prog | `op: FUTEX_WAIT_PRIVATE` |
+| 1 | write | done | 1 | prog |  |
+| 231 | exit_group | partial | 1 | prog |  |
+
+| Path | Programs |
+|---|---|
+| `/etc/passwd` | prog |
+| `/proc/<pid>/stat` | prog |
+""" + inv.END + """
+
+## Lane additions
+
+| # | Syscall | Details | Owner | Why |
+|---|---|---|---|---|
+| 262 | newfstatat | | M1-11 | test |
+| 202 | futex | `op: FUTEX_WAKE_PRIVATE` | M1-16 | test |
+
+| Path | Owner | Why |
+|---|---|---|
+| `/sys/devices/system/cpu/cpu<n>/online` | M1-20 | test |
+"""
+
+
+class CheckTests(LogFixture):
+    def allow(self, doc):
+        path = os.path.join(self.tmp.name, "allow.md")
+        with open(path, "w") as f:
+            f.write(doc)
+        return inv.load_allow(path)
+
+    def test_load_allow_reads_both_tables(self):
+        syscalls, details, files = self.allow(ALLOW_DOC)
+        self.assertIn("newfstatat", syscalls)
+        self.assertIn(("futex", "op: FUTEX_WAKE_PRIVATE"), details)
+        self.assertIn(("futex", "op: FUTEX_WAIT_PRIVATE"), details)
+        self.assertIn("/sys/devices/system/cpu/cpu<n>/online", files)
+        self.assertNotIn(("open", "flags: O_TRUNC"), details)
+
+    def test_everything_listed_passes(self):
+        calls, details, files = self.parse()
+        self.assertEqual(inv.check(calls, details, files, self.allow(ALLOW_DOC)), [])
+
+    def test_missing_syscall_detail_and_file_each_fail(self):
+        calls, details, files = self.parse()
+        doc = (ALLOW_DOC.replace("| 262 | newfstatat | | M1-11 | test |\n", "")
+               .replace(", `flags: CLONE_THREAD`", "")
+               .replace("| `/etc/passwd` | prog |\n", ""))
+        bad = inv.check(calls, details, files, self.allow(doc))
+        self.assertEqual(bad, ["clone flags: CLONE_THREAD (used by prog)",
+                               "syscall newfstatat (used by prog)",
+                               "file /etc/passwd (used by prog)"])
+
+    def test_main_exit_codes(self):
+        allow = os.path.join(self.tmp.name, "allow.md")
+        with open(allow, "w") as f:
+            f.write(ALLOW_DOC)
+        argv = ["x", "--check", "--logs", self.logs, "--tbl", self.tbl, "--allow", allow]
+        old = inv.sys.argv
+        try:
+            inv.sys.argv = argv
+            self.assertEqual(inv.main(), 0)
+            with open(allow, "w") as f:
+                f.write(ALLOW_DOC.replace("`request: TIOCGWINSZ`", ""))
+            self.assertEqual(inv.main(), 1)
+        finally:
+            inv.sys.argv = old
 
 
 if __name__ == "__main__":

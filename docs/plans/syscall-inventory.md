@@ -129,3 +129,18 @@ Build and run status:
 | `/proc/cpuinfo` | llama-completion, llama-embedding |
 
 <!-- END GENERATED -->
+
+## Lane additions (hand-written)
+
+The Linux-first lane (work-blocks.md §5) runs its tests under `strace -f` and checks the logs with
+`tools/syscall-inventory.py --check`: every syscall, recorded detail (`label: VALUE`, as in the generated table) and
+file must appear in a table row of this doc. The generated table above covers what the M0-04 programs use; a lane
+program that needs more gets a row here, in the PR that needs it, naming the M1 block that provides it (and the
+same row in `syscall-table.md` if the syscall has none). Rows here are never generated and survive re-runs. Once the
+generated table lists something (for example after a port bump), its row here may be deleted.
+
+| # | Syscall | Details | Owner | Why |
+|---|---|---|---|---|
+
+| Path | Owner | Why |
+|---|---|---|
