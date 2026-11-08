@@ -10,8 +10,9 @@ format tools/budget-check.py reads, followed by where each count comes from:
                                braces, preprocessor lines and whitespace
                                removed) that also appear elsewhere
                                on the same side (kernel, or libc + userland)
-    dup_static_names           static function names defined in more than one
-                               file on the same side, minus ALLOWED_STATIC_DUPS
+    dup_static_names           extra copies of static functions: a name defined
+                               in N files on the same side adds N - 1 (minus
+                               ALLOWED_STATIC_DUPS)
     arch_includes_outside_arch #include of arch/x86_64/... outside kernel/arch/
     long_functions             function bodies over 100 lines
     untracked_todos            TODO/FIXME without a block ID (M1-07) or DEFERRED
@@ -54,7 +55,7 @@ ALLOWED_STATIC_DUPS = {
 TODO_RE = re.compile(r"\b(TODO|FIXME)\b")
 TRACKED_RE = re.compile(r"\bM\d-\d\d[a-z]?\b|DEFERRED")
 ARCH_INC_RE = re.compile(r'^\s*#\s*include\s*["<][^">]*\barch/x86_64/')
-STATIC_FN_RE = re.compile(r"^static\s+(?:inline\s+)?(?:[A-Za-z_][\w\s\*]*?[\s\*])"
+STATIC_FN_RE = re.compile(r"^(?:__attribute__\(\(.*?\)\)\s+)?static\s+(?:inline\s+)?(?:[A-Za-z_][\w\s\*]*?[\s\*])"
                           r"([A-Za-z_]\w*)\s*\([^;]*$")
 FN_START_RE = re.compile(r"^[A-Za-z_][\w\s\*,()\[\]]*?\b([A-Za-z_]\w*)\s*\(")
 NOT_FUNCTIONS = {"if", "for", "while", "switch", "return", "sizeof", "do"}
@@ -170,7 +171,8 @@ def dup_static_names(files):
                 defs[(side(rel), m.group(1))].add(rel)
     found = sorted((name, sorted(rels)) for (sd, name), rels in defs.items()
                    if len(rels) > 1 and name not in ALLOWED_STATIC_DUPS)
-    return len(found), [f"{name}: {', '.join(rels)}" for name, rels in found]
+    # Each copy beyond the first counts, so a third copy of a known duplicate still raises it
+    return sum(len(rels) - 1 for _, rels in found), [f"{name}: {', '.join(rels)}" for name, rels in found]
 
 
 def arch_includes(files):

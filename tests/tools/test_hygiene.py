@@ -42,6 +42,8 @@ FILES = {
                          "".join(f"    n += {i};\n" for i in range(100)) + "    return n;\n}\n"
                          "int short_one(void) {\n    return 1;\n}\n",
     "kernel/include/limine.h": "/* TODO vendored, skipped */\n",
+    # A third copy (with a leading attribute) still counts: N files add N - 1
+    "kernel/net/f.c": "__attribute__((unused)) static int helper(int x) {\n    return x * 3;\n}\n",
 }
 
 
@@ -66,14 +68,14 @@ class HygieneCounts(unittest.TestCase):
                               capture_output=True, text=True)
 
     def test_every_count(self):
-        res = self.run_hygiene("--expect", "dup_windows=2", "--expect", "dup_static_names=1",
+        res = self.run_hygiene("--expect", "dup_windows=2", "--expect", "dup_static_names=2",
                                "--expect", "arch_includes_outside_arch=1",
                                "--expect", "long_functions=1", "--expect", "untracked_todos=1")
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
         self.assertIn("ARC_TEST budget dup_windows 2", res.stdout)
         self.assertIn("kernel/fs/b.c:1:", res.stdout)          # the arch include, located
         self.assertIn("long_one (104 lines)", res.stdout)
-        self.assertIn("helper: kernel/fs/b.c, kernel/mm/a.c", res.stdout)
+        self.assertIn("helper: kernel/fs/b.c, kernel/mm/a.c, kernel/net/f.c", res.stdout)
 
     def test_expect_mismatch_fails(self):
         res = self.run_hygiene("--expect", "dup_windows=0")

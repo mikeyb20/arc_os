@@ -61,7 +61,7 @@ oversized function or an untracked TODO, measured against limits frozen at today
   `hygiene` writes `build/hygiene.log` and runs `tools/budget-check.py --only-source hygiene`, so CI's build job
   fails on a rise without QEMU (`qemu.budgets` now uses `--skip-source hygiene`). `tools_hygiene` is the fixture
   test (one instance of each pattern, temp tree) plus checker tests.
-- Measured on master cb25815: dup_windows 12, dup_static_names 2 (`phys_to_virt`, `mode_to_rwx`),
+- Measured on master cb25815: dup_windows 12, dup_static_names 2 (extra copies: `phys_to_virt`, `mode_to_rwx`),
   arch_includes_outside_arch 44 (matches ADR-0020), long_functions 3 (`kmain`, `vfs_setup`,
   `socket_tcp_deliver`), untracked_todos 0. Limits = these counts.
 - Decisions: hygiene counts are exact ratchets in the checker (source `hygiene` gets no 5% margin; with 5%, 44

@@ -54,7 +54,7 @@ it (raise it). Raising a limit needs the reason in the PR body (ADR-0019).
 | `kmalloc_walk_max` | every suite | M1-02b | most heap blocks one kmalloc walked (first fit) |
 | `idle_timer_irqs_5s` | off | M1-06 | timer interrupts on an idle CPU over 5 s |
 | `dup_windows` | hygiene | M0-09 | duplicated code regions (10+ normalized lines found twice on one side) |
-| `dup_static_names` | hygiene | M0-09 | `static` functions with the same name in two files on one side |
+| `dup_static_names` | hygiene | M0-09 | extra copies of `static` functions with the same name on one side (N files add N − 1) |
 | `arch_includes_outside_arch` | hygiene | M0-09 | `#include "arch/x86_64/..."` outside `kernel/arch/` |
 | `long_functions` | hygiene | M0-09 | functions over 100 lines |
 | `untracked_todos` | hygiene | M0-09 | `TODO`/`FIXME` without a block ID or `DEFERRED` |
