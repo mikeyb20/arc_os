@@ -149,6 +149,11 @@ set_source_files_properties(abi_layout_ours.c PROPERTIES
     COMPILE_FLAGS "-idirafter ${CMAKE_SOURCE_DIR}/kernel/include")
 add_test(NAME test_abi_layout COMMAND test_abi_layout)
 
+# Cross build directory (kernel.elf, user programs, hygiene.log) read by the
+# hygiene check and the QEMU tests
+set(ARC_CROSS_BUILD_DIR "${CMAKE_SOURCE_DIR}/build" CACHE PATH
+    "Cross build directory (kernel.elf, user programs) used by the QEMU tests")
+
 # M0-03: tools/archive.py (lock-file checks, bundles, fetch) with file:// URLs only
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
@@ -156,6 +161,16 @@ if(Python3_Interpreter_FOUND)
     # M0-04: tools/syscall-inventory.py on hand-written strace lines
     add_test(NAME tools_syscall_inventory
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/tools/test_syscall_inventory.py)
+    # M0-09: tools/hygiene.py on a fixture tree, and hygiene limits as exact ratchets
+    add_test(NAME tools_hygiene
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/tools/test_hygiene.py)
+    # M0-09 (ADR-0020): hygiene counts of the real tree against tests/budgets.txt,
+    # plus the syscall-table check. Writes hygiene.log into the cross build
+    # directory, so CI's qemu job carries the same numbers.
+    add_test(NAME hygiene
+        COMMAND sh -c "\"$0\" tools/hygiene.py --out \"$1/hygiene.log\" && \"$0\" tools/budget-check.py --build-dir \"$1\" --only-source hygiene"
+            ${Python3_EXECUTABLE} ${ARC_CROSS_BUILD_DIR})
+    set_tests_properties(hygiene PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 endif()
 
 # Every test in this directory runs on the build host: `ctest -L host`.

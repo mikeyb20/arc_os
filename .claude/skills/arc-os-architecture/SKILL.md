@@ -53,8 +53,8 @@ The roadmap is `docs/plans/knowledge-os.md` (milestones M0–M5); the build orde
 ## Reference Files
 
 Detailed reference documents in `reference/`:
-- `hal-interface.md` — HAL function signatures and contracts
-- `memory-layout.md` — Kernel address space layout, page table structure
+- `hal-interface.md` — where the HAL lives (`kernel/arch/hal.h`) and the include rule
+- `memory-layout.md` — which header defines each address-space constant
 - `boot-protocol.md` — BootInfo struct definition, bootloader contract
 - `syscall-table.md` — Linux ABI target, migration map, per-syscall status
 - `build-system.md` — How the build works, targets, toolchain details

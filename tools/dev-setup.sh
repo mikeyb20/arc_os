@@ -26,7 +26,7 @@ STAMP="$CROSS_DIR/.arc-toolchain-sha256"
 APT_PACKAGES=(
     build-essential cmake ninja-build nasm
     qemu-system-x86 qemu-utils ovmf xorriso mtools dosfstools e2fsprogs gdisk
-    musl-tools strace python3 python3-pip jq zstd
+    musl-tools strace python3 python3-pip jq zstd clang-format
     git curl ca-certificates
 )
 

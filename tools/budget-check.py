@@ -7,12 +7,14 @@ Limits live in tests/budgets.txt, one metric per line:
 
 `source` says where the value comes from:
     build      measured here from the cross build (kernel.elf)
+    hygiene    the lines tools/hygiene.py wrote to <build-dir>/hygiene.log
     <suite>    the `ARC_TEST budget <name> <value>` line in that QEMU suite's
                serial log (build/qemu-test/<suite>.serial.log)
     *          every suite log that reports it; the worst value counts
 `off` lists a metric that is not measured yet (shown, never checked).
 
-A `max` metric fails when the value is more than 5% above its limit and warns
+A `max` metric fails when the value is more than 5% above its limit (hygiene
+counts: any value above it) and warns
 when it is more than 20% below (tighten the limit); `min` is the mirror image.
 A metric that is not reported fails. Counts and sizes only: never time.
 
@@ -100,11 +102,29 @@ def log_values(log_dir):
     return out
 
 
-def lookup(metric, build, logs):
+def hygiene_values(build_dir):
+    """{name: value} from tools/hygiene.py's output, or None if it hasn't run."""
+    path = os.path.join(build_dir, "hygiene.log")
+    if not os.path.isfile(path):
+        return None
+    vals = {}
+    with open(path) as f:
+        for line in f:
+            m = BUDGET_RE.match(line.rstrip("\r\n"))
+            if m:
+                vals[m.group(1)] = int(m.group(2))
+    return vals
+
+
+def lookup(metric, build, logs, hygiene):
     """(value, where) for a metric, or (None, why)."""
     src, name = metric["source"], metric["name"]
     if src == "build":
         return (build[name], "build") if name in build else (None, "not measured by the build")
+    if src == "hygiene":
+        if hygiene is None:
+            return None, "no hygiene.log (run tools/hygiene.py --out <build-dir>/hygiene.log)"
+        return (hygiene[name], "hygiene") if name in hygiene else (None, "hygiene.py did not report it")
     if src == "*":
         found = [(v[name], s) for s, v in logs.items() if name in v]
         if not found:
@@ -118,16 +138,22 @@ def lookup(metric, build, logs):
     return logs[src][name], src
 
 
+def fail_margin(metric):
+    """Hygiene counts are exact ratchets (ADR-0020): one more is a failure."""
+    return 0.0 if metric["source"] == "hygiene" else FAIL_MARGIN
+
+
 def judge(metric, value):
     """'ok', 'warn' or 'FAIL' for a measured value."""
     limit = metric["limit"]
+    margin = fail_margin(metric)
     if metric["kind"] == "max":
-        if value > limit * (1 + FAIL_MARGIN):
+        if value > limit * (1 + margin):
             return "FAIL"
         if limit > 0 and value < limit * (1 - WARN_MARGIN):
             return "warn"
     else:
-        if value < limit * (1 - FAIL_MARGIN):
+        if value < limit * (1 - margin):
             return "FAIL"
         if value > limit * (1 + WARN_MARGIN):
             return "warn"
@@ -141,6 +167,10 @@ def main():
     ap.add_argument("--build-dir", default=os.path.join(ROOT, "build"))
     ap.add_argument("--log-dir", default=None,
                     help="serial logs (default: <build-dir>/qemu-test)")
+    ap.add_argument("--only-source", action="append", default=[], metavar="SOURCE",
+                    help="check only metrics with this source (build, hygiene, a suite, *)")
+    ap.add_argument("--skip-source", action="append", default=[], metavar="SOURCE",
+                    help="leave out metrics with this source")
     ap.add_argument("--expect-fail", action="append", default=[], metavar="NAME",
                     help="self-check: pass only if exactly these metrics fail")
     args = ap.parse_args()
@@ -153,13 +183,17 @@ def main():
         log(str(e))
         return 2
     logs = log_values(log_dir)
+    hygiene = hygiene_values(args.build_dir)
+    metrics = [m for m in metrics
+               if (not args.only_source or m["source"] in args.only_source)
+               and m["source"] not in args.skip_source]
 
     rows, failed, warned, failed_names = [], [], [], []
     for m in metrics:
         if m["off"]:
             rows.append((m["name"], "-", f"{m['kind']} {m['limit']}", m["unit"], "off", f"not measured until {m['owner']}"))
             continue
-        value, where = lookup(m, build, logs)
+        value, where = lookup(m, build, logs, hygiene)
         if value is None:
             rows.append((m["name"], "-", f"{m['kind']} {m['limit']}", m["unit"], "FAIL", where))
             failed.append(f"{m['name']}: not reported ({where})")
@@ -170,7 +204,7 @@ def main():
         if verdict == "FAIL":
             failed_names.append(m["name"])
             failed.append(f"{m['name']} = {value} {m['unit']}, limit {m['kind']} {m['limit']} "
-                          f"({'+' if m['kind'] == 'max' else '-'}{int(FAIL_MARGIN * 100)}%), from {where}; "
+                          f"({'+' if m['kind'] == 'max' else '-'}{int(fail_margin(m) * 100)}%), from {where}; "
                           f"owner {m['owner']}")
         elif verdict == "warn":
             warned.append(f"{m['name']} = {value}, limit {m['limit']}: more than "
