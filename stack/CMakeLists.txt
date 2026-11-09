@@ -24,18 +24,22 @@ file(MAKE_DIRECTORY "${ARC_LANE_BUDGET_DIR}")
 
 enable_testing()
 
-# lane_test(NAME <name> COMMAND <program> [args...] [WORKING_DIRECTORY <dir>])
+# lane_test(NAME <name> COMMAND <program> [args...] [WORKING_DIRECTORY <dir>] [ENVIRONMENT <VAR=value>...])
 # Registers ctest test lane.<name> (label `lane`). The program runs through
-# tools/lane/run.sh, so it is traced when ARC_LANE_LOGS is set (log <name>.strace).
+# tools/lane/run.sh, so it is traced when ARC_LANE_LOGS is set (log <name>.strace),
+# and so is everything it execs: those must be arc_os-bound programs too.
 # Use it only for arc_os-bound programs; drivers that start them use lane_driver_test().
 function(lane_test)
-    cmake_parse_arguments(T "" "NAME;WORKING_DIRECTORY" "COMMAND" ${ARGN})
+    cmake_parse_arguments(T "" "NAME;WORKING_DIRECTORY" "COMMAND;ENVIRONMENT" ${ARGN})
     if(NOT T_WORKING_DIRECTORY)
         set(T_WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
     endif()
     add_test(NAME lane.${T_NAME} COMMAND "${ARC_LANE_RUN}" ${T_NAME} ${T_COMMAND}
              WORKING_DIRECTORY "${T_WORKING_DIRECTORY}")
     set_tests_properties(lane.${T_NAME} PROPERTIES LABELS lane)
+    if(T_ENVIRONMENT)
+        set_tests_properties(lane.${T_NAME} PROPERTIES ENVIRONMENT "${T_ENVIRONMENT}")
+    endif()
 endfunction()
 
 # lane_driver_test(NAME <name> COMMAND <driver> [args...])

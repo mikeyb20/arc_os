@@ -6,5 +6,5 @@
 # name                 limit       kind unit   owner  source    [off]
 
 # Static C++ binary (cxx_basic: exceptions, threads, filesystem, iostream): loaded ELF
-# bytes, the floor every C++ program pays for static libstdc++ (measured TBD)
-cxx_basic_bytes        0           max  bytes  M2-01  sizes
+# bytes, the floor every C++ program pays for static libstdc++ (measured 1195803)
+cxx_basic_bytes        1315000     max  bytes  M2-01  sizes

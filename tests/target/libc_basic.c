@@ -153,7 +153,10 @@ static void test_signals_and_processes(void) {
 
     pid = fork();
     if (pid == 0) {
-        char *argv[] = { "/bin/true", NULL };
+        /* ARC_TRUE names a static musl `true` for lane tests (M2-01), so the traced
+         * child is an arc_os-bound program and not the host's dynamic /bin/true. */
+        char *path = getenv("ARC_TRUE");
+        char *argv[] = {path ? path : "/bin/true", NULL};
         execv(argv[0], argv);
         _exit(127);
     }

@@ -9,7 +9,10 @@ target_link_libraries(pthread_basic PRIVATE pthread)
 add_executable(cxx_basic "${ARC_TARGET_DIR}/cxx_basic.cpp")
 target_link_libraries(cxx_basic PRIVATE pthread)
 
-lane_test(NAME libc_basic COMMAND $<TARGET_FILE:libc_basic>)
+# libc_basic execs `true`; under strace -f the child is traced too, so give it a static
+# musl one instead of the host's dynamic /bin/true (which would show the host's loader).
+add_executable(lane_true lane_true.c)
+lane_test(NAME libc_basic COMMAND $<TARGET_FILE:libc_basic> ENVIRONMENT ARC_TRUE=$<TARGET_FILE:lane_true>)
 lane_test(NAME pthread_basic COMMAND $<TARGET_FILE:pthread_basic>)
 lane_test(NAME cxx_basic COMMAND $<TARGET_FILE:cxx_basic>)
 
