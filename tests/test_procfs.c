@@ -10,6 +10,7 @@
 #define ARCHOS_MM_PMM_H
 #define ARCHOS_BOOT_BOOTINFO_H
 #define ARCHOS_MM_KMALLOC_H
+#define ARCHOS_MM_SLAB_H
 #define ARCHOS_ARCH_HAL_H
 #define ARCHOS_PROC_PROCESS_H
 #define ARCHOS_PROC_THREAD_H
@@ -64,12 +65,20 @@ struct VfsDirEntry {
 typedef struct {
     size_t total_used;
     size_t total_free;
-    size_t total_blocks;
-    size_t free_blocks;
-    size_t largest_free;
     size_t heap_mapped;
     size_t large_bytes;
 } HeapStats;
+
+/* SlabInfo type (slab.h) */
+typedef struct {
+    const char *name;
+    uint32_t object_size;
+    uint64_t active_objs;
+    uint64_t total_objs;
+    uint64_t slabs;
+    uint32_t objs_per_slab;
+    uint32_t pages_per_slab;
+} SlabInfo;
 
 /* Process states */
 #define PROC_ALIVE       0
@@ -96,9 +105,6 @@ static uint64_t stub_uptime_ms = 12345;
 static HeapStats stub_heap_stats = {
     .total_used = 4096,
     .total_free = 12288,
-    .total_blocks = 5,
-    .free_blocks = 2,
-    .largest_free = 8192,
     .heap_mapped = 16384,
     .large_bytes = 32768,
 };
@@ -162,6 +168,17 @@ static const char *cpu_core_type_name(uint8_t type) {
 
 static void kmalloc_get_stats(HeapStats *out) {
     *out = stub_heap_stats;
+}
+
+/* Two slab caches */
+static int slab_get_info(unsigned n, SlabInfo *out) {
+    static const SlabInfo caches[] = {
+        {"kmem_cache", 120, 3, 34, 1, 34, 1},
+        {"kmalloc-1024", 1024, 9, 16, 2, 8, 2},
+    };
+    if (n >= 2) return -1;
+    *out = caches[n];
+    return 0;
 }
 
 static Process *proc_get_by_pid(uint32_t pid) {
@@ -310,6 +327,19 @@ TEST(cpuinfo_content) {
     return 0;
 }
 
+TEST(slabinfo_content) {
+    VfsNode *root = procfs_init();
+    VfsNode *n = root->ops->lookup(root, "slabinfo");
+    ASSERT_TRUE(n != NULL);
+    char buf[256] = {0};
+    int rd = n->ops->read(n, buf, 0, sizeof(buf) - 1);
+    ASSERT_TRUE(rd > 0);
+    ASSERT_STR_EQ(buf, "# name objsize active total slabs\n"
+                       "kmem_cache 120 3 34 1\n"
+                       "kmalloc-1024 1024 9 16 2\n");
+    return 0;
+}
+
 TEST(pid_status_content) {
     setup_test_procs();
     VfsNode *root = procfs_init();
@@ -336,12 +366,14 @@ TEST(readdir_root) {
     VfsNode *root = procfs_init();
     VfsDirEntry entries[16];
     int count = root->ops->readdir(root, entries, 16);
-    /* meminfo + uptime + cmdline + cpuinfo + 3 non-terminated PIDs (0, 1, 2) */
-    ASSERT_EQ(count, 7);
+    /* meminfo + uptime + cmdline + cpuinfo + slabinfo + 3 non-terminated PIDs (0, 1, 2) */
+    ASSERT_EQ(count, 8);
     ASSERT_STR_EQ(entries[0].name, "meminfo");
     ASSERT_STR_EQ(entries[1].name, "uptime");
     ASSERT_STR_EQ(entries[2].name, "cmdline");
     ASSERT_STR_EQ(entries[3].name, "cpuinfo");
+    ASSERT_STR_EQ(entries[4].name, "slabinfo");
+    ASSERT_STR_EQ(entries[5].name, "0");
     return 0;
 }
 
@@ -368,11 +400,11 @@ TEST(no_create_ops) {
 /* --- Suite --- */
 
 TestCase procfs_tests[] = {
-    TEST_ENTRY(init_returns_non_null), TEST_ENTRY(root_is_directory), TEST_ENTRY(lookup_meminfo),
-    TEST_ENTRY(lookup_uptime),         TEST_ENTRY(lookup_pid),        TEST_ENTRY(lookup_nonexistent_pid),
-    TEST_ENTRY(lookup_non_numeric),    TEST_ENTRY(meminfo_content),   TEST_ENTRY(meminfo_partial_read),
-    TEST_ENTRY(uptime_content),        TEST_ENTRY(cmdline_content),   TEST_ENTRY(cpuinfo_content),
-    TEST_ENTRY(pid_status_content),    TEST_ENTRY(readdir_root),      TEST_ENTRY(readdir_pid_dir),
-    TEST_ENTRY(no_create_ops),
+    TEST_ENTRY(init_returns_non_null), TEST_ENTRY(root_is_directory),  TEST_ENTRY(lookup_meminfo),
+    TEST_ENTRY(lookup_uptime),         TEST_ENTRY(lookup_pid),         TEST_ENTRY(lookup_nonexistent_pid),
+    TEST_ENTRY(lookup_non_numeric),    TEST_ENTRY(meminfo_content),    TEST_ENTRY(meminfo_partial_read),
+    TEST_ENTRY(uptime_content),        TEST_ENTRY(cmdline_content),    TEST_ENTRY(cpuinfo_content),
+    TEST_ENTRY(slabinfo_content),      TEST_ENTRY(pid_status_content), TEST_ENTRY(readdir_root),
+    TEST_ENTRY(readdir_pid_dir),       TEST_ENTRY(no_create_ops),
 };
 int procfs_test_count = sizeof(procfs_tests) / sizeof(procfs_tests[0]);

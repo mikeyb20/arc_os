@@ -15,8 +15,9 @@ typedef uint32_t tid_t;
 #define THREAD_DEAD     4
 #define THREAD_STOPPED  5
 
-/* Default kernel stack size: 16 KB */
-#define THREAD_STACK_SIZE  (16 * 1024)
+/* Kernel stack: one order-2 buddy block, 16 KB (M1-02b) */
+#define THREAD_STACK_ORDER 2
+#define THREAD_STACK_SIZE  (4096 << THREAD_STACK_ORDER)
 
 /* Thread entry function type */
 typedef void (*thread_entry_t)(void *arg);
@@ -39,7 +40,7 @@ typedef struct Thread {
     tid_t           tid;
     uint8_t         state;
     ThreadContext   context;
-    uint8_t        *stack_base;     /* Heap-allocated kernel stack (NULL for boot thread) */
+    uint8_t *stack_base;     /* Kernel stack, an alloc_pages block in the HHDM (NULL for boot thread) */
     size_t          stack_size;
     uint64_t        kernel_stack_top; /* Top of kernel stack for TSS.rsp0 / SYSCALL */
     thread_entry_t  entry;

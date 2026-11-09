@@ -22,7 +22,9 @@ Kernel and user space are separate worlds: the same function in `kernel/lib` and
 | Page descriptors (`struct page`), PFN / phys / HHDM conversions | `pfn_to_page`, `page_to_pfn`, `page_to_phys`, `page_to_virt`, `virt_to_page`, `pfn_valid` | `kernel/mm/page.h` |
 | Allocation flags | `GFP_KERNEL`, `GFP_ZERO`, `GFP_DMA32` | `kernel/mm/gfp.h` |
 | Size strings (`4G`, `512M`) | `pmm_parse_size` | `kernel/mm/pmm.h` |
-| Kernel heap | `kmalloc`, `kfree`, `krealloc` (slab from M1-02b) | `kernel/mm/kmalloc.h` |
+| Kernel heap (16 B-4 MiB, no header) | `kmalloc`, `kfree`, `krealloc` | `kernel/mm/kmalloc.h` |
+| Object caches for hot structures | `kmem_cache_create`, `kmem_cache_alloc`, `kmem_cache_free`, `kmem_cache_shrink`; `slab_owner` | `kernel/mm/slab.h` |
+| PFN-linked page lists (O(1) push/remove through `lru`) | `page_list_push`, `page_list_remove`, `page_list_first` | `kernel/mm/page.h` |
 | User memory | `copy_from_user`, `copy_to_user`, `strncpy_from_user` | `kernel/include/user_access.h` |
 | Spinlock (IRQ-safe) | `spinlock_acquire`, `spinlock_release` | `kernel/proc/spinlock.h` |
 | Interrupts off/on around a section | `irq_save`, `irq_restore` | `kernel/proc/spinlock.h` |

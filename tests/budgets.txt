@@ -29,10 +29,11 @@ page_descriptor_bytes  55000000    max  bytes  M1-02  smoke
 pages_leaked           0           max  pages  M0-10  *
 heap_leaked_bytes      0           max  bytes  M0-10  *
 
-# Most heap blocks one kmalloc walked (first fit; measured worst 148 in abi after
-# M0-10, 215 before; 84 after M1-02 moved 8 KiB-4 MiB blocks to alloc_pages).
-# M1-02b's slab replaces it with slab steps.
-kmalloc_walk_max       92          max  blocks M1-02b *
+# Most steps one slab alloc or free took (M1-02b; replaces the first-fit heap's
+# kmalloc_walk_max, last 84 blocks): 1 for the object, +1 when the slab changes
+# lists, +1 when a slab comes from or goes back to the buddy allocator. 3 is
+# the most the code can take; more means a loop crept into the hot path.
+slab_steps_max         3           max  steps  M1-02b *
 
 # Timer interrupts on an idle CPU over 5 s: needs the tickless timer (M1-06)
 idle_timer_irqs_5s     0           max  irqs   M1-06  smoke     off

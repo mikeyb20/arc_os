@@ -35,25 +35,33 @@
 #define PG_HEAD       (1u << 6)    /* compound page head (reserved for 2 MiB file/anon pages, M1-08/M1-12) */
 #define PG_TAIL       (1u << 7)    /* compound page tail (reserved, see PG_HEAD) */
 #define PG_KMALLOC    (1u << 8)    /* head of a large kmalloc block (kfree checks it) */
-/* Bits 9-31 are free for later blocks (slab M1-02b, page cache M1-12).
- * free_pages() clears every flag, so owners never need to clear their bit. */
+#define PG_SLAB       (1u << 9)    /* every page of a slab (mm/slab.c); slab_cache names the owner */
+/* Bits 10-31 are free for later blocks (page cache M1-12).
+ * free_pages() clears every flag of the head page; owners of a multi-page
+ * block clear what they set on its other pages before freeing it. */
 
 struct page {
     uint32_t flags;      /* PG_* bits and the block order */
     uint32_t refcount;   /* 0 = free or reserved; alloc_pages() sets 1 on the head */
-    uint32_t mapcount;   /* page-table mappings (M1-07) */
-    uint32_t index;      /* page index in its mapping (page cache, M1-12) */
-    union {
-        void *mapping;     /* page cache address space or anon owner (M1-07, M1-12) */
-        void *slab_cache;  /* owning slab cache (M1-02b) */
-    };
     union {
         struct {
-            uint32_t next;  /* PFN of the next page, or PFN_NONE */
-            uint32_t prev;  /* PFN of the previous page, or PFN_NONE */
-        } lru;              /* buddy free lists now; LRU lists later (M1-14) */
-        uint64_t slab_free; /* slab free-list head (M1-02b) */
+            uint32_t mapcount;    /* page-table mappings (M1-07) */
+            uint32_t index;       /* page index in its mapping (page cache, M1-12) */
+        };
+        struct {                  /* slab head page (M1-02b); never mapped to user space */
+            uint16_t slab_inuse;  /* objects handed out */
+            uint16_t slab_fresh;  /* objects never used yet: [slab_fresh, per slab) */
+            uint32_t slab_free;   /* byte offset of the first freed object, or SLAB_FREE_NONE */
+        };
     };
+    union {
+        void *mapping;     /* page cache address space or anon owner (M1-07, M1-12) */
+        void *slab_cache;  /* owning slab cache, on every page of a slab (M1-02b) */
+    };
+    struct {
+        uint32_t next;  /* PFN of the next page, or PFN_NONE */
+        uint32_t prev;  /* PFN of the previous page, or PFN_NONE */
+    } lru;              /* buddy free lists, slab lists (M1-02b), LRU lists later (M1-14) */
 };
 
 _Static_assert(sizeof(struct page) == 32, "struct page must be exactly 32 bytes (ADR-0019)");
@@ -92,6 +100,46 @@ static inline void *page_to_virt(const struct page *pg) {
  * and its PFN valid. */
 static inline struct page *virt_to_page(const void *virt) {
     return pfn_to_page(((uint64_t)(uintptr_t)virt - pmm_hhdm_offset) >> PAGE_SHIFT);
+}
+
+/* A doubly linked list of block heads through their lru PFN links. Every
+ * operation is O(1). A page is on at most one such list at a time. */
+struct page_list {
+    uint32_t head;   /* PFN of the first page, or PFN_NONE */
+};
+
+#define PAGE_LIST_INIT \
+    { PFN_NONE }
+
+/* True if the list has no pages. */
+static inline int page_list_empty(const struct page_list *l) {
+    return l->head == PFN_NONE;
+}
+
+/* First page of the list, or NULL. */
+static inline struct page *page_list_first(const struct page_list *l) {
+    return l->head == PFN_NONE ? NULL : pfn_to_page(l->head);
+}
+
+/* Put `pg` at the front of the list. */
+static inline void page_list_push(struct page_list *l, struct page *pg) {
+    uint32_t pfn = (uint32_t)page_to_pfn(pg);
+    pg->lru.prev = PFN_NONE;
+    pg->lru.next = l->head;
+    if (l->head != PFN_NONE) pfn_to_page(l->head)->lru.prev = pfn;
+    l->head = pfn;
+}
+
+/* Take `pg` off the list it is on (which must be `l`). Its links are reset. */
+static inline void page_list_remove(struct page_list *l, struct page *pg) {
+    if (pg->lru.prev != PFN_NONE) {
+        pfn_to_page(pg->lru.prev)->lru.next = pg->lru.next;
+    } else {
+        l->head = pg->lru.next;
+    }
+    if (pg->lru.next != PFN_NONE) pfn_to_page(pg->lru.next)->lru.prev = pg->lru.prev;
+    pg->lru.next = PFN_NONE;
+    pg->lru.prev = PFN_NONE;
 }
 
 /* Order stored in a block head. */

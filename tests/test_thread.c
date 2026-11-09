@@ -7,6 +7,7 @@
 #define ARCHOS_PROC_THREAD_H    /* Guard thread.h — we reproduce types below */
 #define ARCHOS_LIB_KPRINTF_H
 #define ARCHOS_MM_KMALLOC_H
+#define ARCHOS_MM_PMM_H         /* alloc_pages/free_pages: stubbed below */
 #define ARCHOS_LIB_MEM_H        /* Use libc memset/memcpy */
 #define ARCHOS_ARCH_HAL_H        /* hal.h: only fpu.h is used, stubbed below */
 #define ARCHOS_ARCH_X86_64_FPU_H  /* fpu.h: stubbed below */
@@ -24,7 +25,8 @@ typedef uint32_t tid_t;
 #define THREAD_BLOCKED  3
 #define THREAD_DEAD     4
 
-#define THREAD_STACK_SIZE  (16 * 1024)
+#define THREAD_STACK_ORDER 2
+#define THREAD_STACK_SIZE  (4096 << THREAD_STACK_ORDER)
 
 typedef void (*thread_entry_t)(void *arg);
 
@@ -80,6 +82,23 @@ static void *kmalloc(size_t size, uint32_t flags) {
 static void kfree(void *ptr) {
     kfree_call_count++;
     free(ptr);
+}
+
+/* Page allocator stubs for the kernel stack: a "page" is the block itself, and
+ * calls go through the kmalloc/kfree counters so failure injection counts them */
+struct page;
+static struct page *alloc_pages(unsigned order, uint32_t flags) {
+    return (struct page *)kmalloc((size_t)4096 << order, flags);
+}
+static void free_pages(struct page *pg, unsigned order) {
+    (void)order;
+    kfree(pg);
+}
+static inline void *page_to_virt(struct page *pg) {
+    return pg;
+}
+static inline struct page *virt_to_page(const void *v) {
+    return (struct page *)(uintptr_t)v;
 }
 
 /* fpu.h stubs: the save area comes from kmalloc, as in the kernel */
