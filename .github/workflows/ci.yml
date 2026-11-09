@@ -44,7 +44,7 @@ jobs:
         if: github.event_name == 'pull_request'
         run: |
           git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
-          out=$(git clang-format --diff --extensions c,h "origin/${{ github.base_ref }}" -- kernel libc userland tests || true)
+          out=$(git clang-format --diff --extensions c,h "origin/${{ github.base_ref }}" -- kernel libc userland stack tests || true)
           if printf '%s\n' "$out" | grep -q '^diff '; then
             printf '%s\n' "$out"
             echo "::error::Changed lines are not clang-formatted (.clang-format). Fix: git clang-format origin/${{ github.base_ref }}"

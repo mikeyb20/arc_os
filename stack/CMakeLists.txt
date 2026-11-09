@@ -1,0 +1,55 @@
+# arc_os user-space stack built with musl (lane L; conventions in docs/plans/lane-l.md).
+#
+#   tools/lane/build.sh                         configure and build into build-lane/stack
+#   ctest --test-dir build-lane/stack -L lane   run the lane tests on Linux
+#
+# Static x86-64-v3 programs and libraries (toolchain-musl.cmake). Ports are found under
+# build-lane/ports/<name>/ (ports/<name>/build.sh). userland/ is the libarc base system and
+# is built by the top-level project, not here.
+cmake_minimum_required(VERSION 3.20)
+project(arc_stack C CXX)
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+add_compile_options(-Wall -Wextra)
+
+get_filename_component(ARC_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
+set(ARC_LANE_RUN "${ARC_ROOT}/tools/lane/run.sh")
+# Lane tests write `ARC_TEST budget` lines here; lane.yml checks them against
+# stack/budgets.txt with tools/budget-check.py --log-dir.
+set(ARC_LANE_BUDGET_DIR "${CMAKE_BINARY_DIR}/budgets")
+file(MAKE_DIRECTORY "${ARC_LANE_BUDGET_DIR}")
+
+enable_testing()
+
+# lane_test(NAME <name> COMMAND <program> [args...] [WORKING_DIRECTORY <dir>] [ENVIRONMENT <VAR=value>...])
+# Registers ctest test lane.<name> (label `lane`). The program runs through
+# tools/lane/run.sh, so it is traced when ARC_LANE_LOGS is set (log <name>.strace),
+# and so is everything it execs: those must be arc_os-bound programs too.
+# Use it only for arc_os-bound programs; drivers that start them use lane_driver_test().
+function(lane_test)
+    cmake_parse_arguments(T "" "NAME;WORKING_DIRECTORY" "COMMAND;ENVIRONMENT" ${ARGN})
+    if(NOT T_WORKING_DIRECTORY)
+        set(T_WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+    endif()
+    add_test(NAME lane.${T_NAME} COMMAND "${ARC_LANE_RUN}" ${T_NAME} ${T_COMMAND}
+             WORKING_DIRECTORY "${T_WORKING_DIRECTORY}")
+    set_tests_properties(lane.${T_NAME} PROPERTIES LABELS lane)
+    if(T_ENVIRONMENT)
+        set_tests_properties(lane.${T_NAME} PROPERTIES ENVIRONMENT "${T_ENVIRONMENT}")
+    endif()
+endfunction()
+
+# lane_driver_test(NAME <name> COMMAND <driver> [args...])
+# A test whose driver (shell or Python, untraced) starts arc_os-bound programs itself,
+# each through tools/lane/run.sh. ARC_LANE_RUN and ARC_LANE_BUDGET_DIR are in its environment.
+function(lane_driver_test)
+    cmake_parse_arguments(T "" "NAME" "COMMAND" ${ARGN})
+    add_test(NAME lane.${T_NAME} COMMAND ${T_COMMAND} WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(lane.${T_NAME} PROPERTIES LABELS lane
+        ENVIRONMENT "ARC_LANE_RUN=${ARC_LANE_RUN};ARC_LANE_BUDGET_DIR=${ARC_LANE_BUDGET_DIR}")
+endfunction()
+
+add_subdirectory(tests)

@@ -1,9 +1,12 @@
-# Builds the pinned x86_64-elf cross toolchain (binutils + GCC, C only) from
-# tools/toolchain.lock and publishes it as a release asset of this repo.
+# Builds the pinned cross toolchains from tools/toolchain.lock and publishes each as a
+# release asset of this repo:
+#   build  x86_64-elf (binutils + GCC, C only) for the kernel and libarc
+#   musl   x86_64-linux-musl (GCC + libstdc++, binutils, musl) for user space (M2-01),
+#          built offline from the archive by ports/musl-cross-make/build.sh
 #
-# Runs on manual trigger, and on pushes that change the lock or this file. It does nothing
-# when the asset named in the lock already exists: assets are never replaced in place, a new
-# toolchain gets a new TOOLCHAIN_RELEASE.
+# Runs on manual trigger, and on pushes that change the lock, the musl port or this file.
+# A job does nothing when the asset named in the lock already exists: assets are never
+# replaced in place, a new toolchain gets a new *_RELEASE.
 name: toolchain
 
 on:
@@ -11,6 +14,7 @@ on:
   push:
     paths:
       - tools/toolchain.lock
+      - ports/musl-cross-make/**
       - .github/workflows/toolchain.yml
 
 permissions:
@@ -121,3 +125,73 @@ jobs:
             "$TOOLCHAIN_ASSET" "$TOOLCHAIN_ASSET.sha256"
           echo "Put this in tools/toolchain.lock as TOOLCHAIN_SHA256:"
           cut -d' ' -f1 "$TOOLCHAIN_ASSET.sha256"
+
+  musl:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read lock
+        run: grep -E '^[A-Z0-9_]+=' tools/toolchain.lock >> "$GITHUB_ENV"
+
+      - name: Skip if the asset already exists
+        id: exists
+        run: |
+          if gh release view "$MUSL_TOOLCHAIN_RELEASE" -R "$GITHUB_REPOSITORY" --json assets \
+               -q '.assets[].name' 2>/dev/null | grep -qx "$MUSL_TOOLCHAIN_ASSET"; then
+            echo "already=true" >> "$GITHUB_OUTPUT"
+            echo "$MUSL_TOOLCHAIN_ASSET is already published in $MUSL_TOOLCHAIN_RELEASE; nothing to do."
+          else
+            echo "already=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install build dependencies
+        if: steps.exists.outputs.already == 'false'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential m4 bison flex texinfo zstd
+
+      - name: Build (offline, sources from the archive)
+        if: steps.exists.outputs.already == 'false'
+        run: ports/musl-cross-make/build.sh "$RUNNER_TEMP/cross-musl"
+
+      - name: Smoke test (relocated)
+        if: steps.exists.outputs.already == 'false'
+        run: |
+          # Prove the toolchain works from another directory and makes static C and C++ programs.
+          mv "$RUNNER_TEMP/cross-musl" "$RUNNER_TEMP/relocated"
+          T="$RUNNER_TEMP/relocated/bin/$MUSL_TOOLCHAIN_TARGET"
+          printf '#include <stdio.h>\nint main(void){puts("c ok");return 0;}\n' > "$RUNNER_TEMP/t.c"
+          printf '#include <iostream>\n#include <stdexcept>\nint main(){try{throw std::runtime_error("x");}catch(const std::exception&){std::cout<<"c++ ok\\n";}return 0;}\n' > "$RUNNER_TEMP/t.cpp"
+          "$T-gcc" -static -march=x86-64-v3 -O2 "$RUNNER_TEMP/t.c" -o "$RUNNER_TEMP/t"
+          "$T-g++" -static -march=x86-64-v3 -O2 "$RUNNER_TEMP/t.cpp" -o "$RUNNER_TEMP/tpp"
+          file "$RUNNER_TEMP/t" "$RUNNER_TEMP/tpp" | tee /dev/stderr | grep -c 'statically linked' | grep -qx 2
+          "$RUNNER_TEMP/t" && "$RUNNER_TEMP/tpp"
+          "$T-gcc" -v 2>&1 | tail -1
+          mv "$RUNNER_TEMP/relocated" "$RUNNER_TEMP/cross-musl"
+
+      - name: Pack
+        if: steps.exists.outputs.already == 'false'
+        run: |
+          cd "$RUNNER_TEMP"
+          tar --sort=name --owner=0 --group=0 --numeric-owner -C cross-musl -cf - . \
+            | zstd -19 -T0 -o "$MUSL_TOOLCHAIN_ASSET"
+          sha256sum "$MUSL_TOOLCHAIN_ASSET" | tee "$MUSL_TOOLCHAIN_ASSET.sha256"
+          ls -l "$MUSL_TOOLCHAIN_ASSET"
+
+      - name: Publish release asset
+        if: steps.exists.outputs.already == 'false'
+        run: |
+          cd "$RUNNER_TEMP"
+          if ! gh release view "$MUSL_TOOLCHAIN_RELEASE" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$MUSL_TOOLCHAIN_RELEASE" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --title "x86_64-linux-musl toolchain ($MUSL_TOOLCHAIN_RELEASE)" \
+              --notes "GCC 14.1.0 (C, C++), binutils 2.42, musl 1.2.5 for $MUSL_TOOLCHAIN_TARGET, built offline on ubuntu-24.04 by ports/musl-cross-make/build.sh. Install with tools/dev-setup.sh musl."
+          fi
+          gh release upload "$MUSL_TOOLCHAIN_RELEASE" -R "$GITHUB_REPOSITORY" \
+            "$MUSL_TOOLCHAIN_ASSET" "$MUSL_TOOLCHAIN_ASSET.sha256"
+          echo "Put this in tools/toolchain.lock as MUSL_TOOLCHAIN_SHA256:"
+          cut -d' ' -f1 "$MUSL_TOOLCHAIN_ASSET.sha256"

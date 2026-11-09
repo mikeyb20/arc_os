@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Code hygiene counts (ADR-0020, M0-09).
 
-Scans kernel/, libc/ and userland/ (C sources and headers, vendored files
+Scans kernel/, libc/, userland/ and stack/ (C sources and headers, vendored files
 skipped) and prints one `ARC_TEST budget <name> <value>` line per metric, the
 format tools/budget-check.py reads, followed by where each count comes from:
 
@@ -40,7 +40,7 @@ import sys
 from collections import defaultdict
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SCAN_DIRS = ("kernel", "libc", "userland")
+SCAN_DIRS = ("kernel", "libc", "userland", "stack")
 VENDORED = {"kernel/include/limine.h"}
 SYSCALL_TABLE = ".claude/skills/arc-os-architecture/reference/syscall-table.md"
 

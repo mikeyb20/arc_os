@@ -163,6 +163,8 @@ if(Python3_Interpreter_FOUND)
     # M0-04: tools/syscall-inventory.py on hand-written strace lines
     add_test(NAME tools_syscall_inventory
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/tools/test_syscall_inventory.py)
+    # M2-01: lane helpers (tools/lane/run.sh, tools/lane/sizes.py, lane budget logs)
+    add_test(NAME tools_lane COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/tools/test_lane_tools.py)
     # M0-09: tools/hygiene.py on a fixture tree, and hygiene limits as exact ratchets
     add_test(NAME tools_hygiene
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/tools/test_hygiene.py)
