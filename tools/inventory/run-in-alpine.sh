@@ -67,12 +67,7 @@ cd "$OUT/tmp"
 run libc_basic    "$OUT/bin/libc_basic"
 run pthread_basic "$OUT/bin/pthread_basic"
 run cxx_basic     "$OUT/bin/cxx_basic"
-cat > fts.sql <<'SQL'
-CREATE VIRTUAL TABLE docs USING fts5(title, body);
-INSERT INTO docs VALUES ('Hypothermia', 'Body temperature below 35 C; warm the person slowly.');
-INSERT INTO docs VALUES ('Water', 'Boil water for one minute to make it safe to drink.');
-SELECT title FROM docs WHERE docs MATCH 'warm' ORDER BY rank;
-SQL
+cp /work/tests/target/fts.sql fts.sql    # the FTS5 script, also run by lane.sqlite_shell (M2-02)
 run sqlite3       "$OUT/bin/sqlite3" -bail -cmd ".read fts.sql" fts.db ".quit"
 head -c 3000000 "$OUT/bin/sqlite3" > sample.bin
 run zstd-compress   "$OUT/bin/zstd" -q -f -3 -T2 sample.bin -o sample.bin.zst
