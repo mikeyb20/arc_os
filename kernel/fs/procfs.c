@@ -253,12 +253,23 @@ static int procfs_parse_uint(const char *s, uint32_t *out) {
     return 0;
 }
 
+/* Fixed files in /proc, in readdir order */
+static const struct {
+    const char *name;
+    ProcfsFileNode *node;
+} root_files[] = {
+    {"meminfo", &meminfo_node},
+    {"uptime", &uptime_node},
+    {"cmdline", &cmdline_node},
+    {"cpuinfo", &cpuinfo_node},
+};
+#define ROOT_FILE_COUNT (sizeof(root_files) / sizeof(root_files[0]))
+
 static VfsNode *procfs_root_lookup(VfsNode *dir, const char *name) {
     (void)dir;
-    if (strcmp(name, "meminfo") == 0) return &meminfo_node.vnode;
-    if (strcmp(name, "uptime") == 0) return &uptime_node.vnode;
-    if (strcmp(name, "cmdline") == 0) return &cmdline_node.vnode;
-    if (strcmp(name, "cpuinfo") == 0) return &cpuinfo_node.vnode;
+    for (uint32_t i = 0; i < ROOT_FILE_COUNT; i++) {
+        if (strcmp(name, root_files[i].name) == 0) return &root_files[i].node->vnode;
+    }
 
     uint32_t pid;
     if (procfs_parse_uint(name, &pid) != 0) return NULL;
@@ -323,31 +334,10 @@ static int procfs_root_readdir(VfsNode *dir, VfsDirEntry *entries, uint32_t max)
     (void)dir;
     uint32_t count = 0;
 
-    if (count < max) {
-        strncpy(entries[count].name, "meminfo", VFS_NAME_MAX - 1);
+    for (uint32_t i = 0; i < ROOT_FILE_COUNT && count < max; i++) {
+        strncpy(entries[count].name, root_files[i].name, VFS_NAME_MAX - 1);
         entries[count].name[VFS_NAME_MAX - 1] = '\0';
-        entries[count].inode_num = meminfo_node.vnode.inode_num;
-        entries[count].type = VFS_FILE;
-        count++;
-    }
-    if (count < max) {
-        strncpy(entries[count].name, "uptime", VFS_NAME_MAX - 1);
-        entries[count].name[VFS_NAME_MAX - 1] = '\0';
-        entries[count].inode_num = uptime_node.vnode.inode_num;
-        entries[count].type = VFS_FILE;
-        count++;
-    }
-    if (count < max) {
-        strncpy(entries[count].name, "cmdline", VFS_NAME_MAX - 1);
-        entries[count].name[VFS_NAME_MAX - 1] = '\0';
-        entries[count].inode_num = cmdline_node.vnode.inode_num;
-        entries[count].type = VFS_FILE;
-        count++;
-    }
-    if (count < max) {
-        strncpy(entries[count].name, "cpuinfo", VFS_NAME_MAX - 1);
-        entries[count].name[VFS_NAME_MAX - 1] = '\0';
-        entries[count].inode_num = cpuinfo_node.vnode.inode_num;
+        entries[count].inode_num = root_files[i].node->vnode.inode_num;
         entries[count].type = VFS_FILE;
         count++;
     }
