@@ -52,10 +52,10 @@ target programs, built with it, pass on Linux inside the syscall inventory.
    `.gitignore`: `build-lane/`.
 
 **Done when.**
-- [ ] The `musl` toolchain job is green and `tools/toolchain.lock` pins the asset's SHA-256.
-- [ ] A fresh cloud session gets the musl toolchain from `tools/dev-setup.sh` with no third-party host.
-- [ ] `lane.yml` is green: the three target programs pass and the syscall check passes.
-- [ ] `gcc -v` of the new toolchain shows 14.1.0 and `--enable-languages=c,c++`; `file` shows the test binaries are
+- [x] The `musl` toolchain job is green and `tools/toolchain.lock` pins the asset's SHA-256.
+- [x] A fresh cloud session gets the musl toolchain from `tools/dev-setup.sh` with no third-party host.
+- [x] `lane.yml` is green: the three target programs pass and the syscall check passes.
+- [x] `gcc -v` of the new toolchain shows 14.1.0 and `--enable-languages=c,c++`; `file` shows the test binaries are
       static.
 
 **Watch out.**
@@ -70,4 +70,15 @@ target programs, built with it, pass on Linux inside the syscall inventory.
   downloads from GNU mirrors; leave it.
 
 **Notes.**
--
+- 2026-11-09 (M2-01 PR): toolchain asset `toolchain-musl-v1` published by the `musl` job (SHA-256 in
+  `tools/toolchain.lock`); `tools/dev-setup.sh musl` installs it into `$HOME/opt/cross-musl` and symlinks the tools
+  into `/usr/local/bin` when run as root. The same build also ran in the session (`build.sh`, about 45 minutes on
+  4 CPUs) before the workflow, to catch problems early; don't repeat that in later blocks.
+- GCC 14.1.0 needed nothing beyond the commit's gcc-14.2.0 patches (all 10 apply). SHA-1 files are generated at
+  build time from the SHA-256-verified tarballs rather than committed. `archive.py fetch --cache-only` is new.
+- Surprise: under `strace -f`, `libc_basic` exec'd the host's dynamic `/bin/true`, and the check flagged the glibc
+  loader's `rseq`, `set_robust_list`, `prlimit64` and `/etc/ld.so.cache`. Lane tests must exec only our static
+  programs; `libc_basic` now takes `ARC_TRUE` (unset in Alpine and on arc_os, so `/bin/true` there).
+- Lane budget logs are `<suite>.budget.log` in `build-lane/stack/budgets/` (budget-check reads them like serial
+  logs); `cxx_basic_bytes` = 1 195 803 loaded bytes: static libstdc++ costs about 1.2 MB per C++ program.
+- Next: M2-02 adds `ports/zstd` and `ports/sqlite`; `tools/lane/build.sh` already runs every `ports/*/build.sh`.
