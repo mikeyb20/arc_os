@@ -1,6 +1,6 @@
 # Self-check for tools/budget-check.py (ctest qemu.budgets.selftest): these
 # limits are deliberately wrong, so exactly the first three must fail by name.
 kernel_image_bytes     1000        max  bytes  M0-08  build
-kmalloc_walk_max       1           max  blocks M0-08  *
+slab_steps_max         1           max  steps  M0-08  *
 boot_free_bytes        999999999999 min bytes  M0-08  smoke
 kernel_heap_bytes      2800000     max  bytes  M0-08  smoke

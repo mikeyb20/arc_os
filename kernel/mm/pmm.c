@@ -27,7 +27,7 @@
 #define NR_ZONES    2
 
 typedef struct {
-    uint32_t head[PAGE_MAX_ORDER + 1];   /* first free block of each order, or PFN_NONE */
+    struct page_list free[PAGE_MAX_ORDER + 1];  /* free blocks of each order */
     uint64_t count[PAGE_MAX_ORDER + 1];  /* free blocks of each order */
     uint32_t nonempty;                   /* bit k set when list k is not empty */
 } FreeArea;
@@ -69,12 +69,7 @@ static void list_add(uint64_t pfn, unsigned order) {
 
     pg->flags = PG_BUDDY | order;
     pg->refcount = 0;
-    pg->lru.prev = PFN_NONE;
-    pg->lru.next = z->head[order];
-    if (z->head[order] != PFN_NONE) {
-        pfn_to_page(z->head[order])->lru.prev = (uint32_t)pfn;
-    }
-    z->head[order] = (uint32_t)pfn;
+    page_list_push(&z->free[order], pg);
     z->nonempty |= 1u << order;
     z->count[order]++;
 }
@@ -84,21 +79,12 @@ static void list_del(uint64_t pfn, unsigned order) {
     FreeArea *z = &zones[pfn_zone(pfn)];
     struct page *pg = pfn_to_page(pfn);
 
-    if (pg->lru.prev != PFN_NONE) {
-        pfn_to_page(pg->lru.prev)->lru.next = pg->lru.next;
-    } else {
-        z->head[order] = pg->lru.next;
-    }
-    if (pg->lru.next != PFN_NONE) {
-        pfn_to_page(pg->lru.next)->lru.prev = pg->lru.prev;
-    }
-    if (z->head[order] == PFN_NONE) {
+    page_list_remove(&z->free[order], pg);
+    if (page_list_empty(&z->free[order])) {
         z->nonempty &= ~(1u << order);
     }
     z->count[order]--;
     pg->flags = 0;
-    pg->lru.next = PFN_NONE;
-    pg->lru.prev = PFN_NONE;
 }
 
 /* True if `pfn` is the head of a free block of exactly `order`. */
@@ -138,7 +124,7 @@ static uint64_t alloc_block(unsigned order, uint32_t gfp) {
         if (fit == 0) continue;
 
         unsigned have = (unsigned)__builtin_ctz(fit);   /* smallest order that fits */
-        uint64_t pfn = z->head[have];
+        uint64_t pfn = z->free[have].head;
         list_del(pfn, have);
 
         uint32_t steps = 1;
@@ -419,7 +405,7 @@ static void pmm_init_with_cap(const BootInfo *info, uint64_t cap_bytes) {
     free_page_count = 0;
     for (unsigned z = 0; z < NR_ZONES; z++) {
         for (unsigned o = 0; o <= PAGE_MAX_ORDER; o++) {
-            zones[z].head[o] = PFN_NONE;
+            zones[z].free[o].head = PFN_NONE;
             zones[z].count[o] = 0;
         }
         zones[z].nonempty = 0;

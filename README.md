@@ -84,7 +84,7 @@ userland/
 ```
 
 - Kernel mapped at `0xFFFFFFFF80000000`, HHDM at `0xFFFF800000000000`
-- Heap at `0xFFFFFFFFC0000000`
+- Kernel heap: slab caches and page blocks in the HHDM (`kmalloc`, M1-02b)
 - User processes at `0x400000`, user stack at `0x7FFFFFFFE000`
 - All arch-specific code is under `kernel/arch/x86_64/`
 - Bootloader abstracted behind `BootInfo` struct

@@ -8,6 +8,7 @@
 #include "mm/pmm.h"
 #include "mm/vmm.h"
 #include "mm/kmalloc.h"
+#include "mm/slab.h"
 #include "boot/bootinfo.h"
 #include "proc/thread.h"
 #include "proc/sched.h"
@@ -70,7 +71,7 @@ static const char *memmap_type_name(uint32_t type) {
 
 /* Test mode: budgets measured when init exits (testmode end hook) */
 static void report_end_budgets(void) {
-    ARC_BUDGET("kmalloc_walk_max", kmalloc_max_walk());
+    ARC_BUDGET("slab_steps_max", slab_max_steps());
 }
 
 static void test_thread_entry(void *arg) {
@@ -141,7 +142,24 @@ static void heap_self_test(void) {
         memset(p, 0xAB, sz);
         kfree(p);
     }
-    kprintf("[BOOT] Heap self-test passed (1000 alloc/free cycles)\n");
+    /* Several slabs' worth of one class, then all freed: every empty slab
+     * but the cache's one reserve goes back to the buddy allocator (this is
+     * also the 3-step free that budget slab_steps_max allows) */
+    static void *objs[200];
+    uint64_t free_before = pmm_get_free_pages();
+    for (int i = 0; i < 200; i++) {
+        objs[i] = kmalloc(64, GFP_KERNEL);
+        if (objs[i] == NULL) {
+            kprintf("[BOOT] FAIL: kmalloc(64) returned NULL at %d\n", i);
+            KERNEL_PANIC();
+        }
+    }
+    for (int i = 0; i < 200; i++) kfree(objs[i]);
+    if (pmm_get_free_pages() != free_before) {
+        kprintf("[BOOT] FAIL: empty slabs kept %ld pages\n", (int64_t)(free_before - pmm_get_free_pages()));
+        KERNEL_PANIC();
+    }
+    kprintf("[BOOT] Heap self-test passed (1000 alloc/free cycles, empty slabs returned)\n");
     kmalloc_dump_stats();
 }
 

@@ -1,5 +1,6 @@
 #include "proc/thread.h"
 #include "mm/kmalloc.h"
+#include "mm/pmm.h"
 #include "lib/kprintf.h"
 #include "lib/mem.h"
 #include "arch/hal.h"
@@ -40,16 +41,18 @@ Thread *thread_create(thread_entry_t entry, void *arg) {
     if (t == NULL) return NULL;
 
     /* Allocate kernel stack */
-    t->stack_base = kmalloc(THREAD_STACK_SIZE, 0);
-    if (t->stack_base == NULL) {
+    /* Kernel stack: one order-2 buddy block, no guard page yet (M1-16) */
+    struct page *stack = alloc_pages(THREAD_STACK_ORDER, GFP_KERNEL);
+    if (stack == NULL) {
         kfree(t);
         return NULL;
     }
+    t->stack_base = page_to_virt(stack);
 
     /* Every thread may enter user mode: give it a clean FPU/SSE image */
     t->fpu_state = fpu_state_alloc();
     if (t->fpu_state == NULL) {
-        kfree(t->stack_base);
+        free_pages(virt_to_page(t->stack_base), THREAD_STACK_ORDER);
         kfree(t);
         return NULL;
     }
@@ -80,7 +83,7 @@ Thread *thread_create(thread_entry_t entry, void *arg) {
 void thread_destroy(Thread *t) {
     if (t == NULL) return;
     if (t->stack_base != NULL) {
-        kfree(t->stack_base);
+        free_pages(virt_to_page(t->stack_base), THREAD_STACK_ORDER);
     }
     fpu_state_free(t->fpu_state);
     kfree(t);

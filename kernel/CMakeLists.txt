@@ -36,6 +36,7 @@ set(KERNEL_C_SOURCES
     mm/vmm.c
     mm/uaccess.c
     mm/mm_syscalls.c
+    mm/slab.c
     mm/kmalloc.c
     arch/x86_64/syscall.c
     arch/x86_64/cpu.c
@@ -110,6 +111,16 @@ if(KERNEL_SOURCES)
     target_compile_options(kernel.elf PRIVATE
         $<$<COMPILE_LANGUAGE:C>:-mgeneral-regs-only>
     )
+
+    # Debug checks (ARC_DEBUG=1): slab red zones, poison and double-free
+    # checks (M1-02b); lock-order checks from M1-05. On while arc_os is in
+    # development; a release build turns it off with -DARC_KERNEL_DEBUG=OFF.
+    option(ARC_KERNEL_DEBUG "Build the kernel with debug checks" ON)
+    if(ARC_KERNEL_DEBUG)
+        target_compile_definitions(kernel.elf PRIVATE ARC_DEBUG=1)
+    else()
+        target_compile_definitions(kernel.elf PRIVATE ARC_DEBUG=0)
+    endif()
 
     # Include the kernel root so headers use paths like "mm/pmm.h"
     target_include_directories(kernel.elf PRIVATE

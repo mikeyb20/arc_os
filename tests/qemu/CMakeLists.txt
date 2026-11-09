@@ -89,7 +89,7 @@ add_test(NAME qemu.budgets COMMAND ${_budget_check} --skip-source hygiene)
 # Self-check: deliberately wrong limits fail, each by name
 add_test(NAME qemu.budgets.selftest COMMAND ${_budget_check}
     --budgets tests/budgets-selftest.txt
-    --expect-fail kernel_image_bytes --expect-fail kmalloc_walk_max --expect-fail boot_free_bytes)
+    --expect-fail kernel_image_bytes --expect-fail slab_steps_max --expect-fail boot_free_bytes)
 set_tests_properties(qemu.budgets qemu.budgets.selftest
     PROPERTIES LABELS qemu TIMEOUT 30 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     FIXTURES_REQUIRED qemu_logs)

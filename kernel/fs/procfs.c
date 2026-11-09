@@ -1,6 +1,7 @@
 #include "fs/procfs.h"
 #include "mm/pmm.h"
 #include "mm/kmalloc.h"
+#include "mm/slab.h"
 #include "arch/hal.h"
 #include "proc/process.h"
 #include "lib/mem.h"
@@ -66,6 +67,27 @@ static int gen_meminfo(char *buf, int bufsz, void *ctx) {
     pos = procfs_append_u64(buf, pos, bufsz, hs.large_bytes);
     pos = procfs_append_str(buf, pos, bufsz, " B\n");
 
+    return pos;
+}
+
+/* One line per slab cache (M1-02b): name, object size, objects in use,
+ * objects the cache's slabs hold, slabs. Not Linux's slabinfo 2.1 layout. */
+static int gen_slabinfo(char *buf, int bufsz, void *ctx) {
+    (void)ctx;
+    int pos = procfs_append_str(buf, 0, bufsz, "# name objsize active total slabs\n");
+    SlabInfo si;
+    for (unsigned n = 0; slab_get_info(n, &si) == 0; n++) {
+        pos = procfs_append_str(buf, pos, bufsz, si.name);
+        pos = procfs_append_str(buf, pos, bufsz, " ");
+        pos = procfs_append_u64(buf, pos, bufsz, si.object_size);
+        pos = procfs_append_str(buf, pos, bufsz, " ");
+        pos = procfs_append_u64(buf, pos, bufsz, si.active_objs);
+        pos = procfs_append_str(buf, pos, bufsz, " ");
+        pos = procfs_append_u64(buf, pos, bufsz, si.total_objs);
+        pos = procfs_append_str(buf, pos, bufsz, " ");
+        pos = procfs_append_u64(buf, pos, bufsz, si.slabs);
+        pos = procfs_append_str(buf, pos, bufsz, "\n");
+    }
     return pos;
 }
 
@@ -193,6 +215,7 @@ static ProcfsFileNode meminfo_node;
 static ProcfsFileNode uptime_node;
 static ProcfsFileNode cmdline_node;
 static ProcfsFileNode cpuinfo_node;
+static ProcfsFileNode slabinfo_node;
 
 #define PROCFS_PID_POOL 8
 static ProcfsDirNode pid_dirs[PROCFS_PID_POOL];
@@ -258,10 +281,8 @@ static const struct {
     const char *name;
     ProcfsFileNode *node;
 } root_files[] = {
-    {"meminfo", &meminfo_node},
-    {"uptime", &uptime_node},
-    {"cmdline", &cmdline_node},
-    {"cpuinfo", &cpuinfo_node},
+    {"meminfo", &meminfo_node}, {"uptime", &uptime_node},     {"cmdline", &cmdline_node},
+    {"cpuinfo", &cpuinfo_node}, {"slabinfo", &slabinfo_node},
 };
 #define ROOT_FILE_COUNT (sizeof(root_files) / sizeof(root_files[0]))
 
@@ -381,6 +402,7 @@ VfsNode *procfs_init(void) {
     /* 1999: below the 2000+pid range used by /proc/<pid> directories */
     procfs_init_file(&cmdline_node, 1999, gen_cmdline, NULL);
     procfs_init_file(&cpuinfo_node, 1998, gen_cpuinfo, NULL);
+    procfs_init_file(&slabinfo_node, 1997, gen_slabinfo, NULL);
 
     pid_dirs_next = 0;
     pid_status_next = 0;

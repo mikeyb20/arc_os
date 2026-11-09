@@ -100,8 +100,8 @@ Start every block with `/os/implement-block <ID>`. These rules are what keep ses
 | ID | Block | Size | Tier | Lane | Needs | Done when | Status |
 |---|---|---|---|---|---|---|---|
 | M1-01 | FPU state, CPU floor, Linux signal frames | M | D | K | M0-06 | AVX2 state survives switches and signals; no SIMD in the kernel | done |
-| M1-02 | Page descriptors + buddy allocator | M | D | K | M0-02 | Descriptor array from the PMM; 2 MiB blocks available | review (#18) |
-| M1-02b | Slab allocator | M | D | K | M1-02 | kmalloc/kfree O(1) from slab caches; first-fit heap gone (ADR-0019) | todo |
+| M1-02 | Page descriptors + buddy allocator | M | D | K | M0-02 | Descriptor array from the PMM; 2 MiB blocks available | done |
+| M1-02b | Slab allocator | M | D | K | M1-02 | kmalloc/kfree O(1) from slab caches; first-fit heap gone (ADR-0019) | review |
 | M1-03 | Per-CPU entry paths + x2APIC | M | D | K | M0-06 | `-smp 4` in xAPIC and x2APIC modes; no global syscall stack | todo |
 | M1-04 | Hardware bring-up kit + first hardware boot | M | R | K+H | M1-01, M1-02, M1-03 | Both machines boot from USB; boot report photographed | todo |
 | M1-05 | SMP scheduler | L | D | K | M1-03, M1-02b | Threads run on all CPUs; lock order checked at runtime | todo |
@@ -289,7 +289,8 @@ Parallel sessions shorten the calendar; they don't save compute.
   7. thread-group and signal lock (spinlock)
   8. wait-queue locks (spinlock)
   9. run-queue locks (spinlock, interrupts off; two at once only in CPU-index order)
-  10. leaf spinlocks: buddy allocator, timer queues, log buffer
+  10. leaf spinlocks: slab cache locks (the buddy lock is the only lock taken under one), buddy allocator,
+      timer queues, log buffer
 
   Never sleep while holding a spinlock. The fault path never takes an inode lock. Never take a page fault while
   holding a page lock: prefault the user buffer, copy with faults disabled, and retry on a short copy.
