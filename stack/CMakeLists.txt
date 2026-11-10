@@ -13,7 +13,7 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-add_compile_options(-Wall -Wextra)
+add_compile_options(-Wall -Wextra -Werror)  # our code only: ports are built by their own build.sh
 
 get_filename_component(ARC_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
 set(ARC_LANE_RUN "${ARC_ROOT}/tools/lane/run.sh")

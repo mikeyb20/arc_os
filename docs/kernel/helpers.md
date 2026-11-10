@@ -41,6 +41,14 @@ Kernel and user space are separate worlds: the same function in `kernel/lib` and
 libarc (`libc/include/`, `libc/src/`) is the only C library for our own programs: `stdio.h`, `stdlib.h`,
 `string.h`, `unistd.h`, `fcntl.h`, `sys/*.h`. Programs never invoke syscalls directly. Ported programs use musl.
 
+## Build (CMake)
+
+| Job | Helper | Home |
+|---|---|---|
+| A libarc program: flags, `libc/user.ld`, copy to the build root | `arc_user_program()` | `userland/CMakeLists.txt` |
+| A lane test (traced under strace) | `lane_test()`, `lane_driver_test()` | `stack/CMakeLists.txt` |
+| Where the pinned musl tools are | `ARC_MUSL_PREFIX` | `cmake/musl-prefix.cmake` |
+
 ## Known duplicates (debt, frozen by the hygiene budgets)
 
 Removed in a `tidy:` commit by the first block that edits the file anyway; that PR lowers the limit.

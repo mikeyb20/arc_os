@@ -29,7 +29,8 @@ MUSL_DIR="${ARC_MUSL_DIR:-$HOME/opt/cross-musl}"
 APT_PACKAGES=(
     build-essential cmake ninja-build nasm
     qemu-system-x86 qemu-utils ovmf xorriso mtools dosfstools e2fsprogs gdisk
-    musl-tools strace python3 python3-pip python3-jsonschema jq zstd clang-format
+    musl-tools    # only for the static-PIE start test (userland/testprogs); the rest use the pinned musl
+    strace python3 python3-pip python3-jsonschema jq zstd clang-format
     git curl ca-certificates file
     g++-14    # host GCC of the same major as the musl toolchain: llama.cpp reference build (M2-03)
 )

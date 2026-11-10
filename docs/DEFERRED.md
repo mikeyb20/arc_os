@@ -1,5 +1,9 @@
 # Deferred Items
 
+> **History.** This list belongs to the pre-plan phases 0–12 (`overview.md`) and is no longer kept up
+> to date. Open work is tracked in `docs/plans/work-blocks.md`, and a new `TODO` names the block that
+> owns it (`TODO(M1-07)`), not this file. Corrections as of 2026-11-10 are marked *[now]*.
+
 Items intentionally postponed from their original phase. Each entry notes the original phase and the reason for deferral.
 
 ## Phase 1: Booting & Early Kernel
@@ -25,7 +29,7 @@ Items intentionally postponed from their original phase. Each entry notes the or
 ## Phase 5: System Calls & User Space
 
 - ~~**fork/exec/wait syscalls (5.5)**~~ **DONE** — fork with vmm_fork_address_space, exec via ELF from VFS, wait with zombie reaping.
-- ~~**User pointer validation (copy_from_user/copy_to_user)**~~ **DONE** — user_ptr_valid checks bounds below USER_ADDR_LIMIT.
+- ~~**User pointer validation (copy_from_user/copy_to_user)**~~ **DONE** — user_ptr_valid checks bounds below USER_ADDR_LIMIT. *[now] Only the range check is done: syscalls still dereference user pointers directly, so an unmapped address faults in the kernel. The fault-safe copy helpers are M1-07.*
 
 ## Phase 6: File Systems
 
@@ -36,8 +40,8 @@ Items intentionally postponed from their original phase. Each entry notes the or
 ## Phase 7: IPC & Shell
 
 - ~~**Process groups / killpg**~~ **DONE** — Process groups (pgid field), sig_send_group, setpgid/getpgid/tcsetpgrp syscalls, Ctrl+Z job control.
-- **Signal masking (sigprocmask)** — Block/unblock signals per-process. Not needed until complex signal-handling applications require it.
-- **sigaction** — Extended signal handler registration with flags (SA_RESTART, SA_SIGINFO). Current signal() interface suffices for basic use.
+- **Signal masking (sigprocmask)** — Block/unblock signals per-process. Not needed until complex signal-handling applications require it. *[now] `rt_sigprocmask` is M1-17.*
+- **sigaction** — Extended signal handler registration with flags (SA_RESTART, SA_SIGINFO). Current signal() interface suffices for basic use. *[now] `rt_sigaction` with Linux sigframes arrived in M1-01; SA_RESTART and the rest act in M1-17.*
 - **-EINTR for blocked syscalls** — Return EINTR from blocked read/write/wait when interrupted by a signal. Current signal delivery doesn't interrupt sleeping syscalls.
 - **sigaltstack** — Alternate signal stack for handling stack overflow signals. Not needed for current simple signal use cases.
 - **ISR return path signal check** — Check for pending signals when returning from interrupt (not just syscall). Current syscall-return-only delivery is sufficient.

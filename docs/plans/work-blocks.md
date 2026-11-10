@@ -132,7 +132,7 @@ Start every block with `/os/implement-block <ID>`. These rules are what keep ses
 | M2-01 | musl cross toolchain, ports layout, C++ test | M | R | L | M2-00a, M0-03 | GCC + libstdc++ for `x86_64-linux-musl` archived; C++ test passes on Linux inside the syscall inventory | done |
 | M2-02 | Port zstd + SQLite (FTS5) | M | R | L | M2-01 | Round-trip and FTS5 query tests pass on Linux inside the syscall inventory | done |
 | M2-03 | Port llama.cpp (CPU, static, x86-64-v3) | M | D | L | M2-01 | Greedy output of our static build matches the reference build on Linux; inside the syscall inventory | done |
-| M2-04 | `arc-llm` service | L | D | L | M2-03 | generate, embed, tokenize, list_models over AF_UNIX on Linux; roles; fit check; inside the syscall inventory | review (#23) |
+| M2-04 | `arc-llm` service | L | D | L | M2-03 | generate, embed, tokenize, list_models over AF_UNIX on Linux; roles; fit check; inside the syscall inventory | done |
 | M2-04b | Linux-first stack on arc_os | S | R | U | M2-00, M2-04 | M2-01…M2-04 tests pass in QEMU with the same results as on Linux | todo |
 | M2-05 | `ask` command + M2 done-test | S | R | U | M2-04b | `ask "what is hypothermia"` answers in QEMU (4 CPUs, 4 GB) | todo |
 | M2-06 | Measure on the laptop, shortlist models | M | R | H | M2-05 | Tokens/s and RAM per tier recorded; mmap vs 2 MiB anonymous loading compared and chosen (ADR-0019); plan §4 updated | todo |
