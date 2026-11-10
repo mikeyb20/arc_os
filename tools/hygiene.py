@@ -41,7 +41,12 @@ from collections import defaultdict
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCAN_DIRS = ("kernel", "libc", "userland", "stack")
-VENDORED = {"kernel/include/limine.h"}
+# Files copied in from outside, not ours to tidy (third_party/LICENSES.md, "Vendored in the tree"):
+# Limine's boot protocol header and its freestanding C headers (freestnd-c-hdrs, 0BSD).
+VENDORED = {"kernel/include/limine.h"} | {
+    f"kernel/include/{h}.h"
+    for h in ("float", "iso646", "limits", "stdalign", "stdarg", "stdbool", "stddef", "stdint", "stdnoreturn")
+}
 SYSCALL_TABLE = ".claude/skills/arc-os-architecture/reference/syscall-table.md"
 
 WINDOW = 10            # lines per duplicate window

@@ -36,6 +36,16 @@ used to build arc_os ship alongside it.
 | tiny-chat-model | smollm2-135m | Apache-2.0 | Tests only (CI and QEMU) | Tiny GGUF chat model for QEMU and CI tests (M2) |
 | tiny-embed-model | nomic-embed- | Apache-2.0 | Tests only (CI and QEMU) | Tiny GGUF embedder for retrieval tests (M3) |
 
+## Vendored in the tree
+
+Small outside files committed into the repo instead of archived. `tools/hygiene.py` lists them in `VENDORED`, so
+the hygiene counts skip them.
+
+| Files | From | License | Where it ships | Purpose |
+|---|---|---|---|---|
+| `kernel/include/limine.h` | Limine 8.7.0 (`tools/dev-setup.sh limine` refreshes it) | 0BSD | Inside arc_os (kernel) | Limine boot protocol structures |
+| `kernel/include/{float,iso646,limits,stdalign,stdarg,stdbool,stddef,stdint,stdnoreturn}.h` | Limine's freestanding C headers (`freestnd-c-hdrs`, Mintsuki and contributors) | 0BSD | Inside arc_os (kernel) | The C headers a freestanding kernel build needs |
+
 ## Notes
 
 - **linux-uapi-ref** is reference material for syscall numbers and struct layouts (ADR-0001). Never
