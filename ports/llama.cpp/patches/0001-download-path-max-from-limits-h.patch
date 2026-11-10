@@ -1,0 +1,18 @@
+llama.cpp: take PATH_MAX from <limits.h>, not <linux/limits.h>
+
+common/download.cpp includes <linux/limits.h> on Linux only for PATH_MAX. The
+arc_os musl toolchain has no Linux kernel headers (ports/musl-cross-make,
+LINUX_VER empty), and musl's <limits.h> defines PATH_MAX (POSIX). Upstream
+builds on Alpine only because the linux-headers package is installed there.
+
+--- a/common/download.cpp
++++ b/common/download.cpp
+@@ -24,7 +24,7 @@
+ 
+ #ifndef __EMSCRIPTEN__
+ #ifdef __linux__
+-#include <linux/limits.h>
++#include <limits.h>  /* PATH_MAX; arc_os ships no Linux kernel headers */
+ #elif defined(_WIN32)
+ #   if !defined(PATH_MAX)
+ #   define PATH_MAX MAX_PATH

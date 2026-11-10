@@ -20,6 +20,7 @@ before writing a helper.
 | `port::zstd` | `zstd.h` | zstd compression, streaming decompression (cap the window at 8 MiB: `ports/zstd/PORT.md`) | M2-02 |
 | `port::sqlite3` | `sqlite3.h` | SQLite with FTS5 (options: `ports/sqlite/PORT.md`) | M2-02 |
 | `ARC_ZSTD_CLI`, `ARC_SQLITE_SHELL` | | paths of the `zstd` and `sqlite3` programs, for test drivers | M2-02 |
+| `ARC_LLAMA_COMPLETION`, `ARC_LLAMA_EMBEDDING`, `ARC_LLAMA_TOKENIZE` | | llama.cpp tools for test drivers; `ARC_PORTS_REF_DIR` holds the reference builds | M2-03 |
 
 ## Libraries (one home per helper, ADR-0020)
 

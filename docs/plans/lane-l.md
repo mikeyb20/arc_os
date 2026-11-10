@@ -37,6 +37,7 @@ stack/                    CMake project for in-house musl programs and libraries
   tests/                  lane tests and fixtures
 tools/lane/build.sh       fetch archived sources, build ports, configure and build stack/ into build-lane/ (M2-01)
 tools/lane/port-env.sh    compiler, flags and helpers every ports/<name>/build.sh sources                (M2-02)
+ports/<name>/build-ref.sh optional test-only reference build with the host compiler, build-lane/ref/<name> (M2-03)
 tools/lane/run.sh         run one arc_os-bound binary, under strace when ARC_LANE_LOGS is set           (M2-01)
 .github/workflows/lane.yml                                                                             (M2-01)
 ```

@@ -14,3 +14,9 @@ cxx_basic_bytes        1315000     max  bytes  M2-01  sizes
 zstd_cli_bytes         1136000     max  bytes  M2-02  sizes
 # sqlite3 shell with FTS5 (measured 1694952)
 sqlite3_shell_bytes    1865000     max  bytes  M2-02  sizes
+
+# llama.cpp (M2-03). llama-completion: static, stripped, loaded ELF bytes (measured 11795735).
+llama_completion_bytes 12976000    max  bytes  M2-03  sizes
+# Peak RSS of the 32-token greedy run on the 145 MB tiny chat model, model mmapped and
+# populated, default context (ru_maxrss from the driver; measured 352228)
+llama_tiny_rss_kib     387500      max  kib    M2-03  llama

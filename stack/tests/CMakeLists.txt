@@ -1,5 +1,5 @@
 # Lane tests (label `lane`). M2-01: the M0-04 target programs, built with the pinned
-# musl toolchain, pass on Linux inside the syscall inventory. M2-02: the ports (ports/).
+# musl toolchain, pass on Linux inside the syscall inventory. M2-02, M2-03: the ports (ports/).
 
 set(ARC_TARGET_DIR "${ARC_ROOT}/tests/target")
 
@@ -17,8 +17,10 @@ lane_test(NAME pthread_basic COMMAND $<TARGET_FILE:pthread_basic>)
 lane_test(NAME cxx_basic COMMAND $<TARGET_FILE:cxx_basic>)
 
 add_subdirectory(ports)
+add_subdirectory(llama)
 
 # Sizes for stack/budgets.txt (ADR-0019): loaded ELF bytes, as kernel_image_bytes.
 lane_driver_test(NAME sizes COMMAND python3 "${ARC_ROOT}/tools/lane/sizes.py"
     "${ARC_LANE_BUDGET_DIR}/sizes.budget.log" cxx_basic_bytes=$<TARGET_FILE:cxx_basic>
-    zstd_cli_bytes=${ARC_ZSTD_CLI} sqlite3_shell_bytes=${ARC_SQLITE_SHELL})
+    zstd_cli_bytes=${ARC_ZSTD_CLI} sqlite3_shell_bytes=${ARC_SQLITE_SHELL}
+    llama_completion_bytes=${ARC_LLAMA_COMPLETION})

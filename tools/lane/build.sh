@@ -4,6 +4,8 @@
 #      then ports/<name>/build.sh <prefix> builds it offline and installs into
 #      build-lane/ports/<name>/ (the toolchain port, musl-cross-make, is installed by
 #      tools/dev-setup.sh musl instead and skipped here);
+#      A port with a test-only reference build (ports/<name>/build-ref.sh, built with the host
+#      compiler) gets it in build-lane/ref/<name>/;
 #   2. the stack/ CMake project into build-lane/stack/.
 # Needs the musl toolchain (tools/dev-setup.sh musl). Then: ctest --test-dir build-lane/stack -L lane
 set -euo pipefail
@@ -18,12 +20,16 @@ for script in "$ROOT"/ports/*/build.sh; do
     [[ "$name" == musl-cross-make ]] && continue
     ports+=("$name")
 done
-if ((${#ports[@]})); then
-    "$ROOT/tools/fetch-archived.sh" "${ports[@]}"
-fi
+# Test data the lane tests read (archived like the sources): the tiny llama.cpp models (M2-03).
+TEST_DATA=(tiny-chat-model tiny-embed-model)
+"$ROOT/tools/fetch-archived.sh" "${ports[@]}" "${TEST_DATA[@]}"
 for name in "${ports[@]}"; do
     echo "[lane] port $name"
     "$ROOT/ports/$name/build.sh" "$OUT/ports/$name"
+    if [[ -x "$ROOT/ports/$name/build-ref.sh" ]]; then
+        echo "[lane] reference build $name"
+        "$ROOT/ports/$name/build-ref.sh" "$OUT/ref/$name"
+    fi
 done
 
 cmake -S "$ROOT/stack" -B "$OUT/stack" -G Ninja \

@@ -59,6 +59,8 @@ if(NOT CMAKE_FIND_ROOT_PATH)
     message(FATAL_ERROR "configure stack/ with -DCMAKE_TOOLCHAIN_FILE=toolchain-musl.cmake (tools/lane/build.sh)")
 endif()
 list(GET CMAKE_FIND_ROOT_PATH 0 ARC_PORTS_DIR)
+# Test-only reference builds of ports (ports/<name>/build-ref.sh) sit beside them, in build-lane/ref/<name>/.
+get_filename_component(ARC_PORTS_REF_DIR "${ARC_PORTS_DIR}/../ref" ABSOLUTE)
 
 # arc_port_library(<target> <port> <library> <header>)
 # Defines imported static library port::<target> from build-lane/ports/<port>/{lib,include}.
@@ -86,5 +88,8 @@ arc_port_library(zstd zstd zstd zstd.h)
 arc_port_library(sqlite3 sqlite sqlite3 sqlite3.h)
 arc_port_program(ARC_ZSTD_CLI zstd zstd)
 arc_port_program(ARC_SQLITE_SHELL sqlite sqlite3)
+arc_port_program(ARC_LLAMA_COMPLETION llama.cpp llama-completion)
+arc_port_program(ARC_LLAMA_EMBEDDING llama.cpp llama-embedding)
+arc_port_program(ARC_LLAMA_TOKENIZE llama.cpp llama-tokenize)
 
 add_subdirectory(tests)

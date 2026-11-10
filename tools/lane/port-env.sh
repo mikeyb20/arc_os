@@ -4,18 +4,20 @@
 #   port_begin <name> <prefix>      # sets SRC (archived source), WORK (scratch copy), PREFIX
 #
 # Compiler and flags match toolchain-musl.cmake: the pinned x86_64-linux-musl GCC
-# (tools/dev-setup.sh musl), -march=x86-64-v3 (the arc_os CPU floor), static.
+# (tools/dev-setup.sh musl), -march=x86-64-v3 (the arc_os CPU floor), static. CMake-based
+# ports use that toolchain file itself (it reads ARC_MUSL_PREFIX, exported here).
 # A port build never touches the network: sources come from third_party/src/<name>/,
 # which tools/lane/build.sh fetches from the archive first (tools/fetch-archived.sh).
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ARC_MUSL_PREFIX="${ARC_MUSL_PREFIX:-$HOME/opt/cross-musl/bin/x86_64-linux-musl-}"
 CC="${ARC_MUSL_PREFIX}gcc"
+CXX="${ARC_MUSL_PREFIX}g++"
 AR="${ARC_MUSL_PREFIX}ar"
 RANLIB="${ARC_MUSL_PREFIX}ranlib"
 STRIP="${ARC_MUSL_PREFIX}strip"
 ARC_PORT_ARCH="-march=x86-64-v3"
-export CC AR RANLIB STRIP
+export CC CXX AR RANLIB STRIP ARC_MUSL_PREFIX
 
 # port_begin <name> <prefix>: check the toolchain and the archived source, copy the
 # source to build-lane/work/<name>/ (upstream stays untouched), start an empty prefix.
