@@ -1,94 +1,74 @@
 # arc_os
 
-A custom x86_64 operating system built from scratch. Monolithic kernel written in C (C11) with NASM assembly stubs, targeting POSIX compatibility. Boots via the Limine bootloader, runs in QEMU, and aims to eventually support a shell, coreutils, and real hardware.
+arc_os is a from-scratch x86_64 operating system for an **offline knowledge computer**. It installs from a
+USB key, runs on anything from a 4 GB laptop to a strong desktop, and lets local LLMs (llama.cpp, CPU
+only) search a large offline library and answer with citations. It works fully without internet.
 
-## Current Status
+The kernel is monolithic, written in C11 with NASM stubs, and boots with Limine. Programs use the Linux
+x86_64 syscall ABI and System V process start, so static Linux/musl binaries run unchanged.
 
-The kernel boots in QEMU and has the following working subsystems:
+## Where things stand
 
-- **Boot**: Limine bootloader, serial output, kprintf, bootloader-agnostic BootInfo
-- **Hardware**: GDT/TSS, IDT with all 256 vectors, PIC (remapped), PIT timer at 100Hz, PS/2 keyboard
-- **Memory**: PMM (bitmap allocator), VMM (4-level paging, own page tables), kmalloc (free-list heap)
-- **Processes**: Per-process address spaces, ELF64 loader, fork/exec/wait, user pointer validation
-- **Threading**: Thread creation, context switch, round-robin preemptive scheduler, spinlocks
-- **Syscalls**: SYSCALL/SYSRET entry, 21 syscalls (exit, write, getpid, open, read, close, brk, lseek, stat, mkdir, readdir, unlink, dup2, fork, exec, wait, pipe, signal, kill, sigreturn, and more)
-- **Drivers**: PCI bus enumeration, VirtIO common infrastructure, VirtIO-blk (polling read), PS/2 keyboard, TTY subsystem
-- **Filesystem**: VFS layer with ramfs (in-memory create/read/write/unlink), file syscalls
-- **IPC**: Unix pipes (`cmd1 | cmd2`), POSIX signals (signal/kill/sigreturn, SIGINT/SIGCHLD/SIGPIPE, Ctrl+C)
-- **Shell**: Interactive shell with 14 builtins (ls, cat, mkdir, rm, touch, write, stat, run, echo, pid, uname, help, clear, exit), pipe support
-- **User Binaries**: init, hello, echo, shell — loaded as Limine boot modules
-- **Tests**: 27 host-side test suites, 374 tests — all passing
+- **Plan:** [`docs/plans/knowledge-os.md`](docs/plans/knowledge-os.md) has the goal and milestones M0–M5.
+  The decisions it rests on are the ADRs in [`docs/decisions/`](docs/decisions/).
+- **Progress:** [`docs/plans/work-blocks.md`](docs/plans/work-blocks.md) lists every work block and its
+  status. One block is one PR; each block's spec is in `docs/plans/blocks/`.
+- **History:** `overview.md` (phases 0–12) and `docs/implementation-plan.md` describe the work before the plan.
 
-See `overview.md` for the full 13-phase development roadmap.
+## Layout
 
-## Quick Start
+```
+kernel/        the kernel (arch/x86_64 behind arch/hal.h; boot, mm, proc, fs, drivers, net)
+libc/          libarc, the small C library the base system links against
+userland/      base programs on libarc: init, login, shell, coreutils, test programs
+stack/         user-space services built with musl (arc-llm, shared libraries, lane tests)
+ports/         build recipes for outside code (musl toolchain, llama.cpp, SQLite, zstd)
+third_party/   archived, pinned outside sources (SOURCES.lock) and their licences
+schemas/       JSON schemas for .arcpkg packages, models and packs
+tests/         host unit tests, QEMU boot tests, target test programs
+tools/         dev setup, ISO, QEMU test runner, hygiene and budget checks
+docs/          plan, ADRs, block specs, kernel notes (budgets.md, helpers.md)
+```
 
-### Prerequisites
+## Build and test
 
-- `x86_64-elf-gcc` cross-compiler (see `tools/build-cross-compiler.sh`)
-- `nasm`, `qemu-system-x86_64`, `xorriso`, `cmake`
-- Install system deps: `tools/setup-deps.sh`
-
-### Build
+Ubuntu 24.04. One script installs the apt packages, both pinned toolchains (`x86_64-elf` for the
+kernel and libarc, `x86_64-linux-musl` for user space) and Limine:
 
 ```bash
-cmake -B build -DCMAKE_TOOLCHAIN_FILE=toolchain-x86_64.cmake
+tools/dev-setup.sh
+```
+
+Kernel, libarc, base programs and the bootable ISO:
+
+```bash
+cmake -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=toolchain-x86_64.cmake
 cmake --build build
+cmake --build build --target iso      # build/arc_os.iso
+cmake --build build --target run      # boot it in QEMU, serial on stdio
+cmake --build build --target debug    # QEMU waits for GDB on :1234
 ```
 
-### Run
+Tests (the QEMU tests use the ISO pieces from `build/`):
 
 ```bash
-cmake --build build --target run
+cmake -B build-tests -G Ninja && cmake --build build-tests
+ctest --test-dir build-tests -L host   # host unit tests
+ctest --test-dir build-tests -L qemu   # boot tests in QEMU
+python3 tools/hygiene.py               # ADR-0020 ratchet counts
 ```
 
-Or manually:
-```bash
-qemu-system-x86_64 -cdrom build/arc_os.iso -serial stdio -m 256M -no-reboot
-```
-
-### Test
-
-```bash
-cmake -B build_host
-cmake --build build_host
-ctest --test-dir build_host
-```
-
-### Debug
+User-space stack (lane L, built and tested on Linux first, see
+[`docs/plans/lane-l.md`](docs/plans/lane-l.md)):
 
 ```bash
-# Terminal 1
-cmake --build build --target debug
-# Terminal 2
-gdb build/kernel.elf -ex "target remote :1234" -ex "break kmain" -ex "continue"
+tools/lane/build.sh
+ctest --test-dir build-lane/stack -L lane
 ```
 
-## Architecture
-
-```
-kernel/
-├── arch/x86_64/   # GDT, IDT, PIC, PIT, paging, context switch, ISR stubs, syscall entry
-├── boot/          # Limine integration, BootInfo abstraction, kprintf
-├── mm/            # PMM (bitmap), VMM (4-level paging), kmalloc (free-list)
-├── proc/          # Threads, processes, scheduler, ELF loader, fork/exec/wait, signals
-├── fs/            # VFS layer, ramfs, pipes
-├── drivers/       # PCI, VirtIO, VirtIO-blk, PS/2 keyboard, TTY
-├── include/       # Freestanding C headers + limine.h
-└── lib/           # memcpy/memset, string functions, kprintf
-userland/
-├── init/          # Init process (fork/exec orchestrator)
-├── shell/         # Interactive shell (14 builtins)
-├── echo/          # Echo binary (interactive stdin echo)
-└── hello/         # Hello world binary (exec target)
-```
-
-- Kernel mapped at `0xFFFFFFFF80000000`, HHDM at `0xFFFF800000000000`
-- Kernel heap: slab caches and page blocks in the HHDM (`kmalloc`, M1-02b)
-- User processes at `0x400000`, user stack at `0x7FFFFFFFE000`
-- All arch-specific code is under `kernel/arch/x86_64/`
-- Bootloader abstracted behind `BootInfo` struct
+CI (`.github/workflows/`) runs the cross build, host tests and QEMU tests on every PR, and the lane
+build and tests when lane files change.
 
 ## License
 
-MIT
+MIT. Outside code keeps its own licence; see [`third_party/LICENSES.md`](third_party/LICENSES.md).

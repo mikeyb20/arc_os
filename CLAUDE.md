@@ -51,10 +51,11 @@ arc_os/
 ├── kernel/
 │   ├── arch/x86_64/      # Arch-specific (GDT, IDT, PIC, PIT, LAPIC, IOAPIC, SMP, paging, syscall)
 │   ├── boot/             # Boot protocol parsing (BootInfo, Limine)
-│   ├── mm/               # Memory management (PMM, VMM, kmalloc)
+│   ├── mm/               # Memory management (page descriptors, buddy PMM, slab, VMM, kmalloc)
 │   ├── proc/             # Process & thread management, scheduler, signals, sync primitives, ELF loader
 │   ├── fs/               # VFS layer, ramfs, devfs, procfs, pipe, fat32, path utils, passwd
 │   ├── drivers/          # Device drivers (pci, virtio, blkdev, tty, keyboard, fb_console, ansi, vt, acpi)
+│   ├── ipc/              # Empty placeholder
 │   ├── include/          # Freestanding C headers + limine.h
 │   ├── net/              # Network stack (ethernet, arp, ipv4, icmp, udp, tcp, socket, loopback)
 │   ├── security/         # Hardening (stack canaries, guard pages)
@@ -65,13 +66,19 @@ arc_os/
 ├── userland/             # User-space programs
 │   ├── init/             # Init process (PID 1)
 │   ├── login/            # Login authentication
-│   ├── shell/            # Interactive shell (27 builtins)
+│   ├── shell/            # Interactive shell
 │   ├── hello/            # Hello world
 │   ├── echo/             # Echo utility
-│   └── coreutils/        # 19 standalone utilities (cat, ls, grep, ps, etc.)
-├── tools/                # Build tools, image creation scripts
-├── tests/                # Host-side unit tests (47 suites)
-├── docs/                 # plans/ (master plan), decisions/ (ADRs), deferred items
+│   ├── coreutils/        # Standalone utilities (cat, ls, grep, ps, etc.)
+│   └── testprogs/        # Test-only programs for the QEMU suites
+├── stack/                # User-space services built with musl (arc-llm, lib/, lane tests; lane-l.md)
+├── ports/                # Build recipes for outside code (musl toolchain, llama.cpp, SQLite, zstd)
+├── third_party/          # Archived pinned sources (SOURCES.lock) and LICENSES.md
+├── schemas/              # JSON schemas (.arcpkg, model, pack, roles)
+├── cmake/                # Shared CMake snippets
+├── tools/                # Dev setup, ISO, QEMU test runner, hygiene/budget/syscall checks, lane/
+├── tests/                # Host unit tests (`ctest -L host`), QEMU suites (`-L qemu`), target programs
+├── docs/                 # plans/ (master plan, work blocks), decisions/ (ADRs), kernel/ (budgets, helpers)
 └── CMakeLists.txt
 ```
 
