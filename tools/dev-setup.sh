@@ -30,7 +30,8 @@ APT_PACKAGES=(
     build-essential cmake ninja-build nasm
     qemu-system-x86 qemu-utils ovmf xorriso mtools dosfstools e2fsprogs gdisk
     musl-tools strace python3 python3-pip python3-jsonschema jq zstd clang-format
-    git curl ca-certificates
+    git curl ca-certificates file
+    g++-14    # host GCC of the same major as the musl toolchain: llama.cpp reference build (M2-03)
 )
 
 log() { printf '[dev-setup] %s\n' "$*"; }
