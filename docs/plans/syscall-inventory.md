@@ -141,6 +141,15 @@ generated table lists something (for example after a port bump), its row here ma
 
 | # | Syscall | Details | Owner | Why |
 |---|---|---|---|---|
+| 41 | socket | `family: AF_UNIX`, `type: SOCK_STREAM`, `type: SOCK_CLOEXEC` | M1-18 | `arc-llm` (M2-04) listens on `/var/run/arc-llm.sock`, ADR-0012 |
+| 42 | connect | | M1-18 | `arc-llm` probes a leftover socket file: refused means stale (unlink and bind), accepted means another `arc-llm` runs |
+| 45 | recvfrom | | M1-18 | `recv()` of HTTP requests in `arc-llm` (musl: `recvfrom` with NULL address) |
+| 46 | sendmsg | | M1-18 | `arc-llm` responses: headers and body as an iovec, `MSG_NOSIGNAL` (a gone client is `EPIPE`, not SIGPIPE) |
+| 48 | shutdown | | M1-18 | `arc-llm`'s SIGTERM handler: `shutdown(SHUT_RDWR)` on the listening socket must make a blocked or later `accept4` fail (Linux: `EINVAL`), so no stop signal is lost |
+| 49 | bind | | M1-18 | `arc-llm`, AF_UNIX path (`EADDRINUSE` when the file exists) |
+| 50 | listen | | M1-18 | `arc-llm`, backlog 16: clients wait there while one request runs |
+| 54 | setsockopt | | M1-18 | `arc-llm`: `SO_RCVTIMEO` and `SO_SNDTIMEO` (30 s) on each client, so a stuck client can't hold the service |
+| 288 | accept4 | | M1-18 | `arc-llm`, `SOCK_CLOEXEC`; `EINTR` on a signal (no `SA_RESTART`) |
 
 | Path | Owner | Why |
 |---|---|---|

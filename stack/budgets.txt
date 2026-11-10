@@ -20,3 +20,12 @@ llama_completion_bytes 12976000    max  bytes  M2-03  sizes
 # Peak RSS of the 32-token greedy run on the 145 MB tiny chat model, model mmapped and
 # populated, default context (ru_maxrss from the driver; measured 352228)
 llama_tiny_rss_kib     387500      max  kib    M2-03  llama
+
+# arc-llm (M2-04). Static, loaded ELF bytes: links libllama and libggml, not llama.cpp's common/
+# (measured 7668215).
+arc_llm_bytes          8435100     max  bytes  M2-04  sizes
+# Peak RSS of a service that answered requests but never loaded a model (measured 16244)
+arc_llm_idle_rss_kib   17900       max  kib    M2-04  arc_llm_errors
+# Peak RSS after chat (n_ctx 4096) and embed (n_ctx 2048) on the two tiny models, both loaded and
+# mmapped: weights 136 + 139 MiB, KV cache 90 MiB, compute buffers 107 + 110 MiB (measured 408112)
+arc_llm_tiny_rss_kib   449000      max  kib    M2-04  arc_llm_chat

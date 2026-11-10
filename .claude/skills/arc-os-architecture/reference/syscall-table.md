@@ -56,13 +56,16 @@ same PR that changes a syscall (the `add-syscall` skill does this). Since M0-06 
 | 33 | dup2 | done | 14 | shell |
 | 35 | nanosleep | missing | — | M1; inventory: musl, C++ (M1-06) |
 | 39 | getpid | done | 2 | all; inventory: musl, SQLite |
-| 41 | socket | partial (AF_INET only; SOCK_NONBLOCK/CLOEXEC ignored) | 35 | net, arc-llm |
-| 42 | connect | done | 39 | net, arc-llm |
-| 43 | accept | done | 38 | net, arc-llm |
+| 41 | socket | partial (AF_INET only; SOCK_NONBLOCK/CLOEXEC ignored) | 35 | net, arc-llm (M1-18: AF_UNIX, SOCK_CLOEXEC) |
+| 42 | connect | done | 39 | net, arc-llm (M1-18: AF_UNIX) |
+| 43 | accept | done | 38 | net |
 | 44 | sendto | partial (flags ignored) | 40, 42 | net |
-| 45 | recvfrom | partial (flags ignored) | 41, 43 | net |
-| 49 | bind | done | 36 | net |
-| 50 | listen | done | 37 | net |
+| 45 | recvfrom | partial (flags ignored) | 41, 43 | net, arc-llm (M1-18: AF_UNIX) |
+| 46 | sendmsg | missing | — | arc-llm: iovec, MSG_NOSIGNAL (M1-18) |
+| 48 | shutdown | missing | — | arc-llm: SHUT_RDWR on a listening socket fails accept (M1-18) |
+| 49 | bind | done | 36 | net, arc-llm (M1-18: AF_UNIX path) |
+| 50 | listen | done | 37 | net, arc-llm (M1-18: AF_UNIX) |
+| 54 | setsockopt | missing | — | arc-llm: SO_RCVTIMEO, SO_SNDTIMEO (M1-18) |
 | 56 | clone | missing | — | musl threads; inventory: musl threads, C++, zstd, llama.cpp (M1-16) |
 | 57 | fork | done | 16 | shell; inventory: musl (M0-05) |
 | 59 | execve | done (System V stack + auxv, ET_EXEC and static-PIE; AT_SECURE always 0 until poll, M1-18) | 17 | shell; inventory: musl, musl threads, C++, SQLite, zstd, llama.cpp (M0-06) |
@@ -106,6 +109,7 @@ same PR that changes a syscall (the `add-syscall` skill does this). Since M0-06 
 | 262 | newfstatat | missing | — | musl |
 | 263 | unlinkat | missing | — | inventory: C++ (M1-15) |
 | 280 | utimensat | missing | — | inventory: zstd (M1-20) |
+| 288 | accept4 | missing | — | arc-llm: AF_UNIX, SOCK_CLOEXEC, EINTR without SA_RESTART (M1-18) |
 | 293 | pipe2 | missing | — | musl |
 
 Numbers verified against the archived Linux v6.12 `syscall_64.tbl` (M0-04). "inventory:" lists the programs
