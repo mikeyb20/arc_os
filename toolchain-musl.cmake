@@ -8,16 +8,7 @@
 set(CMAKE_SYSTEM_NAME Linux)
 set(CMAKE_SYSTEM_PROCESSOR x86_64)
 
-# ARC_MUSL_PREFIX (cache variable, else environment variable) is the path prefix of the
-# x86_64-linux-musl tools. Default: where tools/dev-setup.sh musl installs them.
-if(NOT DEFINED ARC_MUSL_PREFIX)
-    if(DEFINED ENV{ARC_MUSL_PREFIX})
-        set(ARC_MUSL_PREFIX "$ENV{ARC_MUSL_PREFIX}")
-    else()
-        set(ARC_MUSL_PREFIX "$ENV{HOME}/opt/cross-musl/bin/x86_64-linux-musl-")
-    endif()
-endif()
-set(ARC_MUSL_PREFIX "${ARC_MUSL_PREFIX}" CACHE STRING "Path prefix of the x86_64-linux-musl tools")
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/musl-prefix.cmake")
 list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES ARC_MUSL_PREFIX)
 
 set(CMAKE_C_COMPILER "${ARC_MUSL_PREFIX}gcc")

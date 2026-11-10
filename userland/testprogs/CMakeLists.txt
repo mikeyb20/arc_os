@@ -1,70 +1,56 @@
 # arc_os — Test-only user programs (M0-02, M0-05, M0-10, M1-01). Shipped only on test ISOs.
 
-if(NOT CMAKE_CROSSCOMPILING)
-    return()
-endif()
-
 foreach(prog testfail abi_check forkreap)
-    add_executable(${prog} ${prog}.c)
-    target_compile_options(${prog} PRIVATE
-        -ffreestanding -nostdlib -nostdinc -static
-        -mno-red-zone -fno-stack-protector -fno-pic -fno-pie
-        -Wall -Wextra -Werror -std=c11
-    )
-    target_link_libraries(${prog} PRIVATE arc)
-    set_target_properties(${prog} PROPERTIES
-        LINK_FLAGS "-nostdlib -static -T ${CMAKE_SOURCE_DIR}/libc/user.ld"
-    )
-    add_custom_command(TARGET ${prog} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${prog}> ${CMAKE_BINARY_DIR}/${prog}
-        COMMENT "Copying ${prog} binary to build directory"
-    )
+    arc_user_program(${prog} ${prog}.c)
 endforeach()
 
-# M0-06: tests/target/start_basic.c (System V process start) built three ways:
-# with libarc (start_arc), and with the host's stock musl as static ET_EXEC
-# (start_musl) and static-PIE (start_musl_pie). Needs musl-tools (dev-setup.sh).
-add_executable(start_arc ${CMAKE_SOURCE_DIR}/tests/target/start_basic.c)
-target_compile_options(start_arc PRIVATE
-    -ffreestanding -nostdlib -nostdinc -static
-    -mno-red-zone -fno-stack-protector -fno-pic -fno-pie
-    -Wall -Wextra -Werror -std=c11
-)
-target_link_libraries(start_arc PRIVATE arc)
-set_target_properties(start_arc PROPERTIES
-    LINK_FLAGS "-nostdlib -static -T ${CMAKE_SOURCE_DIR}/libc/user.ld"
-)
-add_custom_command(TARGET start_arc POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:start_arc> ${CMAKE_BINARY_DIR}/start_arc
-)
+# M0-06: tests/target/start_basic.c (System V process start) built three ways: with libarc
+# (start_arc), and with musl as static ET_EXEC (start_musl) and static-PIE (start_musl_pie).
+arc_user_program(start_arc ${CMAKE_SOURCE_DIR}/tests/target/start_basic.c)
 
-find_program(MUSL_GCC musl-gcc)
-if(MUSL_GCC)
-    set(_start_src ${CMAKE_SOURCE_DIR}/tests/target/start_basic.c)
+# musl programs use the pinned toolchain that stack/ uses (tools/dev-setup.sh musl;
+# cmake/musl-prefix.cmake). Its libc.a is not built as PIC, so it can't
+# link static-PIE: start_musl_pie alone still uses the host's musl-gcc (musl-tools).
+include(${CMAKE_SOURCE_DIR}/cmake/musl-prefix.cmake)
+set(_start_src ${CMAKE_SOURCE_DIR}/tests/target/start_basic.c)
+set(_musl_flags -static -O2 -Wall -Wextra -Werror -std=c11)
+set(_musl_outputs)
+
+if(EXISTS "${ARC_MUSL_PREFIX}gcc")
+    set(MUSL_CC "${ARC_MUSL_PREFIX}gcc")
     add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/start_musl
-        COMMAND ${MUSL_GCC} -static -O2 -Wall -Wextra -Werror -std=c11
-                -o ${CMAKE_BINARY_DIR}/start_musl ${_start_src}
+        COMMAND ${MUSL_CC} ${_musl_flags} -o ${CMAKE_BINARY_DIR}/start_musl ${_start_src}
         DEPENDS ${_start_src}
-        COMMENT "musl-gcc -static start_musl")
-    add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/start_musl_pie
-        COMMAND ${MUSL_GCC} -static-pie -fPIE -O2 -Wall -Wextra -Werror -std=c11
-                -o ${CMAKE_BINARY_DIR}/start_musl_pie ${_start_src}
-        DEPENDS ${_start_src}
-        COMMENT "musl-gcc -static-pie start_musl_pie")
+        COMMENT "musl -static start_musl")
     # M1-01: AVX2 state across preemption and signals, with musl's own
     # sigaction and __restore_rt (qemu.fpu)
     foreach(prog sig_fpu fpu_avx)
         string(TOUPPER ${prog} _define)
         add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/${prog}
-            COMMAND ${MUSL_GCC} -static -O2 -Wall -Wextra -Werror -std=c11 -D${_define}
+            COMMAND ${MUSL_CC} ${_musl_flags} -D${_define}
                     -o ${CMAKE_BINARY_DIR}/${prog} ${CMAKE_CURRENT_SOURCE_DIR}/${prog}.c
                     ${CMAKE_CURRENT_SOURCE_DIR}/fpu_test.S
             DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/${prog}.c ${CMAKE_CURRENT_SOURCE_DIR}/fpu_test.S
-            COMMENT "musl-gcc -static ${prog}")
+            COMMENT "musl -static ${prog}")
     endforeach()
-    add_custom_target(musl_testprogs ALL
-        DEPENDS ${CMAKE_BINARY_DIR}/start_musl ${CMAKE_BINARY_DIR}/start_musl_pie
-                ${CMAKE_BINARY_DIR}/sig_fpu ${CMAKE_BINARY_DIR}/fpu_avx)
+    list(APPEND _musl_outputs ${CMAKE_BINARY_DIR}/start_musl ${CMAKE_BINARY_DIR}/sig_fpu ${CMAKE_BINARY_DIR}/fpu_avx)
+else()
+    message(WARNING "musl toolchain not found at ${ARC_MUSL_PREFIX}gcc (tools/dev-setup.sh musl): "
+                    "qemu.musl and qemu.fpu will fail")
+endif()
+
+find_program(MUSL_GCC musl-gcc)
+if(MUSL_GCC)
+    add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/start_musl_pie
+        COMMAND ${MUSL_GCC} -static-pie -fPIE -O2 -Wall -Wextra -Werror -std=c11
+                -o ${CMAKE_BINARY_DIR}/start_musl_pie ${_start_src}
+        DEPENDS ${_start_src}
+        COMMENT "musl-gcc -static-pie start_musl_pie")
+    list(APPEND _musl_outputs ${CMAKE_BINARY_DIR}/start_musl_pie)
 else()
     message(WARNING "musl-gcc not found (apt install musl-tools): qemu.musl will fail")
+endif()
+
+if(_musl_outputs)
+    add_custom_target(musl_testprogs ALL DEPENDS ${_musl_outputs})
 endif()

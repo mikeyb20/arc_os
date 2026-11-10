@@ -12,6 +12,7 @@ on:
       - ports/**
       - tools/lane/**
       - toolchain-musl.cmake
+      - cmake/**
       - tests/target/**
       - tools/syscall-inventory.py
       - tools/budget-check.py
@@ -25,6 +26,7 @@ on:
       - ports/**
       - tools/lane/**
       - toolchain-musl.cmake
+      - cmake/**
       - .github/workflows/lane.yml
   workflow_dispatch:
 
