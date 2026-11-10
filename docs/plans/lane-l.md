@@ -50,7 +50,9 @@ separate CMake project because it uses the other toolchain. Build outputs go to 
 - Every lane program takes `--root DIR` (default `/`) and resolves every ADR-0009 path under it. Tests run against
   a temporary root; nothing touches the host's real `/var`, `/models` or `/packs`.
 - Installed layout (pinned here because M2-04 and M3-06a read what M5-02 writes):
-  - models: `/models/<name>/<version>/model.json` plus the GGUF file it names; roles in `/models/roles.json`
+  - models: `/models/<name>/<version>/model.json` plus the GGUF file it names; roles in `/models/roles.json`.
+    `arc-llm` sees a new `roles.json` by its inode, size and mtime (one `stat` per request, M2-04), so it is only
+    ever replaced by rename (durable updates, below), never edited in place: ext2 mtimes have 1-second resolution
   - packs: `/packs/<name>/<version>/` holding `manifest.json`, `content/`, `chunks/`, `fts/`, `vectors/`
   - programs: `/apps/<name>/<version>/`
   - package database: `/var/lib/arcpkg/<name>.json`; `arc-llm` socket: `/var/run/arc-llm.sock`

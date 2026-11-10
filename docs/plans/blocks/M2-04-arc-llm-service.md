@@ -63,8 +63,8 @@
    one embed request on the tiny models).
 
 **Done when.**
-- [ ] Every lane test passes and the syscall check passes in `lane.yml`.
-- [ ] `stack/README.md` lists arcjson; the inventory additions name their M1 owner blocks.
+- [x] Every lane test passes and the syscall check passes in `lane.yml`.
+- [x] `stack/README.md` lists arcjson; the inventory additions name their M1 owner blocks.
 
 **Cost.** Per request: one JSON parse O(body), one arena; prompt and output token buffers sized from `n_ctx`. Per
 loaded model: the mmapped weights (page cache, shared) plus one KV cache (`n_ctx` × layers × KV width, logged at load
@@ -81,4 +81,24 @@ the process sleeps in `accept`.
   If the block passes 1.5× its size, hand off with streaming and the role-switch test as the second session.
 
 **Notes.**
--
+- Done in one session (2026-11-10), no hand-off. `stack/lib/arcjson/` (+ `lane.arcjson`), `stack/arc-llm/` split as
+  specified, six driver tests in `stack/tests/arc-llm/arc_llm_lane.py` (chat, embed, roles, fit, errors, clients).
+  Embeddings match `llama-embedding` at cosine 1.0000000; tokenize matches `llama-tokenize`; stream == non-stream.
+- Inventory: every addition is M1-18 (socket AF_UNIX, connect, recvfrom, sendmsg, shutdown, bind, listen,
+  setsockopt, accept4); `syscall-table.md` rows added. No SIGPIPE handler: `MSG_NOSIGNAL` covers it.
+- Choices the spec left open: responses carry `model_version` (the role-switch test needs it); `temperature`
+  defaults to 0.8 with llama.cpp's default top-k 40 / top-p 0.95 / min-p 0.05 chain, 0 is greedy; `max_tokens`
+  defaults to the rest of the context; a role whose model.json doesn't list it, or a bad model.json, gives 500
+  with the reason; wrong method gives 405.
+- Added for robustness (flag if unwanted): 30 s `SO_RCVTIMEO`/`SO_SNDTIMEO` per client, so a stuck client can't
+  block the one-at-a-time service (a timer only while a client is connected, none while idle); a stale socket file
+  is replaced, a live one makes a second `arc-llm` exit 1.
+- SIGTERM race: the handler also `shutdown()`s the listening socket, so a signal landing between the flag check
+  and `accept4` still ends the loop. M1-18 must give `accept` on a shut-down listener an error (Linux: `EINVAL`).
+- `roles.json` change detection uses inode, size and mtime; ext2 mtimes are whole seconds, so writers must
+  replace it by rename (now said in lane-l.md, for M5-02).
+- Prompt text is tokenized with special tokens parsed (as llama-server does): a user message containing
+  `<|im_end|>` can end its turn early. Fine for one local user; revisit if untrusted input ever reaches `arc-llm`.
+- Measured: `arc-llm` 7.67 MB loaded; idle RSS 16 MB; both tiny models loaded 408 MB (KV 90 MiB, compute
+  buffers 107 + 110 MiB; the embed context uses n_ubatch = n_ctx). Next lane block: M3-02, after the ADR-0020
+  maintenance check Michael asked for.

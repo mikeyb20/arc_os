@@ -86,10 +86,21 @@ endfunction()
 
 arc_port_library(zstd zstd zstd zstd.h)
 arc_port_library(sqlite3 sqlite sqlite3 sqlite3.h)
+# llama.cpp (M2-03): libllama needs libggml (backend registry), which needs the CPU backend and
+# ggml-base; static archives, so the link order is fixed here once.
+arc_port_library(llama llama.cpp llama llama.h)
+arc_port_library(ggml llama.cpp ggml ggml.h)
+arc_port_library(ggml_cpu llama.cpp ggml-cpu ggml-cpu.h)
+arc_port_library(ggml_base llama.cpp ggml-base ggml.h)
+set_target_properties(port::llama PROPERTIES INTERFACE_LINK_LIBRARIES "port::ggml;pthread")
+set_target_properties(port::ggml PROPERTIES INTERFACE_LINK_LIBRARIES "port::ggml_cpu;port::ggml_base")
+set_target_properties(port::ggml_cpu PROPERTIES INTERFACE_LINK_LIBRARIES "port::ggml_base;pthread")
 arc_port_program(ARC_ZSTD_CLI zstd zstd)
 arc_port_program(ARC_SQLITE_SHELL sqlite sqlite3)
 arc_port_program(ARC_LLAMA_COMPLETION llama.cpp llama-completion)
 arc_port_program(ARC_LLAMA_EMBEDDING llama.cpp llama-embedding)
 arc_port_program(ARC_LLAMA_TOKENIZE llama.cpp llama-tokenize)
 
+add_subdirectory(lib)
+add_subdirectory(arc-llm)
 add_subdirectory(tests)
