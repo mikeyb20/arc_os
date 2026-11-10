@@ -35,8 +35,8 @@ archive with the musl toolchain, tested on Linux inside the syscall inventory. T
 5. Budgets in `stack/budgets.txt`: `zstd_cli_bytes`, `sqlite3_shell_bytes`.
 
 **Done when.**
-- [ ] Both ports build offline (`DL_CMD`-style: no network in `build.sh`) and the binaries are static.
-- [ ] The four lane tests pass and the syscall check passes in `lane.yml`.
+- [x] Both ports build offline (`DL_CMD`-style: no network in `build.sh`) and the binaries are static.
+- [x] The four lane tests pass and the syscall check passes in `lane.yml`.
 
 **Watch out.**
 - `immutable=1` tells SQLite the file never changes. Only use it for files nothing writes while they are open
@@ -46,4 +46,18 @@ archive with the musl toolchain, tested on Linux inside the syscall inventory. T
   something new, find out why before adding a row.
 
 **Notes.**
--
+- 2026-11-09 (M2-02 PR): `tools/lane/port-env.sh` is the one home for port build settings (musl compiler,
+  `-march=x86-64-v3`, `port_begin` copies the archived source to `build-lane/work/<name>/` and applies
+  `patches/`, `port_check_static`). `tools/lane/build.sh` fetches every port's archived source first; the port
+  builds themselves were checked with the network removed (`unshare -n`). Neither port needs a patch.
+- `stack/CMakeLists.txt` defines `port::zstd`, `port::sqlite3`, `ARC_ZSTD_CLI` and `ARC_SQLITE_SHELL` once;
+  later blocks link those, never `find_library` again.
+- The M0-04 FTS5 script moved to `tests/target/fts.sql`; the inventory (`run-in-alpine.sh`) and
+  `lane.sqlite_shell` both run it.
+- `libzstd.a` is single-threaded (upstream default), the CLI multithreaded. Levels up to 19 keep the window at
+  8 MiB or less for large inputs; 20 and up (`--ultra`) and `--long` don't, so package builders must avoid them
+  (`ports/zstd/PORT.md`; M5-02 writes the rule into `schemas/README.md`).
+- SQLite alone opens `/dev/urandom` once (PRNG seed) and, as root, `fchown`s new journals: both already in the
+  inventory (`fchown` is M1-20's). Syscall check: 8 runs, 56 syscalls, 2 files.
+- Sizes: `zstd` 1 032 537 and `sqlite3` 1 694 952 loaded bytes (stripped, static), budgets +10 %.
+- Next: M2-03 (llama.cpp) adds `ports/llama.cpp/` the same way.

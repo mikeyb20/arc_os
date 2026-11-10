@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Host tests for the lane L helpers (M2-01): tools/lane/run.sh, tools/lane/sizes.py and
-lane budget logs in tools/budget-check.py."""
+lane budget logs in tools/budget-check.py; tools/lane/port-env.sh (M2-02)."""
 
 import importlib.util
 import os
@@ -22,6 +22,14 @@ def load(name, rel):
 
 budget_check = load("budget_check", "tools/budget-check.py")
 RUN = os.path.join(ROOT, "tools", "lane", "run.sh")
+PORT_ENV = os.path.join(ROOT, "tools", "lane", "port-env.sh")
+
+
+def port_env(script, **env):
+    """Run `script` in bash after sourcing tools/lane/port-env.sh."""
+    full = dict(os.environ, **env)
+    return subprocess.run(["bash", "-c", f'set -eu; . "{PORT_ENV}"; {script}'], env=full,
+                          capture_output=True, text=True)
 
 
 class Base(unittest.TestCase):
@@ -49,6 +57,28 @@ class RunTests(Base):
         self.assertEqual(r.returncode, 5)
         with open(os.path.join(logs, "prog.strace")) as f:
             self.assertIn("execve(", f.read())
+
+
+class PortEnvTests(Base):
+    def test_compiler_follows_musl_prefix(self):
+        r = port_env('echo "$CC $AR"', ARC_MUSL_PREFIX="/opt/x/bin/x86_64-linux-musl-")
+        self.assertEqual(r.stdout.split(), ["/opt/x/bin/x86_64-linux-musl-gcc", "/opt/x/bin/x86_64-linux-musl-ar"])
+
+    @unittest.skipUnless(shutil.which("file"), "file not installed")
+    def test_check_static_rejects_dynamic_program(self):
+        sh = os.path.realpath(shutil.which("sh"))
+        if "dynamic" not in subprocess.run(["file", sh], capture_output=True, text=True).stdout:
+            self.skipTest("host sh is not dynamically linked")
+        r = port_env(f'port_check_static "{sh}"')
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("dynamically linked", r.stderr)
+
+    def test_begin_refuses_missing_toolchain(self):
+        prefix = os.path.join(self.dir, "prefix")
+        r = port_env(f'port_begin zstd "{prefix}"', ARC_MUSL_PREFIX=os.path.join(self.dir, "none-"))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no musl toolchain", r.stderr)
+        self.assertFalse(os.path.exists(prefix))
 
 
 class BudgetLogTests(Base):

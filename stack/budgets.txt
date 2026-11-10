@@ -8,3 +8,9 @@
 # Static C++ binary (cxx_basic: exceptions, threads, filesystem, iostream): loaded ELF
 # bytes, the floor every C++ program pays for static libstdc++ (measured 1195803)
 cxx_basic_bytes        1315000     max  bytes  M2-01  sizes
+
+# Port programs (M2-02), stripped static binaries, loaded ELF bytes (+10% over measured).
+# zstd CLI with threads, no legacy formats, no zlib/lzma/lz4 (measured 1032537)
+zstd_cli_bytes         1136000     max  bytes  M2-02  sizes
+# sqlite3 shell with FTS5 (measured 1694952)
+sqlite3_shell_bytes    1865000     max  bytes  M2-02  sizes

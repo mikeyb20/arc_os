@@ -36,6 +36,7 @@ stack/                    CMake project for in-house musl programs and libraries
   arc-llm/  search/  arcpkg/                                                                           (M2-04, M3-06a, M5-02)
   tests/                  lane tests and fixtures
 tools/lane/build.sh       fetch archived sources, build ports, configure and build stack/ into build-lane/ (M2-01)
+tools/lane/port-env.sh    compiler, flags and helpers every ports/<name>/build.sh sources                (M2-02)
 tools/lane/run.sh         run one arc_os-bound binary, under strace when ARC_LANE_LOGS is set           (M2-01)
 .github/workflows/lane.yml                                                                             (M2-01)
 ```
@@ -64,7 +65,8 @@ separate CMake project because it uses the other toolchain. Build outputs go to 
 - A test that starts an arc_os-bound binary starts it through `tools/lane/run.sh <log-name> <command…>`. Drivers
   (shell, Python, `curl`) run untraced: they never reach arc_os. In `stack/`, `lane_test()` registers a program that
   is the whole test (run through `run.sh` for you); `lane_driver_test()` registers a driver, which finds `run.sh`
-  in `$ARC_LANE_RUN` and writes budget lines to `$ARC_LANE_BUDGET_DIR/<suite>.budget.log`.
+  in `$ARC_LANE_RUN` and writes budget lines to `$ARC_LANE_BUDGET_DIR/<suite>.budget.log`. C lane tests report
+  with `stack/tests/lane_check.h` (`lane_check()`, `lane_check_done()`), never a local copy.
 - `lane.yml` sets `ARC_LANE_LOGS`, runs the suite, then
   `tools/syscall-inventory.py --check --logs $ARC_LANE_LOGS --tbl <syscall_64.tbl> --allow docs/plans/syscall-inventory.md`.
   Anything not in a table row of `syscall-inventory.md` fails, named. The fix is either code that doesn't need it,

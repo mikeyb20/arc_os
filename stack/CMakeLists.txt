@@ -52,4 +52,39 @@ function(lane_driver_test)
         ENVIRONMENT "ARC_LANE_RUN=${ARC_LANE_RUN};ARC_LANE_BUDGET_DIR=${ARC_LANE_BUDGET_DIR}")
 endfunction()
 
+# Ports (ports/<name>/build.sh, installed by tools/lane/build.sh into build-lane/ports/<name>/,
+# the toolchain's CMAKE_FIND_ROOT_PATH). Every program in stack/ links them through these
+# imported targets, defined only here.
+if(NOT CMAKE_FIND_ROOT_PATH)
+    message(FATAL_ERROR "configure stack/ with -DCMAKE_TOOLCHAIN_FILE=toolchain-musl.cmake (tools/lane/build.sh)")
+endif()
+list(GET CMAKE_FIND_ROOT_PATH 0 ARC_PORTS_DIR)
+
+# arc_port_library(<target> <port> <library> <header>)
+# Defines imported static library port::<target> from build-lane/ports/<port>/{lib,include}.
+function(arc_port_library target port library header)
+    find_library(ARC_PORT_${target}_LIBRARY NAMES ${library} PATHS /${port}/lib NO_DEFAULT_PATH)
+    find_path(ARC_PORT_${target}_INCLUDE NAMES ${header} PATHS /${port}/include NO_DEFAULT_PATH)
+    if(NOT ARC_PORT_${target}_LIBRARY OR NOT ARC_PORT_${target}_INCLUDE)
+        message(FATAL_ERROR "port ${port} not built in ${ARC_PORTS_DIR}/${port} (run tools/lane/build.sh)")
+    endif()
+    add_library(port::${target} STATIC IMPORTED GLOBAL)
+    set_target_properties(port::${target} PROPERTIES
+        IMPORTED_LOCATION "${ARC_PORT_${target}_LIBRARY}"
+        INTERFACE_INCLUDE_DIRECTORIES "${ARC_PORT_${target}_INCLUDE}")
+endfunction()
+
+# arc_port_program(<variable> <port> <program>): path of a port's program, in <variable>.
+function(arc_port_program variable port program)
+    find_program(${variable} NAMES ${program} PATHS "${ARC_PORTS_DIR}/${port}/bin" NO_DEFAULT_PATH)
+    if(NOT ${variable})
+        message(FATAL_ERROR "port ${port} has no ${program} in ${ARC_PORTS_DIR}/${port}/bin (run tools/lane/build.sh)")
+    endif()
+endfunction()
+
+arc_port_library(zstd zstd zstd zstd.h)
+arc_port_library(sqlite3 sqlite sqlite3 sqlite3.h)
+arc_port_program(ARC_ZSTD_CLI zstd zstd)
+arc_port_program(ARC_SQLITE_SHELL sqlite sqlite3)
+
 add_subdirectory(tests)
