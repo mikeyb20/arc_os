@@ -11,8 +11,40 @@ extern volatile struct limine_kernel_address_request  kernel_address_request;
 extern volatile struct limine_rsdp_request            rsdp_request;
 extern volatile struct limine_module_request          module_request;
 extern volatile struct limine_kernel_file_request     kernel_file_request;
+extern volatile struct limine_smp_request smp_request;
 
 static BootInfo g_boot_info;
+
+/* boot_start_cpu: Limine's record for BootInfo CPU i is smp->cpus[i] */
+static boot_cpu_entry_t boot_cpu_entry;
+
+/* CPU list from the SMP response (absent on some bootloaders: cpu_count 0). */
+static void bootinfo_read_cpus(void) {
+    struct limine_smp_response *smp = smp_request.response;
+    if (smp == NULL) return;
+    uint64_t count = smp->cpu_count;
+    if (count > BOOTINFO_MAX_CPUS) count = BOOTINFO_MAX_CPUS;
+    for (uint64_t i = 0; i < count; i++) {
+        g_boot_info.cpu_apic_ids[i] = smp->cpus[i]->lapic_id;
+    }
+    g_boot_info.cpu_count = (uint32_t)count;
+    g_boot_info.bsp_apic_id = smp->bsp_lapic_id;
+}
+
+/* Limine jumps here with its record; hand the kernel its argument. */
+static void boot_cpu_trampoline(struct limine_smp_info *info) {
+    boot_cpu_entry(info->extra_argument);
+}
+
+int boot_start_cpu(uint32_t i, boot_cpu_entry_t entry, uint64_t arg) {
+    if (i >= g_boot_info.cpu_count || g_boot_info.cpu_apic_ids[i] == g_boot_info.bsp_apic_id) return -1;
+    struct limine_smp_info *cpu = smp_request.response->cpus[i];
+    boot_cpu_entry = entry;
+    cpu->extra_argument = arg;
+    /* The store to goto_address releases the CPU: everything above must be visible first */
+    __atomic_store_n(&cpu->goto_address, boot_cpu_trampoline, __ATOMIC_SEQ_CST);
+    return 0;
+}
 
 const BootInfo *bootinfo_init(void) {
     memset(&g_boot_info, 0, sizeof(g_boot_info));
@@ -93,6 +125,8 @@ const BootInfo *bootinfo_init(void) {
         }
         g_boot_info.module_count = mod_count;
     }
+
+    bootinfo_read_cpus();
 
     /* Kernel command line */
     g_boot_info.cmdline[0] = '\0';

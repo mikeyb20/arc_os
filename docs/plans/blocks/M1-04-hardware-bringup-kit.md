@@ -51,4 +51,7 @@ screen, so hardware surprises show up before the rest of M1 is built on top.
 - Framebuffers differ (pitch ≠ width × 4, BGR vs RGB). Use the Limine framebuffer masks.
 
 **Notes.**
--
+- From M1-03: the kernel runs x2APIC whenever CPUID has it (Limine is asked to switch every CPU too). It does
+  not read the DMAR table's x2APIC opt-out flag; if a test machine misbehaves with x2APIC, that flag is the first
+  thing to check. The boot log shows `[APIC] x2APIC mode` / `xAPIC mode` and one `[SMP] CPU n (APIC a) online`
+  line per AP. `kprintf` has no lock: only the BSP prints during SMP bring-up.

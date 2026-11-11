@@ -1,58 +1,54 @@
-; arc_os — SYSCALL fast-path entry stub
+; arc_os — SYSCALL fast-path entry stub (per CPU, M1-03)
 ;
 ; On SYSCALL:
 ;   RCX = return RIP, R11 = return RFLAGS
-;   RSP = user stack (not swapped by hardware)
+;   RSP = user stack (not swapped by hardware), GS base = user's
 ;   RAX = syscall number
 ;   RDI, RSI, RDX, R10, R8, R9 = args 0-5
+;   IF, DF, TF, AC and NT are clear (SFMASK)
+;
+; SWAPGS comes first, before any GS access; the user RSP waits in this CPU's
+; PerCpu scratch slot until it is pushed. The kernel stack is this CPU's
+; kernel_rsp (the current thread's stack top, set on every context switch).
 ;
 ; Linux ABI: every register except RAX (result), RCX and R11 is preserved,
 ; including the argument registers (musl's inline syscalls rely on it).
 
 section .text
 global syscall_entry
+global syscall_iret_user
 extern syscall_dispatch
-extern syscall_kernel_rsp
 extern sig_maybe_deliver
 
-syscall_entry:
-    ; Save user RSP to scratch space (can't trust user stack)
-    mov [rel syscall_user_rsp], rsp
-    ; Load kernel stack (set by scheduler on context switch)
-    mov rsp, [rel syscall_kernel_rsp]
+; PerCpu field offsets (percpu.h, checked by _Static_assert in percpu.c)
+%define PERCPU_KERNEL_RSP 8
+%define PERCPU_USER_RSP   16
 
-    ; Build frame: push user context (callee-saved + return info)
-    push qword [rel syscall_user_rsp]   ; user RSP
-    push r11                             ; user RFLAGS
-    push rcx                             ; user RIP
-    push rbx                             ; callee-saved regs
+; SyscallFrame offsets (proc/signal.h): r9 at the lowest address
+%define FRAME_RIP     96
+%define FRAME_RFLAGS  104
+%define FRAME_RSP     112
+
+; User selectors with RPL 3 (gdt.h)
+%define USER_DATA_RPL3  0x1B
+%define USER_CODE_RPL3  0x23
+
+syscall_entry:
+    swapgs                              ; GS -> this CPU's PerCpu
+    mov [gs:PERCPU_USER_RSP], rsp       ; user RSP to per-CPU scratch
+    mov rsp, [gs:PERCPU_KERNEL_RSP]     ; this thread's kernel stack
+
+    ; Build the SyscallFrame (proc/signal.h): user context first, r9 last
+    push qword [gs:PERCPU_USER_RSP]     ; user RSP
+    push r11                            ; user RFLAGS
+    push rcx                            ; user RIP
+    push rbx                            ; callee-saved regs
     push rbp
     push r12
     push r13
     push r14
     push r15
-
-    ; Save user context to globals for fork()
-    mov [rel syscall_saved_user_rip], rcx
-    mov [rel syscall_saved_user_rflags], r11
-    push qword [rel syscall_user_rsp]
-    pop qword [rel syscall_saved_user_rsp]
-    mov [rel syscall_saved_user_rbp], rbp
-    mov [rel syscall_saved_user_rbx], rbx
-    mov [rel syscall_saved_user_r12], r12
-    mov [rel syscall_saved_user_r13], r13
-    mov [rel syscall_saved_user_r14], r14
-    mov [rel syscall_saved_user_r15], r15
-    mov [rel syscall_saved_user_rdi], rdi
-    mov [rel syscall_saved_user_rsi], rsi
-    mov [rel syscall_saved_user_rdx], rdx
-    mov [rel syscall_saved_user_r10], r10
-    mov [rel syscall_saved_user_r8], r8
-    mov [rel syscall_saved_user_r9], r9
-
-    ; Argument registers, restored on return: with the pushes above they form
-    ; the SyscallFrame (proc/signal.h), r9 at the lowest address
-    push rdi
+    push rdi                            ; argument registers, restored on return
     push rsi
     push rdx
     push r10
@@ -83,14 +79,26 @@ syscall_entry:
     call sig_maybe_deliver
     ; RAX = value for user RAX
 
+    ; Nothing may interrupt between SWAPGS and SYSRET: an interrupt there would
+    ; see kernel CS and keep the user's GS base
+    cli
+
+    ; SYSRET to a non-canonical RIP faults in ring 0 on Intel, with the user's
+    ; RSP already loaded. rt_sigreturn can set any RIP, so check it here and
+    ; leave through IRET instead (its fault, if any, comes on the kernel stack).
+    mov rcx, [rsp + FRAME_RIP]
+    mov r11, rcx
+    shl r11, 16
+    sar r11, 16
+    cmp r11, rcx
+    jne .return_iret
+
     pop r9
     pop r8
     pop r10
     pop rdx
     pop rsi
     pop rdi
-
-    ; Restore callee-saved registers and user context
     pop r15
     pop r14
     pop r13
@@ -99,41 +107,31 @@ syscall_entry:
     pop rbx
     pop rcx                 ; user RIP
     pop r11                 ; user RFLAGS
-
-    pop rsp                 ; user RSP
-
+    pop rsp                 ; user RSP: from here on no memory access
+    swapgs                  ; GS -> user's (NMI/#MC here decide by MSR_GS_BASE)
     o64 sysret              ; return to user mode (64-bit SYSRET)
 
-section .bss
-syscall_user_rsp: resq 1   ; scratch for user RSP (single-CPU only)
-
-global syscall_saved_user_rip
-global syscall_saved_user_rsp
-global syscall_saved_user_rflags
-global syscall_saved_user_rbp
-global syscall_saved_user_rbx
-global syscall_saved_user_r12
-global syscall_saved_user_r13
-global syscall_saved_user_r14
-global syscall_saved_user_r15
-global syscall_saved_user_rdi
-global syscall_saved_user_rsi
-global syscall_saved_user_rdx
-global syscall_saved_user_r10
-global syscall_saved_user_r8
-global syscall_saved_user_r9
-syscall_saved_user_rip:    resq 1
-syscall_saved_user_rsp:    resq 1
-syscall_saved_user_rflags: resq 1
-syscall_saved_user_rbp:    resq 1
-syscall_saved_user_rbx:    resq 1
-syscall_saved_user_r12:    resq 1
-syscall_saved_user_r13:    resq 1
-syscall_saved_user_r14:    resq 1
-syscall_saved_user_r15:    resq 1
-syscall_saved_user_rdi:    resq 1
-syscall_saved_user_rsi:    resq 1
-syscall_saved_user_rdx:    resq 1
-syscall_saved_user_r10:    resq 1
-syscall_saved_user_r8:     resq 1
-syscall_saved_user_r9:     resq 1
+.return_iret:
+    ; Rare path: restore registers from the frame, then IRET with RCX/R11 set
+    ; as SYSRET would have left them
+    mov r11, [rsp + FRAME_RFLAGS]
+    mov r9,  [rsp + 0]
+    mov r8,  [rsp + 8]
+    mov r10, [rsp + 16]
+    mov rdx, [rsp + 24]
+    mov rsi, [rsp + 32]
+    mov rdi, [rsp + 40]
+    mov r15, [rsp + 48]
+    mov r14, [rsp + 56]
+    mov r13, [rsp + 64]
+    mov r12, [rsp + 72]
+    mov rbp, [rsp + 80]
+    mov rbx, [rsp + 88]
+    push USER_DATA_RPL3                 ; SS
+    push qword [rsp + 8 + FRAME_RSP]    ; RSP (address computed before the push)
+    push r11                            ; RFLAGS
+    push USER_CODE_RPL3                 ; CS
+    push rcx                            ; RIP
+    swapgs
+syscall_iret_user:                      ; a #GP here is the user's (M1-07)
+    iretq

@@ -21,6 +21,20 @@ static int acpi_checksum(const void *data, uint32_t length) {
     return sum == 0;
 }
 
+/* Record an enabled CPU once (firmware may list a CPU as both type 0 and 9).
+ * Runs once per MADT entry at boot: the linear duplicate check is boot-only. */
+static void madt_add_cpu(uint32_t apic_id, uint32_t flags) {
+    if (!(flags & MADT_LAPIC_ENABLED)) return;   /* online-capable: hot-add, not supported */
+    for (uint32_t i = 0; i < acpi_info.cpu_count; i++) {
+        if (acpi_info.cpu_apic_ids[i] == apic_id) return;
+    }
+    if (acpi_info.cpu_count >= ACPI_MAX_CPUS) {
+        kprintf("[ACPI]   CPU apic_id=%u ignored: more than %u CPUs\n", apic_id, ACPI_MAX_CPUS);
+        return;
+    }
+    acpi_info.cpu_apic_ids[acpi_info.cpu_count++] = apic_id;
+}
+
 /* Parse MADT (Multiple APIC Description Table). */
 static void parse_madt(const AcpiMadt *madt) {
     acpi_info.local_apic_address = madt->local_apic_address;
@@ -41,12 +55,14 @@ static void parse_madt(const AcpiMadt *madt) {
         switch (entry->type) {
         case MADT_ENTRY_LOCAL_APIC: {
             const AcpiMadtLocalApic *lapic = (const AcpiMadtLocalApic *)entry;
-            if ((lapic->flags & 1) && acpi_info.cpu_count < ACPI_MAX_CPUS) {
-                acpi_info.cpu_apic_ids[acpi_info.cpu_count] = lapic->apic_id;
-                acpi_info.cpu_count++;
-                kprintf("[ACPI]   CPU: processor_id=%u apic_id=%u\n",
-                        lapic->processor_id, lapic->apic_id);
-            }
+            if (entry->length < sizeof(*lapic) || lapic->apic_id == 0xFF) break;
+            madt_add_cpu(lapic->apic_id, lapic->flags);
+            break;
+        }
+        case MADT_ENTRY_LOCAL_X2APIC: {
+            const AcpiMadtLocalX2Apic *x2 = (const AcpiMadtLocalX2Apic *)entry;
+            if (entry->length < sizeof(*x2) || x2->x2apic_id == 0xFFFFFFFF) break;
+            madt_add_cpu(x2->x2apic_id, x2->flags);
             break;
         }
         case MADT_ENTRY_IO_APIC: {

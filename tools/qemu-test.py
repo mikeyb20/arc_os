@@ -17,6 +17,10 @@ The serial log is parsed for ARC_TEST markers written by init:
     ARC_TEST PANIC suite=<suite>          (written by the kernel)
 
 --cpu picks the QEMU CPU model (default: host under KVM, max under TCG).
+--cpu-flags adds CPU feature flags to that model, e.g. "-x2apic" (default: the
+ARC_QEMU_CPU_FLAGS environment variable), so a whole `ctest -L qemu` run can
+repeat in the other APIC mode (M1-03). --require-kvm skips the run (exit 77)
+when KVM is missing: QEMU before 9.0 has no x2APIC under TCG.
 --expect-exit N makes the run pass only if QEMU's debug-exit value is N (the
 kernel ends the run itself, e.g. 0x7e when the CPU is below the x86-64-v3
 floor); the --expect patterns must still match.
@@ -82,10 +86,11 @@ def qemu_command(args, iso, serial_log):
            "-no-reboot",
            "-boot", "d",
            "-cdrom", iso]
+    flags = "".join("," + f for f in args.cpu_flags.split(",") if f)
     if kvm_usable() and not args.no_kvm and args.cpu is None:
-        cmd += ["-accel", "kvm", "-cpu", "host"]
+        cmd += ["-accel", "kvm", "-cpu", "host" + flags]
     else:
-        cmd += ["-accel", "tcg,thread=multi", "-cpu", args.cpu or "max"]
+        cmd += ["-accel", "tcg,thread=multi", "-cpu", (args.cpu or "max") + flags]
     return cmd
 
 
@@ -116,9 +121,13 @@ def main():
     ap.add_argument("--cmdline", action="append", default=[],
                     help="extra kernel command-line word, e.g. arc.mem=4G")
     ap.add_argument("--name", help="name for the ISO and serial log (default: the suite)")
-    ap.add_argument("--smp", type=int, default=2)
+    ap.add_argument("--smp", type=int, default=4)
     ap.add_argument("--qemu", default="qemu-system-x86_64")
     ap.add_argument("--no-kvm", action="store_true", help="force TCG")
+    ap.add_argument("--cpu-flags", default=os.environ.get("ARC_QEMU_CPU_FLAGS", ""),
+                    help="extra CPU flags, comma separated (e.g. -x2apic)")
+    ap.add_argument("--require-kvm", action="store_true",
+                    help="skip (exit 77) when KVM is not usable")
     ap.add_argument("--cpu", default=None,
                     help="QEMU CPU model, run under TCG (default: host with KVM, else max)")
     ap.add_argument("--expect-exit", type=lambda v: int(v, 0), default=None,
@@ -129,6 +138,10 @@ def main():
     if not os.path.isfile(os.path.join(args.build_dir, "kernel.elf")):
         log(f"{args.build_dir}/kernel.elf not found; run the cross build first")
         return 2
+
+    if args.require_kvm and (args.no_kvm or args.cpu is not None or not kvm_usable()):
+        log("needs KVM (QEMU before 9.0 has no x2APIC under TCG): skipped")
+        return 77
 
     out_dir = os.path.join(args.build_dir, "qemu-test")
     os.makedirs(out_dir, exist_ok=True)

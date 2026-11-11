@@ -41,4 +41,6 @@
 - Keep the old PIT path until the new one passes its tests, then delete it.
 
 **Notes.**
--
+- From M1-03: LAPIC registers go through `lapic_read`/`lapic_write` (xAPIC MMIO or x2APIC MSRs); TSC-deadline is an
+  MSR in both modes. `smp_init` bounds its wait for APs with raw `rdtsc` (2^32 cycles) until a calibrated TSC exists;
+  switch it to the clocksource here.

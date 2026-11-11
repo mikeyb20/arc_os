@@ -11,8 +11,10 @@
 #define IRQ_COUNT  16
 
 /* CPU exception vector numbers */
+#define EXCEPTION_NMI           2
 #define EXCEPTION_DOUBLE_FAULT  8
 #define EXCEPTION_PAGE_FAULT   14
+#define EXCEPTION_MACHINE_CHECK 18
 #define EXCEPTION_COUNT        32  /* Vectors 0-31 are CPU exceptions */
 
 /* Interrupt frame pushed by isr_common (must match asm push order) */

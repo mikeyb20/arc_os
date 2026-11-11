@@ -37,4 +37,6 @@ supports them, and DMA memory comes from one helper (ADR-0006, ADR-0005).
 - `suspend`/`resume` signatures are part of ADR-0006; get them right now even though they do nothing yet.
 
 **Notes.**
--
+- From M1-03: `lapic_x2apic()` says which mode runs; I/O APIC routes take an 8-bit APIC ID (`ioapic_route_isa`
+  warns and skips routing if the BSP's ID is above 255). MSI destinations above 255 need interrupt remapping (out
+  of scope, as the spec says).

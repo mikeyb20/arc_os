@@ -94,6 +94,10 @@ extern TestCase mutex_tests[];
 extern int mutex_test_count;
 extern TestCase acpi_tests[];
 extern int acpi_test_count;
+extern TestCase lapic_tests[];
+extern int lapic_test_count;
+extern TestCase percpu_tests[];
+extern int percpu_test_count;
 extern TestCase fb_console_tests[];
 extern int fb_console_test_count;
 extern TestCase passwd_tests[];
@@ -172,6 +176,8 @@ int main(int argc, char **argv) {
         { "cred",         cred_tests,         &cred_test_count },
         { "mutex",        mutex_tests,        &mutex_test_count },
         { "acpi",         acpi_tests,         &acpi_test_count },
+        { "lapic",        lapic_tests,        &lapic_test_count },
+        { "percpu",       percpu_tests,       &percpu_test_count },
         { "fb_console",   fb_console_tests,   &fb_console_test_count },
         { "passwd",       passwd_tests,       &passwd_test_count },
         { "socket_net",   socket_net_tests,   &socket_net_test_count },

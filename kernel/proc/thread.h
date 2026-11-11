@@ -62,10 +62,10 @@ Thread *thread_create(thread_entry_t entry, void *arg);
  * must be DEAD and must have switched away for the last time (never itself). */
 void thread_destroy(Thread *t);
 
-/* Get the currently running thread. */
+/* Get the thread running on this CPU (one GS-relative load, M1-03). */
 Thread *thread_current(void);
 
-/* Set the currently running thread (used by scheduler). */
+/* Set the thread running on this CPU (used by scheduler). */
 void thread_set_current(Thread *t);
 
 /* Assembly context switch: saves old context, loads new context, returns. */

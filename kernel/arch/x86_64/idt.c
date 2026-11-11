@@ -27,18 +27,23 @@ void idt_init(void) {
     /* Install ISR stubs for all 256 vectors */
     for (int i = 0; i < ISR_COUNT; i++) {
         uint8_t ist = 0;
-        /* Double fault (vector 8) uses IST1 */
-        if (i == EXCEPTION_DOUBLE_FAULT) {
-            ist = 1;
-        }
+        if (i == EXCEPTION_DOUBLE_FAULT)
+            ist = IST_DOUBLE_FAULT;
+        else if (i == EXCEPTION_NMI)
+            ist = IST_NMI;
+        else if (i == EXCEPTION_MACHINE_CHECK)
+            ist = IST_MACHINE_CHECK;
         idt_set_gate(i, isr_stub_table[i], GDT_KERNEL_CODE,
                      IDT_GATE_INTERRUPT, ist);
     }
 
-    /* Load IDT */
     idtr.limit = sizeof(idt) - 1;
     idtr.base  = (uint64_t)idt;
-    __asm__ volatile ("lidt %0" : : "m"(idtr));
+    idt_load();
 
     kprintf("[HAL] IDT loaded (%d entries)\n", IDT_ENTRIES);
+}
+
+void idt_load(void) {
+    __asm__ volatile("lidt %0" : : "m"(idtr));
 }

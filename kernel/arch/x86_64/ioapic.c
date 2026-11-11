@@ -4,6 +4,7 @@
  * LAPIC vectors. Uses MADT Interrupt Source Overrides for remapping. */
 
 #include "arch/x86_64/ioapic.h"
+#include "arch/x86_64/isr.h"
 #include "drivers/acpi.h"
 #include "lib/kprintf.h"
 
@@ -75,4 +76,41 @@ void ioapic_unmask(uint8_t irq) {
     uint64_t entry = ioapic_read_redir(irq);
     entry &= ~IOAPIC_MASKED;
     ioapic_write_redir(irq, entry);
+}
+
+void ioapic_route_isa(const AcpiInfo *acpi, uint8_t dest_apic) {
+    /* Route ISA IRQs 0-15 to vectors 32+irq on dest_apic, applying the MADT
+     * Interrupt Source Overrides (moved here from kmain, M1-03) */
+    for (uint8_t irq = 0; irq < 16; irq++) {
+        uint8_t gsi = irq;
+        int active_low = 0, level = 0;
+
+        /* Check for Interrupt Source Overrides */
+        for (uint32_t j = 0; j < acpi->iso_count; j++) {
+            if (acpi->isos[j].source == irq) {
+                gsi = (uint8_t)acpi->isos[j].gsi;
+                uint16_t flags = acpi->isos[j].flags;
+                active_low = ((flags & 0x3) == 3);
+                level = (((flags >> 2) & 0x3) == 3);
+                break;
+            }
+        }
+
+        /* A GSI claimed by another IRQ's override (e.g. PIT IRQ0 ->
+         * GSI2) must not be re-routed by the identity mapping of the
+         * IRQ with the same number, or the timer lands on vector 34. */
+        int claimed = 0;
+        if (gsi == irq) {
+            for (uint32_t j = 0; j < acpi->iso_count; j++) {
+                if (acpi->isos[j].gsi == irq && acpi->isos[j].source != irq) {
+                    claimed = 1;
+                    break;
+                }
+            }
+        }
+        if (claimed) continue;
+
+        ioapic_route_irq(gsi, (uint8_t)(IRQ_BASE + irq), dest_apic, active_low, level);
+        ioapic_unmask(gsi);
+    }
 }

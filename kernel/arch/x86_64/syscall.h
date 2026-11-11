@@ -13,7 +13,10 @@
 typedef int64_t (*syscall_handler_t)(uint64_t, uint64_t, uint64_t,
                                      uint64_t, uint64_t, uint64_t);
 
-/* Initialize SYSCALL/SYSRET MSRs and register every subsystem's handlers. */
+/* Initialize this CPU's SYSCALL/SYSRET MSRs (BSP and every AP). */
+void syscall_cpu_init(void);
+
+/* syscall_cpu_init on the BSP, then register every subsystem's handlers. */
 void syscall_init(void);
 
 /* Register a syscall handler for the given Linux number (ignored if out of range). */
@@ -22,16 +25,13 @@ void syscall_register(uint32_t num, syscall_handler_t handler);
 /* Assembly entry point for SYSCALL instruction. */
 extern void syscall_entry(void);
 
-/* Kernel stack pointer for SYSCALL — updated by scheduler on context switch.
- * Single-CPU only; SMP would need per-CPU storage. */
-extern uint64_t syscall_kernel_rsp;
-
 /* C dispatcher called from syscall_entry.asm */
 int64_t syscall_dispatch(uint64_t num, uint64_t a0, uint64_t a1, uint64_t a2,
                          uint64_t a3, uint64_t a4, uint64_t a5);
 
 /* Copy the calling thread's saved user registers (RIP, RSP, RFLAGS and the
- * callee-saved set) into a fork context. Valid only inside a syscall. */
+ * callee-saved set) into a fork context, from the SyscallFrame at the top of
+ * its kernel stack. Valid only inside a syscall. */
 struct ForkContext;
 void syscall_save_user_context(struct ForkContext *ctx);
 

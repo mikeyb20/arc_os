@@ -1,8 +1,6 @@
 #include "arch/hal.h"
 #include "arch/x86_64/serial.h"
-#include "arch/x86_64/gdt.h"
 #include "uapi/termios.h"
-#include "arch/x86_64/idt.h"
 #include "arch/x86_64/pic.h"
 #include "arch/x86_64/pit.h"
 #include "mm/pmm.h"
@@ -42,12 +40,6 @@
 #include "drivers/ansi.h"
 #include "drivers/vt.h"
 #include "drivers/font8x16.h"
-#include "arch/x86_64/lapic.h"
-#include "arch/x86_64/ioapic.h"
-#include "arch/x86_64/percpu.h"
-#include "arch/x86_64/smp.h"
-#include "arch/x86_64/ipi.h"
-#include "arch/x86_64/isr.h"
 
 /* Dual output: serial + ANSI parser → framebuffer */
 static void tty_dual_output(char c) {
@@ -385,13 +377,11 @@ void kmain(void) {
 
     boot_log_info(info);
 
-    serial_puts("[BOOT] stage: GDT\n");
-    gdt_init();
-    serial_puts("[BOOT] stage: IDT\n");
-    idt_init();
     serial_puts("[BOOT] stage: CPU\n");
-    cpu_features_init();
+    cpu_features_init();   /* before the per-CPU block: it records the core type */
     cpu_floor_check(info);
+    serial_puts("[BOOT] stage: GDT, per-CPU, IDT\n");
+    hal_cpu_init();   /* GS -> the BSP's per-CPU block: thread_current() works from here */
     serial_puts("[BOOT] stage: FPU\n");
     fpu_cpu_init(1);   /* before any thread exists: threads copy its clean image */
     serial_puts("[BOOT] stage: PIC\n");
@@ -451,71 +441,11 @@ void kmain(void) {
     }
     keyboard_init();
 
-    /* --- SMP: Initialize APIC and bring up APs --- */
+    /* APIC interrupt controllers, then the other CPUs (they idle until M1-05) */
     {
         const AcpiInfo *acpi = acpi_get_info();
         if (acpi && acpi->local_apic_address != 0) {
-            uint64_t hhdm = vmm_get_hhdm_offset();
-
-            /* Initialize BSP's per-CPU data */
-            percpu_init_bsp();
-
-            /* Initialize BSP's Local APIC */
-            lapic_init(acpi->local_apic_address + hhdm);
-            percpu_data[0].apic_id = lapic_id();
-
-            /* Initialize I/O APIC */
-            if (acpi->io_apic_address != 0) {
-                ioapic_init(acpi->io_apic_address + hhdm);
-
-                /* Remap ISA IRQs through I/O APIC, applying ISOs */
-                for (uint8_t irq = 0; irq < 16; irq++) {
-                    uint8_t gsi = irq;
-                    int active_low = 0, level = 0;
-
-                    /* Check for Interrupt Source Overrides */
-                    for (uint32_t j = 0; j < acpi->iso_count; j++) {
-                        if (acpi->isos[j].source == irq) {
-                            gsi = (uint8_t)acpi->isos[j].gsi;
-                            uint16_t flags = acpi->isos[j].flags;
-                            active_low = ((flags & 0x3) == 3);
-                            level = (((flags >> 2) & 0x3) == 3);
-                            break;
-                        }
-                    }
-
-                    /* A GSI claimed by another IRQ's override (e.g. PIT IRQ0 ->
-                     * GSI2) must not be re-routed by the identity mapping of the
-                     * IRQ with the same number, or the timer lands on vector 34. */
-                    int claimed = 0;
-                    if (gsi == irq) {
-                        for (uint32_t j = 0; j < acpi->iso_count; j++) {
-                            if (acpi->isos[j].gsi == irq && acpi->isos[j].source != irq) {
-                                claimed = 1;
-                                break;
-                            }
-                        }
-                    }
-                    if (claimed) continue;
-
-                    /* Route to same vector (32+irq), destination = BSP */
-                    ioapic_route_irq(gsi, (uint8_t)(IRQ_BASE + irq),
-                                     (uint8_t)percpu_data[0].apic_id,
-                                     active_low, level);
-                    ioapic_unmask(gsi);
-                }
-
-                /* Mask PIC (we're using APIC now) */
-                pic_disable();
-                isr_set_apic_mode(1);
-                kprintf("[SMP] Switched from PIC to APIC mode\n");
-            }
-
-            /* Register IPI handlers */
-            ipi_init();
-
-            /* Bring up Application Processors */
-            smp_init();
+            hal_smp_init(info, acpi);
         }
     }
 

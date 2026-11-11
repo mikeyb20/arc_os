@@ -3,6 +3,10 @@
 
 #include <stdint.h>
 
+/* Local APIC access layer (M1-03): xAPIC (MMIO) or x2APIC (MSRs), chosen once
+ * on the BSP and used by every CPU. Callers use register offsets as in the
+ * xAPIC MMIO page; in x2APIC mode register r is MSR 0x800 + (r >> 4). */
+
 /* LAPIC register offsets (memory-mapped) */
 #define LAPIC_ID          0x020
 #define LAPIC_VERSION     0x030
@@ -26,6 +30,9 @@
 #define ICR_INIT          0x00500
 #define ICR_STARTUP       0x00600
 
+/* ICR delivery status (xAPIC only: x2APIC sends at once) */
+#define ICR_SEND_PENDING 0x01000
+
 /* ICR destination shorthand */
 #define ICR_DEST_FIELD    0x00000
 #define ICR_DEST_SELF     0x40000
@@ -39,32 +46,37 @@
 /* Timer divide values */
 #define LAPIC_TIMER_DIV_16  0x03
 
-/* Initialize the local APIC. addr is the HHDM virtual address. */
-void lapic_init(uint64_t base_virt);
+/* Choose the mode on the BSP and enable its local APIC. x2APIC when CPUID
+ * reports it (and always when the firmware or bootloader already enabled it);
+ * xAPIC otherwise, through the HHDM mapping of mmio_phys (from the MADT). */
+void lapic_init_bsp(uint64_t mmio_phys);
+
+/* Enable this application processor's local APIC in the BSP's mode. */
+void lapic_init_ap(void);
+
+/* 1 when the APIC layer runs in x2APIC mode. */
+int lapic_x2apic(void);
 
 /* Send End-of-Interrupt. Must be called after handling every LAPIC interrupt. */
 void lapic_eoi(void);
 
-/* Read the current CPU's APIC ID. */
+/* Read the current CPU's APIC ID: 32 bits in x2APIC mode, 8 in xAPIC mode. */
 uint32_t lapic_id(void);
 
-/* Send an IPI to a specific APIC ID with the given vector. */
+/* Send a fixed IPI to one APIC ID. In xAPIC mode only IDs below 256 exist. */
 void lapic_send_ipi(uint32_t apic_id, uint32_t vector);
 
-/* Send an IPI to all CPUs (including self). */
-void lapic_send_ipi_all(uint32_t vector);
-
-/* Send an IPI to all CPUs except self. */
+/* Send a fixed IPI to all CPUs except self. */
 void lapic_send_ipi_all_excluding_self(uint32_t vector);
 
 /* Initialize the LAPIC timer in periodic mode with the given vector.
  * freq_hz is the desired tick frequency (e.g., 100 for 100 Hz). */
 void lapic_timer_init(uint32_t vector, uint32_t freq_hz);
 
-/* Read a LAPIC register. */
+/* Read a LAPIC register (xAPIC MMIO offset). */
 uint32_t lapic_read(uint32_t reg);
 
-/* Write a LAPIC register. */
+/* Write a LAPIC register (xAPIC MMIO offset). */
 void lapic_write(uint32_t reg, uint32_t val);
 
 #endif /* ARCHOS_ARCH_X86_64_LAPIC_H */

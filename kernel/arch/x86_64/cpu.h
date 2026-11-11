@@ -49,7 +49,7 @@ uint8_t cpu_core_type_detect(void);
 const char *cpu_core_type_name(uint8_t type);
 
 /* Maximum CPUs supported (percpu.h uses the same value) */
-#define CPU_MAX 16
+#define CPU_MAX 256
 
 /* Describe CPU number cpu (0 .. CPU_MAX - 1) for /proc/cpuinfo: its APIC ID and
  * CPU_CORE_* type. Returns 0, or -1 when that CPU is not online. */

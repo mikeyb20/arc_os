@@ -16,9 +16,6 @@
 #define ARCHOS_PROC_FD_H
 #define ARCHOS_PROC_PROC_SYSCALLS_H  /* proc_release_fds: stubbed below */
 #define ARCHOS_ARCH_X86_64_USERMODE_H
-#define ARCHOS_ARCH_X86_64_GDT_H
-#define ARCHOS_ARCH_X86_64_SYSCALL_H
-#define ARCHOS_ARCH_X86_64_PAGING_H
 #define ARCHOS_FS_PATH_H
 #define ARCHOS_ARCH_HAL_H        /* hal.h: only fpu.h is used, stubbed below */
 #define ARCHOS_ARCH_X86_64_FPU_H  /* fpu.h: stubbed below */
@@ -177,9 +174,12 @@ static void proc_release_fds(Process *p) {
 }
 
 /* Arch stubs */
-static void gdt_set_kernel_stack(uint64_t rsp0) { (void)rsp0; }
-static void paging_write_cr3(uint64_t cr3) { (void)cr3; }
-static uint64_t syscall_kernel_rsp;
+static void hal_set_kernel_stack(uint64_t rsp0) {
+    (void)rsp0;
+}
+static void hal_switch_address_space(uint64_t cr3) {
+    (void)cr3;
+}
 __attribute__((noreturn))
 static void fork_return_to_user(const ForkContext *ctx) {
     (void)ctx;
