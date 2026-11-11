@@ -133,6 +133,9 @@ void arcjson_write_float(arcjson_writer *w, float v);   /* 9 significant digits:
 void arcjson_write_bool(arcjson_writer *w, bool v);
 void arcjson_write_null(arcjson_writer *w);
 
+/* arcjson_write_value: a parsed value and everything in it (integers within 2^53 exactly, as written). */
+void arcjson_write_value(arcjson_writer *w, const arcjson_value *v);
+
 /*
  * arcjson_utf8_complete_len: len minus a trailing character that is valid so far but cut
  * short (at most 3 bytes). A streamer writes that many bytes now and keeps the rest until
@@ -171,6 +174,18 @@ bool arcjson_is_schema_id(const char *s, size_t len);
  * (The full semver grammar is checked by the schema at build time.)
  */
 bool arcjson_is_schema_version(const char *s, size_t len);
+
+/* arcjson_is_schema_semver: s[0..len) is a full semver 2.0.0 version (common.schema.json `semver`), at most 64 bytes. */
+bool arcjson_is_schema_semver(const char *s, size_t len);
+
+/* arcjson_is_schema_role: s[0..len) is a model role (common.schema.json `role`): chat, embed, router, expert:<id>. */
+bool arcjson_is_schema_role(const char *s, size_t len);
+
+/*
+ * arcjson_is_schema_relpath: s[0..len) is a relative path (common.schema.json `relpath`): '/'-separated,
+ * no leading or trailing '/', no empty, '.' or '..' parts, no NUL.
+ */
+bool arcjson_is_schema_relpath(const char *s, size_t len);
 
 /*
  * arcjson_schema_version_cmp: <0, 0 or >0 as version a sorts before, with or after b by semver

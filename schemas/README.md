@@ -24,6 +24,17 @@ Rules for every schema:
 - An `.arcpkg` manifest's `model` or `pack` object has the same `name` and `version` as the package. A schema
   cannot say that, so tools check it (see `tests/schemas/validate.py`, `consistency()`).
 
+Rules for package builders (M3-04, M5-04, M5-05; `arcpkg` enforces them):
+
+- An `.arcpkg` is a zstd-compressed POSIX ustar archive with a zstd window of **8 MiB or less**: no `--long` and no
+  `--ultra` levels above 19 (levels up to 19 stay within 8 MiB, `ports/zstd/PORT.md`). `arcpkg` decompresses with
+  `ZSTD_d_windowLogMax` = 23 so a multi-GB package installs on a 4 GB machine; a larger window is refused.
+- `manifest.json` is the first member (at most 1 MiB), then `files/` holding exactly the files the manifest lists:
+  regular files and directories only (no links, devices or pax/GNU extension headers), names within the ustar
+  limits, no absolute paths and no `.` or `..` parts.
+- `install_root` is `/apps/<name>`, `/models/<name>` or `/packs/<name>` for a program, model or pack (the layout
+  `arc-llm` and `search` read; lane-l.md), stricter than the schema's pattern.
+
 `examples/` holds one valid example per schema (three for `.arcpkg`: program, model, pack) and invalid ones
 named for the rule they break. The values in them (model sizes, pack sizes, sources) are illustrative, not
 measurements. CI runs `tests/schemas/validate.py` (host test `schemas`); run it with file arguments to check

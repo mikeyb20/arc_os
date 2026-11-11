@@ -737,6 +737,51 @@ void arcjson_write_null(arcjson_writer *w) {
     w_put(w, "null", 4);
 }
 
+void arcjson_write_value(arcjson_writer *w, const arcjson_value *v) {
+    int64_t i;
+    switch (v->type) {
+    case ARCJSON_NULL:
+        arcjson_write_null(w);
+        return;
+    case ARCJSON_FALSE:
+    case ARCJSON_TRUE:
+        arcjson_write_bool(w, v->type == ARCJSON_TRUE);
+        return;
+    case ARCJSON_NUMBER:
+        if (arcjson_int64(v, &i)) {
+            arcjson_write_int(w, i);
+        } else {
+            arcjson_write_number(w, v->u.number);
+        }
+        return;
+    case ARCJSON_STRING:
+        arcjson_write_string_n(w, v->u.string.ptr, v->u.string.len);
+        return;
+    case ARCJSON_ARRAY:
+    case ARCJSON_OBJECT:
+        if (v->type == ARCJSON_ARRAY) {
+            arcjson_write_array_begin(w);
+        } else {
+            arcjson_write_object_begin(w);
+        }
+        for (const arcjson_value *c = v->u.children.first; c != NULL; c = c->next) {
+            if (v->type == ARCJSON_OBJECT) { /* as arcjson_write_key, with the key's length (it may hold NUL) */
+                w_before_value(w);
+                w_put_string(w, c->key, c->key_len);
+                w_put(w, ":", 1);
+                w->after_key = true;
+            }
+            arcjson_write_value(w, c);
+        }
+        if (v->type == ARCJSON_ARRAY) {
+            arcjson_write_array_end(w);
+        } else {
+            arcjson_write_object_end(w);
+        }
+        return;
+    }
+}
+
 /* ---- Manifests ---------------------------------------------------------------------------- */
 
 char *arcjson_read_file(const char *path, size_t max_len, size_t *len, const char **why) {
@@ -796,6 +841,89 @@ bool arcjson_is_schema_version(const char *s, size_t len) {
               c == '+')) {
             return false;
         }
+    }
+    return true;
+}
+
+/* semver_ids: s[0..len) is dot-separated non-empty identifiers of [0-9A-Za-z-]; `numeric_rule`: numbers have no leading zero. */
+static bool semver_ids(const char *s, size_t len, bool numeric_rule) {
+    size_t start = 0;
+    size_t digits = 0; /* of the current identifier */
+    for (size_t i = 0; i <= len; i++) {
+        if (i < len && s[i] != '.') {
+            char c = s[i];
+            digits += c >= '0' && c <= '9';
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '-')) {
+                return false;
+            }
+            continue;
+        }
+        size_t n = i - start;
+        if (n == 0) {
+            return false;
+        }
+        if (numeric_rule && n > 1 && s[start] == '0' && digits == n) {
+            return false;
+        }
+        start = i + 1;
+        digits = 0;
+    }
+    return true;
+}
+
+bool arcjson_is_schema_semver(const char *s, size_t len) {
+    if (!arcjson_is_schema_version(s, len)) {
+        return false;
+    }
+    size_t end = 0;
+    for (int part = 0; part < 3; part++) { /* major.minor.patch: numbers, no leading zeros */
+        size_t digits = 0;
+        while (end + digits < len && s[end + digits] >= '0' && s[end + digits] <= '9') {
+            digits++;
+        }
+        if (digits == 0 || (digits > 1 && s[end] == '0')) {
+            return false;
+        }
+        end += digits;
+        if (part < 2) {
+            if (end >= len || s[end] != '.') {
+                return false;
+            }
+            end++;
+        }
+    }
+    size_t plus = end;
+    while (plus < len && s[plus] != '+') {
+        plus++;
+    }
+    if (end < plus && (s[end] != '-' || !semver_ids(s + end + 1, plus - end - 1, true))) {
+        return false;
+    }
+    return plus == len || semver_ids(s + plus + 1, len - plus - 1, false);
+}
+
+bool arcjson_is_schema_role(const char *s, size_t len) {
+    if ((len == 4 && memcmp(s, "chat", 4) == 0) || (len == 5 && memcmp(s, "embed", 5) == 0) ||
+        (len == 6 && memcmp(s, "router", 6) == 0)) {
+        return true;
+    }
+    return len > 7 && memcmp(s, "expert:", 7) == 0 && arcjson_is_schema_id(s + 7, len - 7);
+}
+
+bool arcjson_is_schema_relpath(const char *s, size_t len) {
+    size_t start = 0;
+    if (len == 0 || memchr(s, '\0', len) != NULL) {
+        return false;
+    }
+    for (size_t i = 0; i <= len; i++) {
+        if (i < len && s[i] != '/') {
+            continue;
+        }
+        size_t n = i - start;
+        if (n == 0 || (n == 1 && s[start] == '.') || (n == 2 && s[start] == '.' && s[start + 1] == '.')) {
+            return false;
+        }
+        start = i + 1;
     }
     return true;
 }

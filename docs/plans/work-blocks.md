@@ -150,7 +150,7 @@ assistant and viewers lay out from the framebuffer size, never a fixed one.
 | M3-03 | ZIM → doc store + chunks (host) | M | R | C | M3-01, M3-02 | Medical pack built with stable chunk IDs | todo |
 | M3-04 | FTS5, embeddings, tier selector, `.arcpkg` (host) | M | R | C | M3-03 | 32 GB pack set built and sized | todo |
 | M3-05 | UTF-8 console, PSF2, `/dev/input`, `/dev/fb0` | M | D | K | M3-00 | fbdev `mmap` and `input_event` work from user space | todo |
-| M3-06a | Retriever I: keyword search | S | D | L | M3-02 | FTS5 keyword search over packs on Linux; works with no `arc-llm` | review (#27) |
+| M3-06a | Retriever I: keyword search | S | D | L | M3-02 | FTS5 keyword search over packs on Linux; works with no `arc-llm` | done |
 | M3-06 | Retriever II: vector rerank | S | D | U | M3-00, M3-06a | Vector rerank with the embedder chosen in M2-06; keyword-only still works without `arc-llm` | todo |
 | M3-07 | Library reader (no LLM) | M | R | U | M3-05, M3-06 | Search, open, follow links, bookmarks | todo |
 | M3-08 | Image viewer | S | R | U | M3-05 | Article images show on the framebuffer | todo |
@@ -194,7 +194,7 @@ an unclean shutdown.
 |---|---|---|---|---|---|---|---|
 | M5-00 | Plan M5 | S | D | P | M4-14 | M5 block specs written | todo |
 | M5-01 | Port e2fsprogs (`mke2fs`, `e2fsck`) | M | R | U | M5-00 | Both run on arc_os against real partitions | todo |
-| M5-02 | `arcpkg` tool | M | R | L | M2-00a, M2-02, M2-04, M0-07 | install, remove, list, verify, switch role; offline; tested on Linux in a temporary root (on arc_os from M5-03) | todo |
+| M5-02 | `arcpkg` tool | M | R | L | M2-00a, M2-02, M2-04, M0-07 | install, remove, list, verify, switch role; offline; tested on Linux in a temporary root (on arc_os from M5-03) | review (#28) |
 | M5-03 | Installer | L | D | U | M5-01, M5-02 | Disk detected, GPT written, system copied, tier and models chosen | todo |
 | M5-04 | USB key image builder (host) | M | R | I | M5-03 | One image with installer, packages, packs, models, sources | todo |
 | M5-05 | GGUF wrapper + recovery | M | R | U | M5-02 | Any GGUF becomes an `.arcpkg`; `arcpkg verify` repairs from the key | todo |

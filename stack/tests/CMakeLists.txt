@@ -1,6 +1,6 @@
 # Lane tests (label `lane`). M2-01: the M0-04 target programs, built with the pinned
 # musl toolchain, pass on Linux inside the syscall inventory. M2-02, M2-03: the ports (ports/).
-# M2-04: arcjson and arc-llm. M3-02: arcpack. M3-06a: search.
+# M2-04: arcjson and arc-llm. M3-02: arcpack. M3-06a: search. M5-02: arcutil and arcpkg.
 
 set(ARC_TARGET_DIR "${ARC_ROOT}/tests/target")
 
@@ -32,9 +32,12 @@ add_subdirectory(arcjson)
 add_subdirectory(arc-llm)
 add_subdirectory(arcpack)
 add_subdirectory(search)
+add_subdirectory(arcutil)
+add_subdirectory(arcpkg)
 
 # Sizes for stack/budgets.txt (ADR-0019): loaded ELF bytes, as kernel_image_bytes.
 lane_driver_test(NAME sizes COMMAND python3 "${ARC_ROOT}/tools/lane/sizes.py"
     "${ARC_LANE_BUDGET_DIR}/sizes.budget.log" cxx_basic_bytes=$<TARGET_FILE:cxx_basic>
     zstd_cli_bytes=${ARC_ZSTD_CLI} sqlite3_shell_bytes=${ARC_SQLITE_SHELL}
-    llama_completion_bytes=${ARC_LLAMA_COMPLETION} arc_llm_bytes=$<TARGET_FILE:arc-llm>)
+    llama_completion_bytes=${ARC_LLAMA_COMPLETION} arc_llm_bytes=$<TARGET_FILE:arc-llm>
+    arcpkg_bytes=$<TARGET_FILE:arcpkg>)

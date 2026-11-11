@@ -47,8 +47,15 @@ root; on arc_os from M5-03.
 5. Budgets: `arcpkg_bytes`, `arcpkg_install_rss_kib` (the 200 MB install).
 
 **Done when.**
-- [ ] Lane tests pass and the syscall check passes in `lane.yml`.
-- [ ] `stack/README.md` lists arcutil.
+- [x] Lane tests pass and the syscall check passes in `lane.yml`.
+- [x] `stack/README.md` lists arcutil.
+
+**Cost.** Install streams: memory is the zstd window (at most 8 MiB), its 128 KiB input and output buffers, one
+64 KiB copy buffer and the manifest (at most 1 MiB) with its parse, whatever the package size; each file is
+hashed once while written and looked up in the sorted manifest in O(log n). Disk: the package's files once, in
+the temporary directory renamed into place (no copy). fsyncs: one per file, one per directory, then the
+database's durable write. `verify` reads every installed file once. `list` and `verify` read one database file
+per package.
 
 **Watch out.**
 - Package builders (M3-04, M5-04, M5-05) must compress with a window of 8 MiB or less (no `--long`). Write that rule
@@ -59,4 +66,29 @@ root; on arc_os from M5-03.
 - No network code at all. "Offline from USB or disk" means a file path.
 
 **Notes.**
--
+- Done: `stack/lib/arcutil/` (was `arcfile`, M3-06a; adds SHA-256, `arcutil_write_durable`, `arcutil_make_dirs`,
+  `arcutil_remove_tree`, `arcutil_ram_mib`); `stack/arcpkg/` (`tar.c` ustar over zstd streaming, `manifest.c`,
+  `db.c` database and roles, `install.c`, `main.c`); lane tests `lane.arcutil` (FIPS vectors) and
+  `lane.arcpkg_{install,refuse,models,big}`; budgets `arcpkg_bytes` and `arcpkg_install_rss_kib`; the builder
+  rules in `schemas/README.md`. No new syscalls: the syscall check passes as it was.
+- Database entry `/var/lib/arcpkg/<name>.json`: `{"schema_version": 1, "name", "versions": [{"version",
+  "manifest"}]}`, lowest version first, each with the full package manifest it was installed from (files, sizes,
+  hashes), at most 64 versions. `verify`, `list` and `remove` read only that, and re-check it as an install would
+  before touching a path.
+- `install_root` must be exactly `/<apps|models|packs>/<name>`, stricter than the schema's pattern: that is the
+  layout `arc-llm` and `search` read (lane-l.md), and it lets the start-up cleanup find `.tmp-*` directories at a
+  fixed depth. Written in `schemas/README.md`; widen it only with the readers.
+- Programs and packs: installing a version older than the installed one is refused ("remove it first"), so
+  "newer replaces older" never leaves two. Models keep every version.
+- Model RAM is the larger of `requires.ram_mb` and `model.ram_mb`, plus the 1024 MiB reserve.
+- A failed install removes its temporary directory and any `<area>` or `<area>/<name>` directory it created, so
+  the root is byte-for-byte as before (the lane test compares snapshots). A version directory left by a crash
+  between the rename and the database write is replaced by the next install of that version.
+- Not tested: `ENOSPC` (no small filesystem in the lane without mount rights). The write error path is the same
+  one the other refusals take: the temporary directory is removed and the error names the file and "No space left
+  on device".
+- One arcpkg at a time: there is no lock (no `flock` in the inventory yet). M5-03 runs it from the installer only;
+  a lock belongs with the first concurrent user.
+- Reuse and promotions: `arcjson_is_schema_semver`, `_role`, `_relpath` and `arcjson_write_value` (new);
+  `arc-llm` now uses `arcjson_is_schema_role`, `arcjson_is_schema_relpath` and `arcutil_ram_mib` instead of its own
+  copies (`tidy:` commit).

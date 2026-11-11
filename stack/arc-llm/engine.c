@@ -15,8 +15,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/sysinfo.h>
 
+#include "arcutil.h"
 #include "llama.h"
 
 static arc_llm_config engine_config;
@@ -55,15 +55,6 @@ void engine_shutdown(void) {
     llama_backend_free();
 }
 
-/* ram_mib: total RAM from sysinfo, in MiB. */
-static uint64_t ram_mib(void) {
-    struct sysinfo si;
-    if (sysinfo(&si) != 0) {
-        return 0;
-    }
-    return (uint64_t)si.totalram * si.mem_unit / (1024u * 1024u);
-}
-
 engine_status engine_load(const llm_registry *r, llm_model *m, char *err, size_t errlen) {
     if (m->model != NULL) {
         return ENGINE_OK;
@@ -74,7 +65,7 @@ engine_status engine_load(const llm_registry *r, llm_model *m, char *err, size_t
             loaded += (uint64_t)o->ram_mb;
         }
     }
-    uint64_t ram = ram_mib();
+    uint64_t ram = arcutil_ram_mib();
     uint64_t need = (uint64_t)m->ram_mb + loaded + engine_config.reserve_mb;
     if (need > ram) {
         return fail(ENGINE_NO_RAM, err, errlen,
