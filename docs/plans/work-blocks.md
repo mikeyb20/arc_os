@@ -150,7 +150,7 @@ assistant and viewers lay out from the framebuffer size, never a fixed one.
 | M3-03 | ZIM → doc store + chunks (host) | M | R | C | M3-01, M3-02 | Medical pack built with stable chunk IDs | todo |
 | M3-04 | FTS5, embeddings, tier selector, `.arcpkg` (host) | M | R | C | M3-03 | 32 GB pack set built and sized | todo |
 | M3-05 | UTF-8 console, PSF2, `/dev/input`, `/dev/fb0` | M | D | K | M3-00 | fbdev `mmap` and `input_event` work from user space | todo |
-| M3-06a | Retriever I: keyword search | S | D | L | M3-02 | FTS5 keyword search over packs on Linux; works with no `arc-llm` | todo |
+| M3-06a | Retriever I: keyword search | S | D | L | M3-02 | FTS5 keyword search over packs on Linux; works with no `arc-llm` | review (#27) |
 | M3-06 | Retriever II: vector rerank | S | D | U | M3-00, M3-06a | Vector rerank with the embedder chosen in M2-06; keyword-only still works without `arc-llm` | todo |
 | M3-07 | Library reader (no LLM) | M | R | U | M3-05, M3-06 | Search, open, follow links, bookmarks | todo |
 | M3-08 | Image viewer | S | R | U | M3-05 | Article images show on the framebuffer | todo |
