@@ -3,7 +3,7 @@
 Defined by M3-02 under [ADR-0011](../decisions/0011-data-contract.md). The one implementation is
 `stack/lib/arcpack/` (`arcpack.h`): the host pipeline (M3-03, M3-04), the retriever (M3-06a) and the reader
 (M3-07) all go through it, so this file and that library change together. Later blocks add their parts here
-(M3-06a: the FTS index; M3-05: vectors).
+(M3-06a: the FTS index; M3-04b and M3-06: vectors).
 
 ```
 /packs/<name>/<version>/
@@ -13,7 +13,7 @@ Defined by M3-02 under [ADR-0011](../decisions/0011-data-contract.md). The one i
   content/strings      titles and section paths
   chunks/chunks.idx    one 32-byte record per chunk
   fts/index.sqlite     keyword index, SQLite FTS5 (M3-06a)
-  vectors/             vector index (M3-05)
+  vectors/             vectors per embedder (M3-04b, M3-06)
 ```
 
 ## Conventions
