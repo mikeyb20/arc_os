@@ -232,6 +232,27 @@ static void test_schema_names(void) {
                "versions at most 64 bytes");
 }
 
+/* UTF-8 decoding and semver precedence (M3-06a: query words, highest installed version). */
+static void test_decode_and_versions(void) {
+    uint32_t cp = 0;
+    lane_check(arcjson_utf8_decode("\xC3\xBCx", 3, &cp) == 2 && cp == 0xFC, "decode a 2-byte character");
+    lane_check(arcjson_utf8_decode("\xF0\x9F\x98\x80", 4, &cp) == 4 && cp == 0x1F600, "decode a 4-byte character");
+    lane_check(arcjson_utf8_decode("\xF0\x9F", 2, &cp) == 0 && arcjson_utf8_decode("\xFF", 1, &cp) == 0 &&
+                   arcjson_utf8_decode("", 0, &cp) == 0,
+               "cut, invalid and empty input decode to 0");
+    lane_check(arcjson_schema_version_cmp("1.10.0", "1.9.0") > 0 && arcjson_schema_version_cmp("2.0.0", "1.99.99") > 0,
+               "versions compare by number, not text");
+    lane_check(arcjson_schema_version_cmp("1.0.0-rc.1", "1.0.0") < 0 &&
+                   arcjson_schema_version_cmp("1.0.0-rc.2", "1.0.0-rc.10") < 0,
+               "a pre-release sorts before its release; its numbers by value");
+    lane_check(arcjson_schema_version_cmp("1.0.0-alpha", "1.0.0-alpha.1") < 0 &&
+                   arcjson_schema_version_cmp("1.0.0-1", "1.0.0-alpha") < 0,
+               "shorter pre-release first; numeric before alphanumeric");
+    lane_check(arcjson_schema_version_cmp("1.0.0+build.7", "1.0.0") == 0 &&
+                   arcjson_schema_version_cmp("01.0.0", "1.0.0") == 0 && arcjson_schema_version_cmp("1.0", "1.0.0") < 0,
+               "build metadata ignored, leading zeros, fewer parts first");
+}
+
 int main(void) {
     test_literals_and_structure();
     test_strings();
@@ -241,5 +262,6 @@ int main(void) {
     test_utf8_complete_len();
     test_read_file();
     test_schema_names();
+    test_decode_and_versions();
     return lane_check_done("arcjson");
 }

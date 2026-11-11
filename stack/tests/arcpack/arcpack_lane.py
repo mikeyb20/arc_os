@@ -17,8 +17,6 @@
 """
 
 import argparse
-import hashlib
-import json
 import os
 import re
 import shutil
@@ -27,10 +25,13 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import lane_pack  # noqa: E402  (stack/tests/lane_pack.py)
+from lane_pack import HEADER, header_count  # noqa: E402
+
 NAME = "test-pack"
 VERSION = "1.0.0"
 TAGS = ["medicine", "first-aid", "outdoors"]
-HEADER = 4096
 BIG_CHUNKS = 200000
 LONG_MIB = 9
 
@@ -44,37 +45,9 @@ def check(ok, what):
     return ok
 
 
-def header_count(path):
-    with open(path, "rb") as f:
-        return struct.unpack_from("<Q", f.read(24), 16)[0]
-
-
 def write_manifest(pack, **override):
-    """manifest.json for the pack in `pack`, as the pipeline writes it (schemas/pack.schema.json)."""
-    checksums, size = {}, 0
-    for dirpath, _, files in os.walk(pack):
-        for name in sorted(files):
-            path = os.path.join(dirpath, name)
-            rel = os.path.relpath(path, pack)
-            if rel == "manifest.json":
-                continue
-            with open(path, "rb") as f:
-                data = f.read()
-            checksums[rel] = hashlib.sha256(data).hexdigest()
-            size += len(data)
-    manifest = {
-        "schema_version": 1, "name": NAME, "version": VERSION, "title": "arcpack lane test pack",
-        "category": "medical", "priority": 10, "size_bytes": size, "license": "CC0-1.0",
-        "source": "stack/tests/arcpack (generated)", "checksums": checksums, "provides": ["fts"],
-        "chunking": {"tokenizer": "words", "target_tokens": 400, "max_tokens": 500, "overlap_tokens": 50},
-        "document_count": header_count(os.path.join(pack, "content/docs.idx")),
-        "chunk_count": header_count(os.path.join(pack, "chunks/chunks.idx")),
-        "domain_tags": TAGS,
-    }
-    manifest.update(override)
-    with open(os.path.join(pack, "manifest.json"), "w") as f:
-        json.dump(manifest, f, indent=2)
-    return manifest
+    """manifest.json for the test pack in `pack` (lane_pack.py)."""
+    return lane_pack.write_manifest(pack, NAME, VERSION, TAGS, **override)
 
 
 def run(args, log, *argv):

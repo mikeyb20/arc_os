@@ -12,7 +12,8 @@ Defined by M3-02 under [ADR-0011](../decisions/0011-data-contract.md). The one i
   content/docs.idx     one 32-byte record per document
   content/strings      titles and section paths
   chunks/chunks.idx    one 32-byte record per chunk
-  fts/  vectors/       indexes (M3-06a, M3-05)
+  fts/index.sqlite     keyword index, SQLite FTS5 (M3-06a)
+  vectors/             vector index (M3-05)
 ```
 
 ## Conventions
@@ -147,6 +148,32 @@ other byte is kept, so plain text is never longer than the marked-up text.
 `manifest.json` follows `schemas/pack.schema.json`. A reader also checks that its `name` and `version` equal every
 file header's `pack_name` and `pack_version`, that `chunk_count` equals the count in `chunks/chunks.idx`, and that
 `document_count`, when present, equals the count in `content/docs.idx`.
+
+## `fts/index.sqlite`: keyword index (M3-06a)
+
+An SQLite database, written by `arcsearch_build_fts()` and read by `arcsearch_open()` (`stack/lib/arcsearch/`), opened
+read-only as `file:…?immutable=1` (no locks, no journal):
+
+```sql
+CREATE VIRTUAL TABLE fts USING fts5(title, section, body, content='',
+                                    tokenize='porter unicode61 remove_diacritics 2');
+CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
+```
+
+- One `fts` row per chunk, **rowid = global chunk index**. `title` is the document's title, `section` the chunk's
+  section path (parts separated by 0x1F, which the tokenizer treats as a separator), `body` the chunk's plain text
+  (`arcpack_plain()`). Contentless (`content=''`): the text lives once, in `content/`; `snippet()` and
+  `highlight()` don't work, readers take text from libarcpack.
+- `meta` rows, every value text (ADR-0011: an index records what it was built from): `schema_version` `1`,
+  `pack_name`, `pack_version`, `chunk_count` (decimal). A reader skips, with a warning, an index whose rows don't
+  match the pack's manifest.
+- The builder writes the whole index in one transaction with no journal into `fts/index.sqlite.part`, merges it
+  into one segment (`INSERT INTO fts(fts) VALUES('optimize')`), fsyncs it and renames it into place. The
+  pipeline (M3-04) writes `manifest.json`'s checksums after the index exists.
+- Query (arcsearch): every run of Unicode letters and digits in the user's text becomes a double-quoted word
+  (ASCII lowercased; FTS5 syntax is never passed through), English stopwords are dropped, the words are joined with
+  `OR`, and rows are ranked by `bm25(fts, 5.0, 2.0, 1.0)` (title, section, body), best k per pack. Porter
+  stemming is English; other languages are a later decision.
 
 ## Costs
 

@@ -36,8 +36,8 @@ that M3-04 builds. Tested on Linux inside the syscall inventory.
 5. Budgets: `search_rss_kib` (peak RSS of one query over both test packs). Add arcsearch to `stack/README.md`.
 
 **Done when.**
-- [ ] Lane tests pass and the syscall check passes in `lane.yml`.
-- [ ] The FTS schema is in `docs/formats/pack-v1.md`.
+- [x] Lane tests pass and the syscall check passes in `lane.yml`.
+- [x] The FTS schema is in `docs/formats/pack-v1.md`.
 
 **Cost.** One FTS5 query per pack: index lookups proportional to the matching postings, never to the pack's chunk
 count; merge O(k × packs). No heap beyond SQLite's page cache (default size) and k results. The index is opened
@@ -50,4 +50,20 @@ immutable, so no locks or journal files.
 - Contentless FTS5 can't produce `snippet()` or `highlight()`; use libarcpack text instead.
 
 **Notes.**
--
+- Done: FTS schema in `docs/formats/pack-v1.md`; `stack/lib/arcsearch/` (`arcsearch_build_fts`, `arcsearch_open`,
+  `arcsearch_search`, `arcsearch_match_expr`); `stack/search/`; `lane.search` (two packs, 30-odd checks);
+  `search_rss_kib` (measured 1828 KiB). No new syscalls: the syscall check passes as it was.
+- Scores are `-bm25` (higher is better), not normalized; Michael put the review's index guards (0–1 scores,
+  index format in the manifest) on Hold on 2026-11-11, so neither is built here.
+- Finding for M3-06: FTS5's bm25 sums the weighted term counts before saturating, so with the title weighted 5 a
+  title match dominates and the chunks of one document score almost the same whatever their body says (the
+  test checks the document's chunks come first, not their order). The vector rerank decides the order inside a
+  document.
+- Tiny packs: a word in half the chunks or more has an IDF of about 0 and scores 0; the test packs carry filler
+  documents for that. Real packs have thousands of chunks.
+- Reuse and promotions: `arcjson_utf8_decode` (was static), `arcjson_schema_version_cmp` (new, semver
+  precedence; M5-02's arcpkg should use it), `arcfile` (`arcfile_make_dir`, `arcfile_sync_dir`, moved from the
+  pack writer). `stack/tests/lane_pack.py` (manifest writer) is shared by the arcpack and search drivers;
+  `stack/tests/lane_rss.c` measures a program's own peak RSS.
+- `search` takes `--` before a query that starts with '-'. A query is cut at 4096 bytes of MATCH expression.
+- No `/packs` directory is not an error: no packs, one warning.
