@@ -34,3 +34,7 @@ arc_llm_tiny_rss_kib   449000      max  kib    M2-04  arc_llm_chat
 # 200 000-chunk pack: mostly the mapped chunks/chunks.idx (6.4 MB; page cache, shared), plus
 # docs.idx, strings and docs.zst; measured in a child forked by arcpack_test (measured 8232)
 arcpack_lookup_rss_kib 9100        max  kib    M3-02  arcpack_big
+# search (M3-06a). Peak RSS of one `search` query over the two lane test packs, run through
+# lane_rss so the Python driver's RSS isn't counted: SQLite with two immutable indexes, two packs
+# mapped (measured 1828)
+search_rss_kib       2050        max  kib    M3-06a search

@@ -163,6 +163,10 @@ bool arcjson_utf8_valid(const char *s, size_t len) {
     return true;
 }
 
+size_t arcjson_utf8_decode(const char *s, size_t len, uint32_t *cp) {
+    return utf8_decode((const unsigned char *)s, len, cp, NULL);
+}
+
 /* utf8_encode: write code point cp (valid, not a surrogate) to out; returns the length. */
 static size_t utf8_encode(uint32_t cp, char *out) {
     if (cp < 0x80) {
@@ -794,4 +798,62 @@ bool arcjson_is_schema_version(const char *s, size_t len) {
         }
     }
     return true;
+}
+
+/* version_id_cmp: one dot-separated semver identifier against another: numbers by value, numbers before words. */
+static int version_id_cmp(const char *a, size_t a_len, const char *b, size_t b_len) {
+    bool a_num = strspn(a, "0123456789") >= a_len;
+    bool b_num = strspn(b, "0123456789") >= b_len;
+    if (a_num != b_num) {
+        return a_num ? -1 : 1;
+    }
+    if (a_num) {
+        while (a_len > 1 && *a == '0') { /* leading zeros do not change the value */
+            a++, a_len--;
+        }
+        while (b_len > 1 && *b == '0') {
+            b++, b_len--;
+        }
+        if (a_len != b_len) {
+            return a_len < b_len ? -1 : 1;
+        }
+    }
+    size_t n = a_len < b_len ? a_len : b_len;
+    int c = memcmp(a, b, n);
+    return c != 0 ? c : (a_len > b_len) - (a_len < b_len);
+}
+
+/* version_list_cmp: dot-separated identifier lists a[0..a_len) and b[0..b_len); a prefix sorts first. */
+static int version_list_cmp(const char *a, size_t a_len, const char *b, size_t b_len) {
+    size_t i = 0, j = 0;
+    while (i < a_len && j < b_len) {
+        size_t m = i, n = j;
+        while (m < a_len && a[m] != '.') {
+            m++;
+        }
+        while (n < b_len && b[n] != '.') {
+            n++;
+        }
+        int c = version_id_cmp(a + i, m - i, b + j, n - j);
+        if (c != 0) {
+            return c;
+        }
+        i = m + 1;
+        j = n + 1;
+    }
+    return (i < a_len) - (j < b_len);
+}
+
+int arcjson_schema_version_cmp(const char *a, const char *b) {
+    size_t a_end = strcspn(a, "+"), b_end = strcspn(b, "+");
+    size_t a_main = strcspn(a, "-+"), b_main = strcspn(b, "-+");
+    int c = version_list_cmp(a, a_main, b, b_main);
+    if (c != 0) {
+        return c;
+    }
+    bool a_pre = a_main < a_end, b_pre = b_main < b_end;
+    if (a_pre != b_pre) {
+        return a_pre ? -1 : 1; /* 1.0.0-rc.1 < 1.0.0 */
+    }
+    return a_pre ? version_list_cmp(a + a_main + 1, a_end - a_main - 1, b + b_main + 1, b_end - b_main - 1) : 0;
 }

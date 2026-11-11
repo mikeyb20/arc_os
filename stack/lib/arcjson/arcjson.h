@@ -146,6 +146,12 @@ size_t arcjson_utf8_complete_len(const char *s, size_t len);
  */
 bool arcjson_utf8_valid(const char *s, size_t len);
 
+/*
+ * arcjson_utf8_decode: the character at the start of s[0..len): its length (1-4) with *cp set,
+ * or 0 if the bytes there are not valid UTF-8 or are cut short (same rule as arcjson_utf8_valid).
+ */
+size_t arcjson_utf8_decode(const char *s, size_t len, uint32_t *cp);
+
 /* ---- Manifests (schemas/) ------------------------------------------------------------------ */
 
 /*
@@ -165,5 +171,13 @@ bool arcjson_is_schema_id(const char *s, size_t len);
  * (The full semver grammar is checked by the schema at build time.)
  */
 bool arcjson_is_schema_version(const char *s, size_t len);
+
+/*
+ * arcjson_schema_version_cmp: <0, 0 or >0 as version a sorts before, with or after b by semver
+ * precedence (dot-separated numeric parts compare as numbers; a pre-release sorts before its
+ * release; build metadata after '+' is ignored). Both NUL-terminated, accepted by
+ * arcjson_is_schema_version. Picks the highest installed version of a pack or program (lane-l.md).
+ */
+int arcjson_schema_version_cmp(const char *a, const char *b);
 
 #endif /* ARCHOS_STACK_ARCJSON_H */

@@ -103,4 +103,5 @@ arc_port_program(ARC_LLAMA_TOKENIZE llama.cpp llama-tokenize)
 
 add_subdirectory(lib)
 add_subdirectory(arc-llm)
+add_subdirectory(search)
 add_subdirectory(tests)
