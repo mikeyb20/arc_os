@@ -6,24 +6,24 @@
 
 ## 1. Summary
 
-<!-- Totals computed by script from the §4 tables on 2026-11-10. Recompute when blocks change. -->
+<!-- Totals computed by script from the §4 tables on 2026-11-11. Recompute when blocks change. -->
 
 | Milestone | Blocks | Session units | With allowance |
 |---|---|---|---|
 | M0 Lock-in decisions | 10 | 8.0 | 10.5 |
 | M1 Compute kernel | 23 | 29.0 | 41.7 |
 | M2 Toolchain + first LLM | 9 | 8.0 | 9.7 |
-| M3 Knowledge layer | 14 | 12.5 | 16.4 |
+| M3 Knowledge layer | 15 | 14.5 | 18.8 |
 | M4 Real hardware | 15 | 16.0 | 21.1 |
 | M5 Packages + installer | 7 | 7.5 | 9.6 |
-| **Total** | **78** | **81.0** | **109.0** |
+| **Total** | **79** | **83.0** | **111.5** |
 
-- **78 blocks**: 16 small, 51 medium, 11 large. The 38 deep (D) blocks carry
-  45 of the 81 session units.
+- **79 blocks**: 16 small, 51 medium, 12 large. The 38 deep (D) blocks carry
+  45 of the 83 session units.
 - **Session units:** S = 0.5, M = 1, L = 2. "With allowance" adds debugging and rework: D blocks × 1.5, R blocks
   × 1.2; Linux-first blocks (lane L) × 1.2 and × 1.1, because they are debugged natively on Linux instead of in
   QEMU under TCG. That allowance is an estimate, not a measurement; recheck it after M1, the first milestone with
-  real numbers. Budget about **109 sessions**.
+  real numbers. Budget about **111 sessions**.
 - **M1 is the big one:** 23 blocks and 29 units, 17 of them deep. It gives the kernel virtual memory, SMP, threads,
   a page cache and ext2.
 - **Critical path:** 28 blocks, 30 units (§5); 25.5 units are left after the 21 blocks done by 2026-11-11 (the lane blocks done so far are off the path). Running lanes in parallel shortens the calendar, not the compute.
@@ -143,19 +143,20 @@ Start every block with `/os/implement-block <ID>`. These rules are what keep ses
 | M2-05 | `ask` command + M2 done-test | S | R | U | M2-04b | `ask "what is hypothermia"` answers in QEMU (4 CPUs, 4 GB) | todo |
 | M2-06 | Measure on the laptop, shortlist models | M | R | H | M2-05 | Tokens/s and RAM per tier recorded; mmap vs 2 MiB anonymous loading compared and chosen (ADR-0019); plan §4 updated | todo |
 
-### M3 — Knowledge layer (specs from M3-00; M3-02 and M3-06a from M2-00a; M3-01, M3-03 and M3-04 from M3-00a)
+### M3 — Knowledge layer (specs from M3-00; M3-02 and M3-06a from M2-00a; M3-01, M3-03 and M3-04 from M3-00a, with [`content-lane.md`](content-lane.md))
 
 M3-00 sets the smallest supported screen at 1366×768, common on the low-tier reference laptops: the reader,
 assistant and viewers lay out from the framebuffer size, never a fixed one.
 
 | ID | Block | Size | Tier | Lane | Needs | Done when | Status |
 |---|---|---|---|---|---|---|---|
-| M3-00a | Plan the content lane | S | D | P | M3-02 | Specs for M3-01, M3-03 and M3-04 written: keyword-only packs first, vectors once M2-06 picks the embedder (says whether M3-04 splits); decides whether the pack steps after ZIM extraction are written in C on the lane libraries, so they could later run on arc_os | todo |
-| M3-00 | Plan M3 | S | D | P | M2-06 | Specs for the other M3 blocks written; content-lane specs corrected from M2-06 | todo |
+| M3-00a | Plan the content lane | S | D | P | M3-02 | Specs for M3-01, M3-03 and M3-04 written: keyword-only packs first, vectors once M2-06 picks the embedder (says whether M3-04 splits); decides whether the pack steps after ZIM extraction are written in C on the lane libraries, so they could later run on arc_os | review (#30) |
+| M3-00 | Plan M3 | S | D | P | M2-06 | Specs for the other M3 blocks written, M3-04b included; content-lane specs corrected from M2-06 | todo |
 | M3-01 | Content selection, licences, size budget | M | R | C | M3-00a, M0-07 | Source list per category and tier approved by Michael | todo |
 | M3-02 | `libarcpack`: doc store, chunks, manifests | M | D | L | M2-00a, M2-02, M2-04, M0-07 | One library reads packs on Linux inside the syscall inventory (on arc_os from M3-07) | done |
-| M3-03 | ZIM → doc store + chunks (host) | M | R | C | M3-01, M3-02 | Medical pack built with stable chunk IDs | todo |
-| M3-04 | FTS5, embeddings, tier selector, `.arcpkg` (host) | M | R | C | M3-03 | 32 GB pack set built and sized | todo |
+| M3-03 | ZIM → doc store + chunks (host) | L | R | C | M3-01, M3-02 | Medical pack built twice with identical chunk IDs | todo |
+| M3-04 | FTS5, tier selector, `.arcpkg` (host) | M | R | C | M3-03, M5-02 | 32 GB keyword-only pack set built and sized; `tiers.json` for each storage tier | todo |
+| M3-04b | Pack vectors (host) | M | R | C | M3-00, M3-04 | Each 32 GB pack gets `vectors/<embedder>/` from M2-06's embedder as a new minor version with unchanged chunk IDs; tier sizes re-measured | todo |
 | M3-05 | UTF-8 console, PSF2, `/dev/input`, `/dev/fb0` | M | D | K | M3-00 | fbdev `mmap` and `input_event` work from user space | todo |
 | M3-06a | Retriever I: keyword search | S | D | L | M3-02 | FTS5 keyword search over packs on Linux; works with no `arc-llm` | done |
 | M3-06 | Retriever II: vector rerank | S | D | U | M3-00, M3-06a | Vector rerank with the embedder chosen in M2-06; keyword-only still works without `arc-llm` | todo |
@@ -163,7 +164,7 @@ assistant and viewers lay out from the framebuffer size, never a fixed one.
 | M3-08 | Image viewer | S | R | U | M3-05 | Article images show on the framebuffer | todo |
 | M3-09 | Assistant with citations and tools | L | D | U | M3-06 | Cited answers; "not found in library" when retrieval is empty | todo |
 | M3-10 | Maps part 1: place-name search | M | R | C | M3-04, M3-07 | Gazetteer pack and search | todo |
-| M3-11 | M3 done-test + low-tier response time | M | R | I | M3-08, M3-09, M3-10 | Three cited answers from the 32 GB set; library works with `arc-llm` stopped | todo |
+| M3-11 | M3 done-test + low-tier response time | M | R | I | M3-04b, M3-08, M3-09, M3-10 | Three cited answers from the 32 GB set; library works with `arc-llm` stopped | todo |
 
 ### M4 — Real hardware (specs from M4-00)
 
@@ -233,7 +234,7 @@ done-test (12 of M1's 28 units). The other M1 blocks hang off that chain and slo
   xHCI, USB core, USB storage and NVMe (M4-01, M4-02, M4-04, M4-05) are built while the user-space lane runs
   M2-00 → M2-04b → M2-05 and M3. Real hardware is the biggest unknown, and the USB-only machine can't use the
   key before USB storage exists. M4-03 and M4-07 still wait for M3-05 (`/dev/input`); M4-14 waits for M3-11.
-- **Content lane** (M3-01, M3-03, M3-04) runs on a Linux host from M3-00a, which plans it once M3-02 has fixed
+- **Content lane** (M3-01, M3-03, M3-04; M3-04b after M2-06) runs on a Linux host from M3-00a, which plans it once M3-02 has fixed
   the pack format, so content choice and the pack builder happen during M1 instead of after M2-06.
 
 **Linux-first lane (L).** arc_os uses the Linux x86_64 syscall ABI (ADR-0001), so a static musl program built
@@ -271,6 +272,7 @@ Parallel sessions shorten the calendar; they don't save compute.
 | M1-04 | Boot both machines from the USB stick; photograph the boot report and self-test | — |
 | M1-22 | Boot both machines to the shell; read idle watts on the laptop | — |
 | Before M2-06 | Allow a Remote Control session on the laptop (QEMU with KVM, model downloads) | — |
+| Before M3-01 | Create a private repo for the content lists (`sources.json`) and add it to the project (`arc_os` is public) | Kept in project files, `/mnt/project-files/arc_os/content/`, until the repo exists |
 | Before M3-03 | Where big packs are built: the laptop, or allow the content hosts in the cloud environment | The laptop |
 | M3-01 | Approve the content list and licences (earlier now: the content lane starts after M3-00a) | — |
 | M4-14 | Hardware test campaign on both machines | — |
@@ -401,3 +403,9 @@ Secure Boot through a signed shim and our own key.
   wait for M3-05, M4-14 for M3-11). New planning block M3-00a (S) starts a content lane after M3-02. Self-hosting
   becomes a decision at M5-00. §3 rule 14: a how-it-works page per changed subsystem at each milestone end. M1-02b
   row flipped to done (#19 merged). Totals 78 blocks, 81 units; critical path 36.5 → 30 units.
+- **2026-11-11** — M3-00a (content lane plan): specs for M3-01, M3-03 and M3-04 and
+  [`content-lane.md`](content-lane.md). Reading ZIM and HTML stays host-only Python; every pack step after it is C in
+  `stack/` on the lane libraries, so it could later run on arc_os. M3-04 builds keyword-only packs, and embeddings
+  move to a new block, M3-04b (after M2-06, spec from M3-00), which adds vectors as a new minor pack version with
+  the same chunk IDs; M3-11 needs it. M3-03 grows from M to L (extractor and `packbuild`). Totals 79 blocks,
+  83 units; critical path unchanged.
