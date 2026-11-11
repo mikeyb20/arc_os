@@ -146,7 +146,7 @@ assistant and viewers lay out from the framebuffer size, never a fixed one.
 |---|---|---|---|---|---|---|---|
 | M3-00 | Plan M3 | S | D | P | M2-06 | M3 block specs written | todo |
 | M3-01 | Content selection, licences, size budget | M | R | C | M3-00, M0-07 | Source list per category and tier approved by Michael | todo |
-| M3-02 | `libarcpack`: doc store, chunks, manifests | M | D | L | M2-00a, M2-02, M2-04, M0-07 | One library reads packs on Linux inside the syscall inventory (on arc_os from M3-07) | todo |
+| M3-02 | `libarcpack`: doc store, chunks, manifests | M | D | L | M2-00a, M2-02, M2-04, M0-07 | One library reads packs on Linux inside the syscall inventory (on arc_os from M3-07) | review (#26) |
 | M3-03 | ZIM → doc store + chunks (host) | M | R | C | M3-01, M3-02 | Medical pack built with stable chunk IDs | todo |
 | M3-04 | FTS5, embeddings, tier selector, `.arcpkg` (host) | M | R | C | M3-03 | 32 GB pack set built and sized | todo |
 | M3-05 | UTF-8 console, PSF2, `/dev/input`, `/dev/fb0` | M | D | K | M3-00 | fbdev `mmap` and `input_event` work from user space | todo |
