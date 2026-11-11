@@ -30,6 +30,7 @@
 #include "arch/x86_64/percpu.h"  /* this_cpu(), per-CPU kernel stacks */
 #include "arch/x86_64/smp.h"     /* APIC switch-over, AP start */
 #include "arch/x86_64/tsc.h"     /* TSC frequency (M1-04) */
+#include "arch/x86_64/debug_exit.h"   /* hal_debug_exit: QEMU test-mode exit */
 #include "arch/x86_64/ipi.h"     /* halt the other CPUs on panic */
 #include "arch/x86_64/lapic.h"   /* APIC mode for the boot report */
 

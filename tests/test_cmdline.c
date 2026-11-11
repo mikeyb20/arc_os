@@ -8,7 +8,7 @@
 
 /* --- testmode.c with the debug-exit port stubbed --- */
 
-#define ARCHOS_ARCH_X86_64_DEBUG_EXIT_H
+#define ARCHOS_ARCH_HAL_H
 static jmp_buf  exit_jmp;
 static int      exit_called;
 static uint32_t exit_value;
@@ -19,6 +19,9 @@ static void hal_debug_exit(uint32_t value) {
     exit_called = 1;
     exit_value = value;
     longjmp(exit_jmp, 1);
+}
+static void hal_halt_forever(void) {
+    abort();
 }
 
 #include "../kernel/lib/testmode.c"
