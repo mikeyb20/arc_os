@@ -21,10 +21,16 @@ written lock ordering that debug builds check at runtime.
 4. Balancing: an idle CPU pulls from the busiest queue. No fixed periodic balancing tick (ADR-0017).
 5. Migration rules: a running thread is never changed remotely; when two run queues must be locked, lock them in
    CPU-index order.
-6. Lock levels: every spinlock and sleeping lock gets a level from §7. Debug builds panic on an out-of-order
+6. Spinlock API: the saved interrupt flag moves out of the lock and into the caller
+   (`spin_lock_irqsave(lock, &flags)` / `spin_unlock_irqrestore(lock, flags)`, plus plain `spin_lock` /
+   `spin_unlock` for locks no interrupt handler takes). Today `proc/spinlock.h` keeps `saved_flags` inside the lock,
+   so releasing two locks out of order turns interrupts back on while one is still held, and an interrupt that
+   wants that lock deadlocks the CPU. Convert every caller; the `saved_flags` field goes. Host test: acquire A then
+   B, release A then B, and interrupts stay off until the last release.
+7. Lock levels: every spinlock and sleeping lock gets a level from §7. Debug builds panic on an out-of-order
    acquisition or on sleeping while holding a spinlock. Write `docs/kernel/locking.md` from §7.
-7. Per-CPU statistics in `/proc` (context switches, run-queue length, idle time).
-8. Tests (QEMU `-smp 4`, `-accel tcg,thread=multi`): 64 CPU-bound processes spread over all CPUs; fork/exec/wait
+8. Per-CPU statistics in `/proc` (context switches, run-queue length, idle time).
+9. Tests (QEMU `-smp 4`, `-accel tcg,thread=multi`): 64 CPU-bound processes spread over all CPUs; fork/exec/wait
    10 000 times with no leak (free page count returns to its baseline); pipe ping-pong across CPUs; the lock
    checker catches a deliberately inverted pair (test-only).
 
@@ -32,7 +38,8 @@ written lock ordering that debug builds check at runtime.
 - [ ] Tests pass in TCG and in CI.
 - [ ] `docs/kernel/locking.md` exists and matches what the checker enforces.
 - [ ] Files this block rewrites outside `kernel/arch/` include `arch/hal.h` or arch-neutral headers, not
-  `arch/x86_64/`; the `arch_includes_outside_arch` limit in the budgets file is lowered to match (ADR-0020).
+  `arch/x86_64/`, and call the HAL through `hal_*` functions, not x86 names (work-blocks.md §7); the
+  `arch_includes_outside_arch` limit in the budgets file is lowered to match (ADR-0020).
 
 **Cost.** Picking the next thread O(1) from the local queue; choosing a wakeup CPU at most O(CPUs); no global lock in `schedule`; a context switch does no lookup by ID (thread points to its process and mm).
 

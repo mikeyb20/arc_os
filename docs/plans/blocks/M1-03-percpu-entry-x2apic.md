@@ -30,7 +30,8 @@ works in xAPIC or x2APIC mode with 32-bit APIC IDs and up to 256 CPUs.
 - [ ] Suites pass with `-smp 4` in both APIC modes.
 - [ ] No global syscall stack remains.
 - [ ] Files this block rewrites outside `kernel/arch/` include `arch/hal.h` or arch-neutral headers, not
-  `arch/x86_64/`; the `arch_includes_outside_arch` limit in the budgets file is lowered to match (ADR-0020).
+  `arch/x86_64/`, and call the HAL through `hal_*` functions, not x86 names (work-blocks.md §7); the
+  `arch_includes_outside_arch` limit in the budgets file is lowered to match (ADR-0020).
 
 **Cost.** `this_cpu()` is one GS-relative load; no lock on per-CPU data; syscall entry touches no shared cache line.
 

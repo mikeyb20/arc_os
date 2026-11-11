@@ -207,7 +207,7 @@ starts with a planning block that writes its specs.
 - [ ] Per-CPU SYSCALL kernel stack fix; per-CPU run queues; x2APIC mode; up to 256 CPUs
 - [ ] Hybrid CPU awareness: core type from CPUID; inference threads can pin to P-cores (core type per CPU since M1-01)
 - [ ] Threads: `clone`, `futex`, `arch_prctl`, `set_tid_address`, `exit_group`, `sched_setaffinity`, `rt_sigprocmask` (single-thread `arch_prctl`, `set_tid_address`, `exit_group` since M0-06)
-- [ ] Memory: COW fork, demand paging, `mmap`/`munmap`/`mprotect`/`madvise`, page cache shared with `read()`, clean-page eviction, 2 MiB pages
+- [ ] Memory: COW fork, demand paging, `mmap`/`munmap`/`mprotect`/`madvise`, page cache shared with `read()`, clean-page eviction, 2 MiB pages; `exec` maps programs from the page cache instead of copying them (no size cap from the kernel heap)
 - [ ] Time: invariant TSC clocksource, TSC-deadline timer, `clock_gettime`, `nanosleep`, CMOS RTC
 - [ ] Hardening: SMEP, SMAP, NX enforced
 - [ ] Power base: tickless idle, MWAIT idle states, Intel HWP/EPP, RAPL energy counters (ADR-0017)
@@ -260,6 +260,7 @@ starts with a planning block that writes its specs.
 
 Wi-Fi, Bluetooth, GPU acceleration, audio, I2C-HID touchpads, a desktop/window manager, multi-user,
 system suspend/hibernate (driver hooks exist), internet updates, dynamic linking, IPv6, ASLR, Secure Boot signing, ARM.
+Self-hosting (rebuilding arc_os on arc_os from the key, with no Linux machine) is not built; Michael decides at M5-00.
 Static Linux programs may run thanks to the ABI, but that is not a goal.
 
 ## 10. Risks
@@ -280,6 +281,13 @@ Static Linux programs may run thanks to the ABI, but that is not a goal.
 
 ## 11. Review history
 
+- **2026-11-10 — Architecture review** (approved by Michael; no locked decision changed, so no new ADR). Kept every
+  lock-in. Gave exec-through-the-page-cache an owner (M1-12): exec copied whole programs into a 4 MiB-capped
+  buffer and arc-llm is 7.7 MB. Moved the M4 drivers to run right after M1-22 beside M2 and M3, and started a
+  content lane early (M3-00a); critical path 36.5 → 30 units. Caller-held spinlock flags (M1-05) and `hal_*` calls at
+  rewritten HAL sites. Guards to keep an in-house zstd decoder and search index possible (M3-06a, M5-02) are on
+  hold at Michael's call. Self-hosting becomes a decision at M5-00. A how-it-works page per
+  changed subsystem at each milestone end, so arc_os can be maintained offline (work-blocks.md §3 rule 14).
 - **2026-11-08 — Maintainability review** (ADR-0020, approved by Michael). Found duplicated kernel helpers (HHDM address conversion), 44 direct x86 includes in 8 subsystems despite the HAL rule, no format check and no shared review checklist. Added CI ratchets that freeze those counts (new block M0-09), a block-review skill run before every PR, one home per helper, and HAL include moves inside the M1 blocks that already rewrite those call sites. No standalone refactor.
 - **2026-11-08 — Efficiency review** (ADR-0019, approved by Michael). Found an unlocked kernel heap reachable from an interrupt (fixed), no object allocator in the plan (new block M1-02b), a 64-byte vs 32-byte page-descriptor conflict (32 kept), and a 4 KiB-only page-cache design (API made order-agnostic). Added cost lines, hot-path rules and CI budgets on counts and sizes (new block M0-08); real timing stays on hardware checkpoints.
 - **2026-11-07 — Architect review.** Added per-page metadata and eviction; keyword-first retrieval with vector rerank; own doc store instead of a libzim port; early real-hardware boot and MSI-X in M1; Linux semantics (not just numbers); low tier set to 1–2B models.
