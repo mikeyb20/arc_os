@@ -1,7 +1,18 @@
+/* arc_os — SYSCALL setup and dispatch
+ *
+ * Owns: the SYSCALL MSRs (per CPU), the handler table and the user context a
+ * syscall saved (the SyscallFrame at the top of the thread's kernel stack).
+ * Invariants: syscall_entry.asm builds the SyscallFrame at the very top of the
+ * current thread's kernel stack, so it is found from thread_current() alone;
+ * the table is written only at boot.
+ * Locks: none. */
+
 #include "arch/x86_64/syscall.h"
 #include "arch/x86_64/msr.h"
 #include "arch/x86_64/gdt.h"
 #include "proc/process.h"
+#include "proc/signal.h"
+#include "proc/thread.h"
 #include "proc/proc_syscalls.h"
 #include "fs/fs_syscalls.h"
 #include "fs/vfs.h"
@@ -9,58 +20,49 @@
 #include "net/net_syscalls.h"
 #include "lib/kprintf.h"
 
-/* Exported from syscall_entry.asm: user context saved during SYSCALL */
-extern uint64_t syscall_saved_user_rip;
-extern uint64_t syscall_saved_user_rsp;
-extern uint64_t syscall_saved_user_rflags;
-extern uint64_t syscall_saved_user_rbp;
-extern uint64_t syscall_saved_user_rbx;
-extern uint64_t syscall_saved_user_r12;
-extern uint64_t syscall_saved_user_r13;
-extern uint64_t syscall_saved_user_r14;
-extern uint64_t syscall_saved_user_r15;
-extern uint64_t syscall_saved_user_rdi;
-extern uint64_t syscall_saved_user_rsi;
-extern uint64_t syscall_saved_user_rdx;
-extern uint64_t syscall_saved_user_r10;
-extern uint64_t syscall_saved_user_r8;
-extern uint64_t syscall_saved_user_r9;
-
-/* RFLAGS bits cleared by SFMASK on SYSCALL entry */
+/* RFLAGS bits cleared by SFMASK on SYSCALL entry. TF too: a user who sets it
+ * would otherwise take a debug trap on the first kernel instruction. */
+#define RFLAGS_TF           (1ULL << 8)   /* Trap Flag */
 #define RFLAGS_IF  (1ULL << 9)   /* Interrupt Flag */
 #define RFLAGS_DF  (1ULL << 10)  /* Direction Flag */
+#define RFLAGS_NT           (1ULL << 14)  /* Nested Task */
+#define RFLAGS_AC           (1ULL << 18)  /* Alignment Check (SMAP override) */
+#define SYSCALL_RFLAGS_MASK (RFLAGS_TF | RFLAGS_IF | RFLAGS_DF | RFLAGS_NT | RFLAGS_AC)
 
 /* Syscall handler table, indexed by Linux number. 512 slots, 4 KiB. */
 static syscall_handler_t syscall_table[ARC_NR_SYSCALLS];
-
-/* Kernel RSP for SYSCALL entry — set by scheduler on context switch */
-uint64_t syscall_kernel_rsp;
 
 /* fork_return_to_user (usermode.asm) reads ForkContext by these offsets */
 _Static_assert(__builtin_offsetof(ForkContext, user_r15) == 64, "ForkContext layout");
 _Static_assert(__builtin_offsetof(ForkContext, user_rdi) == 72, "ForkContext layout");
 _Static_assert(__builtin_offsetof(ForkContext, user_r9) == 112, "ForkContext layout");
 
+/* The SyscallFrame of the syscall the current thread is in */
+static const SyscallFrame *syscall_frame(void) {
+    return (const SyscallFrame *)(thread_current()->kernel_stack_top - sizeof(SyscallFrame));
+}
+
 void syscall_save_user_context(struct ForkContext *ctx) {
-    ctx->user_rip    = syscall_saved_user_rip;
-    ctx->user_rsp    = syscall_saved_user_rsp;
-    ctx->user_rflags = syscall_saved_user_rflags;
-    ctx->user_rbp    = syscall_saved_user_rbp;
-    ctx->user_rbx    = syscall_saved_user_rbx;
-    ctx->user_r12    = syscall_saved_user_r12;
-    ctx->user_r13    = syscall_saved_user_r13;
-    ctx->user_r14    = syscall_saved_user_r14;
-    ctx->user_r15    = syscall_saved_user_r15;
-    ctx->user_rdi    = syscall_saved_user_rdi;
-    ctx->user_rsi    = syscall_saved_user_rsi;
-    ctx->user_rdx    = syscall_saved_user_rdx;
-    ctx->user_r10    = syscall_saved_user_r10;
-    ctx->user_r8     = syscall_saved_user_r8;
-    ctx->user_r9     = syscall_saved_user_r9;
+    const SyscallFrame *f = syscall_frame();
+    ctx->user_rip = f->rcx;
+    ctx->user_rsp = f->rsp;
+    ctx->user_rflags = f->r11;
+    ctx->user_rbp = f->rbp;
+    ctx->user_rbx = f->rbx;
+    ctx->user_r12 = f->r12;
+    ctx->user_r13 = f->r13;
+    ctx->user_r14 = f->r14;
+    ctx->user_r15 = f->r15;
+    ctx->user_rdi = f->rdi;
+    ctx->user_rsi = f->rsi;
+    ctx->user_rdx = f->rdx;
+    ctx->user_r10 = f->r10;
+    ctx->user_r8 = f->r8;
+    ctx->user_r9 = f->r9;
 }
 
 uint64_t syscall_user_rsp(void) {
-    return syscall_saved_user_rsp;
+    return syscall_frame()->rsp;
 }
 
 /* --- Dispatcher --- */
@@ -83,7 +85,11 @@ void syscall_register(uint32_t num, syscall_handler_t handler) {
 
 /* --- Initialization --- */
 
-void syscall_init(void) {
+static uint64_t syscall_star(void) {
+    return ((uint64_t)(GDT_KERNEL_DATA | 3) << 48) | ((uint64_t)GDT_KERNEL_CODE << 32);
+}
+
+void syscall_cpu_init(void) {
     /* 1. Enable SYSCALL/SYSRET in EFER */
     uint64_t efer = rdmsr(MSR_EFER);
     wrmsr(MSR_EFER, efer | EFER_SCE);
@@ -95,21 +101,23 @@ void syscall_init(void) {
      *    The RPL bits must be in STAR itself: Intel ORs 3 into both selectors, but AMD
      *    loads SS = STAR[63:48]+8 as is. Without them user code ran with SS = 0x18
      *    (RPL 0) on AMD, and the first IRETQ back to user mode raised #GP(0x18). */
-    uint64_t star = ((uint64_t)(GDT_KERNEL_DATA | 3) << 48) | ((uint64_t)GDT_KERNEL_CODE << 32);
-    wrmsr(MSR_STAR, star);
+    wrmsr(MSR_STAR, syscall_star());
 
     /* 3. Set LSTAR = syscall entry point */
     wrmsr(MSR_LSTAR, (uint64_t)syscall_entry);
 
-    /* 4. Set SFMASK: clear IF (bit 9) and DF (bit 10) on SYSCALL entry */
-    wrmsr(MSR_SFMASK, RFLAGS_IF | RFLAGS_DF);
+    /* 4. Set SFMASK: flags cleared on SYSCALL entry */
+    wrmsr(MSR_SFMASK, SYSCALL_RFLAGS_MASK);
+}
 
-    /* 5. Register handlers: each subsystem owns its syscalls */
+void syscall_init(void) {
+    syscall_cpu_init();
+
+    /* Register handlers: each subsystem owns its syscalls */
     fs_syscalls_init();
     proc_syscalls_init();
     mm_syscalls_init();
     net_syscalls_init();
 
-    kprintf("[SYSCALL] Initialized (LSTAR=0x%lx, STAR=0x%lx)\n",
-            (uint64_t)syscall_entry, star);
+    kprintf("[SYSCALL] Initialized (LSTAR=0x%lx, STAR=0x%lx)\n", (uint64_t)syscall_entry, syscall_star());
 }

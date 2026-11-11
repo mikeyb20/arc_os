@@ -57,3 +57,7 @@ kernel; TLB shootdown works across CPUs (ADR-0004).
   proc/signal.c). A SIGSEGV with a handler raised by a page fault needs the same frame built from the interrupt
   frame and a return through `iretq`; without a handler, ending the process with `proc_exit` is enough. Other
   user exceptions (#UD, #GP, #DE, #XM, #MF, #DB, #AC) also still halt the kernel today.
+- From M1-03: #GP is a "paranoid" vector (`isr_paranoid`, GS decided by MSR_GS_BASE). A #GP whose RIP is
+  `syscall_iret_user` (syscall_entry.asm) is the IRET back to a non-canonical user RIP (set by rt_sigreturn): treat it
+  as the user's fault (SIGSEGV), not the kernel's. The syscall frame is found from `thread_current()->kernel_stack_top`
+  (syscall.c `syscall_frame`); the old `syscall_saved_user_*` globals are gone.

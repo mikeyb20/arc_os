@@ -10,9 +10,6 @@
 #define ARCHOS_PROC_SCHED_H
 #define ARCHOS_PROC_PROCESS_H
 #define ARCHOS_PROC_WAITQUEUE_H
-#define ARCHOS_ARCH_X86_64_GDT_H
-#define ARCHOS_ARCH_X86_64_SYSCALL_H
-#define ARCHOS_ARCH_X86_64_PAGING_H
 #define ARCHOS_MM_VMM_H
 #define ARCHOS_BOOT_BOOTINFO_H
 #define ARCHOS_ARCH_HAL_H        /* hal.h: only fpu.h is used, stubbed below */
@@ -105,15 +102,20 @@ typedef struct Process {
     struct Process *next;
 } Process;
 
-static void gdt_set_kernel_stack(uint64_t rsp0) { (void)rsp0; }
+/* hal.h stubs: this CPU's entry stacks (TSS.RSP0 + SYSCALL) and CR3 */
+static int kstack_sets;
+static uint64_t kstack_last;
+static void hal_set_kernel_stack(uint64_t rsp0) {
+    kstack_sets++;
+    kstack_last = rsp0;
+}
 static uint64_t vmm_get_kernel_pml4(void) { return 0x1000; }
 static int cr3_writes;
 static uint64_t cr3_last;
-static void paging_write_cr3(uint64_t cr3) {
+static void hal_switch_address_space(uint64_t cr3) {
     cr3_writes++;
     cr3_last = cr3;
 }
-static uint64_t syscall_kernel_rsp;
 
 /* Tracking context_switch stub (static to avoid linker clash) */
 static int ctx_switch_count;
@@ -167,6 +169,8 @@ static void reset_sched_state(void) {
     arch_switch_before_ctx = 0;
     cr3_writes = 0;
     cr3_last = 0;
+    kstack_sets = 0;
+    kstack_last = 0;
     memset(thread_pool, 0, sizeof(thread_pool));
 }
 
@@ -442,7 +446,28 @@ static int test_sched_cr3_from_thread_proc(void) {
     return 0;
 }
 
+/* M1-03: every switch points this CPU's entry stacks (TSS.RSP0 and the SYSCALL
+ * stack, one HAL call) at the next thread's kernel stack; a thread without
+ * one (the boot thread) leaves them as they are */
+static int test_sched_kernel_stack_follows_thread(void) {
+    reset_sched_state();
+    Thread *a = make_thread(0, 100, THREAD_RUNNING);
+    Thread *b = make_thread(1, 200, THREAD_CREATED);
+    Thread *c = make_thread(2, 300, THREAD_CREATED);
+    b->kernel_stack_top = 0xB0000;
+    test_current_thread = a;
+    sched_add_thread(b);
+    sched_schedule();                       /* a -> b */
+    ASSERT_EQ(kstack_sets, 1);
+    ASSERT_EQ(kstack_last, 0xB0000);
+    sched_add_thread(c);
+    sched_schedule();                       /* b -> c: no kernel stack */
+    ASSERT_EQ(kstack_sets, 1);
+    return 0;
+}
+
 TestCase sched_tests[] = {
+    {"kernel_stack_follows_thread", test_sched_kernel_stack_follows_thread},
     {"cr3_from_thread_proc", test_sched_cr3_from_thread_proc},
     {"init", test_sched_init},
     {"add_one_thread", test_sched_add_one_thread},

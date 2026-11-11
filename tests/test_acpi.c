@@ -330,17 +330,130 @@ TEST(madt_iso_entries) {
     return 0;
 }
 
+/* Install a MADT built in madt_buf through an RSDT + RSDP at the buffer start */
+static int acpi_init_with_madt(uint8_t *madt_buf, uint32_t madt_len) {
+    AcpiMadt *madt = (AcpiMadt *)madt_buf;
+    madt->header.length = madt_len;
+    madt->header.checksum = 0;
+    madt->header.checksum = calc_checksum(madt, madt_len);
+
+    AcpiRsdp *rsdp = (AcpiRsdp *)&test_acpi_buf[0];
+    AcpiRsdt *rsdt = (AcpiRsdt *)&test_acpi_buf[256];
+    memcpy(rsdt->header.signature, "RSDT", 4);
+    rsdt->header.length = sizeof(AcpiSdtHeader) + 4;
+    rsdt->entries[0] = (uint32_t)(uintptr_t)madt_buf;
+    rsdt->header.checksum = 0;
+    rsdt->header.checksum = calc_checksum(rsdt, rsdt->header.length);
+    memcpy(rsdp->signature, "RSD PTR ", 8);
+    rsdp->revision = 0;
+    rsdp->rsdt_address = (uint32_t)(uintptr_t)rsdt;
+    rsdp->checksum = 0;
+    rsdp->checksum = calc_checksum(rsdp, 20);
+    return acpi_init((uint64_t)(uintptr_t)rsdp);
+}
+
+static uint8_t *madt_put_lapic(uint8_t *ptr, uint8_t apic_id, uint32_t flags) {
+    AcpiMadtLocalApic *e = (AcpiMadtLocalApic *)ptr;
+    e->header.type = MADT_ENTRY_LOCAL_APIC;
+    e->header.length = sizeof(*e);
+    e->processor_id = apic_id;
+    e->apic_id = apic_id;
+    e->flags = flags;
+    return ptr + sizeof(*e);
+}
+
+static uint8_t *madt_put_x2apic(uint8_t *ptr, uint32_t apic_id, uint32_t flags) {
+    AcpiMadtLocalX2Apic *e = (AcpiMadtLocalX2Apic *)ptr;
+    e->header.type = MADT_ENTRY_LOCAL_X2APIC;
+    e->header.length = sizeof(*e);
+    e->reserved = 0;
+    e->x2apic_id = apic_id;
+    e->flags = flags;
+    e->acpi_uid = apic_id;
+    return ptr + sizeof(*e);
+}
+
+/* M1-03: MADT type 9 (x2APIC) entries give 32-bit APIC IDs; a CPU listed as
+ * both type 0 and type 9 counts once; disabled and placeholder IDs are skipped */
+TEST(madt_x2apic_entries) {
+    ensure_test_buf();
+    memset(test_acpi_buf, 0, TEST_BUF_SIZE);
+    uint8_t *madt_buf = &test_acpi_buf[512];
+    AcpiMadt *madt = (AcpiMadt *)madt_buf;
+    memcpy(madt->header.signature, "APIC", 4);
+    madt->header.revision = 5;
+    madt->local_apic_address = 0xFEE00000;
+
+    uint8_t *ptr = madt_buf + sizeof(AcpiMadt);
+    ptr = madt_put_lapic(ptr, 0, MADT_LAPIC_ENABLED);
+    ptr = madt_put_lapic(ptr, 1, MADT_LAPIC_ENABLED);
+    ptr = madt_put_lapic(ptr, 0xFF, MADT_LAPIC_ENABLED);       /* placeholder: skipped */
+    ptr = madt_put_lapic(ptr, 7, MADT_LAPIC_ONLINE_CAPABLE);   /* not enabled: skipped */
+    ptr = madt_put_x2apic(ptr, 1, MADT_LAPIC_ENABLED);         /* duplicate of type 0 */
+    ptr = madt_put_x2apic(ptr, 0x100, MADT_LAPIC_ENABLED);
+    ptr = madt_put_x2apic(ptr, 0x12345, MADT_LAPIC_ENABLED);
+    ptr = madt_put_x2apic(ptr, 0x200, 0);                      /* disabled: skipped */
+    ptr = madt_put_x2apic(ptr, 0xFFFFFFFF, MADT_LAPIC_ENABLED); /* placeholder: skipped */
+
+    ASSERT_EQ(acpi_init_with_madt(madt_buf, (uint32_t)(ptr - madt_buf)), 0);
+    const AcpiInfo *info = acpi_get_info();
+    ASSERT_TRUE(info != NULL);
+    ASSERT_EQ(info->cpu_count, 4);
+    ASSERT_EQ(info->cpu_apic_ids[0], 0);
+    ASSERT_EQ(info->cpu_apic_ids[1], 1);
+    ASSERT_EQ(info->cpu_apic_ids[2], 0x100);
+    ASSERT_EQ(info->cpu_apic_ids[3], 0x12345);
+    return 0;
+}
+
+/* A short type 9 entry (length below 16) is ignored, not read past */
+TEST(madt_x2apic_short_entry) {
+    ensure_test_buf();
+    memset(test_acpi_buf, 0, TEST_BUF_SIZE);
+    uint8_t *madt_buf = &test_acpi_buf[512];
+    AcpiMadt *madt = (AcpiMadt *)madt_buf;
+    memcpy(madt->header.signature, "APIC", 4);
+    madt->local_apic_address = 0xFEE00000;
+    uint8_t *ptr = madt_buf + sizeof(AcpiMadt);
+    ptr = madt_put_lapic(ptr, 0, MADT_LAPIC_ENABLED);
+    uint8_t *x2 = ptr;
+    ptr = madt_put_x2apic(ptr, 0x300, MADT_LAPIC_ENABLED);
+    ((AcpiMadtEntry *)x2)->length = 8;
+    ptr = x2 + 8;
+    ASSERT_EQ(acpi_init_with_madt(madt_buf, (uint32_t)(ptr - madt_buf)), 0);
+    ASSERT_EQ(acpi_get_info()->cpu_count, 1);
+    return 0;
+}
+
+/* More enabled CPUs than ACPI_MAX_CPUS: the rest are dropped, nothing overflows */
+TEST(madt_cpu_limit) {
+    size_t size = sizeof(AcpiMadt) + (ACPI_MAX_CPUS + 8) * sizeof(AcpiMadtLocalX2Apic);
+    ensure_test_buf();
+    memset(test_acpi_buf, 0, TEST_BUF_SIZE);
+    /* The RSDT holds 32-bit pointers: the MADT must sit below 4 GiB */
+    uint8_t *madt_buf = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_32BIT, -1, 0);
+    ASSERT_TRUE(madt_buf != MAP_FAILED);
+    AcpiMadt *madt = (AcpiMadt *)madt_buf;
+    memcpy(madt->header.signature, "APIC", 4);
+    madt->local_apic_address = 0xFEE00000;
+    uint8_t *ptr = madt_buf + sizeof(AcpiMadt);
+    for (uint32_t i = 0; i < ACPI_MAX_CPUS + 8; i++) ptr = madt_put_x2apic(ptr, i * 2, MADT_LAPIC_ENABLED);
+    int rc = acpi_init_with_madt(madt_buf, (uint32_t)(ptr - madt_buf));
+    uint32_t count = acpi_get_info() ? acpi_get_info()->cpu_count : 0;
+    uint32_t last = count ? acpi_get_info()->cpu_apic_ids[count - 1] : 0;
+    munmap(madt_buf, size);
+    ASSERT_EQ(rc, 0);
+    ASSERT_EQ(count, ACPI_MAX_CPUS);
+    ASSERT_EQ(last, (ACPI_MAX_CPUS - 1) * 2);
+    return 0;
+}
+
 /* --- Suite --- */
 
 TestCase acpi_tests[] = {
-    TEST_ENTRY(rsdp_bad_signature),
-    TEST_ENTRY(rsdp_bad_checksum),
-    TEST_ENTRY(rsdp_null_address),
-    TEST_ENTRY(rsdt_single_cpu),
-    TEST_ENTRY(rsdt_four_cpus),
-    TEST_ENTRY(xsdt_parsing),
-    TEST_ENTRY(acpi_get_info_before_init),
-    TEST_ENTRY(rsdt_bad_signature),
-    TEST_ENTRY(madt_iso_entries),
+    TEST_ENTRY(rsdp_bad_signature),        TEST_ENTRY(rsdp_bad_checksum),       TEST_ENTRY(rsdp_null_address),
+    TEST_ENTRY(rsdt_single_cpu),           TEST_ENTRY(rsdt_four_cpus),          TEST_ENTRY(xsdt_parsing),
+    TEST_ENTRY(acpi_get_info_before_init), TEST_ENTRY(rsdt_bad_signature),      TEST_ENTRY(madt_iso_entries),
+    TEST_ENTRY(madt_x2apic_entries),       TEST_ENTRY(madt_x2apic_short_entry), TEST_ENTRY(madt_cpu_limit),
 };
 int acpi_test_count = sizeof(acpi_tests) / sizeof(acpi_tests[0]);

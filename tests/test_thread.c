@@ -118,6 +118,16 @@ void thread_destroy(Thread *t);
 Thread *thread_current(void);
 void thread_set_current(Thread *t);
 
+/* hal.h stubs: the running thread lives in the per-CPU block (GS) in the
+ * kernel; here one static stands in for this CPU's slot */
+static Thread *current_thread;
+static inline Thread *hal_current_thread(void) {
+    return current_thread;
+}
+static inline void hal_set_current_thread(Thread *t) {
+    current_thread = t;
+}
+
 /* Include the real thread.c implementation */
 #include "../kernel/proc/thread.c"
 

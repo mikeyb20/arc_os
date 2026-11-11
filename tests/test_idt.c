@@ -15,7 +15,9 @@ static inline void kprintf(const char *fmt, ...) { (void)fmt; }
 /* Constants from guarded headers */
 #define GDT_KERNEL_CODE         0x08
 #define ISR_COUNT               256
+#define EXCEPTION_NMI           2
 #define EXCEPTION_DOUBLE_FAULT  8
+#define EXCEPTION_MACHINE_CHECK 18
 
 /* Provide fake isr_stub_table (we never call idt_init) */
 static uint64_t isr_stub_table[256];

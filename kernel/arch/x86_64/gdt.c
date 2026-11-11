@@ -1,18 +1,15 @@
+/* arc_os — GDT and TSS setup, one pair per CPU (M1-03)
+ *
+ * Owns: filling and loading a CPU's GDT (null, kernel code/data, user data/code
+ * in the order SYSRET needs, then the 16-byte TSS descriptor).
+ * Invariants: the storage lives in that CPU's PerCpu block and outlives the CPU;
+ * each CPU loads only its own GDT, so LTR never finds a busy descriptor.
+ * Locks: none (each CPU touches only its own block). */
+
 #include "arch/x86_64/gdt.h"
 #include "lib/mem.h"
-#include "lib/kprintf.h"
 
-/* 5 standard entries + 1 TSS descriptor (occupies 2 slots) = 7 slots */
-#define GDT_ENTRY_COUNT 7
-
-static GDTEntry gdt[GDT_ENTRY_COUNT];
-static TSS tss;
-static GDTPointer gdtr;
-
-/* Double-fault IST stack (4 KB) */
-static uint8_t df_stack[4096] __attribute__((aligned(16)));
-
-static void gdt_set_entry(int index, uint8_t access, uint8_t flags) {
+static void gdt_set_entry(GDTEntry *gdt, int index, uint8_t access, uint8_t flags) {
     /* For 64-bit code/data segments, base and limit are ignored by the CPU.
      * We set limit=0xFFFFF with 4K granularity for convention. */
     gdt[index].limit_low   = 0xFFFF;
@@ -23,7 +20,7 @@ static void gdt_set_entry(int index, uint8_t access, uint8_t flags) {
     gdt[index].base_high   = 0;
 }
 
-static void gdt_set_tss(int index, uint64_t base, uint32_t limit) {
+static void gdt_set_tss(GDTEntry *gdt, int index, uint64_t base, uint32_t limit) {
     TSSDescriptor *desc = (TSSDescriptor *)&gdt[index];
     desc->limit_low   = (uint16_t)(limit & 0xFFFF);
     desc->base_low    = (uint16_t)(base & 0xFFFF);
@@ -35,39 +32,30 @@ static void gdt_set_tss(int index, uint64_t base, uint32_t limit) {
     desc->reserved    = 0;
 }
 
-void gdt_init(void) {
-    /* Zero everything */
-    memset(gdt, 0, sizeof(gdt));
-    memset(&tss, 0, sizeof(tss));
+void gdt_init_cpu(GDTEntry gdt[GDT_ENTRY_COUNT], TSS *tss) {
+    memset(gdt, 0, sizeof(GDTEntry) * GDT_ENTRY_COUNT);
 
     /* Entry 0: Null descriptor (required) */
 
     /* Entry 1 (0x08): Kernel code — DPL 0, executable, readable, long mode */
-    gdt_set_entry(1, GDT_ACCESS_PRESENT | GDT_ACCESS_SEGMENT | GDT_ACCESS_EXEC | GDT_ACCESS_RW, GDT_FLAG_LONG_MODE);
+    gdt_set_entry(gdt, 1, GDT_ACCESS_PRESENT | GDT_ACCESS_SEGMENT | GDT_ACCESS_EXEC | GDT_ACCESS_RW,
+                  GDT_FLAG_LONG_MODE);
 
     /* Entry 2 (0x10): Kernel data — DPL 0, writable */
-    gdt_set_entry(2, GDT_ACCESS_PRESENT | GDT_ACCESS_SEGMENT | GDT_ACCESS_RW, 0);
+    gdt_set_entry(gdt, 2, GDT_ACCESS_PRESENT | GDT_ACCESS_SEGMENT | GDT_ACCESS_RW, 0);
 
     /* Entry 3 (0x18): User data — DPL 3, writable */
-    gdt_set_entry(3, GDT_ACCESS_PRESENT | GDT_ACCESS_DPL3 | GDT_ACCESS_SEGMENT | GDT_ACCESS_RW, 0);
+    gdt_set_entry(gdt, 3, GDT_ACCESS_PRESENT | GDT_ACCESS_DPL3 | GDT_ACCESS_SEGMENT | GDT_ACCESS_RW, 0);
 
     /* Entry 4 (0x20): User code — DPL 3, executable, readable, long mode */
-    gdt_set_entry(4, GDT_ACCESS_PRESENT | GDT_ACCESS_DPL3 | GDT_ACCESS_SEGMENT | GDT_ACCESS_EXEC | GDT_ACCESS_RW, GDT_FLAG_LONG_MODE);
+    gdt_set_entry(gdt, 4, GDT_ACCESS_PRESENT | GDT_ACCESS_DPL3 | GDT_ACCESS_SEGMENT | GDT_ACCESS_EXEC | GDT_ACCESS_RW,
+                  GDT_FLAG_LONG_MODE);
 
     /* Entry 5-6 (0x28): TSS descriptor (16 bytes, spans two GDT slots) */
-    tss.iomap_base = sizeof(TSS);
-    tss.ist1 = (uint64_t)(df_stack + sizeof(df_stack));  /* Top of stack */
-    gdt_set_tss(5, (uint64_t)&tss, sizeof(TSS) - 1);
+    tss->iomap_base = sizeof(TSS);
+    gdt_set_tss(gdt, 5, (uint64_t)tss, sizeof(TSS) - 1);
 
-    /* Load GDTR */
-    gdtr.limit = sizeof(gdt) - 1;
-    gdtr.base  = (uint64_t)gdt;
-
+    /* LGDT copies the pointer, so it can live on the stack */
+    GDTPointer gdtr = {.limit = sizeof(GDTEntry) * GDT_ENTRY_COUNT - 1, .base = (uint64_t)gdt};
     gdt_flush(&gdtr, GDT_KERNEL_CODE, GDT_KERNEL_DATA, GDT_TSS);
-
-    kprintf("[HAL] GDT loaded (%d entries + TSS)\n", GDT_ENTRY_COUNT);
-}
-
-void gdt_set_kernel_stack(uint64_t rsp0) {
-    tss.rsp0 = rsp0;
 }

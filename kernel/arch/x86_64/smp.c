@@ -1,103 +1,154 @@
-/* arc_os — SMP AP bringup via Limine SMP protocol
+/* arc_os — Interrupt controllers and application processor bring-up (M1-03)
  *
- * Limine provides a goto_address field per CPU. The BSP writes
- * our ap_entry function pointer to it, and the AP wakes up. */
+ * Owns: switching interrupt delivery from the 8259 PIC to the local APIC +
+ * I/O APIC, giving each CPU an index and a PerCpu block, and starting the APs.
+ * CPU indexes: 0 = BSP, then the MADT's enabled CPUs in table order (MADT types
+ * 0 and 9). The bootloader starts each AP (boot_start_cpu); the kernel never
+ * sees which bootloader that is.
+ * Invariants: every CPU runs in the APIC mode the BSP chose; an AP is counted
+ * in cpu_count only after its GDT, TSS, IDT, GS, SYSCALL MSRs, FPU and APIC are
+ * set up. APs stay in HLT with interrupts on until M1-05 gives them threads.
+ * Locks: none. smp_init runs on the BSP before interrupts are enabled; APs only
+ * write their own PerCpu block and the aps_online counter (atomic). */
 
 #include "arch/x86_64/smp.h"
 #include "arch/x86_64/fpu.h"
 #include "arch/x86_64/percpu.h"
 #include "arch/x86_64/lapic.h"
-#include "arch/x86_64/gdt.h"
+#include "arch/x86_64/ioapic.h"
+#include "arch/x86_64/pic.h"
+#include "arch/x86_64/isr.h"
 #include "arch/x86_64/idt.h"
+#include "arch/x86_64/ipi.h"
+#include "arch/x86_64/syscall.h"
+#include "arch/x86_64/cpuid.h"
 #include "mm/vmm.h"
-#include "proc/thread.h"
-#include "proc/sched.h"
 #include "lib/kprintf.h"
-#include "lib/mem.h"
-#include <limine.h>
-#include <stddef.h>
 
-/* Limine SMP request — defined in limine_requests.c */
-extern volatile struct limine_smp_request smp_request;
+_Static_assert(ACPI_MAX_CPUS == MAX_CPUS, "MADT CPU list and per-CPU table sizes");
+_Static_assert(BOOTINFO_MAX_CPUS == MAX_CPUS, "boot CPU list and per-CPU table sizes");
+
+/* How long the BSP waits for the APs: 2^32 TSC cycles, about 1-4 s at the TSC
+ * rates of real and emulated CPUs. Bounded by time, not by a loop count, so
+ * TCG (slow) and KVM (fast) wait alike. */
+#define AP_WAIT_TSC_CYCLES (1ULL << 32)
 
 static volatile uint32_t aps_online;
-static uint32_t total_cpus;
 
-/* AP entry point — called by Limine when BSP writes goto_address.
- * Runs on the AP's bootstrap stack provided by Limine. */
-static void ap_entry(struct limine_smp_info *info) {
-    uint32_t cpu_id = (uint32_t)info->extra_argument;
-    uint32_t apic_id = info->lapic_id;
+/* CPU index each AP read back through its own GS base (proves GS is per CPU).
+ * The BSP prints them: APs don't print, so the log stays readable. */
+static uint8_t gs_index_seen[MAX_CPUS];
 
-    /* Initialize per-CPU data for this AP */
-    percpu_init_ap(cpu_id, apic_id);
+/* AP entry: called through the bootloader on its small stack, interrupts off.
+ * arg = this CPU's index. */
+static void ap_entry(uint64_t arg) {
+    PerCpu *cpu = percpu_get((uint32_t)arg);
 
-    /* SSE on and FS base 0, like the BSP (only the BSP runs user code today) */
-    fpu_cpu_init(0);
+    percpu_load(cpu);      /* GDT + TSS (IST stacks), GS base */
+    idt_load();            /* the shared IDT */
+    syscall_cpu_init();    /* SYSCALL MSRs are per CPU */
+    fpu_cpu_init(0);       /* XSAVE on, FS base 0, like the BSP */
+    lapic_init_ap();       /* in the BSP's APIC mode */
 
-    /* Load GDT and IDT (shared IDT, per-CPU GDT could be done later) */
-    /* For now, APs use the BSP's GDT and IDT since they're the same */
+    gs_index_seen[cpu->cpu_index] = (uint8_t)this_cpu()->cpu_index;   /* < MAX_CPUS = 256 */
+    cpu->apic_id = lapic_id();   /* what the hardware says (the MADT agreed) */
+    cpu->online = 1;
+    __atomic_add_fetch(&aps_online, 1, __ATOMIC_SEQ_CST);   /* publishes the stores above */
 
-    /* Enable LAPIC on this AP */
-    uint64_t hhdm = vmm_get_hhdm_offset();
-    lapic_init(0xFEE00000 + hhdm);  /* Standard LAPIC address */
-
-    /* Mark this AP as online */
-    percpu_data[cpu_id].online = 1;
-    __atomic_add_fetch(&aps_online, 1, __ATOMIC_SEQ_CST);
-
-    kprintf("[SMP] CPU %u (APIC %u) online\n", cpu_id, apic_id);
-
-    /* AP idle loop — wait for scheduler to assign work */
+    /* AP idle loop: M1-05 gives application processors threads */
     __asm__ volatile ("sti");
     for (;;) {
         __asm__ volatile ("hlt");
     }
 }
 
-uint32_t smp_init(void) {
-    struct limine_smp_response *resp = smp_request.response;
-    if (!resp) {
-        kprintf("[SMP] No SMP response from bootloader\n");
-        return 1;
+/* Switch from the PIC to the local APIC + I/O APIC on the BSP. */
+static void smp_apic_setup(const AcpiInfo *acpi) {
+    lapic_init_bsp(acpi->local_apic_address);
+    uint32_t bsp_apic = lapic_id();
+    percpu_set_bsp_apic_id(bsp_apic);
+
+    if (acpi->io_apic_address != 0) {
+        ioapic_init(acpi->io_apic_address + vmm_get_hhdm_offset());
+        if (bsp_apic > 0xFF) {
+            /* I/O APIC destinations are 8-bit without interrupt remapping (M1-09) */
+            kprintf("[SMP] WARNING: BSP APIC ID %u above 255, ISA IRQs not routed\n", bsp_apic);
+        } else {
+            ioapic_route_isa(acpi, (uint8_t)bsp_apic);
+        }
+        pic_disable();
+        isr_set_apic_mode(1);
+        kprintf("[SMP] Switched from PIC to APIC mode\n");
     }
+    ipi_init();
+}
 
-    total_cpus = (uint32_t)resp->cpu_count;
-    aps_online = 0;
+/* Index of APIC ID apic_id in the bootloader's CPU list, or -1. Boot only. */
+static int boot_cpu_slot(const BootInfo *info, uint32_t apic_id) {
+    for (uint32_t i = 0; i < info->cpu_count; i++) {
+        if (info->cpu_apic_ids[i] == apic_id) return (int)i;
+    }
+    return -1;
+}
 
-    kprintf("[SMP] Detected %u CPUs, BSP LAPIC ID=%u\n",
-            total_cpus, resp->bsp_lapic_id);
+/* Allocate blocks for the MADT's other CPUs and start them. Returns how many
+ * were started. */
+static uint32_t smp_start_aps(const BootInfo *info, const AcpiInfo *acpi) {
+    uint32_t bsp_apic = this_cpu()->apic_id;
+    uint32_t next_index = 1;
+    uint32_t started = 0;
 
-    if (total_cpus <= 1) {
+    for (uint32_t i = 0; i < acpi->cpu_count; i++) {
+        uint32_t apic_id = acpi->cpu_apic_ids[i];
+        if (apic_id == bsp_apic) continue;
+        if (!lapic_x2apic() && apic_id > 0xFF) continue;   /* unreachable in xAPIC mode */
+        int slot = boot_cpu_slot(info, apic_id);
+        if (slot < 0) {
+            kprintf("[SMP] CPU with APIC ID %u: the bootloader cannot start it\n", apic_id);
+            continue;
+        }
+        PerCpu *cpu = percpu_alloc(next_index, apic_id);
+        if (cpu == NULL) {
+            kprintf("[SMP] Out of memory for CPU %u's per-CPU block\n", next_index);
+            break;
+        }
+        next_index++;
+        if (boot_start_cpu((uint32_t)slot, ap_entry, cpu->cpu_index) == 0) started++;
+    }
+    return started;
+}
+
+uint32_t smp_init(const BootInfo *info, const AcpiInfo *acpi) {
+    smp_apic_setup(acpi);
+
+    kprintf("[SMP] MADT lists %u CPUs, bootloader %u, BSP APIC ID %u\n", acpi->cpu_count, info->cpu_count,
+            this_cpu()->apic_id);
+    if (acpi->cpu_count <= 1 || info->cpu_count <= 1) {
         kprintf("[SMP] Single-CPU system, SMP not needed\n");
-        return 1;
+        return cpu_count;
     }
 
-    /* Wake up each AP */
-    uint32_t ap_count = 0;
-    for (uint64_t i = 0; i < resp->cpu_count; i++) {
-        struct limine_smp_info *cpu = resp->cpus[i];
+    uint32_t started = smp_start_aps(info, acpi);
 
-        /* Skip BSP */
-        if (cpu->lapic_id == resp->bsp_lapic_id) continue;
-
-        ap_count++;
-        uint32_t cpu_id = ap_count; /* CPU 0 = BSP, 1+ = APs */
-        cpu->extra_argument = cpu_id;
-
-        /* Write goto_address to wake the AP */
-        __atomic_store_n(&cpu->goto_address, ap_entry, __ATOMIC_SEQ_CST);
-    }
-
-    /* Wait for all APs to come online (with timeout) */
-    for (volatile int wait = 0; wait < 10000000; wait++) {
-        if (__atomic_load_n(&aps_online, __ATOMIC_SEQ_CST) >= ap_count) break;
+    /* Wait for the started APs to come online, bounded by time */
+    uint64_t start = cpu_rdtsc();
+    while (__atomic_load_n(&aps_online, __ATOMIC_SEQ_CST) < started && cpu_rdtsc() - start < AP_WAIT_TSC_CYCLES) {
         __asm__ volatile ("pause");
     }
 
-    cpu_count = 1 + __atomic_load_n(&aps_online, __ATOMIC_SEQ_CST);
-    kprintf("[SMP] All %u CPUs online\n", cpu_count);
-
+    uint32_t online = __atomic_load_n(&aps_online, __ATOMIC_SEQ_CST);
+    cpu_count = 1 + online;
+    if (online < started) {
+        kprintf("[SMP] WARNING: %u of %u APs came online\n", online, started);
+    }
+    for (uint32_t i = 1; i < MAX_CPUS; i++) {
+        PerCpu *cpu = percpu_get(i);
+        if (cpu == NULL) break;
+        if (cpu->online) {
+            kprintf("[SMP] CPU %u (APIC %u) online, GS index %u\n", i, cpu->apic_id, gs_index_seen[i]);
+        }
+    }
+    kprintf("[SMP] All %u CPUs online (%s)\n", cpu_count, lapic_x2apic() ? "x2APIC" : "xAPIC");
     return cpu_count;
 }
 

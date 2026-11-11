@@ -19,6 +19,7 @@ global jump_to_usermode
 %define RFLAGS_IF       0x202   ; RFLAGS with Interrupt Flag set
 
 jump_to_usermode:
+    cli                     ; no interrupt between SWAPGS and IRETQ (M1-03)
     ; Build IRETQ frame
     push USER_DATA_RPL3     ; SS
     push rsi                ; RSP = user_rsp
@@ -43,6 +44,7 @@ jump_to_usermode:
     xor r14, r14
     xor r15, r15
 
+    swapgs                  ; GS -> user's; this CPU's block waits in KERNEL_GS_BASE
     iretq
 
 ; void fork_return_to_user(const ForkContext *ctx)
@@ -63,6 +65,7 @@ jump_to_usermode:
 global fork_return_to_user
 
 fork_return_to_user:
+    cli                     ; no interrupt between SWAPGS and SYSRET (M1-03)
     ; Load callee-saved registers from ForkContext (must finish before zeroing RDI)
     mov rbp, [rdi + 24]
     mov rbx, [rdi + 32]
@@ -85,4 +88,5 @@ fork_return_to_user:
     mov r9,  [rdi + 112]
     mov rdi, [rdi + 72]     ; RDI last (was struct pointer)
 
+    swapgs                  ; GS -> user's (RIP came from SYSCALL: canonical)
     o64 sysret

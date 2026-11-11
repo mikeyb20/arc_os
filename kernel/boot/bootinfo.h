@@ -51,6 +51,9 @@ typedef struct {
 /* Kernel command line buffer size, including the NUL. */
 #define BOOTINFO_CMDLINE_MAX 256
 
+/* CPUs the bootloader found and can start (BootInfo.cpus) */
+#define BOOTINFO_MAX_CPUS 256
+
 /* Bootloader-agnostic boot information. */
 typedef struct {
     MemoryMapEntry memory_map[BOOTINFO_MAX_MEMMAP_ENTRIES];
@@ -64,11 +67,22 @@ typedef struct {
     BootModule     modules[BOOTINFO_MAX_MODULES];
     uint64_t       module_count;
     char           cmdline[BOOTINFO_CMDLINE_MAX];  /* Kernel command line ("" if none) */
+    uint32_t cpu_apic_ids[BOOTINFO_MAX_CPUS];  /* every CPU, BSP included */
+    uint32_t cpu_count;                        /* 0: no SMP information */
+    uint32_t bsp_apic_id;
 } BootInfo;
 
 /* Parse bootloader data into a BootInfo struct.
  * Returns a pointer to the global BootInfo, or NULL if critical data
  * (memory map, HHDM) is missing. */
 const BootInfo *bootinfo_init(void);
+
+/* Entry point of a started CPU; arg is the value given to boot_start_cpu. It
+ * runs on a small bootloader stack with interrupts off and never returns. */
+typedef void (*boot_cpu_entry_t)(uint64_t arg);
+
+/* Start BootInfo CPU number i (not the BSP) at entry(arg). Every call must pass
+ * the same entry. Returns 0, or -1 if i is out of range or the BSP. */
+int boot_start_cpu(uint32_t i, boot_cpu_entry_t entry, uint64_t arg);
 
 #endif /* ARCHOS_BOOT_BOOTINFO_H */

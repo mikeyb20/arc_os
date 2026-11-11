@@ -44,6 +44,8 @@ add_executable(test_runner
     test_cred.c
     test_mutex.c
     test_acpi.c
+    test_lapic.c
+    test_percpu.c
     test_fb_console.c
     test_passwd.c
     test_socket.c
@@ -99,6 +101,8 @@ add_test(NAME test_fd_refs  COMMAND test_runner --suite fd_refs)
 add_test(NAME test_vmm      COMMAND test_runner --suite vmm)
 add_test(NAME test_spinlock  COMMAND test_runner --suite spinlock)
 add_test(NAME test_gdt       COMMAND test_runner --suite gdt)
+add_test(NAME test_lapic     COMMAND test_runner --suite lapic)
+add_test(NAME test_percpu    COMMAND test_runner --suite percpu)
 add_test(NAME test_idt       COMMAND test_runner --suite idt)
 add_test(NAME test_bootinfo  COMMAND test_runner --suite bootinfo)
 add_test(NAME test_pic          COMMAND test_runner --suite pic)

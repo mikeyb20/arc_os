@@ -31,4 +31,6 @@ memory is both writable and executable (knowledge-os.md §3.2).
 - Interrupts that arrive between `STAC` and `CLAC` must not leak the AC flag; the entry stubs clear it.
 
 **Notes.**
--
+- From M1-03: do not enable CR4.FSGSBASE: the NMI/#DF/#GP/#MC entry (`isr_paranoid`) trusts that a user GS base
+  is never a kernel address. The IST stacks (4 KiB each, `percpu.c`) and the AP's bootloader stack have no guard
+  pages; SFMASK now clears TF, AC and NT on SYSCALL (AC matters once SMAP is on).

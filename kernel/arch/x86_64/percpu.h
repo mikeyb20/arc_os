@@ -2,76 +2,103 @@
 #define ARCHOS_ARCH_X86_64_PERCPU_H
 
 #include <stdint.h>
-#include "proc/thread.h"
-#include "proc/spinlock.h"
+#include <stddef.h>
 #include "arch/x86_64/gdt.h"
 #include "arch/x86_64/cpu.h"
 
-/* Maximum CPUs supported */
+/* Per-CPU data, found through GS (M1-03).
+ *
+ * In the kernel, GS base points at the running CPU's PerCpu block and
+ * this_cpu() is one GS-relative load. In user mode GS base holds the user's
+ * value (always 0 today: no ARCH_SET_GS, no FSGSBASE) and KERNEL_GS_BASE holds
+ * the block; every kernel entry from user mode (SYSCALL, interrupts, exceptions)
+ * runs SWAPGS first and every return to user mode runs it last. NMI, #DF, #GP and
+ * #MC can arrive with either value loaded, so they read MSR_GS_BASE instead: a
+ * kernel address (sign bit set) means the kernel's is already there.
+ *
+ * Each AP's block sits in one 16 KiB area from the page allocator: three 4 KiB
+ * IST stacks (#DF, NMI, #MC), then the PerCpu page. The BSP's are static. */
+
 #define MAX_CPUS CPU_MAX
 
-/* Offset of kernel_rsp in PerCpu — must match assembly */
-#define PERCPU_KERNEL_RSP_OFFSET 24
+#define PERCPU_AREA_ORDER 2                               /* 16 KiB */
+#define PERCPU_AREA_SIZE  (4096u << PERCPU_AREA_ORDER)
+#define PERCPU_IST_SIZE   4096u                           /* each IST stack */
 
-/* Per-CPU data structure — one per processor */
-typedef struct __attribute__((aligned(64))) {
-    /* Identity */
-    uint32_t cpu_id;
-    uint32_t apic_id;
+/* Field offsets the assembly entry stubs use (syscall_entry.asm); checked by
+ * _Static_assert in percpu.c */
+#define PERCPU_SELF       0
+#define PERCPU_KERNEL_RSP 8
+#define PERCPU_USER_RSP   16
+#define PERCPU_CURRENT    24
 
-    /* Current thread/process */
-    Thread  *current_thread;
-    uint64_t kernel_rsp;        /* Kernel stack top for SYSCALL entry */
+struct Thread;
 
-    /* Idle thread for this CPU */
-    Thread  *idle_thread;
+/* One per CPU. The fields the entry paths and this_cpu() touch come first and
+ * share one cache line that no other CPU writes. */
+typedef struct __attribute__((aligned(64))) PerCpu {
+    struct PerCpu *self;              /* this block: this_cpu() reads GS:0 */
+    uint64_t kernel_rsp;              /* SYSCALL stack = current thread's kernel stack top */
+    uint64_t user_rsp;                /* SYSCALL scratch: user RSP until it is pushed */
+    struct Thread *current_thread;    /* thread running on this CPU */
+    uint32_t cpu_index;               /* 0 = BSP, then MADT order */
+    uint32_t apic_id;                 /* 32-bit (x2APIC) local APIC ID */
+    TSS *tss;                         /* this CPU's TSS (tss_storage) */
+    uint8_t core_type;                /* CPU_CORE_* from CPUID 0x1A (hybrid parts) */
+    volatile uint8_t online;          /* set by the CPU itself once it is up */
 
-    /* Per-CPU GDT and TSS */
-    GDTEntry gdt[7];
-    TSS      tss;
-
-    /* Per-CPU run queue */
-    Thread  *run_queue_head;
-    Thread  *run_queue_tail;
-    Spinlock sched_lock;
-
-    /* AP startup synchronization */
-    volatile int online;
-
-    /* CPU_CORE_* from CPUID 0x1A (hybrid parts), for the scheduler (ADR-0003) */
-    uint8_t core_type;
+    GDTEntry gdt[GDT_ENTRY_COUNT];    /* this CPU's GDT (LTR marks its TSS busy) */
+    TSS tss_storage;                  /* RSP0 + IST pointers */
 } PerCpu;
 
-/* Global array of per-CPU data */
-extern PerCpu percpu_data[MAX_CPUS];
+/* Number of CPUs online (BSP + application processors that came up) */
 extern uint32_t cpu_count;
 
-/* Initialize per-CPU data for the BSP (CPU 0). */
-void percpu_init_bsp(void);
-
-/* Initialize per-CPU data for an AP. Called on the AP itself. */
-void percpu_init_ap(uint32_t cpu_id, uint32_t apic_id);
-
-/* Get the current CPU's PerCpu structure via GS base. */
+/* This CPU's PerCpu block: one GS-relative load. Valid from percpu_init_bsp()
+ * (BSP) or percpu_load() (AP) on, in kernel mode. Volatile because the answer
+ * changes when a thread moves to another CPU (M1-05). */
 static inline PerCpu *this_cpu(void) {
     PerCpu *p;
-    __asm__ volatile (
-        "mov %%gs:0, %0"  /* PerCpu starts with cpu_id, but we read the GS base */
-        : "=r"(p)
-    );
-    /* Actually, we store the pointer to PerCpu in GS base directly.
-     * Reading GS:0 gives the first 8 bytes of the struct starting at GS base.
-     * Instead, read MSR_GS_BASE for the pointer. */
-    uint32_t lo, hi;
-    __asm__ volatile ("rdmsr" : "=a"(lo), "=d"(hi) : "c"(0xC0000101));
-    return (PerCpu *)((uint64_t)hi << 32 | lo);
+    __asm__ volatile("mov %%gs:0, %0" : "=r"(p));
+    return p;
 }
 
-/* Set GS base to point to the given PerCpu struct. */
-static inline void percpu_set_gs_base(PerCpu *p) {
-    uint64_t addr = (uint64_t)p;
-    __asm__ volatile ("wrmsr" : : "c"(0xC0000101),
-                      "a"((uint32_t)addr), "d"((uint32_t)(addr >> 32)));
+/* The running thread, read straight through GS. */
+static inline struct Thread *this_cpu_thread(void) {
+    struct Thread *t;
+    __asm__ volatile("mov %%gs:%c1, %0" : "=r"(t) : "i"(PERCPU_CURRENT));
+    return t;
+}
+
+/* Set up the BSP's block (index 0, static area): its GDT and TSS with IST
+ * stacks, GS base, KERNEL_GS_BASE = 0. First thing after the boot info is
+ * parsed: thread_current() reads GS. */
+void percpu_init_bsp(void);
+
+/* Allocate and fill the block for CPU index with the given APIC ID (BSP, while
+ * starting the APs). Records the APIC ID in the APIC ID -> index map. Returns
+ * NULL when out of memory or index >= MAX_CPUS. */
+PerCpu *percpu_alloc(uint32_t index, uint32_t apic_id);
+
+/* On the CPU itself: load its GDT and TSS, then point GS at its block and
+ * record its core type. */
+void percpu_load(PerCpu *cpu);
+
+/* Block of CPU index, or NULL. */
+PerCpu *percpu_get(uint32_t index);
+
+/* Set the BSP's APIC ID (known once the APIC layer is up) and add it to the map. */
+void percpu_set_bsp_apic_id(uint32_t apic_id);
+
+/* CPU index for an APIC ID, or -1. O(log CPUs): binary search of a sorted map. */
+int percpu_index_of_apic(uint32_t apic_id);
+
+/* Point this CPU's kernel entry stacks at top: TSS.RSP0 (interrupts from user
+ * mode) and the SYSCALL stack. Called on every context switch. */
+static inline void percpu_set_kernel_stack(uint64_t top) {
+    PerCpu *c = this_cpu();
+    c->tss->rsp0 = top;
+    c->kernel_rsp = top;
 }
 
 #endif /* ARCHOS_ARCH_X86_64_PERCPU_H */

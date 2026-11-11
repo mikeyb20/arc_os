@@ -41,4 +41,5 @@
 - L block: a clean stopping point is after steps 1–3 with single-thread behaviour unchanged and tests passing.
 
 **Notes.**
--
+- From M1-03: user GS base is always 0 (no `ARCH_SET_GS`), so it is not context-switched. If a thread ever gets
+  its own GS base, save and restore MSR_KERNEL_GS_BASE (the user's value while in the kernel) on every switch.

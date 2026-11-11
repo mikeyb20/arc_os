@@ -67,6 +67,25 @@ add_test(NAME qemu.cpufloor COMMAND ${_qemu_test} --suite cpufloor --cpu Nehalem
     --expect-exit 0x7e --timeout 60
     --expect "CPU floor: this CPU lacks: .*AVX2")
 
+# Per-CPU entry and APIC modes (M1-03): every suite boots with -smp 4; these two
+# pin the APIC mode, and each AP reads its own CPU index back through GS.
+# x2APIC needs KVM (QEMU before 9.0 has none under TCG), so CI runs it and TCG
+# sessions skip it; CI's default `-cpu host` runs every other suite in x2APIC too.
+set(_smp_expect
+    --expect "\\[SMP\\] CPU 1 \\(APIC [0-9]+\\) online, GS index 1$"
+    --expect "\\[SMP\\] CPU 2 \\(APIC [0-9]+\\) online, GS index 2$"
+    --expect "\\[SMP\\] CPU 3 \\(APIC [0-9]+\\) online, GS index 3$")
+add_test(NAME qemu.smp.xapic COMMAND ${_qemu_test} --suite userland --name smp-xapic --cpu-flags=-x2apic
+    ${_smp_expect}
+    --expect "\\[APIC\\] xAPIC mode"
+    --expect "\\[SMP\\] All 4 CPUs online \\(xAPIC\\)")
+add_test(NAME qemu.smp.x2apic COMMAND ${_qemu_test} --suite userland --name smp-x2apic --cpu-flags=+x2apic
+    --require-kvm
+    ${_smp_expect}
+    --expect "\\[APIC\\] x2APIC mode"
+    --expect "\\[SMP\\] All 4 CPUs online \\(x2APIC\\)")
+set_tests_properties(qemu.smp.x2apic PROPERTIES SKIP_RETURN_CODE 77)
+
 # Harness self-checks: a failing program is reported by name and reason,
 # and a kernel panic ends the run within seconds instead of at the timeout.
 add_test(NAME qemu.selftest.fail COMMAND ${_qemu_test} --suite selftest --module testfail)
@@ -75,7 +94,7 @@ set_tests_properties(qemu.selftest.fail PROPERTIES
 add_test(NAME qemu.selftest.panic COMMAND ${_qemu_test} --suite kpanic --expect-panic --timeout 30)
 
 set_tests_properties(qemu.smoke qemu.mem.buddy qemu.mem.cap qemu.userland qemu.abi qemu.musl qemu.fpu qemu.cpufloor
-    qemu.selftest.fail qemu.selftest.panic
+    qemu.smp.xapic qemu.smp.x2apic qemu.selftest.fail qemu.selftest.panic
     PROPERTIES LABELS qemu TIMEOUT 180 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     FIXTURES_SETUP qemu_logs)
 

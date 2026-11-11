@@ -29,6 +29,7 @@ volatile struct limine_kernel_address_request kernel_address_request;
 volatile struct limine_rsdp_request           rsdp_request;
 volatile struct limine_module_request        module_request;
 volatile struct limine_kernel_file_request   kernel_file_request;
+volatile struct limine_smp_request smp_request;
 
 /* Include the real limine.c */
 #include "../kernel/boot/limine.c"

@@ -1,9 +1,6 @@
 #include "proc/sched.h"
 #include "proc/process.h"
 #include "proc/spinlock.h"
-#include "arch/x86_64/gdt.h"
-#include "arch/x86_64/syscall.h"
-#include "arch/x86_64/paging.h"
 #include "arch/hal.h"
 #include "mm/vmm.h"
 #include "lib/kprintf.h"
@@ -94,17 +91,16 @@ void sched_schedule(void) {
     thread_set_current(next);
 
     if (next != old) {
-        /* Update TSS.rsp0 and SYSCALL kernel stack for the new thread */
+        /* This CPU's entry stacks (TSS.RSP0 and SYSCALL) for the new thread */
         if (next->kernel_stack_top != 0) {
-            gdt_set_kernel_stack(next->kernel_stack_top);
-            syscall_kernel_rsp = next->kernel_stack_top;
+            hal_set_kernel_stack(next->kernel_stack_top);
         }
 
         /* Switch CR3 if switching between different address spaces */
         uint64_t old_cr3 = proc_get_cr3(old->proc);
         uint64_t new_cr3 = proc_get_cr3(next->proc);
         if (new_cr3 != old_cr3) {
-            paging_write_cr3(new_cr3);
+            hal_switch_address_space(new_cr3);
         }
 
         /* User FPU/SSE state and FS base (TLS), eagerly (fpu.h) */

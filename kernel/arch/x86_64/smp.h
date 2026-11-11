@@ -3,11 +3,14 @@
 
 #include <stdint.h>
 #include "boot/bootinfo.h"
+#include "drivers/acpi.h"
 
-/* Initialize SMP: bring up Application Processors using Limine SMP protocol.
- * Must be called after LAPIC, I/O APIC, and per-CPU data are initialized.
- * Returns total number of CPUs online. */
-uint32_t smp_init(void);
+/* Switch interrupt delivery to the local APIC (xAPIC or x2APIC) + I/O APIC
+ * (ISA IRQs to the BSP), register the IPI handlers, then give every other
+ * enabled MADT CPU a per-CPU block and start it through the bootloader. Call
+ * once on the BSP, after the page allocator, with interrupts off. Returns the
+ * number of CPUs online. */
+uint32_t smp_init(const BootInfo *info, const AcpiInfo *acpi);
 
 /* Check if SMP is active (more than 1 CPU online). */
 int smp_active(void);

@@ -8,9 +8,7 @@
 #include "mm/vmm.h"
 #include "mm/pmm.h"
 #include "mm/kmalloc.h"
-#include "arch/x86_64/gdt.h"
-#include "arch/x86_64/syscall.h"
-#include "arch/x86_64/paging.h"
+#include "arch/hal.h"
 #include "arch/x86_64/usermode.h"
 #include "lib/kprintf.h"
 #include "lib/testmode.h"
@@ -69,13 +67,12 @@ static void init_thread_entry(void *arg) {
         return;
     }
 
-    /* Set TSS.rsp0 and SYSCALL kernel RSP */
+    /* This CPU's entry stacks (TSS.RSP0 and SYSCALL) */
     Thread *t = thread_current();
-    gdt_set_kernel_stack(t->kernel_stack_top);
-    syscall_kernel_rsp = t->kernel_stack_top;
+    hal_set_kernel_stack(t->kernel_stack_top);
 
     /* Switch to the process's address space */
-    paging_write_cr3(p->page_table);
+    hal_switch_address_space(p->page_table);
 
     kprintf("[INIT] Jumping to user mode: entry=0x%lx\n", result.entry_point);
 

@@ -46,23 +46,19 @@ typedef struct __attribute__((packed)) {
 } TSSDescriptor;
 
 /* Task State Segment — used for RSP0 (ring 3→0) and IST entries */
+#define TSS_SIZE 104
 typedef struct __attribute__((packed)) {
     uint32_t reserved0;
     uint64_t rsp0;       /* Stack for ring 0 transitions */
     uint64_t rsp1;
     uint64_t rsp2;
     uint64_t reserved1;
-    uint64_t ist1;       /* IST1: double-fault stack */
-    uint64_t ist2;
-    uint64_t ist3;
-    uint64_t ist4;
-    uint64_t ist5;
-    uint64_t ist6;
-    uint64_t ist7;
+    uint64_t ist[7];     /* IST1..IST7 stack tops (ist[0] = IST1; slots in idt.h) */
     uint64_t reserved2;
     uint16_t reserved3;
     uint16_t iomap_base;
 } TSS;
+_Static_assert(sizeof(TSS) == TSS_SIZE, "64-bit TSS layout");
 
 /* GDTR pointer loaded by lgdt */
 typedef struct __attribute__((packed)) {
@@ -70,11 +66,14 @@ typedef struct __attribute__((packed)) {
     uint64_t base;
 } GDTPointer;
 
-/* Initialize and load the GDT with TSS. */
-void gdt_init(void);
+/* 5 segment descriptors + the TSS descriptor (two slots) */
+#define GDT_ENTRY_COUNT 7
 
-/* Set the kernel stack pointer in TSS (for ring 3→0 transitions). */
-void gdt_set_kernel_stack(uint64_t rsp0);
+/* Fill this CPU's GDT (kernel/user code and data, a TSS descriptor for tss)
+ * and load it: LGDT, segment reloads, LTR. Each CPU has its own GDT and TSS
+ * (in its PerCpu block, M1-03), because LTR marks the descriptor busy. The
+ * caller sets the TSS fields (RSP0, IST pointers); tss->iomap_base is set here. */
+void gdt_init_cpu(GDTEntry gdt[GDT_ENTRY_COUNT], TSS *tss);
 
 /* Assembly routine: load GDT, reload segment registers, load TSS. */
 extern void gdt_flush(const GDTPointer *gdtr, uint16_t code_sel, uint16_t data_sel, uint16_t tss_sel);

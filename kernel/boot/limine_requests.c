@@ -77,13 +77,12 @@ volatile struct limine_kernel_file_request kernel_file_request = {
     .response = NULL
 };
 
-/* SMP — for multi-core AP bringup */
+/* SMP — for multi-core AP bringup. X2APIC: Limine switches every CPU to x2APIC
+ * mode when the CPU has it, so it can start CPUs whose APIC ID is above 255; the
+ * kernel picks the same mode (lapic.c, M1-03). */
 LIMINE_SECTION
 volatile struct limine_smp_request smp_request = {
-    .id = LIMINE_SMP_REQUEST,
-    .revision = 0,
-    .response = NULL
-};
+    .id = LIMINE_SMP_REQUEST, .revision = 0, .response = NULL, .flags = LIMINE_SMP_X2APIC};
 
 LIMINE_SECTION
 volatile uint64_t limine_requests_end_marker[2] = {

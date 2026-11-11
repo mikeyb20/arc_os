@@ -10,8 +10,10 @@
 /* Stub kprintf */
 static inline void kprintf(const char *fmt, ...) { (void)fmt; }
 
-/* Track gdt_flush calls */
+/* Track gdt_flush calls (and the GDTR it was given: LGDT copies it) */
 static int gdt_flush_called;
+static uint16_t gdtr_limit;
+static uint64_t gdtr_base;
 static uint16_t gdt_flush_code_sel;
 static uint16_t gdt_flush_data_sel;
 static uint16_t gdt_flush_tss_sel;
@@ -22,7 +24,8 @@ static uint16_t gdt_flush_tss_sel;
 
 void gdt_flush(const GDTPointer *gdtr_arg, uint16_t code_sel,
                uint16_t data_sel, uint16_t tss_sel) {
-    (void)gdtr_arg;
+    gdtr_limit = gdtr_arg->limit;
+    gdtr_base = gdtr_arg->base;
     gdt_flush_called++;
     gdt_flush_code_sel = code_sel;
     gdt_flush_data_sel = data_sel;
@@ -32,12 +35,20 @@ void gdt_flush(const GDTPointer *gdtr_arg, uint16_t code_sel,
 /* Include the real implementation */
 #include "../kernel/arch/x86_64/gdt.c"
 
+/* One CPU's GDT and TSS, as in its PerCpu block */
+static GDTEntry gdt[GDT_ENTRY_COUNT];
+static TSS tss;
+
 static void reset_gdt_state(void) {
     gdt_flush_called = 0;
     gdt_flush_code_sel = 0;
     gdt_flush_data_sel = 0;
     gdt_flush_tss_sel = 0;
-    gdt_init();
+    memset(gdt, 0xAA, sizeof(gdt));   /* gdt_init_cpu must clear it */
+    memset(&tss, 0, sizeof(tss));
+    tss.ist[0] = 0x1000;              /* IST pointers belong to the caller */
+    tss.ist[2] = 0x3000;
+    gdt_init_cpu(gdt, &tss);
 }
 
 /* --- Tests --- */
@@ -109,10 +120,11 @@ TEST(tss_descriptor) {
     return 0;
 }
 
-TEST(tss_ist1_set) {
+TEST(tss_ist_kept) {
     reset_gdt_state();
-    /* IST1 should point to the top of the double-fault stack */
-    ASSERT_EQ(tss.ist1, (uint64_t)(df_stack + sizeof(df_stack)));
+    /* gdt_init_cpu leaves the caller's IST stack pointers alone */
+    ASSERT_EQ(tss.ist[0], 0x1000);
+    ASSERT_EQ(tss.ist[2], 0x3000);
     return 0;
 }
 
@@ -124,8 +136,8 @@ TEST(tss_iomap_base) {
 
 TEST(gdtr_values) {
     reset_gdt_state();
-    ASSERT_EQ(gdtr.limit, sizeof(gdt) - 1);
-    ASSERT_EQ(gdtr.base, (uint64_t)gdt);
+    ASSERT_EQ(gdtr_limit, sizeof(gdt) - 1);
+    ASSERT_EQ(gdtr_base, (uint64_t)gdt);
     return 0;
 }
 
@@ -138,35 +150,40 @@ TEST(gdt_flush_called_correct) {
     return 0;
 }
 
-TEST(set_kernel_stack) {
+TEST(per_cpu_tss) {
+    /* M1-03: each CPU's GDT points at its own TSS (LTR marks it busy) */
+    static GDTEntry gdt2[GDT_ENTRY_COUNT];
+    static TSS tss2;
     reset_gdt_state();
-    gdt_set_kernel_stack(0xDEADBEEFCAFEBABE);
-    ASSERT_EQ(tss.rsp0, 0xDEADBEEFCAFEBABE);
+    gdt_init_cpu(gdt2, &tss2);
+    TSSDescriptor *d1 = (TSSDescriptor *)&gdt[5];
+    TSSDescriptor *d2 = (TSSDescriptor *)&gdt2[5];
+    uint64_t b1 = d1->base_low | ((uint64_t)d1->base_mid << 16) | ((uint64_t)d1->base_high << 24) |
+                  ((uint64_t)d1->base_upper << 32);
+    uint64_t b2 = d2->base_low | ((uint64_t)d2->base_mid << 16) | ((uint64_t)d2->base_high << 24) |
+                  ((uint64_t)d2->base_upper << 32);
+    ASSERT_EQ(b1, (uint64_t)&tss);
+    ASSERT_EQ(b2, (uint64_t)&tss2);
+    ASSERT_EQ(gdtr_base, (uint64_t)gdt2);
     return 0;
 }
 
 TEST(gdt_entry_count) {
     reset_gdt_state();
     /* 7 entries × 8 bytes = 56 bytes, limit = 56 - 1 = 55 */
-    ASSERT_EQ(gdtr.limit, 55);
+    ASSERT_EQ(gdtr_limit, 55);
     return 0;
 }
 
 /* --- Test suite export --- */
 
 TestCase gdt_tests[] = {
-    TEST_ENTRY(null_descriptor),
-    TEST_ENTRY(kernel_code_segment),
-    TEST_ENTRY(kernel_data_segment),
-    TEST_ENTRY(user_data_segment),
-    TEST_ENTRY(user_code_segment),
-    TEST_ENTRY(user_data_before_user_code),
-    TEST_ENTRY(tss_descriptor),
-    TEST_ENTRY(tss_ist1_set),
-    TEST_ENTRY(tss_iomap_base),
-    TEST_ENTRY(gdtr_values),
-    TEST_ENTRY(gdt_flush_called_correct),
-    TEST_ENTRY(set_kernel_stack),
+    TEST_ENTRY(null_descriptor),          TEST_ENTRY(kernel_code_segment),
+    TEST_ENTRY(kernel_data_segment),      TEST_ENTRY(user_data_segment),
+    TEST_ENTRY(user_code_segment),        TEST_ENTRY(user_data_before_user_code),
+    TEST_ENTRY(tss_descriptor),           TEST_ENTRY(tss_ist_kept),
+    TEST_ENTRY(tss_iomap_base),           TEST_ENTRY(gdtr_values),
+    TEST_ENTRY(gdt_flush_called_correct), TEST_ENTRY(per_cpu_tss),
     TEST_ENTRY(gdt_entry_count),
 };
 

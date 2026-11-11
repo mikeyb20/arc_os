@@ -53,3 +53,9 @@ written lock ordering that debug builds check at runtime.
 **Notes.**
 - From M0-02: `sched_yield()` no longer takes `sched_lock` (holding it across `context_switch` deadlocked);
   it only disables interrupts. Per-CPU queue locking replaces it here.
+- From M1-03: `thread_current()` reads the per-CPU block through GS (`hal_current_thread`), and
+  `hal_set_kernel_stack()` sets TSS.RSP0 and the SYSCALL stack of the CPU it runs on, so the switch path is already
+  per CPU. APs sit in HLT on the bootloader's small stack (`ap_entry` in smp.c), with their GDT, TSS, IDT, GS,
+  SYSCALL MSRs, XSAVE and APIC set up; give each its idle thread and own stack here. `percpu_get(i)` and
+  `percpu_index_of_apic(id)` (O(log n)) map indexes and APIC IDs; `cpu_count` counts online CPUs. `kprintf` is not
+  SMP-safe yet (interleaved lines when APs print). `MAX_CPUS` is 256: an affinity mask is 32 bytes.

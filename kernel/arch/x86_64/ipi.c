@@ -50,8 +50,9 @@ void ipi_tlb_shootdown(void) {
 }
 
 void ipi_reschedule(uint32_t cpu_id) {
-    if (cpu_id >= cpu_count) return;
-    lapic_send_ipi(percpu_data[cpu_id].apic_id, IPI_VEC_SCHEDULE);
+    PerCpu *c = percpu_get(cpu_id);
+    if (c == NULL || !c->online) return;
+    lapic_send_ipi(c->apic_id, IPI_VEC_SCHEDULE);
 }
 
 void ipi_halt_all(void) {

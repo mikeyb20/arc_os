@@ -13,6 +13,13 @@ static inline void cpuid(uint32_t leaf, uint32_t sub, uint32_t *a, uint32_t *b,
                       : "a"(leaf), "c"(sub));
 }
 
+/* Read the time-stamp counter (raw cycles; calibration comes with M1-06). */
+static inline uint64_t cpu_rdtsc(void) {
+    uint32_t lo, hi;
+    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
+}
+
 /* AT_HWCAP on x86_64: CPUID leaf 1 EDX (as Linux reports it) */
 static inline uint64_t cpu_hwcap(void) {
     uint32_t a, b, c, d;

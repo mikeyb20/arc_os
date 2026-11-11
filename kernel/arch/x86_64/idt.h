@@ -10,6 +10,14 @@
 
 #define IDT_ENTRIES 256
 
+/* Interrupt Stack Table slots (TSS ist1..ist7). These vectors always run on a
+ * per-CPU stack of their own, because they can arrive at any instruction:
+ * #DF after a stack overflow, NMI and #MC even between SWAPGS and SYSRET while
+ * RSP is already the user's (M1-03). */
+#define IST_DOUBLE_FAULT  1
+#define IST_NMI           2
+#define IST_MACHINE_CHECK 3
+
 /* IDT entry (16 bytes in long mode) */
 typedef struct __attribute__((packed)) {
     uint16_t offset_low;
@@ -31,7 +39,11 @@ typedef struct __attribute__((packed)) {
 void idt_set_gate(int vector, uint64_t handler, uint16_t selector,
                   uint8_t type_attr, uint8_t ist);
 
-/* Initialize and load the IDT. */
+/* Build the shared IDT (all 256 stubs; NMI, #DF and #MC on their IST stacks)
+ * and load it on this CPU. Call once, on the BSP. */
 void idt_init(void);
+
+/* Load the IDT that idt_init built on this CPU (application processors). */
+void idt_load(void);
 
 #endif /* ARCHOS_ARCH_X86_64_IDT_H */

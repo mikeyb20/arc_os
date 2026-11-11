@@ -66,6 +66,11 @@ typedef struct __attribute__((packed)) {
 #define MADT_ENTRY_ISO            2  /* Interrupt Source Override */
 #define MADT_ENTRY_NMI            4  /* Non-Maskable Interrupt */
 #define MADT_ENTRY_LOCAL_APIC_64  5  /* 64-bit Local APIC Address Override */
+#define MADT_ENTRY_LOCAL_X2APIC   9  /* Processor Local x2APIC (32-bit APIC ID) */
+
+/* Local APIC / x2APIC flags */
+#define MADT_LAPIC_ENABLED        (1u << 0)
+#define MADT_LAPIC_ONLINE_CAPABLE (1u << 1)
 
 /* MADT Local APIC entry (type 0) */
 typedef struct __attribute__((packed)) {
@@ -74,6 +79,16 @@ typedef struct __attribute__((packed)) {
     uint8_t       apic_id;
     uint32_t      flags;      /* Bit 0: processor enabled */
 } AcpiMadtLocalApic;
+
+/* MADT Local x2APIC entry (type 9): used for APIC IDs of 255 and above, and by
+ * some firmware for every CPU */
+typedef struct __attribute__((packed)) {
+    AcpiMadtEntry header;
+    uint16_t reserved;
+    uint32_t x2apic_id;
+    uint32_t flags;      /* Bit 0: processor enabled */
+    uint32_t acpi_uid;
+} AcpiMadtLocalX2Apic;
 
 /* MADT I/O APIC entry (type 1) */
 typedef struct __attribute__((packed)) {
@@ -94,12 +109,12 @@ typedef struct __attribute__((packed)) {
 } AcpiMadtIso;
 
 /* Parsed ACPI info — populated by acpi_init() */
-#define ACPI_MAX_CPUS     16
+#define ACPI_MAX_CPUS     256   /* = MAX_CPUS (arch/x86_64/percpu.h) */
 #define ACPI_MAX_ISOS     16
 
 typedef struct {
-    /* CPU info from MADT */
-    uint8_t  cpu_apic_ids[ACPI_MAX_CPUS];
+    /* Enabled CPUs from MADT types 0 and 9, in table order, each APIC ID once */
+    uint32_t cpu_apic_ids[ACPI_MAX_CPUS];
     uint32_t cpu_count;
 
     /* I/O APIC */

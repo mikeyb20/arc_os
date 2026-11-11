@@ -8,8 +8,10 @@
 # name                 limit       kind unit   owner  source    [off]
 
 # Kernel image: .text + .rodata + .data + .bss of kernel.elf (measured 181251;
-# 190961 after M1-01; 201966 after M1-02: buddy allocator + 4 KiB boot range table)
-kernel_image_bytes     212000      max  bytes  M0-08  build
+# 190961 after M1-01; 201966 after M1-02: buddy allocator + 4 KiB boot range table;
+# 207928 -> 221831 after M1-03: the BSP's NMI and #MC IST stacks (8 KiB) and the
+# per-CPU, APIC ID and MADT tables sized for 256 CPUs)
+kernel_image_bytes     233000      max  bytes  M0-08  build
 
 # Free memory when init starts, booted with -m 4G (qemu.smoke; measured 4251873280)
 boot_free_bytes        3830000000  min  bytes  M0-08  smoke
@@ -42,8 +44,9 @@ idle_timer_irqs_5s     0           max  irqs   M1-06  smoke     off
 # counts measured on master 2026-11-08. These limits only go down: a block that
 # removes an instance lowers the limit in the same PR (the checker warns when a
 # count is 20% under). Run `python3 tools/hygiene.py` to see every location.
+# arch_includes_outside_arch: 43 -> 26 in M1-03 (kmain, sched, init, process).
 dup_windows                 12   max  regions  M0-09  hygiene
 dup_static_names            2    max  copies   M0-09  hygiene
-arch_includes_outside_arch  43   max  includes M0-09  hygiene
+arch_includes_outside_arch  26   max  includes M0-09  hygiene
 long_functions              3    max  funcs    M0-09  hygiene
 untracked_todos             0    max  todos    M0-09  hygiene

@@ -27,15 +27,35 @@
 #include "arch/x86_64/fpu.h"     /* fpu_*, arch_thread_switch, arch_set_fs_base */
 #include "arch/x86_64/cpuid.h"   /* cpu_hwcap, cpu_random_fill */
 #include "arch/x86_64/cpu.h"     /* CPU features, floor, core types */
+#include "arch/x86_64/percpu.h"  /* this_cpu(), per-CPU kernel stacks */
+#include "arch/x86_64/smp.h"     /* APIC switch-over, AP start */
 
 /* ==================================================================
  * CPU Initialization & Control
  * ================================================================== */
 
-/* Initialize CPU descriptor tables (GDT + IDT). */
+/* Set up the boot CPU: its per-CPU block (GDT, TSS, IST stacks, GS base),
+ * then the shared IDT. Must run before anything calls thread_current(). */
 static inline void hal_cpu_init(void) {
-    gdt_init();
+    percpu_init_bsp();
     idt_init();
+}
+
+/* Switch to the APIC interrupt controllers and start the other CPUs (they
+ * idle until M1-05). Needs the page allocator; interrupts still off. Returns
+ * the number of CPUs online. */
+static inline uint32_t hal_smp_init(const BootInfo *info, const AcpiInfo *acpi) {
+    return smp_init(info, acpi);
+}
+
+/* The thread running on this CPU (kept in the per-CPU block). */
+static inline struct Thread *hal_current_thread(void) {
+    return this_cpu_thread();
+}
+
+/* Record the thread now running on this CPU. */
+static inline void hal_set_current_thread(struct Thread *t) {
+    this_cpu()->current_thread = t;
 }
 
 /* Enable hardware interrupts. */
@@ -141,9 +161,10 @@ static inline void hal_invalidate_page(uint64_t vaddr) {
  * Task State (kernel stack for ring transitions)
  * ================================================================== */
 
-/* Set the kernel stack pointer used on ring 3→0 transitions. */
+/* Set the kernel stack used on ring 3→0 transitions on this CPU: interrupts
+ * (TSS.RSP0) and SYSCALL alike. Call on every switch to a thread. */
 static inline void hal_set_kernel_stack(uint64_t rsp0) {
-    gdt_set_kernel_stack(rsp0);
+    percpu_set_kernel_stack(rsp0);
 }
 
 /* ==================================================================

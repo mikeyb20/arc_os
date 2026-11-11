@@ -2,6 +2,7 @@
 #define ARCHOS_ARCH_X86_64_IOAPIC_H
 
 #include <stdint.h>
+#include "drivers/acpi.h"
 
 /* I/O APIC register offsets (indirect access) */
 #define IOAPIC_REGSEL   0x00
@@ -24,6 +25,10 @@ void ioapic_init(uint64_t base_virt);
  * Applies polarity and trigger mode from MADT ISOs. */
 void ioapic_route_irq(uint8_t irq, uint8_t vector, uint8_t dest_apic,
                        int active_low, int level_triggered);
+
+/* Route and unmask ISA IRQs 0-15 (vector IRQ_BASE + irq) to dest_apic (physical destination, so an
+ * APIC ID below 256), applying the MADT Interrupt Source Overrides. */
+void ioapic_route_isa(const AcpiInfo *acpi, uint8_t dest_apic);
 
 /* Mask/unmask an I/O APIC entry */
 void ioapic_mask(uint8_t irq);

@@ -5,9 +5,6 @@
 #include "mm/kmalloc.h"
 #include "mm/vmm.h"
 #include "arch/x86_64/usermode.h"
-#include "arch/x86_64/gdt.h"
-#include "arch/x86_64/syscall.h"
-#include "arch/x86_64/paging.h"
 #include "arch/hal.h"
 #include "lib/kprintf.h"
 #include "lib/string.h"
@@ -129,13 +126,12 @@ static void fork_child_entry(void *arg) {
     ForkChildArgs *args = &local;
     Process *child = args->child;
 
-    /* Set TSS.rsp0 and syscall kernel RSP for this thread */
+    /* This CPU's entry stacks (TSS.RSP0 and SYSCALL) for this thread */
     Thread *t = thread_current();
-    gdt_set_kernel_stack(t->kernel_stack_top);
-    syscall_kernel_rsp = t->kernel_stack_top;
+    hal_set_kernel_stack(t->kernel_stack_top);
 
     /* Switch to child's address space */
-    paging_write_cr3(child->page_table);
+    hal_switch_address_space(child->page_table);
 
     /* Return to user mode with RAX=0, restoring callee-saved registers */
     fork_return_to_user(&args->ctx);

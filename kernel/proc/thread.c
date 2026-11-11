@@ -5,7 +5,6 @@
 #include "lib/mem.h"
 #include "arch/hal.h"
 
-static Thread *current_thread = NULL;
 static tid_t next_tid = 0;
 
 /* Trampoline: first thing a new thread executes after context_switch returns.
@@ -32,7 +31,7 @@ void thread_init(void) {
     boot->tid = next_tid++;
     boot->state = THREAD_RUNNING;
 
-    current_thread = boot;
+    thread_set_current(boot);   /* kept per CPU, through GS (M1-03) */
     kprintf("[PROC] Threading initialized (boot thread tid=%u)\n", boot->tid);
 }
 
@@ -90,9 +89,9 @@ void thread_destroy(Thread *t) {
 }
 
 Thread *thread_current(void) {
-    return current_thread;
+    return hal_current_thread();
 }
 
 void thread_set_current(Thread *t) {
-    current_thread = t;
+    hal_set_current_thread(t);
 }

@@ -1,30 +1,60 @@
-/* arc_os — Local APIC driver
+/* arc_os — Local APIC access layer (M1-03)
  *
- * The Local APIC is memory-mapped at the address from MADT.
- * We use the HHDM to access it. */
+ * Owns: the APIC mode (xAPIC MMIO or x2APIC MSRs), register access, EOI, IPIs.
+ * Invariants: the mode is chosen once on the BSP before any AP starts and never
+ * changes; every CPU runs in that mode (an AP left in xAPIC mode by the
+ * bootloader is switched to x2APIC; xAPIC -> x2APIC is the only legal direction
+ * without a reset). In xAPIC mode lapic_mmio is the HHDM address of the MMIO page.
+ * Locks: none. Register access is per CPU; an xAPIC IPI is two register writes,
+ * so lapic_send_ipi keeps interrupts off across them. */
 
 #include "arch/x86_64/lapic.h"
+#include "arch/x86_64/msr.h"
+#include "arch/x86_64/cpuid.h"
 #include "arch/x86_64/pit.h"
+#include "mm/vmm.h"
+#include "proc/spinlock.h"
 #include "lib/kprintf.h"
 #include <stddef.h>
 
-static volatile uint32_t *lapic_base;
+#define CPUID1_ECX_X2APIC (1u << 21)
+
+static volatile uint32_t *lapic_mmio;   /* xAPIC mode only */
+static int x2apic_mode;
+
+int lapic_x2apic(void) {
+    return x2apic_mode;
+}
 
 uint32_t lapic_read(uint32_t reg) {
-    return lapic_base[reg / 4];
+    if (x2apic_mode) return (uint32_t)rdmsr(MSR_X2APIC_FIRST + (reg >> 4));
+    return lapic_mmio[reg / 4];
 }
 
 void lapic_write(uint32_t reg, uint32_t val) {
-    lapic_base[reg / 4] = val;
+    if (x2apic_mode) {
+        wrmsr(MSR_X2APIC_FIRST + (reg >> 4), val);
+        return;
+    }
+    lapic_mmio[reg / 4] = val;
 }
 
-void lapic_init(uint64_t base_virt) {
-    lapic_base = (volatile uint32_t *)base_virt;
+/* Enable the APIC on this CPU in the chosen mode, then program it. */
+static void lapic_enable_this_cpu(void) {
+    uint64_t base = rdmsr(MSR_APIC_BASE);
+    if (x2apic_mode) {
+        if (!(base & APIC_BASE_EXTD)) {
+            /* xAPIC -> x2APIC: EN must stay set; both bits in one write */
+            wrmsr(MSR_APIC_BASE, base | APIC_BASE_EN | APIC_BASE_EXTD);
+        }
+    } else if (!(base & APIC_BASE_EN)) {
+        wrmsr(MSR_APIC_BASE, base | APIC_BASE_EN);
+    }
 
     /* Enable LAPIC via Spurious Interrupt Vector Register */
     lapic_write(LAPIC_SVR, LAPIC_SVR_ENABLE | LAPIC_SPURIOUS_VEC);
 
-    /* Clear Error Status Register (write twice as per spec) */
+    /* Clear Error Status Register (write twice as per spec; x2APIC needs 0) */
     lapic_write(LAPIC_ESR, 0);
     lapic_write(LAPIC_ESR, 0);
 
@@ -33,41 +63,67 @@ void lapic_init(uint64_t base_virt) {
 
     /* Send EOI to clear any pending interrupts */
     lapic_eoi();
+}
 
-    kprintf("[LAPIC] Initialized (ID=%u, version=0x%x)\n",
-            lapic_id(), lapic_read(LAPIC_VERSION) & 0xFF);
+void lapic_init_bsp(uint64_t mmio_phys) {
+    uint32_t eax, ebx, ecx, edx;
+    cpuid(1, 0, &eax, &ebx, &ecx, &edx);
+    uint64_t base = rdmsr(MSR_APIC_BASE);
+
+    x2apic_mode = (ecx & CPUID1_ECX_X2APIC) || (base & APIC_BASE_EXTD);
+    if (!x2apic_mode) {
+        if (mmio_phys == 0) mmio_phys = base & APIC_BASE_ADDR_MASK;
+        lapic_mmio = (volatile uint32_t *)(mmio_phys + vmm_get_hhdm_offset());
+    }
+    lapic_enable_this_cpu();
+
+    kprintf("[APIC] %s mode, BSP APIC ID %u, version 0x%x\n", x2apic_mode ? "x2APIC" : "xAPIC", lapic_id(),
+            lapic_read(LAPIC_VERSION) & 0xFF);
+}
+
+void lapic_init_ap(void) {
+    lapic_enable_this_cpu();
 }
 
 void lapic_eoi(void) {
-    if (lapic_base)
-        lapic_write(LAPIC_EOI, 0);
-}
-
-uint32_t lapic_id(void) {
-    return (lapic_read(LAPIC_ID) >> 24) & 0xFF;
-}
-
-/* Wait for IPI delivery (ICR delivery status bit) */
-static void lapic_ipi_wait(void) {
-    while (lapic_read(LAPIC_ICR_LOW) & (1 << 12)) {
-        __asm__ volatile ("pause");
+    if (x2apic_mode) {
+        wrmsr(MSR_X2APIC_FIRST + (LAPIC_EOI >> 4), 0);
+    } else if (lapic_mmio) {
+        lapic_mmio[LAPIC_EOI / 4] = 0;
     }
 }
 
-void lapic_send_ipi(uint32_t apic_id, uint32_t vector) {
-    lapic_write(LAPIC_ICR_HIGH, apic_id << 24);
-    lapic_write(LAPIC_ICR_LOW, vector | ICR_FIXED | ICR_LEVEL_ASSERT);
-    lapic_ipi_wait();
+uint32_t lapic_id(void) {
+    uint32_t id = lapic_read(LAPIC_ID);
+    return x2apic_mode ? id : (id >> 24) & 0xFF;
 }
 
-void lapic_send_ipi_all(uint32_t vector) {
-    lapic_write(LAPIC_ICR_LOW, vector | ICR_FIXED | ICR_DEST_ALL | ICR_LEVEL_ASSERT);
-    lapic_ipi_wait();
+/* Write the ICR. x2APIC: one 64-bit MSR write, destination in bits 63:32, no
+ * delivery-status bit. xAPIC: high half, then low half (which sends), then wait
+ * until the APIC accepted it. */
+static void lapic_write_icr(uint32_t dest, uint32_t low) {
+    if (x2apic_mode) {
+        /* x2APIC MSR writes are not serializing: make earlier stores visible to
+         * the target before it can take the interrupt */
+        __asm__ volatile("mfence; lfence" : : : "memory");
+        wrmsr(MSR_X2APIC_FIRST + (LAPIC_ICR_LOW >> 4), ((uint64_t)dest << 32) | low);
+        return;
+    }
+    uint64_t flags = irq_save();
+    lapic_mmio[LAPIC_ICR_HIGH / 4] = dest << 24;
+    lapic_mmio[LAPIC_ICR_LOW / 4] = low;
+    while (lapic_mmio[LAPIC_ICR_LOW / 4] & ICR_SEND_PENDING) {
+        __asm__ volatile ("pause");
+    }
+    irq_restore(flags);
+}
+
+void lapic_send_ipi(uint32_t apic_id, uint32_t vector) {
+    lapic_write_icr(apic_id, vector | ICR_FIXED | ICR_LEVEL_ASSERT);
 }
 
 void lapic_send_ipi_all_excluding_self(uint32_t vector) {
-    lapic_write(LAPIC_ICR_LOW, vector | ICR_FIXED | ICR_DEST_ALL_EX | ICR_LEVEL_ASSERT);
-    lapic_ipi_wait();
+    lapic_write_icr(0, vector | ICR_FIXED | ICR_DEST_ALL_EX | ICR_LEVEL_ASSERT);
 }
 
 void lapic_timer_init(uint32_t vector, uint32_t freq_hz) {

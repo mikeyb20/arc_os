@@ -32,6 +32,10 @@ Kernel and user space are separate worlds: the same function in `kernel/lib` and
 | Close an fd, copy an fd (pipe/socket refs) | `fd_close`, `fd_file_addref` | `kernel/proc/fd.h` |
 | End the current process (exit, fatal signal) | `proc_exit` | `kernel/proc/proc_syscalls.h` |
 | Hardware access from portable code | `hal_*`, FPU state, CPUID | `kernel/arch/hal.h` |
+| Per-CPU block (GS), running thread, entry stacks | `this_cpu`, `percpu_get`, `percpu_index_of_apic`; portable code: `hal_current_thread`, `hal_set_kernel_stack` | `kernel/arch/x86_64/percpu.h` (via `arch/hal.h`) |
+| Local APIC (xAPIC or x2APIC): EOI, IPIs, ID | `lapic_eoi`, `lapic_send_ipi`, `lapic_id`, `lapic_x2apic` | `kernel/arch/x86_64/lapic.h` |
+| Start another CPU (bootloader-neutral) | `boot_start_cpu` | `kernel/boot/bootinfo.h` |
+| Time-stamp counter (raw cycles) | `cpu_rdtsc` | `kernel/arch/x86_64/cpuid.h` |
 | CPU features, x86-64-v3 floor, core type | `cpu_features`, `cpu_floor_missing`, `cpu_core_type_detect`, `cpu_describe` | `kernel/arch/x86_64/cpu.h` (via `arch/hal.h`) |
 | Signal actions and masks (rt_sigaction, fork, execve) | `sig_set_action`, `sig_fork_copy`, `sig_exec_reset` | `kernel/proc/signal.h` |
 | Linux ABI values and structs | `__NR_*`, errno, flags, `struct stat`, ... | `kernel/include/uapi/` |
