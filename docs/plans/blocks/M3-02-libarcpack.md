@@ -48,8 +48,8 @@ the format has a single home. Tested on Linux inside the syscall inventory; on a
 5. Budgets: `arcpack_lookup_rss_kib` (the 1000-lookup run). Add arcpack to `stack/README.md`.
 
 **Done when.**
-- [ ] `docs/formats/pack-v1.md` is written and ADR-0011 links it.
-- [ ] Lane tests pass and the syscall check passes in `lane.yml`.
+- [x] `docs/formats/pack-v1.md` is written and ADR-0011 links it.
+- [x] Lane tests pass and the syscall check passes in `lane.yml`.
 
 **Cost.** Chunk and document lookup O(1) by index. 32 bytes per chunk and per document record, plus the strings
 file; text stored once, compressed per document. Reading a chunk decompresses its one document into a caller buffer
@@ -62,4 +62,22 @@ file; text stored once, compressed per document. Reading a chunk decompresses it
 - Don't build FTS here. The FTS index schema belongs to the retriever (M3-06a), which uses this library to fill it.
 
 **Notes.**
--
+- Done: `docs/formats/pack-v1.md`, `stack/lib/arcpack/` (reader, streaming writer), lane tests `arcpack_three`,
+  `arcpack_damaged` (20 cases), `arcpack_long` (a 9 MiB document past the window), `arcpack_big` (200 000 chunks), budget `arcpack_lookup_rss_kib` (measured ~8.4 MB).
+- Layout changes from Build 1, each for a concrete reason: every header also carries the pack name and version
+  (64 bytes each, must match the manifest) so files from two packs or versions can't be mixed; the `docs.zst`
+  header is a zstd skippable frame, so the file stays a valid zstd stream; the padding u32 is named `reserved`
+  and must be zero; `chunks/chunks.bin` in the schema examples became `chunks/chunks.idx`.
+- No dictionary (Michael, 2026-11-10): `content/dict.zstd` dropped. Frames: level 19, window ≤ 8 MiB, checksum
+  on, no long mode or `--ultra`. The reader checks each frame header (checksum, no dictionary, window ≤ 8 MiB; by
+  hand, as zstd's one-shot decoder ignores `ZSTD_d_windowLogMax`), so an in-house decoder can replace zstd later
+  without a format change. Only libarcpack calls zstd on packs.
+- Document text markup (headings, links, image lines) uses C0 bytes 0x01–0x04 and 0x1F; the writer refuses any
+  other control character, bad UTF-8, and chunk cuts inside a character or markup.
+- Reuse: `arcjson_utf8_valid`, `arcjson_read_file`, `arcjson_is_schema_id`, `arcjson_is_schema_version` promoted
+  to arcjson; `arc-llm/roles.c` now uses them (`tidy:` commit).
+- Surprise: `ru_maxrss` of a program the Python lane driver starts includes Python's ~13 MB from before exec, so
+  `arcpack_test big-lookup` measures a forked child. The same overstates `arc_llm_idle_rss_kib` and the other
+  RSS budgets from `llama_lane.run`; not changed here.
+- Left to later blocks: the FTS index and the manifest's `index` field (index format and tokenizer) to M3-06a;
+  vectors to M3-05/M3-06; manifest writing to M3-04.

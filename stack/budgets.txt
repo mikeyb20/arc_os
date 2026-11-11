@@ -29,3 +29,8 @@ arc_llm_idle_rss_kib   17900       max  kib    M2-04  arc_llm_errors
 # Peak RSS after chat (n_ctx 4096) and embed (n_ctx 2048) on the two tiny models, both loaded and
 # mmapped: weights 136 + 139 MiB, KV cache 90 MiB, compute buffers 107 + 110 MiB (measured 408112)
 arc_llm_tiny_rss_kib   449000      max  kib    M2-04  arc_llm_chat
+
+# libarcpack (M3-02). Peak RSS of 1000 random chunk lookups (record, text, ID both ways) in a
+# 200 000-chunk pack: mostly the mapped chunks/chunks.idx (6.4 MB; page cache, shared), plus
+# docs.idx, strings and docs.zst; measured in a child forked by arcpack_test (measured 8232)
+arcpack_lookup_rss_kib 9100        max  kib    M3-02  arcpack_big

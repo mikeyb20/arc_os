@@ -29,7 +29,8 @@ Look here and in the ports' own APIs before writing a helper. Each block that ad
 
 | Library | Header | What it does | Block |
 |---|---|---|---|
-| `arcjson` | `arcjson.h` | The stack's only JSON code. Parser: RFC 8259, strict, UTF-8 checked, nesting limit 64, caller's size limit, one arena per document. Writer: escaping (invalid UTF-8 becomes U+FFFD), numbers, nesting, into one growing buffer. `arcjson_utf8_complete_len` holds back a split UTF-8 character when streaming | M2-04 |
+| `arcjson` | `arcjson.h` | The stack's only JSON code. Parser: RFC 8259, strict, UTF-8 checked, nesting limit 64, caller's size limit, one arena per document. Writer: escaping (invalid UTF-8 becomes U+FFFD), numbers, nesting, into one growing buffer. `arcjson_utf8_complete_len` holds back a split UTF-8 character when streaming; `arcjson_utf8_valid` is the stack's UTF-8 check. Manifest helpers (M3-02): `arcjson_read_file` (whole small file, size-limited) and the schemas' `id` and version checks | M2-04 |
+| `arcpack` | `arcpack.h` | The pack format's one home (`docs/formats/pack-v1.md`): reader (maps the files, checks headers and every record it reads, O(1) document, chunk and chunk-ID lookup, document text decompressed into the caller's buffer, `arcpack_plain()`) and streaming writer (checks markup and chunk ranges). The only code that runs zstd on pack content | M3-02 |
 
 ## Programs
 
