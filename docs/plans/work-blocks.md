@@ -194,7 +194,7 @@ an unclean shutdown.
 |---|---|---|---|---|---|---|---|
 | M5-00 | Plan M5 | S | D | P | M4-14 | M5 block specs written | todo |
 | M5-01 | Port e2fsprogs (`mke2fs`, `e2fsck`) | M | R | U | M5-00 | Both run on arc_os against real partitions | todo |
-| M5-02 | `arcpkg` tool | M | R | L | M2-00a, M2-02, M2-04, M0-07 | install, remove, list, verify, switch role; offline; tested on Linux in a temporary root (on arc_os from M5-03) | todo |
+| M5-02 | `arcpkg` tool | M | R | L | M2-00a, M2-02, M2-04, M0-07 | install, remove, list, verify, switch role; offline; tested on Linux in a temporary root (on arc_os from M5-03) | review (#28) |
 | M5-03 | Installer | L | D | U | M5-01, M5-02 | Disk detected, GPT written, system copied, tier and models chosen | todo |
 | M5-04 | USB key image builder (host) | M | R | I | M5-03 | One image with installer, packages, packs, models, sources | todo |
 | M5-05 | GGUF wrapper + recovery | M | R | U | M5-02 | Any GGUF becomes an `.arcpkg`; `arcpkg verify` repairs from the key | todo |
