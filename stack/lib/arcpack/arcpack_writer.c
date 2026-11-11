@@ -18,7 +18,7 @@
 #include <unistd.h>
 #include <zstd.h>
 
-#include "arcfile.h"
+#include "arcutil.h"
 #include "arcjson.h"
 #include "arcpack_internal.h"
 
@@ -108,7 +108,7 @@ static bool open_files(arcpack_writer *w, const char **why) {
     char path[PATH_MAX];
     static const char *const dirs[] = {"", "/content", "/chunks"};
     for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
-        if (snprintf(path, sizeof(path), "%s%s", w->dir, dirs[i]) >= (int)sizeof(path) || !arcfile_make_dir(path)) {
+        if (snprintf(path, sizeof(path), "%s%s", w->dir, dirs[i]) >= (int)sizeof(path) || !arcutil_make_dir(path)) {
             return writer_fail(w, why, "%s%s: cannot create directory: %s", w->dir, dirs[i], strerror(errno));
         }
     }
@@ -519,8 +519,8 @@ bool arcpack_writer_finish(arcpack_writer *w, const char **why) {
             writer_fail(w, why, "%s: rename: %s", arcpack_files[f].path, strerror(errno));
         }
     }
-    if (ok && (!path_of(w, "content", "", from, sizeof(from)) || !arcfile_sync_dir(from) ||
-               !path_of(w, "chunks", "", to, sizeof(to)) || !arcfile_sync_dir(to))) {
+    if (ok && (!path_of(w, "content", "", from, sizeof(from)) || !arcutil_sync_dir(from) ||
+               !path_of(w, "chunks", "", to, sizeof(to)) || !arcutil_sync_dir(to))) {
         ok = writer_fail(w, why, "fsync of the pack directories failed");
     }
     if (!ok) {

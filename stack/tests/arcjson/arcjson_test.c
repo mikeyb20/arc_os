@@ -253,6 +253,50 @@ static void test_decode_and_versions(void) {
                "build metadata ignored, leading zeros, fewer parts first");
 }
 
+static void test_schema_paths_roles_semver(void) {
+    lane_check(arcjson_is_schema_semver("1.0.0", 5) && arcjson_is_schema_semver("2026.11.0", 9) &&
+                   arcjson_is_schema_semver("1.0.0-rc.1+build.7", 18) && arcjson_is_schema_semver("0.0.0-0a", 8),
+               "semver accepted");
+    lane_check(!arcjson_is_schema_semver("1.0", 3) && !arcjson_is_schema_semver("01.0.0", 6) &&
+                   !arcjson_is_schema_semver("1.0.0-01", 8) && !arcjson_is_schema_semver("1.0.0-", 6) &&
+                   !arcjson_is_schema_semver("1.0.0+", 6) && !arcjson_is_schema_semver("1.0.0-a..b", 10) &&
+                   !arcjson_is_schema_semver("v1.0.0", 6) && !arcjson_is_schema_semver("1.0.0 ", 6),
+               "not semver refused (short, leading zero, empty identifier, prefix, space)");
+    lane_check(arcjson_is_schema_role("chat", 4) && arcjson_is_schema_role("embed", 5) &&
+                   arcjson_is_schema_role("router", 6) && arcjson_is_schema_role("expert:medicine", 15),
+               "roles accepted");
+    lane_check(!arcjson_is_schema_role("writer", 6) && !arcjson_is_schema_role("expert:", 7) &&
+                   !arcjson_is_schema_role("expert:Med", 10) && !arcjson_is_schema_role("chat2", 5) &&
+                   !arcjson_is_schema_role("cha", 3),
+               "not roles refused");
+    lane_check(arcjson_is_schema_relpath("a", 1) && arcjson_is_schema_relpath("bin/arc-search", 14) &&
+                   arcjson_is_schema_relpath("a/.hidden/b..c", 14),
+               "relative paths accepted");
+    lane_check(!arcjson_is_schema_relpath("", 0) && !arcjson_is_schema_relpath("/etc", 4) &&
+                   !arcjson_is_schema_relpath("a/../b", 6) && !arcjson_is_schema_relpath("./a", 3) &&
+                   !arcjson_is_schema_relpath("a//b", 4) && !arcjson_is_schema_relpath("a/", 2) &&
+                   !arcjson_is_schema_relpath("..", 2) && !arcjson_is_schema_relpath("a\0b", 3),
+               "unsafe paths refused (empty, absolute, .., ., empty part, NUL)");
+}
+
+static void test_write_value(void) {
+    const char *doc = "{\"a\":[1,-2,3.5,true,false,null],\"s\":\"x\\\"y\\u00e9\",\"o\":{\"k\":{}},\"e\":[]}";
+    arcjson_arena a;
+    arcjson_arena_init(&a);
+    const arcjson_value *v = arcjson_parse(&a, doc, strlen(doc), LIMIT, NULL);
+    arcjson_writer w;
+    arcjson_writer_init(&w);
+    arcjson_write_value(&w, v);
+    size_t len;
+    const char *out = arcjson_writer_result(&w, &len);
+    lane_check(
+        out != NULL &&
+            strcmp(out, "{\"a\":[1,-2,3.5,true,false,null],\"s\":\"x\\\"y\xc3\xa9\",\"o\":{\"k\":{}},\"e\":[]}") == 0,
+        "write_value copies a parsed document (integers stay integers)");
+    arcjson_writer_free(&w);
+    arcjson_arena_free(&a);
+}
+
 int main(void) {
     test_literals_and_structure();
     test_strings();
@@ -263,5 +307,7 @@ int main(void) {
     test_read_file();
     test_schema_names();
     test_decode_and_versions();
+    test_schema_paths_roles_semver();
+    test_write_value();
     return lane_check_done("arcjson");
 }

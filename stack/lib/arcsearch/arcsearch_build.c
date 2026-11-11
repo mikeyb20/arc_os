@@ -16,7 +16,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "arcfile.h"
+#include "arcutil.h"
 #include "arcsearch.h"
 
 static const char SCHEMA[] = "CREATE VIRTUAL TABLE fts USING fts5(title, section, body, content='',"
@@ -157,7 +157,7 @@ bool arcsearch_build_fts(const char *pack_dir, const char **why) {
         arcpack_close(b.pack);
         return build_fail(why, "%s: path too long", pack_dir);
     }
-    if (!arcfile_make_dir(dir) || (unlink(part) != 0 && errno != ENOENT)) {
+    if (!arcutil_make_dir(dir) || (unlink(part) != 0 && errno != ENOENT)) {
         ok = build_fail(why, "%s: %s", dir, strerror(errno));
     } else if (sqlite3_open_v2(part, &b.db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL) != SQLITE_OK) {
         ok = sql_fail(&b, "open", why);
@@ -176,7 +176,7 @@ bool arcsearch_build_fts(const char *pack_dir, const char **why) {
     if (sqlite3_close(b.db) != SQLITE_OK && ok) {
         ok = build_fail(why, "fts/index.sqlite: close failed");
     }
-    if (ok && (!sync_file(part) || rename(part, path) != 0 || !arcfile_sync_dir(dir))) {
+    if (ok && (!sync_file(part) || rename(part, path) != 0 || !arcutil_sync_dir(dir))) {
         ok = build_fail(why, "%s: %s", path, strerror(errno));
     }
     if (!ok) {

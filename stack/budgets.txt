@@ -38,3 +38,8 @@ arcpack_lookup_rss_kib 9100        max  kib    M3-02  arcpack_big
 # lane_rss so the Python driver's RSS isn't counted: SQLite with two immutable indexes, two packs
 # mapped (measured 1828)
 search_rss_kib       2050        max  kib    M3-06a search
+# arcpkg (M5-02). Static, loaded ELF bytes: arcjson, arcutil and the zstd decompressor (measured 232528)
+arcpkg_bytes         255800      max  bytes  M5-02  sizes
+# Peak RSS of installing a 200 MiB pack, through lane_rss: zstd window (the fixture's zstd -3: 2 MiB; a
+# package may use up to 8 MiB) and stream buffers, one 64 KiB copy buffer, the manifest (measured 2816)
+arcpkg_install_rss_kib 3100      max  kib    M5-02  arcpkg_big
