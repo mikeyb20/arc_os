@@ -43,9 +43,4 @@ void testmode_process_exited(int pid, int status);
  * 0..0x3f). If no debug-exit device is present, halts. Never returns. */
 void testmode_exit(int code) __attribute__((noreturn));
 
-/* Fatal stop used by KERNEL_PANIC() and unhandled CPU exceptions. In test mode
- * prints "ARC_TEST PANIC" and exits QEMU with TESTMODE_PANIC_CODE; otherwise
- * halts this CPU forever. Never returns. */
-void kernel_panic_halt(void) __attribute__((noreturn));
-
 #endif /* ARCHOS_LIB_TESTMODE_H */

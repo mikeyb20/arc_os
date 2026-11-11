@@ -138,6 +138,6 @@ void kmalloc_dump_stats(void) {
     kmalloc_get_stats(&hs);
     kprintf("[HEAP] Stats: slabs hold %lu KB (%lu B in use), large blocks %lu KB, cap use %lu KB of %lu MB\n",
             (uint64_t)hs.heap_mapped / 1024, (uint64_t)hs.total_used, (uint64_t)hs.large_bytes / 1024,
-            kmem_charged_bytes() / 1024, KMEM_CAP_BYTES >> 20);
+            kmem_charged_bytes() / 1024, (uint64_t)(KMEM_CAP_BYTES >> 20));
     slab_dump_caches();
 }

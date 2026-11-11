@@ -29,6 +29,7 @@
 
 static PciDevice devices[PCI_MAX_DEVICES];
 static int device_count;
+static int devices_dropped;   /* found after the table filled up */
 
 static inline uint32_t pci_config_addr(uint8_t bus, uint8_t device,
                                         uint8_t func, uint8_t offset) {
@@ -57,7 +58,10 @@ static inline uint8_t pci_reg_byte(uint32_t reg, int byte) {
 /* Populate a PciDevice entry. Caller already verified vendor != 0xFFFF. */
 static void pci_populate_device(uint8_t bus, uint8_t dev, uint8_t func,
                                 uint16_t vendor, uint16_t devid) {
-    if (device_count >= PCI_MAX_DEVICES) return;
+    if (device_count >= PCI_MAX_DEVICES) {
+        devices_dropped++;
+        return;
+    }
 
     PciDevice *d = &devices[device_count];
     d->addr.bus      = bus;
@@ -65,6 +69,7 @@ static void pci_populate_device(uint8_t bus, uint8_t dev, uint8_t func,
     d->addr.function = func;
     d->vendor_id     = vendor;
     d->device_id     = devid;
+    d->driver = NULL;
 
     uint32_t class_reg = pci_config_read32(bus, dev, func, PCI_REG_CLASS);
     d->class_code = pci_reg_byte(class_reg, 3);
@@ -97,9 +102,11 @@ static void pci_scan_device(uint8_t bus, uint8_t dev) {
 
     pci_populate_device(bus, dev, 0, vendor, devid);
 
-    /* Check if multi-function device — reuse header_type from the device
-     * we just populated (avoids a redundant config read). */
-    if (device_count > 0 && (devices[device_count - 1].header_type & PCI_HEADER_MULTIFUNCTION)) {
+    /* Multi-function device? Read the header type from the device itself: once
+     * the table is full, function 0 was not recorded and the last table entry is
+     * some other device (M1-04 fix). */
+    uint8_t header = pci_reg_byte(pci_config_read32(bus, dev, 0, PCI_REG_HEADER_TYPE), 2);
+    if (header & PCI_HEADER_MULTIFUNCTION) {
         for (uint8_t func = 1; func < PCI_MAX_FUNCTIONS; func++) {
             id_reg = pci_config_read32(bus, dev, func, PCI_REG_VENDOR_ID);
             vendor = id_reg & PCI_WORD0_MASK;
@@ -112,6 +119,7 @@ static void pci_scan_device(uint8_t bus, uint8_t dev) {
 
 void pci_init(void) {
     device_count = 0;
+    devices_dropped = 0;
 
     for (int bus = 0; bus < PCI_MAX_BUSES; bus++) {
         for (int dev = 0; dev < PCI_MAX_DEV_PER_BUS; dev++) {
@@ -120,6 +128,9 @@ void pci_init(void) {
     }
 
     kprintf("[PCI] Found %d devices\n", device_count);
+    if (devices_dropped > 0) {
+        kprintf("[PCI] WARNING: %d more not recorded (table holds %d)\n", devices_dropped, PCI_MAX_DEVICES);
+    }
     for (int i = 0; i < device_count; i++) {
         PciDevice *d = &devices[i];
         kprintf("[PCI]   %x:%x.%x  %x:%x  class=%x:%x  IRQ=%d\n",
@@ -149,6 +160,79 @@ void pci_enable_bus_master(const PciDevice *dev) {
 uint16_t pci_bar_io_base(uint32_t bar) {
     /* Bit 0 = 1 means I/O space. Bits [1:0] are flags, base is bits [31:2]. */
     return (uint16_t)(bar & PCI_BAR_IO_MASK);
+}
+
+void pci_set_driver(const PciDevice *dev, const char *name) {
+    if (dev < devices || dev >= devices + device_count) return;
+    devices[dev - devices].driver = name;
+}
+
+const char *pci_class_name(uint8_t class_code, uint8_t subclass) {
+    switch (class_code) {
+    case 0x01:
+        switch (subclass) {
+        case 0x01:
+            return "IDE";
+        case 0x06:
+            return "SATA";
+        case 0x08:
+            return "NVMe";
+        default:
+            return "storage";
+        }
+    case 0x02:
+        return subclass == 0x00 ? "ethernet" : "network";
+    case 0x03:
+        return "display";
+    case 0x04:
+        return "audio/video";
+    case 0x05:
+        return "memory";
+    case 0x06:
+        switch (subclass) {
+        case 0x00:
+            return "host bridge";
+        case 0x01:
+            return "ISA bridge";
+        case 0x04:
+            return "PCI bridge";
+        default:
+            return "bridge";
+        }
+    case 0x07:
+        return "serial/comm";
+    case 0x08:
+        return "system";
+    case 0x09:
+        return "input";
+    case 0x0C:
+        switch (subclass) {
+        case 0x03:
+            return "USB";
+        case 0x05:
+            return "SMBus";
+        case 0x80:
+            return "serial bus";
+        default:
+            return "bus";
+        }
+    case 0x0D:
+        return "wireless";
+    case 0x10:
+        return "crypto";
+    case 0x11:
+        return "signal proc";
+    case 0x12:
+        return "accelerator";
+    case 0x13:
+        return "instrument";
+    default:
+        return "other";
+    }
+}
+
+int pci_get_dropped_count(void) {
+    return devices_dropped;
 }
 
 int pci_get_device_count(void) {

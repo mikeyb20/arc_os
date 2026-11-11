@@ -111,6 +111,18 @@ typedef struct __attribute__((packed)) {
 /* Parsed ACPI info — populated by acpi_init() */
 #define ACPI_MAX_CPUS     256   /* = MAX_CPUS (arch/x86_64/percpu.h) */
 #define ACPI_MAX_ISOS     16
+#define ACPI_MAX_TABLES   48    /* signatures kept for the boot report */
+
+/* DMAR (Intel VT-d) flags, ACPI DMAR table byte 37 */
+#define ACPI_DMAR_INTR_REMAP     (1u << 0)
+#define ACPI_DMAR_X2APIC_OPT_OUT (1u << 1)
+
+/* One table the RSDT/XSDT lists */
+typedef struct {
+    char signature[5];   /* NUL-terminated */
+    uint32_t length;
+    int checksum_ok;
+} AcpiTableEntry;
 
 typedef struct {
     /* Enabled CPUs from MADT types 0 and 9, in table order, each APIC ID once */
@@ -130,6 +142,15 @@ typedef struct {
 
     /* Dual 8259 legacy PICs present */
     int has_legacy_pics;
+
+    /* Boot report (M1-04): RSDP revision and OEM, every table listed, DMAR */
+    uint8_t rsdp_revision;
+    char oem_id[7];
+    AcpiTableEntry tables[ACPI_MAX_TABLES];
+    uint32_t table_count;      /* entries in tables[] */
+    uint32_t tables_listed;    /* entries the RSDT/XSDT has (may exceed table_count) */
+    int dmar_present;
+    uint8_t dmar_flags;       /* ACPI_DMAR_*; x2APIC opt-out is reported, not acted on yet */
 } AcpiInfo;
 
 /* Parse ACPI tables starting from the RSDP physical address.

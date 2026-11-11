@@ -71,4 +71,10 @@ void arch_thread_switch(struct Thread *old, struct Thread *next);
 /* Set the current thread's FS base (arch_prctl ARCH_SET_FS, execve). */
 void arch_set_fs_base(uint64_t base);
 
+/* Self-test (M1-04, arc.selftest=1 only, before any user thread exists): on
+ * this CPU, check CR4.OSXSAVE and that XCR0 matches the BSP's, then sum count
+ * 32-bit words of buf (32-byte aligned, count a multiple of 8) with AVX2.
+ * *xcr0 gets this CPU's XCR0. Returns 0, or -1 when AVX isn't enabled here. */
+int fpu_avx2_selftest(const uint32_t *buf, uint64_t count, uint32_t *sum, uint64_t *xcr0);
+
 #endif /* ARCHOS_ARCH_X86_64_FPU_H */

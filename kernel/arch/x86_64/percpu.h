@@ -84,6 +84,10 @@ PerCpu *percpu_alloc(uint32_t index, uint32_t apic_id);
  * record its core type. */
 void percpu_load(PerCpu *cpu);
 
+/* This CPU's index; 0 before the BSP's block exists (GS not set up yet), so
+ * the panic path can call it at any point of boot. */
+uint32_t percpu_current_index(void);
+
 /* Block of CPU index, or NULL. */
 PerCpu *percpu_get(uint32_t index);
 

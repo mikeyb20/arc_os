@@ -4,12 +4,10 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* Guard kernel headers */
-#define ARCHOS_LIB_KPRINTF_H
+/* Guard kernel headers. The log ring (lib/klog.c) and ksnprintf are the real
+ * ones, built by test_kprintf.c. */
 #define ARCHOS_LIB_MEM_H
 #define ARCHOS_BOOT_BOOTINFO_H
-
-static inline void kprintf(const char *fmt, ...) { (void)fmt; }
 
 /* Framebuffer types (standalone for testing) */
 typedef struct {
@@ -152,15 +150,191 @@ TEST(fb_line_wrap) {
     return 0;
 }
 
-TEST(fb_scroll) {
+/* Before the cell array is attached (early boot) a full screen clears and
+ * output restarts at the top: the framebuffer is never read back */
+TEST(fb_scroll_without_cells_wraps) {
     Framebuffer fb = make_test_fb();
     fb_console_init(&fb);
-    /* Fill all rows */
     for (uint32_t r = 0; r < rows; r++) {
         fb_console_putchar('\n');
     }
-    /* Should have scrolled, cursor at last row */
+    ASSERT_EQ(cur_row, 0);
+    return 0;
+}
+
+/* Count foreground pixels in text cell (col, row) */
+static int cell_fg_pixels(uint32_t col, uint32_t row, uint32_t fg) {
+    int n = 0;
+    for (uint32_t y = 0; y < FONT_HEIGHT * scale; y++) {
+        for (uint32_t x = 0; x < FONT_WIDTH * scale; x++) {
+            uint64_t px = (uint64_t)col * FONT_WIDTH * scale + x, py = (uint64_t)row * FONT_HEIGHT * scale + y;
+            if (test_fb_pixels[py * TEST_FB_W + px] == fg) n++;
+        }
+    }
+    return n;
+}
+
+static FbCell test_cells[(TEST_FB_W / FONT_WIDTH) * (TEST_FB_H / FONT_HEIGHT)];
+
+static void init_with_cells(Framebuffer *fb) {
+    fb_console_init(fb);
+    if (fb_console_cells_bytes() != sizeof(test_cells)) abort();   /* test setup is wrong */
+    fb_console_attach_cells(test_cells);
+}
+
+TEST(fb_scroll_with_cells_moves_text) {
+    Framebuffer fb = make_test_fb();
+    init_with_cells(&fb);
+    fb_console_set_colors(0xFFFFFF, 0x000000);
+    uint32_t white = pack_color(0xFFFFFF);
+    fb_console_putchar('\n');
+    fb_console_putchar('A');            /* row 1 */
+    for (uint32_t r = 1; r < rows; r++) fb_console_putchar('\n');   /* one scroll */
     ASSERT_EQ(cur_row, rows - 1);
+    ASSERT_EQ(test_cells[0].ch, 'A');    /* moved up to row 0 */
+    ASSERT_EQ(test_cells[cols].ch, ' ');
+    ASSERT_TRUE(cell_fg_pixels(0, 0, white) > 0);
+    ASSERT_EQ(cell_fg_pixels(0, 1, white), 0);
+    return 0;
+}
+
+/* Scrolling redraws only cells that change: pixels of an unchanged cell are
+ * left as they are (proof that nothing is copied or read back) */
+TEST(fb_scroll_redraws_only_changes) {
+    Framebuffer fb = make_test_fb();
+    init_with_cells(&fb);
+    /* Rows 0 and 1 both blank: after a scroll row 0 is unchanged */
+    test_fb_pixels[0] = 0x12345678;
+    fb_console_set_cursor(0, rows - 1);
+    fb_console_putchar('\n');
+    ASSERT_EQ(test_fb_pixels[0], 0x12345678u);
+    return 0;
+}
+
+TEST(fb_scale_2x_on_large_screens) {
+    Framebuffer fb = make_test_fb();
+    static uint8_t big[2400 * 1350 * 4];
+    fb.address = big;
+    fb.width = 2400;
+    fb.height = 1350;
+    fb.pitch = 2400 * 4;
+    ASSERT_EQ(fb_console_init(&fb), 0);
+    ASSERT_EQ(scale, 2);
+    ASSERT_EQ(fb_console_cols(), 150);   /* 2400 / 16 */
+    ASSERT_EQ(fb_console_rows(), 42);    /* 1350 / 32 */
+    fb.width = 2399;
+    fb.pitch = 2399 * 4;
+    fb_console_init(&fb);
+    ASSERT_EQ(scale, 1);
+    return 0;
+}
+
+/* 24 bpp with a BGR channel order: colours follow the framebuffer's masks */
+TEST(fb_24bpp_bgr_masks) {
+    Framebuffer fb = make_test_fb();
+    fb.bpp = 24;
+    fb.pitch = TEST_FB_W * 3;
+    fb.red_mask_shift = 0;
+    fb.blue_mask_shift = 16;
+    ASSERT_EQ(fb_console_init(&fb), 0);
+    fb_console_write_row(0, "#", 0xFF0000, 0x0000FF);   /* red on blue */
+    uint8_t *p = (uint8_t *)test_fb_pixels;
+    /* Top-left pixel of '#' is background: blue = shift 16 = third byte */
+    ASSERT_EQ(p[0], 0x00);
+    ASSERT_EQ(p[1], 0x00);
+    ASSERT_EQ(p[2], 0xFF);
+    /* Somewhere in the glyph a red pixel: first byte */
+    int red = 0;
+    for (uint32_t y = 0; y < FONT_HEIGHT; y++)
+        for (uint32_t x = 0; x < FONT_WIDTH; x++) {
+            uint8_t *q = p + y * fb.pitch + x * 3;
+            if (q[0] == 0xFF && q[1] == 0 && q[2] == 0) red++;
+        }
+    ASSERT_TRUE(red > 0);
+    /* The pixel after the last column of a 24 bpp row is untouched */
+    ASSERT_EQ(p[TEST_FB_W * 3], 0);
+    return 0;
+}
+
+TEST(fb_write_row_pads_and_replaces) {
+    Framebuffer fb = make_test_fb();
+    init_with_cells(&fb);
+    fb_console_write_row(2, "ab\x01", 0xFFFFFF, 0x000000);
+    ASSERT_EQ(test_cells[2 * cols + 0].ch, 'a');
+    ASSERT_EQ(test_cells[2 * cols + 2].ch, '?');   /* control character */
+    ASSERT_EQ(test_cells[2 * cols + cols - 1].ch, ' ');
+    ASSERT_EQ(cur_row, 0);                           /* cursor untouched */
+    fb_console_write_row(rows, "x", 0, 0);           /* out of range: ignored */
+    return 0;
+}
+
+/* Collects the log lines log_lines() returns */
+static char got_lines[64][FB_MAX_LINE + 1];
+static uint32_t got_count;
+static void collect_line(uint32_t index, const char *text, uint32_t len, void *ctx) {
+    (void)index;
+    (void)ctx;
+    if (got_count < 64) {
+        memcpy(got_lines[got_count], text, len);
+        got_lines[got_count][len] = '\0';
+        got_count++;
+    }
+}
+
+TEST(fb_log_lines_filters_levels) {
+    const char a[] = "\nfb-test info\n", b[] = "fb-test debug\n", c[] = "fb-test err\n";
+    klog_write(6, a, sizeof(a) - 1);
+    klog_write(7, b, sizeof(b) - 1);
+    klog_write(3, c, sizeof(c) - 1);
+    uint32_t total = log_lines(0, 0, NULL, NULL);
+    ASSERT_TRUE(total >= 2);
+    got_count = 0;
+    log_lines(total - 2, 2, collect_line, NULL);
+    ASSERT_EQ(got_count, 2);
+    ASSERT_STR_EQ(got_lines[0], "fb-test info");   /* the debug line is above the console level */
+    ASSERT_STR_EQ(got_lines[1], "fb-test err");
+    return 0;
+}
+
+TEST(fb_scrollback_freezes_and_returns) {
+    Framebuffer fb = make_test_fb();
+    init_with_cells(&fb);
+    char line[32];
+    for (int i = 0; i < 40; i++) {
+        int n = ksnprintf(line, sizeof(line), "scroll line %d\n", i);
+        klog_write(6, line, (size_t)n);
+    }
+    fb_console_set_colors(0xFFFFFF, 0x000000);
+    uint32_t white = pack_color(0xFFFFFF);
+    fb_console_scrollback(1);
+    ASSERT_EQ(view_pages, 1);
+    /* Output while the view is open updates the cells, not the screen */
+    fb_console_set_cursor(0, rows - 1);
+    int before = cell_fg_pixels(0, rows - 1, white);
+    fb_console_putchar('W');
+    ASSERT_EQ(test_cells[(rows - 1) * cols].ch, 'W');
+    ASSERT_EQ(cell_fg_pixels(0, rows - 1, white), before);
+    fb_console_scrollback(-5);   /* clamps at the live screen and redraws it */
+    ASSERT_EQ(view_pages, 0);
+    ASSERT_TRUE(cell_fg_pixels(0, rows - 1, white) > 0);
+    fb_console_scrollback(1000);   /* clamps at the oldest page */
+    ASSERT_TRUE(view_pages >= 1);
+    ASSERT_TRUE(view_pages <= log_lines(0, 0, NULL, NULL) / (rows - 1));
+    fb_console_scrollback(-1000);
+    ASSERT_EQ(view_pages, 0);
+    return 0;
+}
+
+TEST(fb_panic_view_colours_and_freezes) {
+    Framebuffer fb = make_test_fb();
+    init_with_cells(&fb);
+    fb_console_panic_view();
+    ASSERT_EQ(test_fb_pixels[0], pack_color(0xFFFF00));                    /* banner */
+    ASSERT_EQ(test_fb_pixels[FONT_HEIGHT * TEST_FB_W], pack_color(0x8B0000));   /* row 1 background */
+    uint32_t snapshot = test_fb_pixels[(rows - 1) * FONT_HEIGHT * TEST_FB_W + 3];
+    fb_console_puts("\n\n\nafter the panic\n");
+    ASSERT_EQ(test_fb_pixels[(rows - 1) * FONT_HEIGHT * TEST_FB_W + 3], snapshot);
+    view_pages = 0;
     return 0;
 }
 
@@ -224,7 +398,15 @@ TestCase fb_console_tests[] = {
     TEST_ENTRY(fb_backspace),
     TEST_ENTRY(fb_backspace_at_start),
     TEST_ENTRY(fb_line_wrap),
-    TEST_ENTRY(fb_scroll),
+    TEST_ENTRY(fb_scroll_without_cells_wraps),
+    TEST_ENTRY(fb_scroll_with_cells_moves_text),
+    TEST_ENTRY(fb_scroll_redraws_only_changes),
+    TEST_ENTRY(fb_scale_2x_on_large_screens),
+    TEST_ENTRY(fb_24bpp_bgr_masks),
+    TEST_ENTRY(fb_write_row_pads_and_replaces),
+    TEST_ENTRY(fb_log_lines_filters_levels),
+    TEST_ENTRY(fb_scrollback_freezes_and_returns),
+    TEST_ENTRY(fb_panic_view_colours_and_freezes),
     TEST_ENTRY(fb_glyph_renders_pixels),
     TEST_ENTRY(fb_clear_resets),
     TEST_ENTRY(fb_puts_string),

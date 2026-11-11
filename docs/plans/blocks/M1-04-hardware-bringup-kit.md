@@ -55,3 +55,18 @@ screen, so hardware surprises show up before the rest of M1 is built on top.
   not read the DMAR table's x2APIC opt-out flag; if a test machine misbehaves with x2APIC, that flag is the first
   thing to check. The boot log shows `[APIC] x2APIC mode` / `xAPIC mode` and one `[SMP] CPU n (APIC a) online`
   line per AP. `kprintf` has no lock: only the BSP prints during SMP bring-up.
+- Built (PR for M1-04): kernel log ring (`lib/klog.c`, 16 KiB static then 256 KiB from the buddy allocator,
+  `/proc/kmsg`, `arc.loglevel=N`, hot-path messages at debug level); framebuffer console that never reads the
+  framebuffer (cell array, redraws changed cells only, 2x glyphs from 2400x1350, 24 bpp, mask-packed colours) with
+  Shift+PgUp/PgDn scrollback; panic screen with registers, CR2 and a symbolised backtrace (two-stage link,
+  `tools/gen-ksyms.py`, `.ksyms` section after `.rodata`, `--check` proves no function moved); boot report,
+  self-test and benchmark in `kernel/diag/` (`arc.report=1`, `arc.selftest=1`, `arc.bench=1`; init never starts);
+  bring-up stick `tools/make-iso.sh -B` / `cmake --build build --target iso-bringup` with a three-entry menu; guide
+  in `docs/hardware/bringup.md`, results template in `docs/perf/README.md`.
+- Decision (Michael, 2026-11-11): one AVX2 routine is allowed in the kernel, test-only (ADR-0003 Notes).
+- Verified in QEMU (TCG): BIOS and UEFI, booted as CD, SATA disk and USB stick (xHCI); the panic and report screens
+  were checked as screenshots. Not verified: real hardware (Michael's step), KVM-only paths (CI).
+- Open: the DMAR x2APIC opt-out is shown in the report but not acted on; serial runs at 9600 baud, so a console
+  owner printing a long burst holds that CPU for a while (the log never waits for it); `vmm.c`'s page walk ignores
+  2 MiB pages (M1-07). Fixed here: the PCI scan's multifunction check read the last table entry, which is another
+  device once the 64-entry table is full; it now reads the header type from the device.

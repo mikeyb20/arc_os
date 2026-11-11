@@ -66,6 +66,7 @@ int virtio_blk_init(void) {
     /* Register as a generic block device */
     virtio_blk_register_blkdev();
 
+    pci_set_driver(pci, "virtio-blk");   /* boot report (M1-04) */
     return 0;
 }
 

@@ -24,6 +24,9 @@
 #include "drivers/virtio_net.h"
 #include "net/net.h"
 #include "lib/kprintf.h"
+#include "lib/klog.h"
+#include "lib/panic.h"
+#include "diag/diag.h"
 #include "lib/mem.h"
 #include "lib/string.h"
 #include "fs/vfs.h"
@@ -39,7 +42,6 @@
 
 #include "drivers/ansi.h"
 #include "drivers/vt.h"
-#include "drivers/font8x16.h"
 
 /* Dual output: serial + ANSI parser → framebuffer */
 static void tty_dual_output(char c) {
@@ -59,6 +61,54 @@ static const char *memmap_type_name(uint32_t type) {
     case MEMMAP_FRAMEBUFFER:        return "Framebuffer";
     default:                        return "Unknown";
     }
+}
+
+/* arc.loglevel=N: the highest log level the consoles print (default 6, info) */
+static void klog_setup_level(void) {
+    char val[4];
+    if (cmdline_get(cmdline_raw(), "arc.loglevel", val, sizeof(val)) && val[0] >= '0' && val[0] <= '7') {
+        klog_set_console_level(val[0] - '0');
+    }
+}
+
+/* Move the kernel log from its 16 KiB boot buffer to 256 KiB from the page
+ * allocator (M1-04): kept for the life of the system, never freed. */
+static void klog_setup_buffer(void) {
+    struct page *pg = alloc_pages(KLOG_ORDER, GFP_KERNEL);
+    if (pg == NULL) {
+        kprintf("[KLOG] WARNING: no memory for the log ring, keeping 16 KiB\n");
+        return;
+    }
+    klog_set_buffer(page_to_virt(pg), KLOG_SIZE);
+}
+
+/* Test mode only (suite kpanic, arc.panic=fault): write to the unmapped page
+ * at 0 so the panic report shows a page fault, CR2 and this function by name
+ * in the backtrace. */
+static void __attribute__((noinline)) panic_test_fault(void) {
+    kprintf("[TEST] kpanic suite: page fault on purpose\n");
+    *(volatile uint64_t *)0x10 = 1;
+}
+
+/* Framebuffer console, when Limine gave a framebuffer. The cell array lets it
+ * scroll without reading the framebuffer back (slow on real hardware). */
+static void fb_setup(const BootInfo *info) {
+    if (!info->fb_present || fb_console_init(&info->framebuffer) != 0) return;
+    fb_console_attach_cells(kmalloc(fb_console_cells_bytes(), GFP_KERNEL));
+    kprintf_set_putchar_hook(fb_console_putchar);
+    panic_set_screen(fb_console_panic_view);
+    kprintf("[FB] Framebuffer console active (%lux%lu, %ux%u text)\n", info->framebuffer.width,
+            info->framebuffer.height, fb_console_cols(), fb_console_rows());
+}
+
+/* Boot report (M1-04): logged on every boot. arc.report, arc.selftest and
+ * arc.bench stop here and page it on screen instead of starting init. */
+static void diag_setup(const BootInfo *info) {
+    diag_report(info);
+    if (!diag_requested()) return;
+    hal_timer_init(100);
+    hal_enable_interrupts();
+    diag_run();
 }
 
 /* Test mode: budgets measured when init exits (testmode end hook) */
@@ -370,6 +420,7 @@ void kmain(void) {
     /* Kernel command line; arc.test=<suite> turns on test mode (M0-02) */
     cmdline_set(info->cmdline);
     testmode_init(info->cmdline);
+    klog_setup_level();
     kprintf("[BOOT] Command line: '%s'\n", cmdline_raw());
     if (testmode_active()) {
         kprintf("[TEST] Kernel test mode, suite '%s'\n", testmode_suite());
@@ -380,6 +431,7 @@ void kmain(void) {
     serial_puts("[BOOT] stage: CPU\n");
     cpu_features_init();   /* before the per-CPU block: it records the core type */
     cpu_floor_check(info);
+    hal_tsc_calibrate();   /* 50 ms against the PIT: boot report, self-test, benchmarks */
     serial_puts("[BOOT] stage: GDT, per-CPU, IDT\n");
     hal_cpu_init();   /* GS -> the BSP's per-CPU block: thread_current() works from here */
     serial_puts("[BOOT] stage: FPU\n");
@@ -392,22 +444,16 @@ void kmain(void) {
     vmm_init(info);
     serial_puts("[BOOT] stage: heap\n");
     kmalloc_init();
+    klog_setup_buffer();
     heap_self_test();
     pmm_self_test();
-    /* Initialize framebuffer console if available */
-    if (info->fb_present) {
-        if (fb_console_init(&info->framebuffer) == 0) {
-            kprintf_set_putchar_hook(fb_console_putchar);
-            kprintf("[FB] Framebuffer console active (%lux%lu)\n",
-                    info->framebuffer.width, info->framebuffer.height);
-        }
-    }
+    fb_setup(info);
 
     /* Initialize ANSI parser and VT subsystem */
     ansi_init();
-    if (info->fb_present) {
-        uint32_t vt_cols = (uint32_t)(info->framebuffer.width / FONT_WIDTH);
-        uint32_t vt_rows = (uint32_t)(info->framebuffer.height / FONT_HEIGHT);
+    if (info->fb_present && fb_console_cols() > 0) {
+        uint32_t vt_cols = fb_console_cols();
+        uint32_t vt_rows = fb_console_rows();
         vt_init(vt_cols, vt_rows);
         struct winsize ws = { .ws_row = (uint16_t)vt_rows, .ws_col = (uint16_t)vt_cols };
         tty_set_winsize(&ws);   /* TIOCGWINSZ reports the console's size */
@@ -449,11 +495,15 @@ void kmain(void) {
         }
     }
 
-    /* Test mode self-check: suite "kpanic" proves a panic ends the run at once */
+    /* Test mode self-check: suite "kpanic" proves a panic ends the run at once;
+     * with arc.panic=fault it is a real page fault instead (M1-04) */
     if (testmode_active() && strcmp(testmode_suite(), "kpanic") == 0) {
+        if (cmdline_get(cmdline_raw(), "arc.panic", NULL, 0)) panic_test_fault();
         kprintf("[TEST] kpanic suite: panicking on purpose\n");
         KERNEL_PANIC();
     }
+
+    diag_setup(info);
 
     /* Boot budgets (ADR-0019): memory left for user space and what the kernel took */
     if (testmode_active()) {

@@ -84,6 +84,14 @@ LIMINE_SECTION
 volatile struct limine_smp_request smp_request = {
     .id = LIMINE_SMP_REQUEST, .revision = 0, .response = NULL, .flags = LIMINE_SMP_X2APIC};
 
+/* SMBIOS entry points and firmware type, for the boot report (M1-04) */
+LIMINE_SECTION
+volatile struct limine_smbios_request smbios_request = {.id = LIMINE_SMBIOS_REQUEST, .revision = 0, .response = NULL};
+
+LIMINE_SECTION
+volatile struct limine_firmware_type_request firmware_type_request = {
+    .id = LIMINE_FIRMWARE_TYPE_REQUEST, .revision = 0, .response = NULL};
+
 LIMINE_SECTION
 volatile uint64_t limine_requests_end_marker[2] = {
     0xadc0e0531bb10d03, 0x9572709f31764c62

@@ -13,6 +13,7 @@ set(KERNEL_ASM_SOURCES
     arch/x86_64/context_switch.asm
     arch/x86_64/syscall_entry.asm
     arch/x86_64/usermode.asm
+    arch/x86_64/selftest_avx2.asm
 )
 
 # --- C sources ---
@@ -23,6 +24,9 @@ set(KERNEL_C_SOURCES
     lib/mem.c
     lib/string.c
     lib/kprintf.c
+    lib/klog.c
+    lib/ksyms.c
+    lib/panic.c
     lib/cmdline.c
     lib/testmode.c
     arch/x86_64/debug_exit.c
@@ -32,6 +36,7 @@ set(KERNEL_C_SOURCES
     arch/x86_64/isr.c
     arch/x86_64/pic.c
     arch/x86_64/pit.c
+    arch/x86_64/tsc.c
     mm/pmm.c
     mm/vmm.c
     mm/uaccess.c
@@ -61,6 +66,7 @@ set(KERNEL_C_SOURCES
     proc/condvar.c
     drivers/acpi.c
     drivers/pci.c
+    drivers/smbios.c
     drivers/virtio.c
     drivers/virtio_blk.c
     drivers/blkdev.c
@@ -93,23 +99,32 @@ set(KERNEL_C_SOURCES
     net/loopback.c
     security/hardening.c
     drivers/virtio_net.c
+    diag/report.c
+    diag/selftest.c
+    diag/bench.c
 )
 
 set(KERNEL_SOURCES ${KERNEL_ASM_SOURCES} ${KERNEL_C_SOURCES})
 
 # Only build kernel.elf when there are source files
 if(KERNEL_SOURCES)
-    add_executable(kernel.elf ${KERNEL_SOURCES})
+    # Every kernel object is compiled once and linked twice (M1-04): the first
+    # link gives the function addresses for the panic backtrace's symbol table,
+    # the second adds that table in its own section after .rodata, so no
+    # function moves (tools/gen-ksyms.py --check proves it on every build).
+    add_library(kernel_objs OBJECT ${KERNEL_SOURCES})
 
     # NASM flags
-    target_compile_options(kernel.elf PRIVATE
+    target_compile_options(kernel_objs PRIVATE
         $<$<COMPILE_LANGUAGE:ASM_NASM>:-f elf64>
     )
 
     # Kernel C never touches x87/SSE/AVX registers: they hold the running
     # thread's user state, saved only at context switch (ADR-0003, fpu.h).
-    target_compile_options(kernel.elf PRIVATE
-        $<$<COMPILE_LANGUAGE:C>:-mgeneral-regs-only>
+    # Frame pointers stay on at every optimisation level: the panic screen
+    # walks them for its backtrace (M1-04).
+    target_compile_options(kernel_objs PRIVATE
+        $<$<COMPILE_LANGUAGE:C>:-mgeneral-regs-only -fno-omit-frame-pointer>
     )
 
     # Debug checks (ARC_DEBUG=1): slab red zones, poison and double-free
@@ -117,26 +132,48 @@ if(KERNEL_SOURCES)
     # development; a release build turns it off with -DARC_KERNEL_DEBUG=OFF.
     option(ARC_KERNEL_DEBUG "Build the kernel with debug checks" ON)
     if(ARC_KERNEL_DEBUG)
-        target_compile_definitions(kernel.elf PRIVATE ARC_DEBUG=1)
+        target_compile_definitions(kernel_objs PRIVATE ARC_DEBUG=1)
     else()
-        target_compile_definitions(kernel.elf PRIVATE ARC_DEBUG=0)
+        target_compile_definitions(kernel_objs PRIVATE ARC_DEBUG=0)
     endif()
 
     # Include the kernel root so headers use paths like "mm/pmm.h"
-    target_include_directories(kernel.elf PRIVATE
+    target_include_directories(kernel_objs PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/include
     )
 
-    # Linker flags — freestanding, use our linker script
-    set_target_properties(kernel.elf PROPERTIES
-        LINK_FLAGS "-nostdlib -T ${CMAKE_CURRENT_SOURCE_DIR}/arch/x86_64/linker.ld"
-    )
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    set(_gen_ksyms ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/gen-ksyms.py --nm ${CMAKE_NM})
+    set(_ksyms_empty ${CMAKE_CURRENT_BINARY_DIR}/ksyms_empty.c)
+    set(_ksyms ${CMAKE_CURRENT_BINARY_DIR}/ksyms.c)
+    add_custom_command(OUTPUT ${_ksyms_empty}
+        COMMAND ${_gen_ksyms} --empty --out ${_ksyms_empty}
+        DEPENDS ${CMAKE_SOURCE_DIR}/tools/gen-ksyms.py
+        COMMENT "Generating the empty kernel symbol table")
 
-    # Copy kernel.elf to build root for ISO creation
+    set(_kernel_link_flags "-nostdlib -T ${CMAKE_CURRENT_SOURCE_DIR}/arch/x86_64/linker.ld")
+
+    add_executable(kernel_stage1.elf $<TARGET_OBJECTS:kernel_objs> ${_ksyms_empty})
+    set_target_properties(kernel_stage1.elf PROPERTIES LINK_FLAGS "${_kernel_link_flags}"
+        LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/arch/x86_64/linker.ld)
+
+    add_custom_command(OUTPUT ${_ksyms}
+        COMMAND ${_gen_ksyms} --out ${_ksyms} $<TARGET_FILE:kernel_stage1.elf>
+        DEPENDS kernel_stage1.elf ${CMAKE_SOURCE_DIR}/tools/gen-ksyms.py
+        COMMENT "Generating the kernel symbol table")
+
+    add_executable(kernel.elf $<TARGET_OBJECTS:kernel_objs> ${_ksyms})
+    target_include_directories(kernel_stage1.elf PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_include_directories(kernel.elf PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    set_target_properties(kernel.elf PROPERTIES LINK_FLAGS "${_kernel_link_flags}"
+        LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/arch/x86_64/linker.ld)
+
+    # Check no function moved, then copy kernel.elf to the build root for the ISO
     add_custom_command(TARGET kernel.elf POST_BUILD
+        COMMAND ${_gen_ksyms} --check $<TARGET_FILE:kernel_stage1.elf> $<TARGET_FILE:kernel.elf>
         COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:kernel.elf> ${CMAKE_BINARY_DIR}/kernel.elf
-        COMMENT "Copying kernel.elf to build directory"
+        COMMENT "Checking symbol addresses and copying kernel.elf to build directory"
     )
 else()
     message(STATUS "No kernel sources yet — skipping kernel.elf target")

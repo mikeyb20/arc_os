@@ -6,6 +6,7 @@
 #include "arch/x86_64/isr.h"
 #include "arch/x86_64/lapic.h"
 #include "arch/x86_64/percpu.h"
+#include "arch/x86_64/cpuid.h"
 #include "lib/kprintf.h"
 
 /* TLB shootdown handler — flush TLB on this CPU */
@@ -35,10 +36,41 @@ static void ipi_halt_handler(InterruptFrame *frame) {
     for (;;) __asm__ volatile ("hlt");
 }
 
+/* ipi_call_others: the function to run and how many CPUs finished it */
+static void (*call_fn)(void *arg);
+static void *call_arg;
+static uint32_t call_done;
+
+static void ipi_call_handler(InterruptFrame *frame) {
+    (void)frame;
+    void (*fn)(void *) = __atomic_load_n(&call_fn, __ATOMIC_ACQUIRE);
+    if (fn != NULL) {
+        fn(call_arg);
+        __atomic_add_fetch(&call_done, 1, __ATOMIC_SEQ_CST);
+    }
+    lapic_eoi();
+}
+
+uint32_t ipi_call_others(void (*fn)(void *arg), void *arg, uint64_t max_cycles) {
+    if (cpu_count <= 1) return 0;
+    call_arg = arg;
+    __atomic_store_n(&call_done, 0, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&call_fn, fn, __ATOMIC_RELEASE);   /* publishes call_arg */
+    lapic_send_ipi_all_excluding_self(IPI_VEC_CALL);
+
+    uint64_t start = cpu_rdtsc();
+    while (__atomic_load_n(&call_done, __ATOMIC_SEQ_CST) < cpu_count - 1 && cpu_rdtsc() - start < max_cycles) {
+        __asm__ volatile("pause");
+    }
+    __atomic_store_n(&call_fn, NULL, __ATOMIC_RELEASE);   /* a late CPU runs nothing */
+    return __atomic_load_n(&call_done, __ATOMIC_SEQ_CST);
+}
+
 void ipi_init(void) {
     isr_register_handler(IPI_VEC_TLB_SHOOTDOWN, ipi_tlb_handler);
     isr_register_handler(IPI_VEC_SCHEDULE, ipi_schedule_handler);
     isr_register_handler(IPI_VEC_HALT, ipi_halt_handler);
+    isr_register_handler(IPI_VEC_CALL, ipi_call_handler);
 
     kprintf("[IPI] Handlers registered (TLB=0x%x, Sched=0x%x, Halt=0x%x)\n",
             IPI_VEC_TLB_SHOOTDOWN, IPI_VEC_SCHEDULE, IPI_VEC_HALT);

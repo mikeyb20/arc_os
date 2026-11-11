@@ -11,9 +11,12 @@ Kernel and user space are separate worlds: the same function in `kernel/lib` and
 |---|---|---|
 | Memory copy, fill, compare | `memcpy`, `memset`, `memmove`, `memcmp` | `kernel/lib/mem.h` |
 | Strings | `strlen`, `strcmp`, `strncmp`, `strncpy`, `strchr` | `kernel/lib/string.h` |
-| Formatted output | `kprintf` | `kernel/lib/kprintf.h` |
+| Formatted output, log levels, format into a buffer | `kprintf`, `kprintf_level`, `kdebug` (hot paths), `ksnprintf`, `kvsnprintf` | `kernel/lib/kprintf.h` |
+| Kernel log ring (`/proc/kmsg` text), console owner | `klog_read`, `klog_tail`, `klog_head`, `klog_console_try_acquire` / `_release`, `klog_set_console_level` | `kernel/lib/klog.h` |
 | Kernel command line | `cmdline_get`, `cmdline_raw` | `kernel/lib/cmdline.h` |
-| Test mode, panic stop | `testmode_*`, `kernel_panic_halt` | `kernel/lib/testmode.h` |
+| Test mode | `testmode_*` | `kernel/lib/testmode.h` |
+| Panic stop with report and screen | `KERNEL_PANIC()` (`kernel/lib/kprintf.h`); exception paths: `panic_begin`, `panic_report`, `hal_panic_capture` | `kernel/lib/panic.h` |
+| Kernel address to function name | `ksym_lookup` | `kernel/lib/ksyms.h` |
 | Budget metric (CI) | `ARC_BUDGET(name, value)` | `kernel/lib/budget.h` |
 | Path clean-up (`.`, `..`, cwd) | `path_normalize` | `kernel/fs/path.h` |
 | Physical ↔ virtual (HHDM) | `vmm_get_hhdm_offset()` (+ phys) | `kernel/mm/vmm.h` |
@@ -35,7 +38,15 @@ Kernel and user space are separate worlds: the same function in `kernel/lib` and
 | Per-CPU block (GS), running thread, entry stacks | `this_cpu`, `percpu_get`, `percpu_index_of_apic`; portable code: `hal_current_thread`, `hal_set_kernel_stack` | `kernel/arch/x86_64/percpu.h` (via `arch/hal.h`) |
 | Local APIC (xAPIC or x2APIC): EOI, IPIs, ID | `lapic_eoi`, `lapic_send_ipi`, `lapic_id`, `lapic_x2apic` | `kernel/arch/x86_64/lapic.h` |
 | Start another CPU (bootloader-neutral) | `boot_start_cpu` | `kernel/boot/bootinfo.h` |
-| Time-stamp counter (raw cycles) | `cpu_rdtsc` | `kernel/arch/x86_64/cpuid.h` |
+| Time-stamp counter (raw cycles) | `cpu_rdtsc`; portable code: `hal_tsc_read` | `kernel/arch/x86_64/cpuid.h`, `kernel/arch/hal.h` |
+| TSC frequency and cycles to ns (boot calibration) | `hal_tsc_info`, `hal_tsc_to_ns` (`tsc_info`, `tsc_cycles_to_ns`) | `kernel/arch/hal.h` (`arch/x86_64/tsc.h`) |
+| Busy-wait hint in a time-bounded loop | `hal_cpu_relax` | `kernel/arch/hal.h` |
+| Run a function on every other CPU (bounded wait) | `hal_run_on_other_cpus` (`ipi_call_others`) | `kernel/arch/hal.h` (`arch/x86_64/ipi.h`) |
+| CPU brand, signature, feature names | `hal_cpu_brand`, `hal_cpu_signature`, `hal_cpu_feature_names` (`cpu_brand`, `cpu_feature_names`) | `kernel/arch/hal.h` |
+| Machine maker and model (SMBIOS) | `smbios_read` | `kernel/drivers/smbios.h` |
+| PCI driver binding, class names | `pci_set_driver`, `pci_class_name` | `kernel/drivers/pci.h` |
+| One screen row of text (pagers, banners) | `fb_console_write_row` | `kernel/drivers/fb_console.h` |
+| Boot report line, TSC-timed delay (diagnostic mode) | `diag_line`, `diag_delay_ms` | `kernel/diag/diag.h` |
 | CPU features, x86-64-v3 floor, core type | `cpu_features`, `cpu_floor_missing`, `cpu_core_type_detect`, `cpu_describe` | `kernel/arch/x86_64/cpu.h` (via `arch/hal.h`) |
 | Signal actions and masks (rt_sigaction, fork, execve) | `sig_set_action`, `sig_fork_copy`, `sig_exec_reset` | `kernel/proc/signal.h` |
 | Linux ABI values and structs | `__NR_*`, errno, flags, `struct stat`, ... | `kernel/include/uapi/` |

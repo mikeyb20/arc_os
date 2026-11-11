@@ -14,10 +14,8 @@ void icmp_rx(struct NetIf *nif, uint32_t src_ip, const void *data, uint32_t len)
     if (net_checksum(data, len) != 0) return;
 
     if (hdr->type == ICMP_TYPE_ECHO_REQUEST && hdr->code == 0) {
-        kprintf("[ICMP] Echo request from %d.%d.%d.%d (id=%u seq=%u)\n",
-                src_ip & 0xFF, (src_ip >> 8) & 0xFF,
-                (src_ip >> 16) & 0xFF, (src_ip >> 24) & 0xFF,
-                ntohs(hdr->id), ntohs(hdr->sequence));
+        kdebug("[ICMP] Echo request from %d.%d.%d.%d (id=%u seq=%u)\n", src_ip & 0xFF, (src_ip >> 8) & 0xFF,
+               (src_ip >> 16) & 0xFF, (src_ip >> 24) & 0xFF, ntohs(hdr->id), ntohs(hdr->sequence));
 
         /* Build echo reply: same id, sequence, and payload data */
         uint8_t reply[ETH_MTU];
@@ -37,6 +35,6 @@ void icmp_rx(struct NetIf *nif, uint32_t src_ip, const void *data, uint32_t len)
         rhdr->checksum = htons(net_checksum(reply, ICMP_HEADER_SIZE + payload_len));
 
         ipv4_send(nif, src_ip, IPV4_PROTO_ICMP, reply, ICMP_HEADER_SIZE + payload_len);
-        kprintf("[ICMP] Echo reply sent\n");
+        kdebug("[ICMP] Echo reply sent\n");
     }
 }

@@ -46,11 +46,3 @@ void testmode_exit(int code) {
     /* No isa-debug-exit device (real hardware, plain QEMU): just stop. */
     for (;;) __asm__ volatile ("cli; hlt");
 }
-
-void kernel_panic_halt(void) {
-    if (g_active) {
-        kprintf("ARC_TEST PANIC suite=%s\n", g_suite);
-        testmode_exit(TESTMODE_PANIC_CODE);
-    }
-    for (;;) __asm__ volatile ("cli; hlt");
-}

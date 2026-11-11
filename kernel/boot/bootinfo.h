@@ -54,6 +54,12 @@ typedef struct {
 /* CPUs the bootloader found and can start (BootInfo.cpus) */
 #define BOOTINFO_MAX_CPUS 256
 
+/* How the machine booted (BootInfo.firmware) */
+#define BOOT_FIRMWARE_UNKNOWN 0
+#define BOOT_FIRMWARE_BIOS    1
+#define BOOT_FIRMWARE_UEFI32  2
+#define BOOT_FIRMWARE_UEFI64  3
+
 /* Bootloader-agnostic boot information. */
 typedef struct {
     MemoryMapEntry memory_map[BOOTINFO_MAX_MEMMAP_ENTRIES];
@@ -70,6 +76,9 @@ typedef struct {
     uint32_t cpu_apic_ids[BOOTINFO_MAX_CPUS];  /* every CPU, BSP included */
     uint32_t cpu_count;                        /* 0: no SMP information */
     uint32_t bsp_apic_id;
+    uint64_t smbios_entry32;   /* physical address of the SMBIOS 2.x entry point, 0 if none */
+    uint64_t smbios_entry64;   /* physical address of the SMBIOS 3.x entry point, 0 if none */
+    uint32_t firmware;         /* BOOT_FIRMWARE_* */
 } BootInfo;
 
 /* Parse bootloader data into a BootInfo struct.

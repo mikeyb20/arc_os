@@ -33,6 +33,23 @@ static void pic_send_eoi(uint8_t irq) {
 static int test_lapic_eoi_called;
 static void lapic_eoi(void) { test_lapic_eoi_called++; }
 
+/* Panic path stand-ins: no test raises an unhandled exception */
+#include <stdlib.h>
+#include "../kernel/lib/panic.h"
+static int stub_panic_begin(void) {
+    return 1;
+}
+static void stub_panic_report(const PanicInfo *pi) {
+    (void)pi;
+    abort();
+}
+static void stub_panic_halt(void) {
+    abort();
+}
+#define panic_begin  stub_panic_begin
+#define panic_report stub_panic_report
+#define panic_halt   stub_panic_halt
+
 /* Include the real ISR implementation */
 #include "../kernel/arch/x86_64/isr.c"
 

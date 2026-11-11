@@ -59,7 +59,8 @@ arc_os/
 │   ├── include/          # Freestanding C headers + limine.h
 │   ├── net/              # Network stack (ethernet, arp, ipv4, icmp, udp, tcp, socket, loopback)
 │   ├── security/         # Hardening (stack canaries, guard pages)
-│   └── lib/              # Kernel utility library (mem, string, kprintf)
+│   ├── diag/             # Bring-up diagnostics: boot report, self-test, benchmark (arc.report/selftest/bench)
+│   └── lib/              # Kernel utility library (mem, string, kprintf, klog ring, panic, ksyms)
 ├── libc/                 # Minimal C library (libarc.a) for user-space programs
 │   ├── include/          # POSIX-compatible headers (stdio.h, stdlib.h, unistd.h, etc.)
 │   └── src/              # CRT0, string, printf, malloc, syscall wrappers
@@ -78,7 +79,7 @@ arc_os/
 ├── cmake/                # Shared CMake snippets
 ├── tools/                # Dev setup, ISO, QEMU test runner, hygiene/budget/syscall checks, lane/
 ├── tests/                # Host unit tests (`ctest -L host`), QEMU suites (`-L qemu`), target programs
-├── docs/                 # plans/ (master plan, work blocks), decisions/ (ADRs), kernel/ (budgets, helpers)
+├── docs/                 # plans/ (master plan, work blocks), decisions/ (ADRs), kernel/ (budgets, helpers), hardware/, perf/
 └── CMakeLists.txt
 ```
 

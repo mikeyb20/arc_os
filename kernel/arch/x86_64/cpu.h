@@ -23,8 +23,20 @@ typedef struct {
     uint32_t ext1_ecx;       /* leaf 0x80000001 */
     uint32_t ext1_edx;
     uint32_t ext7_edx;       /* leaf 0x80000007 (invariant TSC etc.) */
+    uint32_t l6_eax;         /* leaf 6 (thermal/power: HWP) */
+    uint32_t l7s1_eax;       /* leaf 7, subleaf 1 (AVX-VNNI) */
     char vendor[13];     /* "GenuineIntel", "AuthenticAMD", ... */
 } CpuFeatures;
+
+/* The CPU's brand string ("Intel(R) Core(TM) Ultra 7 255H"), or "" if none. */
+void cpu_brand(char *buf, size_t size);
+
+/* Display family, model and stepping from CPUID 1. */
+void cpu_signature(uint32_t *family, uint32_t *model, uint32_t *stepping);
+
+/* Names of the notable features this CPU has (AVX2, AVX512F, x2APIC, HWP,
+ * HYBRID, ...), space separated, for the boot report. */
+void cpu_feature_names(char *buf, size_t size);
 
 /* Core types from CPUID 0x1A EAX[31:24] (hybrid parts only) */
 #define CPU_CORE_UNKNOWN 0x00   /* not a hybrid part, or no leaf 0x1A */

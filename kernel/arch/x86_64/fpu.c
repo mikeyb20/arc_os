@@ -250,3 +250,21 @@ void arch_set_fs_base(uint64_t base) {
     wrmsr(MSR_FS_BASE, base);
     irq_restore(flags);
 }
+
+/* The AVX2 routine in selftest_avx2.asm (M1-04) */
+extern uint32_t selftest_avx2_sum(const uint32_t *buf, uint64_t count);
+
+int fpu_avx2_selftest(const uint32_t *buf, uint64_t count, uint32_t *sum, uint64_t *xcr0_out) {
+    uint64_t cr4;
+    __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
+    uint64_t here = 0;
+    if (cr4 & CR4_OSXSAVE) {
+        uint32_t lo, hi;
+        __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+        here = ((uint64_t)hi << 32) | lo;
+    }
+    *xcr0_out = here;
+    if (here != xcr0 || (here & (XFEATURE_SSE | XFEATURE_AVX)) != (XFEATURE_SSE | XFEATURE_AVX)) return -1;
+    *sum = selftest_avx2_sum(buf, count);
+    return 0;
+}

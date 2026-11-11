@@ -1,0 +1,2 @@
+# qemu.diag: arc.report / arc.selftest / arc.bench run in the kernel and end the
+# run themselves (ARC_TEST DONE from kernel/diag/report.c); init never starts.

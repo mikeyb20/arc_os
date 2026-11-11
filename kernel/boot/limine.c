@@ -9,6 +9,8 @@ extern volatile struct limine_hhdm_request            hhdm_request;
 extern volatile struct limine_framebuffer_request     framebuffer_request;
 extern volatile struct limine_kernel_address_request  kernel_address_request;
 extern volatile struct limine_rsdp_request            rsdp_request;
+extern volatile struct limine_smbios_request smbios_request;
+extern volatile struct limine_firmware_type_request firmware_type_request;
 extern volatile struct limine_module_request          module_request;
 extern volatile struct limine_kernel_file_request     kernel_file_request;
 extern volatile struct limine_smp_request smp_request;
@@ -44,6 +46,40 @@ int boot_start_cpu(uint32_t i, boot_cpu_entry_t entry, uint64_t arg) {
     /* The store to goto_address releases the CPU: everything above must be visible first */
     __atomic_store_n(&cpu->goto_address, boot_cpu_trampoline, __ATOMIC_SEQ_CST);
     return 0;
+}
+
+/* Firmware type and SMBIOS entry points (M1-04, both optional). With API
+ * revision 0 the SMBIOS pointers may be HHDM pointers or physical addresses
+ * depending on the Limine version: anything at or above the HHDM offset is a
+ * pointer. Needs info->hhdm_offset. */
+static void bootinfo_firmware(BootInfo *info) {
+    struct limine_smbios_response *smb = smbios_request.response;
+    if (smb != NULL) {
+        uint64_t e32 = (uint64_t)(uintptr_t)smb->entry_32;
+        uint64_t e64 = (uint64_t)(uintptr_t)smb->entry_64;
+        if (e32 >= info->hhdm_offset) e32 -= info->hhdm_offset;
+        if (e64 >= info->hhdm_offset) e64 -= info->hhdm_offset;
+        info->smbios_entry32 = e32;
+        info->smbios_entry64 = e64;
+    }
+
+    struct limine_firmware_type_response *fw = firmware_type_request.response;
+    info->firmware = BOOT_FIRMWARE_UNKNOWN;
+    if (fw != NULL) {
+        switch (fw->firmware_type) {
+        case LIMINE_FIRMWARE_TYPE_X86BIOS:
+            info->firmware = BOOT_FIRMWARE_BIOS;
+            break;
+        case LIMINE_FIRMWARE_TYPE_UEFI32:
+            info->firmware = BOOT_FIRMWARE_UEFI32;
+            break;
+        case LIMINE_FIRMWARE_TYPE_UEFI64:
+            info->firmware = BOOT_FIRMWARE_UEFI64;
+            break;
+        default:
+            break;
+        }
+    }
 }
 
 const BootInfo *bootinfo_init(void) {
@@ -105,6 +141,8 @@ const BootInfo *bootinfo_init(void) {
         uint64_t virt = (uint64_t)(uintptr_t)rsdp->address;
         g_boot_info.acpi_rsdp = virt - g_boot_info.hhdm_offset;
     }
+
+    bootinfo_firmware(&g_boot_info);
 
     /* Boot modules (init binary, etc.) */
     struct limine_module_response *mod_resp = module_request.response;

@@ -113,6 +113,10 @@ PerCpu *percpu_alloc(uint32_t index, uint32_t apic_id) {
     return c;
 }
 
+uint32_t percpu_current_index(void) {
+    return percpu_table[0] != NULL ? this_cpu()->cpu_index : 0;
+}
+
 PerCpu *percpu_get(uint32_t index) {
     return index < MAX_CPUS ? percpu_table[index] : NULL;
 }

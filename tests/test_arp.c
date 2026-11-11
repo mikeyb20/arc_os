@@ -73,7 +73,10 @@ static int eth_send(struct NetIf *nif, const uint8_t dst[ETH_ALEN],
     return 0;
 }
 
-static void kprintf(const char *fmt, ...) { (void)fmt; }
+static inline void kprintf(const char *fmt, ...) {
+    (void)fmt;
+}
+#define kdebug(...) ((void)0)
 
 /* Include arp.c */
 #include "../kernel/net/arp.c"

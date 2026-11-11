@@ -5,6 +5,8 @@ add_executable(test_runner
     test_mem.c
     test_pmm.c
     test_kprintf.c
+    test_panic.c
+    test_smbios.c
     test_kmalloc.c
     test_isr.c
     test_thread.c
@@ -133,6 +135,8 @@ add_test(NAME test_arc_string  COMMAND test_runner --suite arc_string)
 add_test(NAME test_arc_printf  COMMAND test_runner --suite arc_printf)
 add_test(NAME test_ansi        COMMAND test_runner --suite ansi)
 add_test(NAME test_cmdline     COMMAND test_runner --suite cmdline)
+add_test(NAME test_panic       COMMAND test_runner --suite panic)
+add_test(NAME test_smbios      COMMAND test_runner --suite smbios)
 set_tests_properties(test_fat32 PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 set_tests_properties(arc_os_tests PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 

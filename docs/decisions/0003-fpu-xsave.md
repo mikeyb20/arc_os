@@ -25,3 +25,10 @@ high-tier laptop). A fixed 512-byte FXSAVE area cannot hold AVX or AVX-512 state
 ## Verification
 - QEMU test: N threads each fill YMM registers with a unique pattern, yield in a loop, and check the pattern survives.
 - Run with `-cpu max` and with a v3-level CPU model.
+
+## Notes
+- **2026-11-11, M1-04 (Michael's OK on the block's decision card):** one exception to "no SSE/AVX inside the
+  kernel". `selftest_avx2_sum` (`kernel/arch/x86_64/selftest_avx2.asm`) sums a buffer with AVX2 on each CPU for the
+  hardware self-test. It runs only with `arc.selftest=1`, in diagnostic mode, where `init` never starts, so no
+  user thread exists on any CPU and there is no user state to clobber; it ends with `vzeroall`. It is the only
+  name `tools/no-simd-check.py` allows. Any other SIMD in the kernel still needs a new ADR.

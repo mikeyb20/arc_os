@@ -9,6 +9,8 @@
 #include "arch/x86_64/pic.h"
 #include "arch/x86_64/io.h"
 #include "lib/kprintf.h"
+#include "lib/klog.h"
+#include "drivers/fb_console.h"
 
 #define KB_DATA_PORT 0x60
 
@@ -48,6 +50,9 @@ static volatile int shift_held;
 static volatile int ctrl_held;
 static volatile int alt_held;
 static volatile int caps_lock;
+static volatile int extended;   /* the last byte was the E0 prefix */
+static volatile uint32_t key_count;   /* key presses since boot (M1-04 pager) */
+static volatile int grabbed;          /* keys are counted, not sent to the TTY */
 
 /* Scancode constants for modifiers */
 #define SC_LSHIFT_PRESS   0x2A
@@ -61,6 +66,8 @@ static volatile int caps_lock;
 #define SC_CAPS_PRESS     0x3A
 #define SC_EXTENDED_PREFIX  0xE0
 #define SC_RELEASE_BIT      0x80
+#define SC_EXT_PGUP         0x49   /* after E0 */
+#define SC_EXT_PGDN         0x51
 
 /* F1-F6 scancodes */
 #define SC_F1  0x3B
@@ -70,12 +77,36 @@ static volatile int caps_lock;
 #define SC_F5  0x3F
 #define SC_F6  0x40
 
+/* Shift+PgUp / Shift+PgDn: scroll the kernel log on screen (M1-04). Needs the
+ * console, like the log drain; if another context is printing, the key is
+ * dropped. */
+static void keyboard_scrollback(int pages) {
+    if (klog_console_try_acquire()) {
+        fb_console_scrollback(pages);
+        klog_console_release();
+    }
+}
+
 static void keyboard_irq_handler(InterruptFrame *frame) {
     (void)frame;
     uint8_t scancode = inb(KB_DATA_PORT);
 
-    /* Ignore extended prefix for now */
-    if (scancode == SC_EXTENDED_PREFIX) return;
+    /* Extended keys (E0 xx) other than these are handled like their plain
+     * twins, as before (right Ctrl, right Alt, keypad Enter) */
+    if (scancode == SC_EXTENDED_PREFIX) {
+        extended = 1;
+        return;
+    }
+    if (extended) {
+        extended = 0;
+        uint8_t key = scancode & (uint8_t)~SC_RELEASE_BIT;
+        /* E0 2A / E0 36 are fake shifts keyboards send around PgUp/PgDn */
+        if (key == SC_LSHIFT_PRESS || key == SC_RSHIFT_PRESS) return;
+        if (key == SC_EXT_PGUP || key == SC_EXT_PGDN) {
+            if (shift_held && key == scancode) keyboard_scrollback(key == SC_EXT_PGUP ? 1 : -1);
+            return;
+        }
+    }
 
     /* Handle modifier key press/release */
     switch (scancode) {
@@ -107,6 +138,9 @@ static void keyboard_irq_handler(InterruptFrame *frame) {
     /* Ignore key releases (bit 7 set) */
     if (scancode & SC_RELEASE_BIT) return;
 
+    key_count++;
+    if (grabbed) return;
+
     /* Alt+F1-F6: VT switching */
     if (alt_held) {
         if (scancode >= SC_F1 && scancode <= SC_F6) {
@@ -130,11 +164,20 @@ static void keyboard_irq_handler(InterruptFrame *frame) {
     }
 }
 
+uint32_t keyboard_key_count(void) {
+    return key_count;
+}
+
+void keyboard_grab(int on) {
+    grabbed = on;
+}
+
 void keyboard_init(void) {
     shift_held = 0;
     ctrl_held = 0;
     alt_held = 0;
     caps_lock = 0;
+    extended = 0;
 
     /* Register IRQ 1 handler (vector 33) — follows PIT pattern */
     isr_register_handler(IRQ_BASE + 1, keyboard_irq_handler);

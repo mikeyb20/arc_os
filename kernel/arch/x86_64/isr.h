@@ -2,6 +2,7 @@
 #define ARCHOS_ARCH_X86_64_ISR_H
 
 #include <stdint.h>
+#include "lib/panic.h"
 
 /* Number of ISR vectors */
 #define ISR_COUNT 256
@@ -44,5 +45,10 @@ void isr_dispatch(InterruptFrame *frame);
 
 /* Set APIC mode: when true, isr_dispatch sends LAPIC EOI instead of PIC EOI. */
 void isr_set_apic_mode(int enabled);
+
+/* Fill a panic report (lib/panic.h PanicInfo) for a panic raised by code, not
+ * by an exception: CPU index, RSP, RBP, RFLAGS, CR3 and a backtrace starting
+ * at frame_address (the caller's __builtin_frame_address(0)). */
+void arch_panic_capture(PanicInfo *pi, void *frame_address);
 
 #endif /* ARCHOS_ARCH_X86_64_ISR_H */

@@ -30,6 +30,8 @@ volatile struct limine_rsdp_request           rsdp_request;
 volatile struct limine_module_request        module_request;
 volatile struct limine_kernel_file_request   kernel_file_request;
 volatile struct limine_smp_request smp_request;
+volatile struct limine_smbios_request smbios_request;
+volatile struct limine_firmware_type_request firmware_type_request;
 
 /* Include the real limine.c */
 #include "../kernel/boot/limine.c"
@@ -69,6 +71,8 @@ static void reset_bootinfo_state(void) {
     framebuffer_request.response = NULL;
     kernel_address_request.response = NULL;
     rsdp_request.response = NULL;
+    smbios_request.response = NULL;
+    firmware_type_request.response = NULL;
     module_request.response = NULL;
     kernel_file_request.response = NULL;
 }
@@ -232,6 +236,32 @@ TEST(rsdp_present) {
     return 0;
 }
 
+/* M1-04: SMBIOS entry points come as HHDM pointers or physical addresses;
+ * both end up physical. The firmware type maps to BOOT_FIRMWARE_*. */
+TEST(smbios_and_firmware) {
+    reset_bootinfo_state();
+    static struct limine_smbios_response smb;
+    static struct limine_firmware_type_response fw;
+    smb.entry_32 = (void *)(uintptr_t)(0xFFFF800000000000ULL + 0xF0000);   /* HHDM pointer */
+    smb.entry_64 = (void *)(uintptr_t)0x7F000000ULL;                        /* physical */
+    smbios_request.response = &smb;
+    fw.firmware_type = LIMINE_FIRMWARE_TYPE_UEFI64;
+    firmware_type_request.response = &fw;
+    const BootInfo *info = bootinfo_init();
+    ASSERT_TRUE(info != NULL);
+    ASSERT_EQ(info->smbios_entry32, 0xF0000);
+    ASSERT_EQ(info->smbios_entry64, 0x7F000000ULL);
+    ASSERT_EQ(info->firmware, BOOT_FIRMWARE_UEFI64);
+    fw.firmware_type = LIMINE_FIRMWARE_TYPE_X86BIOS;
+    ASSERT_EQ(bootinfo_init()->firmware, BOOT_FIRMWARE_BIOS);
+    smbios_request.response = NULL;
+    firmware_type_request.response = NULL;
+    info = bootinfo_init();
+    ASSERT_EQ(info->smbios_entry32, 0);
+    ASSERT_EQ(info->firmware, BOOT_FIRMWARE_UNKNOWN);
+    return 0;
+}
+
 TEST(rsdp_absent) {
     reset_bootinfo_state();
     rsdp_request.response = NULL;
@@ -305,6 +335,7 @@ TestCase bootinfo_tests[] = {
     TEST_ENTRY(kernel_address_absent),
     TEST_ENTRY(rsdp_present),
     TEST_ENTRY(rsdp_absent),
+    TEST_ENTRY(smbios_and_firmware),
     TEST_ENTRY(hhdm_offset_propagated),
     TEST_ENTRY(memmap_single_entry),
     TEST_ENTRY(cmdline_absent_is_empty),

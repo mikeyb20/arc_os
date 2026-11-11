@@ -93,8 +93,32 @@ set_tests_properties(qemu.selftest.fail PROPERTIES
     PASS_REGULAR_EXPRESSION "FAIL testfail exit=3")
 add_test(NAME qemu.selftest.panic COMMAND ${_qemu_test} --suite kpanic --expect-panic --timeout 30)
 
+# Panic screen (M1-04): a real page fault (arc.panic=fault, test mode only) prints
+# the reason, registers, CR2 and a backtrace with symbols from the build's table
+add_test(NAME qemu.panic.fault COMMAND ${_qemu_test} --suite kpanic --name panic-fault --cmdline arc.panic=fault
+    --expect-panic --timeout 30
+    --expect "PANIC: Page Fault on CPU 0"
+    --expect "CR2 +0000000000000010"
+    --expect "Backtrace:"
+    --expect "#0 +ffffffff[0-9a-f]+ panic_test_fault\\+0x"
+    --expect "kmain\\+0x")
+
+# Bring-up diagnostics (M1-04): boot report, self-test and benchmark run in the
+# kernel instead of init and end the run themselves (ARC_TEST DONE)
+add_test(NAME qemu.diag COMMAND ${_qemu_test} --suite diag
+    --cmdline arc.report=1 --cmdline arc.selftest=1 --cmdline arc.bench=1
+    --expect "\\[REPORT\\] Machine +QEMU"
+    --expect "\\[REPORT\\] CPUs +4 online; MADT lists 4"
+    --expect "\\[REPORT\\] TSC +[0-9]+ kHz"
+    --expect "\\[REPORT\\] Memory +[0-9]+ MB RAM"
+    --expect "\\[REPORT\\] ACPI +revision"
+    --expect "\\[REPORT\\] PCI +[0-9]+ devices"
+    --expect "\\[REPORT\\] SELFTEST PASS avx2 +4 CPUs"
+    --expect "\\[REPORT\\] BENCH context switch"
+    --expect "ARC_TEST DONE pass=5 fail=0")
+
 set_tests_properties(qemu.smoke qemu.mem.buddy qemu.mem.cap qemu.userland qemu.abi qemu.musl qemu.fpu qemu.cpufloor
-    qemu.smp.xapic qemu.smp.x2apic qemu.selftest.fail qemu.selftest.panic
+    qemu.smp.xapic qemu.smp.x2apic qemu.selftest.fail qemu.selftest.panic qemu.panic.fault qemu.diag
     PROPERTIES LABELS qemu TIMEOUT 180 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     FIXTURES_SETUP qemu_logs)
 
