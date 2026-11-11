@@ -34,29 +34,14 @@ static bool is_version(const char *s) {
     return arcjson_is_schema_version(s, strlen(s));
 }
 
-/* is_role: chat, embed, router or expert:<id>. */
+/* is_role, is_model_file: the schemas' rules, from arcjson (one home, ADR-0020); a model file ends .gguf. */
 static bool is_role(const char *s) {
-    if (strcmp(s, "chat") == 0 || strcmp(s, "embed") == 0 || strcmp(s, "router") == 0) {
-        return true;
-    }
-    return strncmp(s, "expert:", 7) == 0 && is_id(s + 7);
+    return arcjson_is_schema_role(s, strlen(s));
 }
 
-/* is_model_file: a relative path inside the model directory, no `.` or `..` parts, ending .gguf. */
 static bool is_model_file(const char *s) {
     size_t n = strlen(s);
-    if (n < 6 || strcmp(s + n - 5, ".gguf") != 0 || s[0] == '/') {
-        return false;
-    }
-    for (const char *part = s; part != NULL;) {
-        const char *slash = strchr(part, '/');
-        size_t len = slash ? (size_t)(slash - part) : strlen(part);
-        if (len == 0 || (len == 1 && part[0] == '.') || (len == 2 && part[0] == '.' && part[1] == '.')) {
-            return false;
-        }
-        part = slash ? slash + 1 : NULL;
-    }
-    return true;
+    return n > 5 && strcmp(s + n - 5, ".gguf") == 0 && arcjson_is_schema_relpath(s, n);
 }
 
 /* positive_int: member `key` of `obj` as an integer >= 1, or 0. */
