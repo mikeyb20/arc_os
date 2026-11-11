@@ -10,16 +10,15 @@
  * path and the markup spans of the current document.
  */
 #include <errno.h>
-#include <fcntl.h>
 #include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <unistd.h>
 #include <zstd.h>
 
+#include "arcfile.h"
 #include "arcjson.h"
 #include "arcpack_internal.h"
 
@@ -79,12 +78,6 @@ static bool path_of(const arcpack_writer *w, const char *rel, const char *suffix
 
 /* ---- Opening ------------------------------------------------------------------------------------ */
 
-/* make_dir: mkdir, accepting a directory that already exists. */
-static bool make_dir(const char *path) {
-    struct stat st;
-    return mkdir(path, 0755) == 0 || (errno == EEXIST && stat(path, &st) == 0 && S_ISDIR(st.st_mode));
-}
-
 /* close_files: close and free every open file; with `discard`, remove the .part files. */
 static void close_files(arcpack_writer *w, bool discard) {
     for (int f = 0; f < ARCPACK_NFILES; f++) {
@@ -115,7 +108,7 @@ static bool open_files(arcpack_writer *w, const char **why) {
     char path[PATH_MAX];
     static const char *const dirs[] = {"", "/content", "/chunks"};
     for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
-        if (snprintf(path, sizeof(path), "%s%s", w->dir, dirs[i]) >= (int)sizeof(path) || !make_dir(path)) {
+        if (snprintf(path, sizeof(path), "%s%s", w->dir, dirs[i]) >= (int)sizeof(path) || !arcfile_make_dir(path)) {
             return writer_fail(w, why, "%s%s: cannot create directory: %s", w->dir, dirs[i], strerror(errno));
         }
     }
@@ -502,16 +495,6 @@ static bool seal(arcpack_writer *w, int f, uint64_t count, const char **why) {
     return ok || writer_fail(w, why, "%s: %s", arcpack_files[f].path, strerror(errno));
 }
 
-/* sync_dir: fsync a directory so the renames in it are durable. */
-static bool sync_dir(const char *path) {
-    int fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    bool ok = fd >= 0 && fsync(fd) == 0;
-    if (fd >= 0) {
-        close(fd);
-    }
-    return ok;
-}
-
 bool arcpack_writer_finish(arcpack_writer *w, const char **why) {
     static _Thread_local char finish_why[256];
     const uint64_t count[ARCPACK_NFILES] = {
@@ -536,8 +519,8 @@ bool arcpack_writer_finish(arcpack_writer *w, const char **why) {
             writer_fail(w, why, "%s: rename: %s", arcpack_files[f].path, strerror(errno));
         }
     }
-    if (ok && (!path_of(w, "content", "", from, sizeof(from)) || !sync_dir(from) ||
-               !path_of(w, "chunks", "", to, sizeof(to)) || !sync_dir(to))) {
+    if (ok && (!path_of(w, "content", "", from, sizeof(from)) || !arcfile_sync_dir(from) ||
+               !path_of(w, "chunks", "", to, sizeof(to)) || !arcfile_sync_dir(to))) {
         ok = writer_fail(w, why, "fsync of the pack directories failed");
     }
     if (!ok) {
