@@ -18,6 +18,8 @@ on:
       - tools/budget-check.py
       - docs/plans/syscall-inventory.md
       - tools/toolchain.lock
+      - schemas/**
+      - tests/schemas/validate.py
       - .github/workflows/lane.yml
   push:
     branches: [master]
@@ -27,6 +29,8 @@ on:
       - tools/lane/**
       - toolchain-musl.cmake
       - cmake/**
+      - schemas/**
+      - tests/schemas/validate.py
       - .github/workflows/lane.yml
   workflow_dispatch:
 

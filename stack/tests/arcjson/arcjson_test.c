@@ -1,11 +1,14 @@
 /*
  * lane.arcjson (M2-04): the stack's JSON parser and writer against RFC 8259 edge cases:
  * escapes, surrogate pairs, bad UTF-8, deep nesting, numbers at the limits, trailing
- * garbage, the size limit, and writer output that parses back to the same values.
+ * garbage, the size limit, and writer output that parses back to the same values. Also the
+ * helpers manifests share (M3-02): UTF-8 check, whole-file read, schema id and version checks.
  */
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "../lane_check.h"
 #include "arcjson.h"
@@ -186,6 +189,47 @@ static void test_utf8_complete_len(void) {
     lane_check(arcjson_utf8_complete_len("a\xF0\x9F\x98", 4) == 1, "cut 4-byte character held back");
     lane_check(arcjson_utf8_complete_len("a\xF0\x9F\x98\x80", 5) == 5, "complete 4-byte character");
     lane_check(arcjson_utf8_complete_len("a\xFF", 2) == 2, "invalid byte not held back");
+    lane_check(arcjson_utf8_valid("", 0) && arcjson_utf8_valid("a\xC2\xB0\xF0\x9F\x98\x80", 7), "valid UTF-8");
+    lane_check(!arcjson_utf8_valid("a\xC2", 2) && !arcjson_utf8_valid("\xC0\xAF", 2) &&
+                   !arcjson_utf8_valid("\xED\xA0\x80", 3),
+               "cut, overlong and surrogate UTF-8 refused");
+}
+
+/* arcjson_read_file reads a whole file NUL-terminated and refuses missing and oversized ones. */
+static void test_read_file(void) {
+    char path[256];
+    const char *dir = getenv("TMPDIR");
+    snprintf(path, sizeof(path), "%s/arcjson_test.%ld.json", dir ? dir : "/tmp", (long)getpid());
+    FILE *f = fopen(path, "w");
+    lane_check(f != NULL && fputs("{\"a\": 1}", f) >= 0 && fclose(f) == 0, "write a small JSON file");
+    size_t len = 0;
+    const char *why = NULL;
+    char *text = arcjson_read_file(path, 64, &len, &why);
+    lane_check(text != NULL && len == 8 && strcmp(text, "{\"a\": 1}") == 0, "read whole, NUL-terminated");
+    free(text);
+    lane_check(arcjson_read_file(path, 7, &len, &why) == NULL && strstr(why, "size limit") != NULL,
+               "file over the limit refused");
+    unlink(path);
+    lane_check(arcjson_read_file(path, 64, &len, &why) == NULL && why != NULL, "missing file refused");
+}
+
+/* The schema id and version checks shared by roles.json and pack manifests. */
+static void test_schema_names(void) {
+    lane_check(arcjson_is_schema_id("medical-en", 10) && arcjson_is_schema_id("a1", 2), "ids accepted");
+    lane_check(!arcjson_is_schema_id("", 0) && !arcjson_is_schema_id("-a", 2) && !arcjson_is_schema_id("Ab", 2) &&
+                   !arcjson_is_schema_id("a_b", 3),
+               "empty, leading '-', upper case, '_' refused in ids");
+    char long_id[66];
+    memset(long_id, 'a', sizeof(long_id));
+    lane_check(arcjson_is_schema_id(long_id, 64) && !arcjson_is_schema_id(long_id, 65), "ids at most 64 bytes");
+    lane_check(arcjson_is_schema_version("1.0.0", 5) && arcjson_is_schema_version("2.1.0-rc.1+b7", 13),
+               "versions accepted");
+    lane_check(!arcjson_is_schema_version("", 0) && !arcjson_is_schema_version("v1", 2) &&
+                   !arcjson_is_schema_version("1/0", 3) && !arcjson_is_schema_version("1 0", 3),
+               "empty, leading letter, '/', space refused in versions");
+    memset(long_id, '1', sizeof(long_id));
+    lane_check(arcjson_is_schema_version(long_id, 64) && !arcjson_is_schema_version(long_id, 65),
+               "versions at most 64 bytes");
 }
 
 int main(void) {
@@ -195,5 +239,7 @@ int main(void) {
     test_limits();
     test_writer();
     test_utf8_complete_len();
+    test_read_file();
+    test_schema_names();
     return lane_check_done("arcjson");
 }

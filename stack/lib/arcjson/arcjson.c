@@ -7,11 +7,13 @@
 #include "arcjson.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <inttypes.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /* ---- arena ------------------------------------------------------------------------------ */
 
@@ -142,6 +144,23 @@ size_t arcjson_utf8_complete_len(const char *s, size_t len) {
         }
     }
     return len;
+}
+
+bool arcjson_utf8_valid(const char *s, size_t len) {
+    const unsigned char *u = (const unsigned char *)s;
+    for (size_t i = 0; i < len;) {
+        uint32_t cp;
+        if (u[i] < 0x80) {
+            i++; /* ASCII fast path */
+            continue;
+        }
+        size_t n = utf8_decode(u + i, len - i, &cp, NULL);
+        if (n == 0) {
+            return false;
+        }
+        i += n;
+    }
+    return true;
 }
 
 /* utf8_encode: write code point cp (valid, not a surrogate) to out; returns the length. */
@@ -712,4 +731,67 @@ void arcjson_write_bool(arcjson_writer *w, bool v) {
 void arcjson_write_null(arcjson_writer *w) {
     w_before_value(w);
     w_put(w, "null", 4);
+}
+
+/* ---- Manifests ---------------------------------------------------------------------------- */
+
+char *arcjson_read_file(const char *path, size_t max_len, size_t *len, const char **why) {
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        *why = strerror(errno);
+        return NULL;
+    }
+    char *buf = malloc(max_len + 2);
+    size_t got = 0;
+    *why = buf == NULL ? "out of memory" : NULL;
+    while (buf != NULL && got <= max_len) {
+        ssize_t n = read(fd, buf + got, max_len + 1 - got);
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        if (n < 0) {
+            *why = strerror(errno);
+        }
+        if (n <= 0) {
+            break;
+        }
+        got += (size_t)n;
+    }
+    close(fd);
+    if (*why == NULL && got > max_len) {
+        *why = "larger than the size limit";
+    }
+    if (*why != NULL) {
+        free(buf);
+        return NULL;
+    }
+    buf[got] = '\0';
+    *len = got;
+    return buf;
+}
+
+bool arcjson_is_schema_id(const char *s, size_t len) {
+    if (len == 0 || len > 64 || s[0] == '-') {
+        return false;
+    }
+    for (size_t i = 0; i < len; i++) {
+        if (!((s[i] >= 'a' && s[i] <= 'z') || (s[i] >= '0' && s[i] <= '9') || s[i] == '-')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool arcjson_is_schema_version(const char *s, size_t len) {
+    if (len == 0 || len > 64 || s[0] < '0' || s[0] > '9') {
+        return false;
+    }
+    for (size_t i = 0; i < len; i++) {
+        char c = s[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '-' ||
+              c == '+')) {
+            return false;
+        }
+    }
+    return true;
 }

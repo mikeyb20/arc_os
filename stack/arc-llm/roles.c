@@ -5,13 +5,10 @@
 #define _GNU_SOURCE
 #include "roles.h"
 
-#include <errno.h>
-#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <unistd.h>
 
 #include "arcjson.h"
 #include "engine.h"
@@ -20,57 +17,21 @@
 
 /* read_manifest: the whole file at `path` (at most MANIFEST_MAX bytes), malloc'd; NULL with *why set. */
 static char *read_manifest(const char *path, size_t *len, char **why) {
-    int fd = open(path, O_RDONLY | O_CLOEXEC);
-    if (fd < 0) {
-        asprintf(why, "%s: %s", path, strerror(errno));
-        return NULL;
+    const char *err;
+    char *text = arcjson_read_file(path, MANIFEST_MAX, len, &err);
+    if (text == NULL) {
+        asprintf(why, "%s: %s", path, err);
     }
-    char *buf = malloc(MANIFEST_MAX + 1);
-    size_t got = 0;
-    while (buf != NULL && got <= MANIFEST_MAX) {
-        ssize_t n = read(fd, buf + got, MANIFEST_MAX + 1 - got);
-        if (n < 0 && errno == EINTR) {
-            continue;
-        }
-        if (n <= 0) {
-            if (n < 0) {
-                asprintf(why, "%s: %s", path, strerror(errno));
-                free(buf);
-                buf = NULL;
-            }
-            break;
-        }
-        got += (size_t)n;
-    }
-    close(fd);
-    if (buf != NULL && got > MANIFEST_MAX) {
-        asprintf(why, "%s: larger than %u bytes", path, MANIFEST_MAX);
-        free(buf);
-        return NULL;
-    }
-    if (buf == NULL && *why == NULL) {
-        asprintf(why, "%s: out of memory", path);
-    }
-    *len = got;
-    return buf;
+    return text;
 }
 
-/* is_id: the schema's `id` ([a-z0-9][a-z0-9-]*, at most 64). */
+/* is_id, is_version: the schemas' rules, from arcjson (one home, ADR-0020). */
 static bool is_id(const char *s) {
-    size_t n = strlen(s);
-    if (n == 0 || n > 64 || s[0] == '-') {
-        return false;
-    }
-    return strspn(s, "abcdefghijklmnopqrstuvwxyz0123456789-") == n;
+    return arcjson_is_schema_id(s, strlen(s));
 }
 
-/* is_version: semver's characters, starting with a digit; enough to make it a safe directory name. */
 static bool is_version(const char *s) {
-    size_t n = strlen(s);
-    if (n == 0 || n > 64 || s[0] < '0' || s[0] > '9') {
-        return false;
-    }
-    return strspn(s, "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.+-") == n;
+    return arcjson_is_schema_version(s, strlen(s));
 }
 
 /* is_role: chat, embed, router or expert:<id>. */

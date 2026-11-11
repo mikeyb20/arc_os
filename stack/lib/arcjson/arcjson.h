@@ -12,6 +12,9 @@
  * the writer. Strings are escaped and invalid UTF-8 is replaced with U+FFFD, so the output
  * is always valid JSON even for raw model output.
  *
+ * Manifests: reading a small JSON file whole, and the schemas' `id` and version rules, shared by
+ * every program that reads manifests (arc-llm, arcpack, arcpkg).
+ *
  * Cost: parse is O(input) time and about 2x input plus 40 bytes per value of arena memory.
  */
 #ifndef ARCHOS_STACK_ARCJSON_H
@@ -136,5 +139,31 @@ void arcjson_write_null(arcjson_writer *w);
  * the next piece completes the character. Invalid bytes are not held back.
  */
 size_t arcjson_utf8_complete_len(const char *s, size_t len);
+
+/*
+ * arcjson_utf8_valid: true if s[0..len) is valid UTF-8 (shortest forms, no surrogates, at most
+ * U+10FFFF), the same rule the parser applies. The stack's one UTF-8 check (ADR-0013).
+ */
+bool arcjson_utf8_valid(const char *s, size_t len);
+
+/* ---- Manifests (schemas/) ------------------------------------------------------------------ */
+
+/*
+ * arcjson_read_file: the whole file at `path`, at most max_len bytes, in a malloc'd buffer with a
+ * NUL after it, ready for arcjson_parse (the stack reads only small JSON files whole: manifests,
+ * roles.json). NULL with *why set to static text (strerror, "larger than the size limit",
+ * "out of memory") on failure.
+ */
+char *arcjson_read_file(const char *path, size_t max_len, size_t *len, const char **why);
+
+/* arcjson_is_schema_id: s[0..len) is a common.schema.json `id`: a-z, 0-9, '-', not starting with '-', 1..64 bytes. */
+bool arcjson_is_schema_id(const char *s, size_t len);
+
+/*
+ * arcjson_is_schema_version: s[0..len) starts with a digit and holds only semver's characters
+ * (0-9, A-Z, a-z, '.', '-', '+'), 1..64 bytes: safe as a directory name and in a pack header.
+ * (The full semver grammar is checked by the schema at build time.)
+ */
+bool arcjson_is_schema_version(const char *s, size_t len);
 
 #endif /* ARCHOS_STACK_ARCJSON_H */

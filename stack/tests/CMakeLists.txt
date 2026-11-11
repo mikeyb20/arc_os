@@ -1,6 +1,6 @@
 # Lane tests (label `lane`). M2-01: the M0-04 target programs, built with the pinned
 # musl toolchain, pass on Linux inside the syscall inventory. M2-02, M2-03: the ports (ports/).
-# M2-04: arcjson and arc-llm.
+# M2-04: arcjson and arc-llm. M3-02: arcpack.
 
 set(ARC_TARGET_DIR "${ARC_ROOT}/tests/target")
 
@@ -27,6 +27,7 @@ set(ARC_TINY_EMBED "${ARC_ROOT}/third_party/src/tiny-embed-model/nomic-embed-tex
 add_subdirectory(llama)
 add_subdirectory(arcjson)
 add_subdirectory(arc-llm)
+add_subdirectory(arcpack)
 
 # Sizes for stack/budgets.txt (ADR-0019): loaded ELF bytes, as kernel_image_bytes.
 lane_driver_test(NAME sizes COMMAND python3 "${ARC_ROOT}/tools/lane/sizes.py"

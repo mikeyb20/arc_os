@@ -29,7 +29,7 @@
       "sha256": "5de06abae8f6d83c7a1e4a838636731ed3f394bdf92390c4a3a1805723b74f53"
     },
     {
-      "path": "chunks/chunks.bin",
+      "path": "chunks/chunks.idx",
       "size": 1002,
       "sha256": "fb6f795c592be6f60f1f49df18296d67c8adc35e903e9736eec31bba5191bf79"
     },
@@ -51,7 +51,7 @@
     "source": "Kiwix wikipedia_en_medicine_maxi_2026-10.zim",
     "checksums": {
       "content/docs.zst": "46b42b4229cd7a39c564e780bb665a8bde4fdf722007e8473f167fe53ed4b995",
-      "chunks/chunks.bin": "903998a13c26111438bcdf5ccf829e38beea39f5c240f35fb2f398d206dedd10",
+      "chunks/chunks.idx": "903998a13c26111438bcdf5ccf829e38beea39f5c240f35fb2f398d206dedd10",
       "fts/fts.sqlite": "dd8f6640e1c144ff8cb56e681948ad4690c9333e62121f8fb8395feb04769ad0",
       "vectors/bge-small-en-v1-5/vectors.bin": "38a4fdfc27ed7703b383ee995758eba4e628f02be5b1da70570a89768671438a"
     },
