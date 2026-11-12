@@ -4,7 +4,6 @@
 #include <stdint.h>
 
 /* Guard kernel headers that conflict or need stubbing */
-#define ARCHOS_PROC_THREAD_H    /* Guard thread.h — we reproduce types below */
 #define ARCHOS_LIB_KPRINTF_H
 #define ARCHOS_MM_KMALLOC_H
 #define ARCHOS_MM_PMM_H         /* alloc_pages/free_pages: stubbed below */
@@ -17,45 +16,8 @@ static inline void kprintf(const char *fmt, ...) { (void)fmt; }
 #define kdebug(...) ((void)0)
 #define KERNEL_PANIC() do { } while(0)
 
-/* Reproduce types from thread.h (since we guard it) */
-typedef uint32_t tid_t;
-
-#define THREAD_CREATED  0
-#define THREAD_READY    1
-#define THREAD_RUNNING  2
-#define THREAD_BLOCKED  3
-#define THREAD_DEAD     4
-
-#define THREAD_STACK_ORDER 2
-#define THREAD_STACK_SIZE  (4096 << THREAD_STACK_ORDER)
-
-typedef void (*thread_entry_t)(void *arg);
-
-typedef struct {
-    uint64_t r15;
-    uint64_t r14;
-    uint64_t r13;
-    uint64_t r12;
-    uint64_t rbx;
-    uint64_t rbp;
-    uint64_t rsp;
-} ThreadContext;
-
-typedef struct Thread {
-    tid_t           tid;
-    uint8_t         state;
-    ThreadContext   context;
-    uint8_t        *stack_base;
-    size_t          stack_size;
-    uint64_t        kernel_stack_top;
-    thread_entry_t  entry;
-    void           *arg;
-    void           *fpu_state;
-    uint64_t        fs_base;
-    uint64_t        clear_child_tid;
-    struct Process *proc;
-    struct Thread  *next;
-} Thread;
+#include "proc/thread.h"
+#include "arch/hal_lock.h"
 
 /* Allocation flags */
 #define GFP_KERNEL  0x00
@@ -112,12 +74,6 @@ void context_switch(ThreadContext *old, ThreadContext *new_ctx) {
     (void)old; (void)new_ctx;
 }
 
-/* Forward-declare thread.c public functions (since we guarded thread.h) */
-void thread_init(void);
-Thread *thread_create(thread_entry_t entry, void *arg);
-void thread_destroy(Thread *t);
-Thread *thread_current(void);
-void thread_set_current(Thread *t);
 
 /* hal.h stubs: the running thread lives in the per-CPU block (GS) in the
  * kernel; here one static stands in for this CPU's slot */
@@ -127,6 +83,13 @@ static inline Thread *hal_current_thread(void) {
 }
 static inline void hal_set_current_thread(Thread *t) {
     current_thread = t;
+}
+static inline uint32_t hal_cpu_index(void) {
+    return 0;
+}
+static inline void hal_enable_interrupts(void) {
+}
+static inline void hal_halt_forever(void) {
 }
 
 /* Include the real thread.c implementation */

@@ -7,242 +7,72 @@
 #include <pthread.h>
 #include <unistd.h>
 
-/* Guard kernel headers */
+/* The real mutex.c, semaphore.c, condvar.c and waitqueue.c run here, on host
+ * threads. Each host thread is one kernel thread on its own simulated CPU
+ * (arch/hal_lock.h); the scheduler shim below blocks a BLOCKED thread on a
+ * pthread condition until a wakeup makes it runnable, as sched.c would. The
+ * names are prefixed so they don't meet test_sched.c's real scheduler or
+ * test_waitqueue.c's copy of waitqueue.c at link time. */
 #define ARCHOS_LIB_KPRINTF_H
-#define ARCHOS_MM_KMALLOC_H
-#define ARCHOS_LIB_MEM_H
-#define ARCHOS_LIB_STRING_H
-#define ARCHOS_PROC_SCHED_H
-#define ARCHOS_PROC_SPINLOCK_H
-#define ARCHOS_PROC_THREAD_H
-#define ARCHOS_PROC_WAITQUEUE_H
-#define ARCHOS_PROC_MUTEX_H
-#define ARCHOS_PROC_SEMAPHORE_H
-#define ARCHOS_PROC_CONDVAR_H
+#define thread_current mutex_test_thread_current
+#define thread_set_current mutex_test_thread_set_current
+#define context_switch mutex_test_context_switch
+#define sched_schedule mutex_test_sched_schedule
+#define sched_wake mutex_test_sched_wake
+#define sched_yield mutex_test_sched_yield   /* <pthread.h> declares the POSIX one */
+#define wq_init mutex_test_wq_init
+#define wq_sleep mutex_test_wq_sleep
+#define wq_wake mutex_test_wq_wake
+#define wq_wake_all mutex_test_wq_wake_all
 
 static inline void kprintf(const char *fmt, ...) { (void)fmt; }
 
-/* ---- Spinlock stub (uses pthreads) ---- */
+#include "proc/thread.h"
+#include "proc/sched.h"
+#include "proc/spinlock.h"
 
-typedef struct {
-    volatile uint32_t locked;
-    uint64_t saved_flags;
-} Spinlock;
-
-#define SPINLOCK_INIT { .locked = 0, .saved_flags = 0 }
-
-static inline void spinlock_acquire(Spinlock *lock) {
-    while (__sync_lock_test_and_set(&lock->locked, 1)) {
-        /* spin */
-    }
-    lock->saved_flags = 0;
-}
-
-static inline void spinlock_release(Spinlock *lock) {
-    __sync_lock_release(&lock->locked);
-}
-
-/* ---- Thread stub (uses pthreads) ---- */
-
-#define THREAD_CREATED  0
-#define THREAD_READY    1
-#define THREAD_RUNNING  2
-#define THREAD_BLOCKED  3
-#define THREAD_DEAD     4
-
-typedef struct Thread {
-    uint32_t      tid;
-    uint8_t       state;
-    struct Thread *next;
-} Thread;
-
-/* Per-pthread thread identity */
-static __thread Thread tls_thread;
+static _Thread_local Thread tls_thread;
 static uint32_t next_tid = 1;
 
-static Thread *thread_current(void) {
+Thread *mutex_test_thread_current(void) {
     return &tls_thread;
 }
 
-/* ---- Wait queue stub (uses condvar/mutex from pthreads) ---- */
+/* Scheduler shim: blocking and waking under one host mutex, so a wakeup that
+ * comes before the sleeper reaches its wait is never lost */
+static pthread_mutex_t shim_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t shim_cond = PTHREAD_COND_INITIALIZER;
+static int shim_sleeps;
 
-typedef struct WaitQueue {
-    Spinlock lock;
-    Thread  *head;
-    Thread  *tail;
-    /* pthreads backing */
-    pthread_mutex_t pmtx;
-    pthread_cond_t  pcond;
-} WaitQueue;
-
-#define WAITQUEUE_INIT { \
-    .lock = SPINLOCK_INIT, .head = NULL, .tail = NULL, \
-    .pmtx = PTHREAD_MUTEX_INITIALIZER, \
-    .pcond = PTHREAD_COND_INITIALIZER \
-}
-
-static void wq_init(WaitQueue *wq) {
-    wq->lock = (Spinlock)SPINLOCK_INIT;
-    wq->head = NULL;
-    wq->tail = NULL;
-    pthread_mutex_init(&wq->pmtx, NULL);
-    pthread_cond_init(&wq->pcond, NULL);
-}
-
-/* sched stubs — actual blocking done by pthreads in wq_sleep */
-static void stub_sched_yield(void) __attribute__((unused));
-static void stub_sched_yield(void) { }
-
-static void sched_add_thread(Thread *t) __attribute__((unused));
-static void sched_add_thread(Thread *t) { t->state = THREAD_READY; }
-
-static void wq_sleep(WaitQueue *wq, Spinlock *lock) {
-    Thread *self = thread_current();
-    self->state = THREAD_BLOCKED;
-    spinlock_release(lock);
-    pthread_mutex_lock(&wq->pmtx);
-    pthread_cond_wait(&wq->pcond, &wq->pmtx);
-    pthread_mutex_unlock(&wq->pmtx);
+void mutex_test_sched_schedule(void) {
+    Thread *self = &tls_thread;
+    pthread_mutex_lock(&shim_lock);
+    if (self->state == THREAD_BLOCKED) shim_sleeps++;
+    while (self->state == THREAD_BLOCKED) pthread_cond_wait(&shim_cond, &shim_lock);
     self->state = THREAD_RUNNING;
+    pthread_mutex_unlock(&shim_lock);
 }
 
-static int wq_wake(WaitQueue *wq) {
-    pthread_mutex_lock(&wq->pmtx);
-    pthread_cond_signal(&wq->pcond);
-    pthread_mutex_unlock(&wq->pmtx);
-    return 1;
-}
-
-static int wq_wake_all(WaitQueue *wq) {
-    pthread_mutex_lock(&wq->pmtx);
-    pthread_cond_broadcast(&wq->pcond);
-    pthread_mutex_unlock(&wq->pmtx);
-    return 1;
-}
-
-/* ---- Now include the implementations ---- */
-
-/* Mutex */
-typedef struct {
-    Spinlock  guard;
-    Thread   *owner;
-    WaitQueue waiters;
-} Mutex;
-
-#define MUTEX_INIT { \
-    .guard = SPINLOCK_INIT, \
-    .owner = NULL, \
-    .waiters = WAITQUEUE_INIT \
-}
-
-static void mutex_init(Mutex *m) {
-    m->guard = (Spinlock)SPINLOCK_INIT;
-    m->owner = NULL;
-    wq_init(&m->waiters);
-}
-
-static void mutex_lock(Mutex *m) {
-    spinlock_acquire(&m->guard);
-    while (m->owner != NULL) {
-        wq_sleep(&m->waiters, &m->guard);
-        spinlock_acquire(&m->guard);
+int mutex_test_sched_wake(Thread *t) {
+    pthread_mutex_lock(&shim_lock);
+    int woke = t->state == THREAD_BLOCKED;
+    if (woke) {
+        t->state = THREAD_READY;
+        pthread_cond_broadcast(&shim_cond);
     }
-    m->owner = thread_current();
-    spinlock_release(&m->guard);
+    pthread_mutex_unlock(&shim_lock);
+    return woke;
 }
 
-static void mutex_unlock(Mutex *m) {
-    spinlock_acquire(&m->guard);
-    m->owner = NULL;
-    wq_wake(&m->waiters);
-    spinlock_release(&m->guard);
-}
+#include "../kernel/proc/waitqueue.c"
+#include "../kernel/proc/mutex.c"
+#include "../kernel/proc/semaphore.c"
+#include "../kernel/proc/condvar.c"
 
-static int mutex_trylock(Mutex *m) {
-    spinlock_acquire(&m->guard);
-    if (m->owner != NULL) {
-        spinlock_release(&m->guard);
-        return -1;
-    }
-    m->owner = thread_current();
-    spinlock_release(&m->guard);
-    return 0;
-}
-
-/* Semaphore */
-typedef struct {
-    Spinlock  guard;
-    int32_t   count;
-    WaitQueue waiters;
-} Semaphore;
-
-static void sem_init(Semaphore *s, int32_t initial_count) {
-    s->guard = (Spinlock)SPINLOCK_INIT;
-    s->count = initial_count;
-    wq_init(&s->waiters);
-}
-
-static void sem_wait(Semaphore *s) {
-    spinlock_acquire(&s->guard);
-    while (s->count <= 0) {
-        wq_sleep(&s->waiters, &s->guard);
-        spinlock_acquire(&s->guard);
-    }
-    s->count--;
-    spinlock_release(&s->guard);
-}
-
-static void sem_post(Semaphore *s) {
-    spinlock_acquire(&s->guard);
-    s->count++;
-    wq_wake(&s->waiters);
-    spinlock_release(&s->guard);
-}
-
-static int sem_trywait(Semaphore *s) {
-    spinlock_acquire(&s->guard);
-    if (s->count <= 0) {
-        spinlock_release(&s->guard);
-        return -1;
-    }
-    s->count--;
-    spinlock_release(&s->guard);
-    return 0;
-}
-
-static int32_t sem_getvalue(Semaphore *s) {
-    spinlock_acquire(&s->guard);
-    int32_t val = s->count;
-    spinlock_release(&s->guard);
-    return val;
-}
-
-/* Condvar */
-typedef struct {
-    WaitQueue waiters;
-} CondVar;
-
-static void condvar_init(CondVar *cv) {
-    wq_init(&cv->waiters);
-}
-
-static void condvar_wait(CondVar *cv, Mutex *m) {
-    spinlock_acquire(&cv->waiters.lock);
-    spinlock_release(&cv->waiters.lock);
-    mutex_unlock(m);
-    /* Use pthreads to actually block */
-    pthread_mutex_lock(&cv->waiters.pmtx);
-    pthread_cond_wait(&cv->waiters.pcond, &cv->waiters.pmtx);
-    pthread_mutex_unlock(&cv->waiters.pmtx);
-    mutex_lock(m);
-}
-
-static void condvar_signal(CondVar *cv) {
-    wq_wake(&cv->waiters);
-}
-
-static void condvar_broadcast(CondVar *cv) {
-    wq_wake_all(&cv->waiters);
+/* Every host thread starts as a running kernel thread with its own id */
+static void thread_start(void) {
+    tls_thread.tid = __atomic_fetch_add(&next_tid, 1, __ATOMIC_RELAXED);
+    tls_thread.state = THREAD_RUNNING;
 }
 
 /* ==================================================================
@@ -253,15 +83,15 @@ static void condvar_broadcast(CondVar *cv) {
 
 TEST(mutex_init_unlocked) {
     Mutex m;
-    mutex_init(&m);
+    mutex_init(&m, LOCK_LEVEL_INODE);
     ASSERT_TRUE(m.owner == NULL);
     return 0;
 }
 
 TEST(mutex_lock_unlock) {
-    tls_thread.tid = next_tid++;
+    thread_start();
     Mutex m;
-    mutex_init(&m);
+    mutex_init(&m, LOCK_LEVEL_INODE);
     mutex_lock(&m);
     ASSERT_TRUE(m.owner == thread_current());
     mutex_unlock(&m);
@@ -270,9 +100,9 @@ TEST(mutex_lock_unlock) {
 }
 
 TEST(mutex_trylock_success) {
-    tls_thread.tid = next_tid++;
+    thread_start();
     Mutex m;
-    mutex_init(&m);
+    mutex_init(&m, LOCK_LEVEL_INODE);
     ASSERT_EQ(mutex_trylock(&m), 0);
     ASSERT_TRUE(m.owner == thread_current());
     mutex_unlock(&m);
@@ -280,9 +110,9 @@ TEST(mutex_trylock_success) {
 }
 
 TEST(mutex_trylock_fail) {
-    tls_thread.tid = next_tid++;
+    thread_start();
     Mutex m;
-    mutex_init(&m);
+    mutex_init(&m, LOCK_LEVEL_INODE);
     mutex_lock(&m);
     /* Simulate another thread trying */
     Thread fake = { .tid = 99 };
@@ -300,7 +130,7 @@ static Mutex contended_mutex;
 static volatile int shared_counter;
 
 static void *mutex_incrementer(void *arg) {
-    tls_thread.tid = next_tid++;
+    thread_start();
     int count = *(int *)arg;
     for (int i = 0; i < count; i++) {
         mutex_lock(&contended_mutex);
@@ -310,18 +140,19 @@ static void *mutex_incrementer(void *arg) {
     return NULL;
 }
 
+/* Four host threads (four CPUs) contend: waiters really sleep and are woken */
 TEST(mutex_contended_correctness) {
-    mutex_init(&contended_mutex);
+    mutex_init(&contended_mutex, LOCK_LEVEL_INODE);
     shared_counter = 0;
-    int iters = 1000;
+    int iters = 20000;
 
-    pthread_t t1, t2;
-    pthread_create(&t1, NULL, mutex_incrementer, &iters);
-    pthread_create(&t2, NULL, mutex_incrementer, &iters);
-    pthread_join(t1, NULL);
-    pthread_join(t2, NULL);
+    pthread_t t[4];
+    for (int i = 0; i < 4; i++) pthread_create(&t[i], NULL, mutex_incrementer, &iters);
+    for (int i = 0; i < 4; i++) pthread_join(t[i], NULL);
 
-    ASSERT_EQ(shared_counter, 2000);
+    ASSERT_EQ(shared_counter, 80000);
+    ASSERT_TRUE(contended_mutex.owner == NULL);
+    ASSERT_TRUE(contended_mutex.waiters.head == NULL);
     return 0;
 }
 
@@ -335,7 +166,7 @@ TEST(sem_init_value) {
 }
 
 TEST(sem_wait_decrements) {
-    tls_thread.tid = next_tid++;
+    thread_start();
     Semaphore s;
     sem_init(&s, 3);
     sem_wait(&s);
@@ -356,7 +187,7 @@ TEST(sem_post_increments) {
 }
 
 TEST(sem_trywait_success) {
-    tls_thread.tid = next_tid++;
+    thread_start();
     Semaphore s;
     sem_init(&s, 1);
     ASSERT_EQ(sem_trywait(&s), 0);
@@ -374,7 +205,7 @@ TEST(sem_trywait_fail) {
 
 TEST(sem_binary_mutex) {
     /* Use semaphore(1) as a binary lock */
-    tls_thread.tid = next_tid++;
+    thread_start();
     Semaphore s;
     sem_init(&s, 1);
     sem_wait(&s);
@@ -390,7 +221,7 @@ static Semaphore prod_sem;
 static volatile int produced_count;
 
 static void *sem_producer(void *arg) {
-    tls_thread.tid = next_tid++;
+    thread_start();
     int count = *(int *)arg;
     for (int i = 0; i < count; i++) {
         __sync_fetch_and_add(&produced_count, 1);
@@ -400,7 +231,7 @@ static void *sem_producer(void *arg) {
 }
 
 static void *sem_consumer(void *arg) {
-    tls_thread.tid = next_tid++;
+    thread_start();
     int count = *(int *)arg;
     for (int i = 0; i < count; i++) {
         sem_wait(&prod_sem);
@@ -440,7 +271,7 @@ static volatile int cv_ready;
 
 static void *cv_waiter(void *arg) {
     (void)arg;
-    tls_thread.tid = next_tid++;
+    thread_start();
     mutex_lock(&cv_mutex);
     while (!cv_ready) {
         condvar_wait(&cv_cond, &cv_mutex);
@@ -450,10 +281,10 @@ static void *cv_waiter(void *arg) {
 }
 
 TEST(condvar_signal_wakes_one) {
-    mutex_init(&cv_mutex);
+    mutex_init(&cv_mutex, LOCK_LEVEL_INODE);
     condvar_init(&cv_cond);
     cv_ready = 0;
-    tls_thread.tid = next_tid++;
+    thread_start();
 
     pthread_t w;
     pthread_create(&w, NULL, cv_waiter, NULL);
@@ -475,7 +306,7 @@ static volatile int cv_broadcast_count;
 
 static void *cv_broadcast_waiter(void *arg) {
     (void)arg;
-    tls_thread.tid = next_tid++;
+    thread_start();
     mutex_lock(&cv_mutex);
     while (!cv_ready) {
         condvar_wait(&cv_cond, &cv_mutex);
@@ -486,11 +317,11 @@ static void *cv_broadcast_waiter(void *arg) {
 }
 
 TEST(condvar_broadcast_wakes_all) {
-    mutex_init(&cv_mutex);
+    mutex_init(&cv_mutex, LOCK_LEVEL_INODE);
     condvar_init(&cv_cond);
     cv_ready = 0;
     cv_broadcast_count = 0;
-    tls_thread.tid = next_tid++;
+    thread_start();
 
     pthread_t w1, w2, w3;
     pthread_create(&w1, NULL, cv_broadcast_waiter, NULL);

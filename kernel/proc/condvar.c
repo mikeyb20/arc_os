@@ -9,7 +9,8 @@ void condvar_wait(CondVar *cv, Mutex *m) {
     /* Enqueue self on the condvar's wait queue, then release the mutex.
      * We use the condvar's internal spinlock (inside waiters) as the
      * sleep lock to get atomic enqueue-and-release semantics. */
-    spinlock_acquire(&cv->waiters.lock);
+    uint64_t flags;
+    spin_lock_irqsave(&cv->waiters.lock, &flags);
 
     /* Append to wait queue */
     Thread *self = thread_current();
@@ -22,13 +23,16 @@ void condvar_wait(CondVar *cv, Mutex *m) {
     cv->waiters.tail = self;
     self->state = THREAD_BLOCKED;
 
-    spinlock_release(&cv->waiters.lock);
+    spin_unlock(&cv->waiters.lock);
 
-    /* Release the mutex — other threads can now modify the condition */
+    /* Release the mutex — other threads can now modify the condition. A
+     * signal that comes now finds this thread queued and sets it running
+     * again (sched_wake), so it is not lost. */
     mutex_unlock(m);
 
     /* Schedule away — returns when condvar_signal/broadcast wakes us */
-    sched_yield();
+    sched_schedule();
+    irq_restore(flags);
 
     /* Re-acquire the mutex before returning to caller */
     mutex_lock(m);

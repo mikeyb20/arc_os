@@ -8,7 +8,6 @@
 #define ARCHOS_MM_KMALLOC_H
 #define ARCHOS_LIB_MEM_H
 #define ARCHOS_LIB_STRING_H
-#define ARCHOS_PROC_SPINLOCK_H
 #define ARCHOS_PROC_WAITQUEUE_H
 #define ARCHOS_PROC_SCHED_H
 #define ARCHOS_PROC_THREAD_H
@@ -66,11 +65,8 @@ static void kfree(void *ptr) {
     free(ptr);
 }
 
-/* Spinlock stub (no-op for single-threaded tests) */
-typedef struct { volatile uint32_t locked; uint64_t saved_flags; } Spinlock;
-#define SPINLOCK_INIT { .locked = 0, .saved_flags = 0 }
-static inline void spinlock_acquire(Spinlock *l) { (void)l; }
-static inline void spinlock_release(Spinlock *l) { (void)l; }
+/* The real spinlock.h (host builds simulate the interrupt flag) */
+#include "proc/spinlock.h"
 
 /* Thread stub */
 #define THREAD_BLOCKED 3
@@ -81,16 +77,16 @@ static Thread *thread_current(void) { return &stub_thread; }
 
 /* WaitQueue stub (no-op — tests are single-threaded) */
 typedef struct WaitQueue { Spinlock lock; Thread *head; Thread *tail; } WaitQueue;
-#define WAITQUEUE_INIT { .lock = SPINLOCK_INIT, .head = NULL, .tail = NULL }
+#define WAITQUEUE_INIT { .lock = SPINLOCK_INIT(LOCK_LEVEL_WAITQUEUE, "wait queue"), .head = NULL, .tail = NULL }
 static void wq_init(WaitQueue *wq) { (void)wq; }
 static int wq_wake(WaitQueue *wq) { (void)wq; return 0; }
 static int wq_wake_all(WaitQueue *wq) { (void)wq; return 0; }
 /* wq_sleep: in single-threaded tests, set global flag to break loops */
 static volatile int *wq_sleep_break_flag;
 __attribute__((unused))
-static void wq_sleep(WaitQueue *wq, Spinlock *lock) {
+static void wq_sleep(WaitQueue *wq, Spinlock *lock, uint64_t flags) {
     (void)wq;
-    spinlock_release(lock);
+    spin_unlock_irqrestore(lock, flags);
     if (wq_sleep_break_flag) *wq_sleep_break_flag = 1;
 }
 
@@ -391,10 +387,10 @@ TEST(tcp_deliver_data) {
     seg[20] = 'h'; seg[21] = 'i';        /* payload */
 
     /* Deliver (skip checksum validation in this test) */
-    spinlock_acquire(&sk->lock);
+    spin_lock(&sk->lock);
     rx_enqueue(sk, "hi", 2);
     sk->rcv_nxt += 2;
-    spinlock_release(&sk->lock);
+    spin_unlock(&sk->lock);
     wq_wake(&sk->rx_wq);
 
     /* Receive */

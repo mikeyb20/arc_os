@@ -33,10 +33,17 @@
 #include "arch/x86_64/debug_exit.h"   /* hal_debug_exit: QEMU test-mode exit */
 #include "arch/x86_64/ipi.h"     /* halt the other CPUs on panic */
 #include "arch/x86_64/lapic.h"   /* APIC mode for the boot report */
+#include "arch/hal_lock.h"        /* irq_save/irq_restore, hal_cpu_relax, spinlock depth */
 
 /* ==================================================================
  * CPU Initialization & Control
  * ================================================================== */
+
+/* First thing at boot: point GS at the boot CPU's per-CPU block, so spinlocks
+ * can count their depth (hal_lock.h) before hal_cpu_init runs. */
+static inline void hal_cpu_early_init(void) {
+    percpu_early_init();
+}
 
 /* Set up the boot CPU: its per-CPU block (GDT, TSS, IST stacks, GS base),
  * then the shared IDT. Must run before anything calls thread_current(). */
@@ -92,26 +99,9 @@ static inline void hal_panic_capture(PanicInfo *pi, void *frame_address) {
     arch_panic_capture(pi, frame_address);
 }
 
-/* Spin-wait hint for busy loops bounded by time (PAUSE on x86). */
-static inline void hal_cpu_relax(void) {
-    __asm__ volatile("pause" ::: "memory");
-}
-
 /* Halt the CPU until the next interrupt. */
 static inline void hal_halt(void) {
     __asm__ volatile ("hlt");
-}
-
-/* Save interrupt state and return it (for save/restore pattern). */
-static inline uint64_t hal_save_irq_state(void) {
-    uint64_t flags;
-    __asm__ volatile ("pushf; pop %0" : "=r"(flags));
-    return flags;
-}
-
-/* Restore previously saved interrupt state. */
-static inline void hal_restore_irq_state(uint64_t flags) {
-    __asm__ volatile ("push %0; popf" : : "r"(flags) : "memory", "cc");
 }
 
 /* ---- CPU description and cross-CPU calls (boot report, self-test; M1-04) ---- */
@@ -161,6 +151,73 @@ static inline const char *hal_apic_mode(void) {
  * Returns how many ran it. Boot diagnostics only, from the BSP. */
 static inline uint32_t hal_run_on_other_cpus(void (*fn)(void *), void *arg, uint64_t max_cycles) {
     return ipi_call_others(fn, arg, max_cycles);
+}
+
+/* ---- Scheduler support (M1-05) ---- */
+
+/* This CPU's run queue (proc/sched.c), NULL before the scheduler set it. */
+static inline void *hal_this_cpu_sched(void) {
+    return this_cpu()->sched;
+}
+
+/* Run queue of CPU index cpu, or NULL. */
+static inline void *hal_cpu_sched(uint32_t cpu) {
+    PerCpu *c = percpu_get(cpu);
+    return c != NULL ? c->sched : NULL;
+}
+
+/* Attach a run queue to CPU index cpu (boot, before that CPU schedules). */
+static inline void hal_cpu_set_sched(uint32_t cpu, void *rq) {
+    PerCpu *c = percpu_get(cpu);
+    if (c != NULL) c->sched = rq;
+}
+
+/* 1 if CPU index cpu is online. */
+static inline int hal_cpu_online(uint32_t cpu) {
+    PerCpu *c = percpu_get(cpu);
+    return c != NULL && c->online;
+}
+
+/* Core kinds for hal_cpu_core_kind */
+#define HAL_CORE_OTHER 0   /* not a hybrid CPU, or unknown */
+#define HAL_CORE_P     1
+#define HAL_CORE_E     2
+
+/* Core kind of online CPU index cpu (HAL_CORE_*), or -1 if it is not online. */
+static inline int hal_cpu_core_kind(uint32_t cpu) {
+    uint32_t apic;
+    uint8_t type;
+    if (cpu_describe(cpu, &apic, &type) != 0) return -1;
+    return type == CPU_CORE_CORE ? HAL_CORE_P : (type == CPU_CORE_ATOM ? HAL_CORE_E : HAL_CORE_OTHER);
+}
+
+/* Idle: enable interrupts and halt until the next one, in one step (no
+ * wakeup can slip in between). Returns with interrupts on. */
+static inline void hal_idle_wait(void) {
+    __asm__ volatile("sti; hlt" ::: "memory");
+}
+
+/* Ask CPU index cpu to reschedule (an IPI; it runs sched_preempt). */
+static inline void hal_send_resched(uint32_t cpu) {
+    ipi_reschedule(cpu);
+}
+
+/* Let the APs, idling since hal_smp_init, enter sched_ap_start. */
+static inline void hal_release_aps(void) {
+    smp_release_aps();
+}
+
+/* Slice timer: this CPU's local APIC timer (TSC-deadline mode comes with
+ * M1-06). hal_slice_timer_init measures it once on the BSP and sets fn as the
+ * handler on every CPU; start/stop act on the calling CPU. */
+static inline void hal_slice_timer_init(void (*fn)(void)) {
+    lapic_timer_setup(fn);
+}
+static inline void hal_slice_timer_start(uint64_t period_ns) {
+    lapic_timer_periodic(period_ns);
+}
+static inline void hal_slice_timer_stop(void) {
+    lapic_timer_stop();
 }
 
 /* Self-test only (arc.selftest=1, no user thread exists): AVX2 sum of buf on

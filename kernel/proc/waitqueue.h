@@ -12,15 +12,17 @@ typedef struct WaitQueue {
     Thread  *tail;
 } WaitQueue;
 
-#define WAITQUEUE_INIT { .lock = SPINLOCK_INIT, .head = NULL, .tail = NULL }
+#define WAITQUEUE_INIT { .lock = SPINLOCK_INIT(LOCK_LEVEL_WAITQUEUE, "wait queue"), .head = NULL, .tail = NULL }
 
 /* Initialize a wait queue. */
 void wq_init(WaitQueue *wq);
 
-/* Sleep on the wait queue.  Caller must hold `lock`; it is released atomically
- * after the thread is enqueued (prevents lost wakeups).  Callers must
- * re-check their condition in a while loop (spurious wakeup safe). */
-void wq_sleep(WaitQueue *wq, Spinlock *lock);
+/* Sleep on the wait queue. The caller holds `lock`, taken with
+ * spin_lock_irqsave(lock, &flags); wq_sleep releases it once the thread is
+ * queued (no lost wakeups), sleeps, and returns with lock NOT held and the
+ * interrupt state `flags` restored. Callers re-check their condition in a
+ * loop, taking the lock again. */
+void wq_sleep(WaitQueue *wq, Spinlock *lock, uint64_t flags);
 
 /* Wake the first thread on the queue.  Returns 1 if a thread was woken, 0 if
  * the queue was empty. */

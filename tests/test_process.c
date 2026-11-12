@@ -28,6 +28,8 @@ static inline void kprintf(const char *fmt, ...) { (void)fmt; }
 #define EINVAL 22
 #define PATH_MAX 512
 
+#include "proc/cpumask.h"
+
 /* Reproduce types (headers are guarded out) */
 typedef uint32_t tid_t;
 typedef uint32_t pid_t;
@@ -60,6 +62,7 @@ typedef struct Thread {
     uint64_t        clear_child_tid;
     struct Process *proc;
     struct Thread  *next;
+    CpuMask         affinity;
 } Thread;
 
 #define PROC_ALIVE       0
@@ -258,6 +261,13 @@ static Thread *thread_destroy_last;
 static void thread_destroy(Thread *t) {
     thread_destroy_calls++;
     thread_destroy_last = t;
+}
+
+/* sched_wait_off_cpu stub: a reaped child has always switched away here */
+static int wait_off_cpu_calls;
+static void sched_wait_off_cpu(Thread *t) {
+    (void)t;
+    wait_off_cpu_calls++;
 }
 
 /* Tracking sched_add_thread stub (static to avoid linker clash) */

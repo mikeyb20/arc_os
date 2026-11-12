@@ -4,7 +4,6 @@
 #include <stdint.h>
 
 /* Guard kernel headers that conflict or need stubbing */
-#define ARCHOS_PROC_SPINLOCK_H
 #define ARCHOS_PROC_THREAD_H
 #define ARCHOS_PROC_SCHED_H
 #define ARCHOS_PROC_WAITQUEUE_H
@@ -44,21 +43,8 @@ typedef struct Thread {
     struct Thread  *next;
 } Thread;
 
-/* Spinlock stub — no-op for host tests */
-typedef struct {
-    volatile uint32_t locked;
-    uint64_t saved_flags;
-} Spinlock;
-
-#define SPINLOCK_INIT { .locked = 0, .saved_flags = 0 }
-
-static inline void spinlock_acquire(Spinlock *lock) {
-    lock->locked = 1;
-}
-
-static inline void spinlock_release(Spinlock *lock) {
-    lock->locked = 0;
-}
+/* The real spinlock.h (host builds simulate the interrupt flag) */
+#include "proc/spinlock.h"
 
 /* WaitQueue type (guarded out waitqueue.h) */
 typedef struct WaitQueue {
@@ -67,7 +53,7 @@ typedef struct WaitQueue {
     Thread  *tail;
 } WaitQueue;
 
-#define WAITQUEUE_INIT { .lock = SPINLOCK_INIT, .head = NULL, .tail = NULL }
+#define WAITQUEUE_INIT { .lock = SPINLOCK_INIT(LOCK_LEVEL_WAITQUEUE, "wait queue"), .head = NULL, .tail = NULL }
 
 /* thread_current stub */
 static Thread *test_current_thread = NULL;
@@ -76,23 +62,30 @@ static Thread *thread_current(void) {
     return test_current_thread;
 }
 
-/* sched_yield stub — no-op (lets us observe side effects without context switch) */
-static int yield_count = 0;
+/* sched_schedule stub: records that the sleeper gave up the CPU, and with
+ * what interrupt flag and spinlock depth */
+static int schedule_count = 0;
+static int schedule_irq_enabled = -1;
+static uint32_t schedule_lock_depth = 99;
 
-static void sched_yield(void) {
-    yield_count++;
+static void sched_schedule(void) {
+    schedule_count++;
+    schedule_irq_enabled = hal_test_irq_enabled;
+    schedule_lock_depth = hal_test_lock_depth;
 }
 
-/* sched_add_thread tracking stub */
+/* sched_wake tracking stub */
 #define MAX_WOKEN 16
 static Thread *woken_threads[MAX_WOKEN];
 static int woken_count = 0;
 
-static void sched_add_thread(Thread *t) {
+static int sched_wake(Thread *t) {
+    if (t->state != THREAD_BLOCKED) return 0;
     t->state = THREAD_READY;
     if (woken_count < MAX_WOKEN) {
         woken_threads[woken_count++] = t;
     }
+    return 1;
 }
 
 /* Include the real waitqueue.c */
@@ -112,10 +105,21 @@ static Thread *make_thread(int index, tid_t tid, uint8_t state) {
 
 static void reset_state(void) {
     test_current_thread = NULL;
-    yield_count = 0;
+    schedule_count = 0;
+    schedule_irq_enabled = -1;
+    schedule_lock_depth = 99;
+    hal_test_irq_enabled = 1;
+    hal_test_lock_depth = 0;
     woken_count = 0;
     memset(woken_threads, 0, sizeof(woken_threads));
     memset(thread_pool, 0, sizeof(thread_pool));
+}
+
+/* Sleep the current thread the way callers do: condition lock with irqsave */
+static void sleep_on(WaitQueue *wq, Spinlock *cond_lock) {
+    uint64_t flags;
+    spin_lock_irqsave(cond_lock, &flags);
+    wq_sleep(wq, cond_lock, flags);
 }
 
 /* --- Tests --- */
@@ -159,13 +163,12 @@ static int test_wake_all_empty_returns_zero(void) {
 static int test_sleep_sets_blocked(void) {
     reset_state();
     WaitQueue wq = (WaitQueue)WAITQUEUE_INIT;
-    Spinlock cond_lock = (Spinlock)SPINLOCK_INIT;
-    cond_lock.locked = 1; /* Caller holds it */
+    Spinlock cond_lock = (Spinlock)SPINLOCK_INIT(LOCK_LEVEL_OBJECT, "condition");
 
     Thread *a = make_thread(0, 1, THREAD_RUNNING);
     test_current_thread = a;
 
-    wq_sleep(&wq, &cond_lock);
+    sleep_on(&wq, &cond_lock);
 
     ASSERT_EQ(a->state, THREAD_BLOCKED);
     return 0;
@@ -174,28 +177,33 @@ static int test_sleep_sets_blocked(void) {
 static int test_sleep_releases_caller_lock(void) {
     reset_state();
     WaitQueue wq = (WaitQueue)WAITQUEUE_INIT;
-    Spinlock cond_lock = (Spinlock)SPINLOCK_INIT;
-    cond_lock.locked = 1;
+    Spinlock cond_lock = (Spinlock)SPINLOCK_INIT(LOCK_LEVEL_OBJECT, "condition");
 
     Thread *a = make_thread(0, 1, THREAD_RUNNING);
     test_current_thread = a;
 
-    wq_sleep(&wq, &cond_lock);
+    sleep_on(&wq, &cond_lock);
 
     ASSERT_EQ(cond_lock.locked, 0);
+    ASSERT_EQ(wq.lock.locked, 0);
+    /* Scheduled away with both locks gone but interrupts still off */
+    ASSERT_EQ(schedule_count, 1);
+    ASSERT_EQ(schedule_irq_enabled, 0);
+    ASSERT_EQ(schedule_lock_depth, 0);
+    /* Back from the sleep: the caller's interrupt state is restored */
+    ASSERT_EQ(hal_test_irq_enabled, 1);
     return 0;
 }
 
 static int test_sleep_adds_to_queue(void) {
     reset_state();
     WaitQueue wq = (WaitQueue)WAITQUEUE_INIT;
-    Spinlock cond_lock = (Spinlock)SPINLOCK_INIT;
-    cond_lock.locked = 1;
+    Spinlock cond_lock = (Spinlock)SPINLOCK_INIT(LOCK_LEVEL_OBJECT, "condition");
 
     Thread *a = make_thread(0, 1, THREAD_RUNNING);
     test_current_thread = a;
 
-    wq_sleep(&wq, &cond_lock);
+    sleep_on(&wq, &cond_lock);
 
     ASSERT_TRUE(wq.head == a);
     ASSERT_TRUE(wq.tail == a);
@@ -205,13 +213,12 @@ static int test_sleep_adds_to_queue(void) {
 static int test_wake_removes_from_queue(void) {
     reset_state();
     WaitQueue wq = (WaitQueue)WAITQUEUE_INIT;
-    Spinlock cond_lock = (Spinlock)SPINLOCK_INIT;
-    cond_lock.locked = 1;
+    Spinlock cond_lock = (Spinlock)SPINLOCK_INIT(LOCK_LEVEL_OBJECT, "condition");
 
     Thread *a = make_thread(0, 1, THREAD_RUNNING);
     test_current_thread = a;
 
-    wq_sleep(&wq, &cond_lock);
+    sleep_on(&wq, &cond_lock);
     wq_wake(&wq);
 
     ASSERT_TRUE(wq.head == NULL);
@@ -219,16 +226,15 @@ static int test_wake_removes_from_queue(void) {
     return 0;
 }
 
-static int test_wake_calls_sched_add(void) {
+static int test_wake_calls_sched_wake(void) {
     reset_state();
     WaitQueue wq = (WaitQueue)WAITQUEUE_INIT;
-    Spinlock cond_lock = (Spinlock)SPINLOCK_INIT;
-    cond_lock.locked = 1;
+    Spinlock cond_lock = (Spinlock)SPINLOCK_INIT(LOCK_LEVEL_OBJECT, "condition");
 
     Thread *a = make_thread(0, 1, THREAD_RUNNING);
     test_current_thread = a;
 
-    wq_sleep(&wq, &cond_lock);
+    sleep_on(&wq, &cond_lock);
     wq_wake(&wq);
 
     ASSERT_EQ(woken_count, 1);
@@ -240,13 +246,12 @@ static int test_wake_calls_sched_add(void) {
 static int test_wake_returns_one(void) {
     reset_state();
     WaitQueue wq = (WaitQueue)WAITQUEUE_INIT;
-    Spinlock cond_lock = (Spinlock)SPINLOCK_INIT;
-    cond_lock.locked = 1;
+    Spinlock cond_lock = (Spinlock)SPINLOCK_INIT(LOCK_LEVEL_OBJECT, "condition");
 
     Thread *a = make_thread(0, 1, THREAD_RUNNING);
     test_current_thread = a;
 
-    wq_sleep(&wq, &cond_lock);
+    sleep_on(&wq, &cond_lock);
     int ret = wq_wake(&wq);
 
     ASSERT_EQ(ret, 1);
@@ -256,20 +261,18 @@ static int test_wake_returns_one(void) {
 static int test_fifo_ordering(void) {
     reset_state();
     WaitQueue wq = (WaitQueue)WAITQUEUE_INIT;
-    Spinlock cond_lock = (Spinlock)SPINLOCK_INIT;
+    Spinlock cond_lock = (Spinlock)SPINLOCK_INIT(LOCK_LEVEL_OBJECT, "condition");
 
     Thread *a = make_thread(0, 1, THREAD_RUNNING);
     Thread *b = make_thread(1, 2, THREAD_RUNNING);
 
     /* Sleep thread A */
-    cond_lock.locked = 1;
     test_current_thread = a;
-    wq_sleep(&wq, &cond_lock);
+    sleep_on(&wq, &cond_lock);
 
     /* Sleep thread B */
-    cond_lock.locked = 1;
     test_current_thread = b;
-    wq_sleep(&wq, &cond_lock);
+    sleep_on(&wq, &cond_lock);
 
     /* Wake first — should be A (FIFO) */
     wq_wake(&wq);
@@ -287,24 +290,21 @@ static int test_fifo_ordering(void) {
 static int test_wake_all_wakes_multiple(void) {
     reset_state();
     WaitQueue wq = (WaitQueue)WAITQUEUE_INIT;
-    Spinlock cond_lock = (Spinlock)SPINLOCK_INIT;
+    Spinlock cond_lock = (Spinlock)SPINLOCK_INIT(LOCK_LEVEL_OBJECT, "condition");
 
     Thread *a = make_thread(0, 1, THREAD_RUNNING);
     Thread *b = make_thread(1, 2, THREAD_RUNNING);
     Thread *c = make_thread(2, 3, THREAD_RUNNING);
 
     /* Sleep all three */
-    cond_lock.locked = 1;
     test_current_thread = a;
-    wq_sleep(&wq, &cond_lock);
+    sleep_on(&wq, &cond_lock);
 
-    cond_lock.locked = 1;
     test_current_thread = b;
-    wq_sleep(&wq, &cond_lock);
+    sleep_on(&wq, &cond_lock);
 
-    cond_lock.locked = 1;
     test_current_thread = c;
-    wq_sleep(&wq, &cond_lock);
+    sleep_on(&wq, &cond_lock);
 
     /* Wake all — should wake A, B, C in FIFO order */
     wq_wake_all(&wq);
@@ -320,23 +320,20 @@ static int test_wake_all_wakes_multiple(void) {
 static int test_wake_all_returns_count(void) {
     reset_state();
     WaitQueue wq = (WaitQueue)WAITQUEUE_INIT;
-    Spinlock cond_lock = (Spinlock)SPINLOCK_INIT;
+    Spinlock cond_lock = (Spinlock)SPINLOCK_INIT(LOCK_LEVEL_OBJECT, "condition");
 
     Thread *a = make_thread(0, 1, THREAD_RUNNING);
     Thread *b = make_thread(1, 2, THREAD_RUNNING);
     Thread *c = make_thread(2, 3, THREAD_RUNNING);
 
-    cond_lock.locked = 1;
     test_current_thread = a;
-    wq_sleep(&wq, &cond_lock);
+    sleep_on(&wq, &cond_lock);
 
-    cond_lock.locked = 1;
     test_current_thread = b;
-    wq_sleep(&wq, &cond_lock);
+    sleep_on(&wq, &cond_lock);
 
-    cond_lock.locked = 1;
     test_current_thread = c;
-    wq_sleep(&wq, &cond_lock);
+    sleep_on(&wq, &cond_lock);
 
     int ret = wq_wake_all(&wq);
 
@@ -347,14 +344,13 @@ static int test_wake_all_returns_count(void) {
 static int test_sleep_wake_reuse(void) {
     reset_state();
     WaitQueue wq = (WaitQueue)WAITQUEUE_INIT;
-    Spinlock cond_lock = (Spinlock)SPINLOCK_INIT;
+    Spinlock cond_lock = (Spinlock)SPINLOCK_INIT(LOCK_LEVEL_OBJECT, "condition");
 
     Thread *a = make_thread(0, 1, THREAD_RUNNING);
 
     /* First cycle: sleep + wake */
-    cond_lock.locked = 1;
     test_current_thread = a;
-    wq_sleep(&wq, &cond_lock);
+    sleep_on(&wq, &cond_lock);
     wq_wake(&wq);
 
     ASSERT_EQ(woken_count, 1);
@@ -362,9 +358,8 @@ static int test_sleep_wake_reuse(void) {
 
     /* Second cycle: sleep + wake again */
     a->state = THREAD_RUNNING;
-    cond_lock.locked = 1;
     test_current_thread = a;
-    wq_sleep(&wq, &cond_lock);
+    sleep_on(&wq, &cond_lock);
     wq_wake(&wq);
 
     ASSERT_EQ(woken_count, 2);
@@ -389,18 +384,16 @@ static int test_multiple_wakes_empty(void) {
 static int test_wake_all_empties_queue(void) {
     reset_state();
     WaitQueue wq = (WaitQueue)WAITQUEUE_INIT;
-    Spinlock cond_lock = (Spinlock)SPINLOCK_INIT;
+    Spinlock cond_lock = (Spinlock)SPINLOCK_INIT(LOCK_LEVEL_OBJECT, "condition");
 
     Thread *a = make_thread(0, 1, THREAD_RUNNING);
     Thread *b = make_thread(1, 2, THREAD_RUNNING);
 
-    cond_lock.locked = 1;
     test_current_thread = a;
-    wq_sleep(&wq, &cond_lock);
+    sleep_on(&wq, &cond_lock);
 
-    cond_lock.locked = 1;
     test_current_thread = b;
-    wq_sleep(&wq, &cond_lock);
+    sleep_on(&wq, &cond_lock);
 
     wq_wake_all(&wq);
 
@@ -419,7 +412,7 @@ TestCase waitqueue_tests[] = {
     { "sleep_releases_caller_lock", test_sleep_releases_caller_lock },
     { "sleep_adds_to_queue",      test_sleep_adds_to_queue },
     { "wake_removes_from_queue",  test_wake_removes_from_queue },
-    { "wake_calls_sched_add",     test_wake_calls_sched_add },
+    { "wake_calls_sched_wake",     test_wake_calls_sched_wake },
     { "wake_returns_one",         test_wake_returns_one },
     { "fifo_ordering",            test_fifo_ordering },
     { "wake_all_wakes_multiple",  test_wake_all_wakes_multiple },

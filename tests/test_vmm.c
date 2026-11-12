@@ -10,12 +10,7 @@
 #define ARCHOS_LIB_MEM_H             /* Use libc memset/memcpy */
 #define ARCHOS_MM_VMM_H
 
-/* Stub spinlock for host-side tests (cli/popf fault in user space) */
-#define ARCHOS_PROC_SPINLOCK_H
-typedef struct { volatile uint32_t locked; uint64_t saved_flags; } Spinlock;
-#define SPINLOCK_INIT { .locked = 0, .saved_flags = 0 }
-static inline void spinlock_acquire(Spinlock *l) { (void)l; }
-static inline void spinlock_release(Spinlock *l) { (void)l; }
+#include "proc/spinlock.h"   /* host build: simulated interrupt flag */
 
 /* Stub kprintf */
 static inline void kprintf(const char *fmt, ...) { (void)fmt; }

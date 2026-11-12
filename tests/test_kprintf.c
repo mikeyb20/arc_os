@@ -32,22 +32,8 @@ static void hal_serial_putchar(char c) {
         capture_buf[capture_pos++] = c;
     }
 }
-static void hal_cpu_relax(void) {}
-
-/* The real spinlock uses cli/popf */
-#define ARCHOS_PROC_SPINLOCK_H
-typedef struct {
-    volatile uint32_t locked;
-} Spinlock;
-#define SPINLOCK_INIT \
-    { 0 }
-static void spinlock_acquire(Spinlock *l) {
-    while (__sync_lock_test_and_set(&l->locked, 1)) {
-    }
-}
-static void spinlock_release(Spinlock *l) {
-    __sync_lock_release(&l->locked);
-}
+/* The real spinlock.h: host builds (ARC_HOST_TEST) simulate the interrupt flag */
+#include "proc/spinlock.h"
 
 #include "../kernel/lib/klog.c"
 #include "../kernel/lib/kprintf.c"

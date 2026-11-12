@@ -18,7 +18,7 @@ section .text
 global syscall_entry
 global syscall_iret_user
 extern syscall_dispatch
-extern sig_maybe_deliver
+extern syscall_exit_work
 
 ; PerCpu field offsets (percpu.h, checked by _Static_assert in percpu.c)
 %define PERCPU_KERNEL_RSP 8
@@ -71,12 +71,12 @@ syscall_entry:
     call syscall_dispatch
     add rsp, 8              ; pop 7th arg
 
-    ; --- Signal delivery and rt_sigreturn ---
-    ; sig_maybe_deliver(frame, syscall_ret) may rewrite any frame field
+    ; --- Signal delivery and rt_sigreturn, then the kernel lock goes ---
+    ; syscall_exit_work(frame, syscall_ret) may rewrite any frame field
     ; (handler entry: RIP, RSP, RDI/RSI/RDX; sigreturn: every register)
     mov rdi, rsp            ; SyscallFrame pointer
     mov rsi, rax            ; syscall return value
-    call sig_maybe_deliver
+    call syscall_exit_work
     ; RAX = value for user RAX
 
     ; Nothing may interrupt between SWAPGS and SYSRET: an interrupt there would

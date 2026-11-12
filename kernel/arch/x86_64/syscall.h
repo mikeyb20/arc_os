@@ -25,9 +25,15 @@ void syscall_register(uint32_t num, syscall_handler_t handler);
 /* Assembly entry point for SYSCALL instruction. */
 extern void syscall_entry(void);
 
-/* C dispatcher called from syscall_entry.asm */
+/* C dispatcher called from syscall_entry.asm; takes the kernel lock. */
 int64_t syscall_dispatch(uint64_t num, uint64_t a0, uint64_t a1, uint64_t a2,
                          uint64_t a3, uint64_t a4, uint64_t a5);
+
+/* Called from syscall_entry.asm on the way out: signal delivery and
+ * rt_sigreturn (sig_maybe_deliver), then the kernel lock is released.
+ * Returns the value for user RAX. */
+struct SyscallFrame;
+int64_t syscall_exit_work(struct SyscallFrame *frame, int64_t syscall_ret);
 
 /* Copy the calling thread's saved user registers (RIP, RSP, RFLAGS and the
  * callee-saved set) into a fork context, from the SyscallFrame at the top of

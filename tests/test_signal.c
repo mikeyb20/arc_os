@@ -99,12 +99,13 @@ static int proc_foreach(void (*cb)(Process *p, void *ctx), void *ctx) {
     return count;
 }
 
-static int sched_remove_called = 0;
-static void sched_remove_thread(Thread *t) { (void)t; sched_remove_called = 1; }
-static int sched_add_called = 0;
-static void sched_add_thread(Thread *t) {
+/* sched_continue stub: SIGCONT resumes a THREAD_STOPPED thread */
+static int sched_continue_called = 0;
+static int sched_continue(Thread *t) {
+    sched_continue_called = 1;
+    if (t->state != THREAD_STOPPED) return 0;
     t->state = THREAD_READY;
-    sched_add_called = 1;
+    return 1;
 }
 
 /* User copies: the fake user stack is ordinary host memory; copy_fail makes
@@ -181,8 +182,7 @@ static void test_reset(void) {
     }
     test_current_idx = 0;
     sched_schedule_called = 0;
-    sched_remove_called = 0;
-    sched_add_called = 0;
+    sched_continue_called = 0;
     proc_exit_called = 0;
     copy_fail = 0;
     fpu_save_fail = 0;
@@ -408,7 +408,7 @@ TEST(default_stop_signals) {
         sig_maybe_deliver(&frame, 0);
         ASSERT_EQ(test_procs[0].state, PROC_STOPPED);
         ASSERT_EQ(test_threads[0].state, THREAD_STOPPED);
-        ASSERT_TRUE(sched_schedule_called && sched_remove_called);
+        ASSERT_TRUE(sched_schedule_called);
     }
     return 0;
 }
@@ -770,7 +770,8 @@ TEST(sigcont_resumes_stopped) {
     test_threads[1].state = THREAD_STOPPED;
     sig_send(1, SIGCONT);
     ASSERT_EQ(test_procs[1].state, PROC_ALIVE);
-    ASSERT_TRUE(sched_add_called);
+    ASSERT_TRUE(sched_continue_called);
+    ASSERT_EQ(test_threads[1].state, THREAD_READY);
     return 0;
 }
 
@@ -778,7 +779,7 @@ TEST(sigcont_noop_if_not_stopped) {
     test_reset();
     sig_send(0, SIGCONT);
     ASSERT_EQ(test_procs[0].state, PROC_ALIVE);
-    ASSERT_FALSE(sched_add_called);
+    ASSERT_FALSE(sched_continue_called);
     return 0;
 }
 

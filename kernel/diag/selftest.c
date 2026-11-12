@@ -3,17 +3,22 @@
  * Owns: the bring-up checks, one PASS/FAIL report line each: every MADT CPU
  * came online; an AVX2 checksum on every CPU matches the scalar one (XCR0
  * checked first); a 256 MB memory pattern test; the TSC rate against the PIT;
- * the PIT interrupt rate against the TSC.
+ * the PIT interrupt rate against the TSC; a kernel thread pinned to each CPU
+ * runs there (M1-05: this starts the other CPUs' schedulers early).
  * Invariants: runs only in diagnostic mode, where init never starts, so no
- * user thread exists on any CPU while the AVX2 routine runs (ADR-0003 note).
- * Every wait is bounded by TSC time. Locks: none (boot, BSP only).
- * Cost: about 1 s of memory traffic plus 300 ms of timed waits. */
+ * user thread exists on any CPU while the AVX2 routine runs (ADR-0003 note);
+ * the scheduler check runs last, after it. Every wait is bounded by TSC time.
+ * Locks: none of its own (boot thread, pinned to the BSP).
+ * Cost: about 1 s of memory traffic plus 300 ms of timed waits; one 16 KiB
+ * kernel thread per CPU that is never freed (diagnostic mode only). */
 
 #include "diag/diag.h"
 #include "arch/hal.h"
 #include "drivers/acpi.h"
 #include "mm/pmm.h"
 #include "mm/kmalloc.h"
+#include "proc/thread.h"
+#include "proc/sched.h"
 #include "lib/kprintf.h"
 #include "lib/testmode.h"
 #include <stdarg.h>
@@ -24,6 +29,7 @@
 #define MEMTEST_BLOCKS  64                             /* x 4 MiB = 256 MB */
 #define TIMER_CHECK_MS  200
 #define TIMER_HZ        100                                  /* kmain starts the PIT at 100 Hz */
+#define SCHED_CHECK_MS  2000                                 /* every pinned thread has run by then */
 
 static int passed, failed;
 
@@ -209,6 +215,49 @@ static void check_timer_irq(void) {
            ticks == 0 ? ": IRQ0 never fired" : "");
 }
 
+/* ---- SMP scheduler (M1-05): a thread pinned to each CPU runs there ---- */
+
+static volatile uint32_t sched_ran;        /* pinned threads that ran on their own CPU */
+static volatile uint32_t sched_misplaced;  /* pinned threads that ran anywhere else */
+
+static void pinned_entry(void *arg) {
+    uint32_t want = (uint32_t)(uintptr_t)arg;
+    if (hal_cpu_index() == want)
+        __atomic_fetch_add(&sched_ran, 1, __ATOMIC_RELAXED);
+    else
+        __atomic_fetch_add(&sched_misplaced, 1, __ATOMIC_RELAXED);
+}   /* returns: the thread ends DEAD (thread_trampoline) */
+
+static void check_sched(void) {
+    sched_start_aps();
+    uint32_t started = 0, p_cores = 0, e_cores = 0;
+    for (uint32_t cpu = 0; cpu < HAL_MAX_CPUS; cpu++) {
+        SchedCpuStats st;
+        if (sched_cpu_stats(cpu, &st) != 0) continue;
+        Thread *t = thread_create(pinned_entry, (void *)(uintptr_t)cpu);
+        if (t == NULL) break;
+        CpuMask only;
+        cpumask_clear(&only);
+        cpumask_set(&only, cpu);
+        sched_set_affinity(t, &only);
+        sched_add_thread(t);
+        started++;
+        p_cores += st.core[0] == 'P';
+        e_cores += st.core[0] == 'E';
+    }
+    uint64_t start = hal_tsc_read();
+    uint64_t khz = hal_tsc_info()->khz;
+    uint64_t limit = khz != 0 ? khz * SCHED_CHECK_MS : CALL_MAX_CYCLES;
+    while (sched_ran + sched_misplaced < started && hal_tsc_read() - start < limit) {
+        sched_yield();   /* CPU 0's pinned thread runs when this one yields */
+        hal_cpu_relax();
+    }
+    uint32_t online = hal_cpu_count();
+    int ok = started == online && sched_ran == online && sched_misplaced == 0;
+    result("sched", ok, "%u of %u CPUs ran a pinned thread (%u P, %u E), %u elsewhere", sched_ran, online, p_cores,
+           e_cores, sched_misplaced);
+}
+
 void diag_selftest(int *passes, int *fails) {
     passed = failed = 0;
     diag_line("Self-test");
@@ -217,6 +266,7 @@ void diag_selftest(int *passes, int *fails) {
     check_memory();
     check_tsc();
     check_timer_irq();
+    check_sched();   /* last: starts the other CPUs' schedulers */
     diag_line("Self-test: %d PASS, %d FAIL", passed, failed);
     *passes = passed;
     *fails = failed;

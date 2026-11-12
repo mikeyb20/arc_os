@@ -50,7 +50,7 @@ static const int slab_debug = 0;
 static struct kmem_cache cache_cache;   /* holds every kmem_cache_create()d cache */
 static struct kmem_cache *registry_head;
 static struct kmem_cache *registry_tail;
-static Spinlock registry_lock = SPINLOCK_INIT;
+static Spinlock registry_lock = SPINLOCK_INIT(LOCK_LEVEL_SLAB_REGISTRY, "slab registry");
 
 static uint64_t charged_bytes;   /* atomic: slab pages + large kmalloc blocks */
 static uint32_t max_steps;       /* atomic: budget slab_steps_max */
@@ -120,12 +120,13 @@ static void slab_bad(const struct kmem_cache *c, const void *obj, const char *wh
 /* --- Cache set-up and registry --- */
 
 int kmem_cache_setup(struct kmem_cache *cache, const char *name, size_t size, size_t align) {
+    uint64_t irqf;
     if (align == 0) align = SLAB_MIN_ALIGN;
     if (size == 0 || size > SLAB_OBJECT_MAX || (align & (align - 1)) != 0 || align > PAGE_SIZE) return -1;
     if (align < SLAB_MIN_ALIGN) align = SLAB_MIN_ALIGN;
 
     memset(cache, 0, sizeof(*cache));
-    cache->lock = (Spinlock)SPINLOCK_INIT;
+    spin_lock_init(&cache->lock, LOCK_LEVEL_SLAB, "slab cache");
     cache->name = name;
     cache->object_size = (uint32_t)size;
     cache->align = (uint32_t)align;
@@ -143,14 +144,14 @@ int kmem_cache_setup(struct kmem_cache *cache, const char *name, size_t size, si
     cache->full = (struct page_list)PAGE_LIST_INIT;
     cache->empty = (struct page_list)PAGE_LIST_INIT;
 
-    spinlock_acquire(&registry_lock);
+    spin_lock_irqsave(&registry_lock, &irqf);
     if (registry_tail) {
         registry_tail->next = cache;
     } else {
         registry_head = cache;
     }
     registry_tail = cache;
-    spinlock_release(&registry_lock);
+    spin_unlock_irqrestore(&registry_lock, irqf);
     return 0;
 }
 
@@ -238,8 +239,9 @@ static void *slab_take(struct kmem_cache *c, struct page *pg) {
 }
 
 void *kmem_cache_alloc(struct kmem_cache *cache, uint32_t flags) {
+    uint64_t irqf;
     uint32_t steps = 1;
-    spinlock_acquire(&cache->lock);
+    spin_lock_irqsave(&cache->lock, &irqf);
     struct page *pg = page_list_first(&cache->partial);
     if (pg == NULL) {
         pg = page_list_first(&cache->empty);
@@ -249,7 +251,7 @@ void *kmem_cache_alloc(struct kmem_cache *cache, uint32_t flags) {
         } else {
             pg = slab_new(cache);
             if (pg == NULL) {
-                spinlock_release(&cache->lock);
+                spin_unlock_irqrestore(&cache->lock, irqf);
                 return NULL;
             }
         }
@@ -258,7 +260,7 @@ void *kmem_cache_alloc(struct kmem_cache *cache, uint32_t flags) {
     }
     void *obj = slab_take(cache, pg);
     if (obj == NULL) {
-        spinlock_release(&cache->lock);
+        spin_unlock_irqrestore(&cache->lock, irqf);
         return NULL;
     }
     if (pg->slab_inuse == cache->per_slab) {
@@ -268,7 +270,7 @@ void *kmem_cache_alloc(struct kmem_cache *cache, uint32_t flags) {
     }
     cache->active++;
     note_steps(steps);
-    spinlock_release(&cache->lock);
+    spin_unlock_irqrestore(&cache->lock, irqf);
 
     if (flags & GFP_ZERO) memset(obj, 0, cache->object_size);
     return obj;
@@ -280,6 +282,7 @@ static inline uint32_t obj_offset(const struct page *head, const void *obj) {
 }
 
 void kmem_cache_free(struct kmem_cache *cache, void *obj) {
+    uint64_t irqf;
     if (obj == NULL) return;
     if (slab_debug && slab_owner(obj) != cache) {
         slab_bad(cache, obj, "free to the wrong cache or of a non-slab pointer");
@@ -294,11 +297,11 @@ void kmem_cache_free(struct kmem_cache *cache, void *obj) {
     }
 
     uint32_t steps = 1;
-    spinlock_acquire(&cache->lock);
+    spin_lock_irqsave(&cache->lock, &irqf);
     if (slab_debug) {
         uint32_t state = *rz_state(cache, o);
         if (state != RZ_LIVE || off / cache->stride >= pg->slab_fresh) {
-            spinlock_release(&cache->lock);
+            spin_unlock_irqrestore(&cache->lock, irqf);
             slab_bad(cache, obj, state == RZ_FREE ? "double free" : "red zone overwritten (overflow?)");
             return;
         }
@@ -327,12 +330,13 @@ void kmem_cache_free(struct kmem_cache *cache, void *obj) {
         steps++;
     }
     note_steps(steps);
-    spinlock_release(&cache->lock);
+    spin_unlock_irqrestore(&cache->lock, irqf);
 }
 
 uint64_t kmem_cache_shrink(struct kmem_cache *cache) {
+    uint64_t irqf;
     uint64_t pages = 0;
-    spinlock_acquire(&cache->lock);
+    spin_lock_irqsave(&cache->lock, &irqf);
     struct page *pg;
     while ((pg = page_list_first(&cache->empty)) != NULL) {   /* normally one slab */
         page_list_remove(&cache->empty, pg);
@@ -340,7 +344,7 @@ uint64_t kmem_cache_shrink(struct kmem_cache *cache) {
         slab_release(cache, pg);
         pages += 1u << cache->order;
     }
-    spinlock_release(&cache->lock);
+    spin_unlock_irqrestore(&cache->lock, irqf);
     return pages;
 }
 
@@ -361,17 +365,18 @@ size_t slab_object_size(const void *obj) {
 }
 
 int slab_get_info(unsigned n, SlabInfo *out) {
-    spinlock_acquire(&registry_lock);
+    uint64_t irqf;
+    spin_lock_irqsave(&registry_lock, &irqf);
     struct kmem_cache *c = registry_head;
     while (c != NULL && n > 0) {
         c = c->next;
         n--;
     }
     if (c == NULL) {
-        spinlock_release(&registry_lock);
+        spin_unlock_irqrestore(&registry_lock, irqf);
         return -1;
     }
-    spinlock_acquire(&c->lock);
+    spin_lock(&c->lock);   /* interrupts already off */
     out->name = c->name;
     out->object_size = c->object_size;
     out->active_objs = c->active;
@@ -379,21 +384,22 @@ int slab_get_info(unsigned n, SlabInfo *out) {
     out->total_objs = c->nr_slabs * c->per_slab;
     out->slabs = c->nr_slabs;
     out->pages_per_slab = 1u << c->order;
-    spinlock_release(&c->lock);
-    spinlock_release(&registry_lock);
+    spin_unlock(&c->lock);
+    spin_unlock_irqrestore(&registry_lock, irqf);
     return 0;
 }
 
 void slab_get_totals(uint64_t *used_bytes, uint64_t *slab_bytes) {
+    uint64_t irqf;
     uint64_t used = 0, held = 0;
-    spinlock_acquire(&registry_lock);
+    spin_lock_irqsave(&registry_lock, &irqf);
     for (struct kmem_cache *c = registry_head; c != NULL; c = c->next) {
-        spinlock_acquire(&c->lock);
+        spin_lock(&c->lock);   /* interrupts already off */
         used += c->active * c->object_size;
         held += c->nr_slabs * ((uint64_t)PAGE_SIZE << c->order);
-        spinlock_release(&c->lock);
+        spin_unlock(&c->lock);
     }
-    spinlock_release(&registry_lock);
+    spin_unlock_irqrestore(&registry_lock, irqf);
     *used_bytes = used;
     *slab_bytes = held;
 }

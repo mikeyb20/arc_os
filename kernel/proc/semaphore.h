@@ -16,7 +16,7 @@ typedef struct {
 } Semaphore;
 
 #define SEMAPHORE_INIT(n) { \
-    .guard = SPINLOCK_INIT, \
+    .guard = SPINLOCK_INIT(LOCK_LEVEL_OBJECT, "semaphore"), \
     .count = (n), \
     .waiters = WAITQUEUE_INIT \
 }

@@ -3,21 +3,24 @@
 #include "mm/pmm.h"
 #include "lib/kprintf.h"
 #include "lib/mem.h"
+#include "proc/sched.h"
 #include "arch/hal.h"
 
 static tid_t next_tid = 0;
 
 /* Trampoline: first thing a new thread executes after context_switch returns.
- * Enables interrupts, calls the entry function, marks thread DEAD, then yields. */
+ * Finishes the switch that started it (releases the run-queue lock), enables
+ * interrupts, calls the entry function; if that returns, the thread is DEAD
+ * and switches away for good (no one frees a kernel thread without a process). */
 static void thread_trampoline(void) {
+    sched_finish_switch();
     Thread *t = thread_current();
-    __asm__ volatile ("sti");
+    hal_enable_interrupts();
     t->entry(t->arg);
+    (void)irq_save();
     t->state = THREAD_DEAD;
-    /* Yield to scheduler — thread will never be scheduled again */
-    for (;;) {
-        __asm__ volatile ("hlt");
-    }
+    sched_schedule();
+    for (;;) hal_halt_forever();
 }
 
 void thread_init(void) {
@@ -30,6 +33,7 @@ void thread_init(void) {
 
     boot->tid = next_tid++;
     boot->state = THREAD_RUNNING;
+    cpumask_fill(&boot->affinity);
 
     thread_set_current(boot);   /* kept per CPU, through GS (M1-03) */
     kprintf("[PROC] Threading initialized (boot thread tid=%u)\n", boot->tid);
@@ -56,13 +60,14 @@ Thread *thread_create(thread_entry_t entry, void *arg) {
         return NULL;
     }
 
-    t->tid = next_tid++;
+    t->tid = __atomic_fetch_add(&next_tid, 1, __ATOMIC_RELAXED);
     t->state = THREAD_READY;
+    t->cpu = hal_cpu_index();   /* where a first wakeup looks first */
+    cpumask_fill(&t->affinity);
     t->stack_size = THREAD_STACK_SIZE;
     t->kernel_stack_top = (uint64_t)(t->stack_base + THREAD_STACK_SIZE);
     t->entry = entry;
     t->arg = arg;
-    t->next = NULL;
 
     /* Set up initial stack so context_switch's ret jumps to thread_trampoline.
      * Stack grows downward, so top = base + size.

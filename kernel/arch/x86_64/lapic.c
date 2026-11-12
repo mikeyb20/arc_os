@@ -1,6 +1,8 @@
 /* arc_os — Local APIC access layer (M1-03)
  *
- * Owns: the APIC mode (xAPIC MMIO or x2APIC MSRs), register access, EOI, IPIs.
+ * Owns: the APIC mode (xAPIC MMIO or x2APIC MSRs), register access, EOI, IPIs,
+ * and the per-CPU timer the scheduler uses for time slices (M1-05: rate measured
+ * once against the TSC on the BSP, periodic while a CPU runs a thread).
  * Invariants: the mode is chosen once on the BSP before any AP starts and never
  * changes; every CPU runs in that mode (an AP left in xAPIC mode by the
  * bootloader is switched to x2APIC; xAPIC -> x2APIC is the only legal direction
@@ -11,9 +13,10 @@
 #include "arch/x86_64/lapic.h"
 #include "arch/x86_64/msr.h"
 #include "arch/x86_64/cpuid.h"
-#include "arch/x86_64/pit.h"
+#include "arch/x86_64/tsc.h"
+#include "arch/x86_64/isr.h"
 #include "mm/vmm.h"
-#include "proc/spinlock.h"
+#include "arch/hal_lock.h"
 #include "lib/kprintf.h"
 #include <stddef.h>
 
@@ -126,34 +129,55 @@ void lapic_send_ipi_all_excluding_self(uint32_t vector) {
     lapic_write_icr(0, vector | ICR_FIXED | ICR_DEST_ALL_EX | ICR_LEVEL_ASSERT);
 }
 
-void lapic_timer_init(uint32_t vector, uint32_t freq_hz) {
-    /* Set divide value to 16 */
+/* Timer ticks per second at divide-by-16, measured once on the BSP. The APIC
+ * timer runs from the same clock on every CPU, so APs reuse the number. */
+#define LAPIC_TIMER_MEASURE_MS 10
+#define LAPIC_TIMER_LVT_PERIODIC (1u << 17)
+#define LAPIC_TIMER_LVT_MASKED   (1u << 16)
+static uint64_t timer_hz;
+static void (*timer_fn)(void);
+
+static void lapic_timer_handler(InterruptFrame *frame) {
+    (void)frame;
+    lapic_eoi();   /* first: the handler may switch threads */
+    if (timer_fn != NULL) timer_fn();
+}
+
+void lapic_timer_setup(void (*fn)(void)) {
+    timer_fn = fn;
+    isr_register_handler(LAPIC_TIMER_VEC, lapic_timer_handler);
+
+    uint64_t tsc_khz = tsc_info()->khz;
+    lapic_write(LAPIC_TIMER_LVT, LAPIC_TIMER_LVT_MASKED | LAPIC_TIMER_VEC);   /* one-shot, masked */
     lapic_write(LAPIC_TIMER_DCR, LAPIC_TIMER_DIV_16);
-
-    /* Calibrate: use PIT to measure LAPIC timer speed.
-     * Set initial count to max, wait ~10ms, read remaining. */
-    lapic_write(LAPIC_TIMER_ICR, 0xFFFFFFFF);
-
-    /* Busy-wait ~10ms using PIT ticks (PIT runs at 100 Hz = 10ms/tick) */
-    uint64_t start = pit_get_ticks();
-    while (pit_get_ticks() - start < 1) {
-        __asm__ volatile ("pause");
+    if (tsc_khz != 0) {
+        uint64_t wait = tsc_khz * LAPIC_TIMER_MEASURE_MS;
+        lapic_write(LAPIC_TIMER_ICR, 0xFFFFFFFF);
+        uint64_t start = cpu_rdtsc();
+        while (cpu_rdtsc() - start < wait) {
+            __asm__ volatile("pause");
+        }
+        uint32_t elapsed = 0xFFFFFFFF - lapic_read(LAPIC_TIMER_CCR);
+        lapic_write(LAPIC_TIMER_ICR, 0);
+        timer_hz = (uint64_t)elapsed * (1000 / LAPIC_TIMER_MEASURE_MS);
     }
+    if (timer_hz == 0) {
+        timer_hz = 1000000000ULL / 16;   /* no TSC rate: assume a 1 GHz APIC clock */
+        kprintf("[LAPIC] WARNING: timer not measured, assuming %lu Hz\n", timer_hz);
+    }
+    kprintf("[LAPIC] Timer: %lu Hz at divide 16 (slice timer, vector 0x%x)\n", timer_hz, LAPIC_TIMER_VEC);
+}
 
-    uint32_t elapsed = 0xFFFFFFFF - lapic_read(LAPIC_TIMER_CCR);
+void lapic_timer_periodic(uint64_t period_ns) {
+    uint64_t count = timer_hz * period_ns / 1000000000ULL;
+    if (count == 0) count = 1;
+    if (count > 0xFFFFFFFF) count = 0xFFFFFFFF;
+    lapic_write(LAPIC_TIMER_DCR, LAPIC_TIMER_DIV_16);
+    lapic_write(LAPIC_TIMER_LVT, LAPIC_TIMER_LVT_PERIODIC | LAPIC_TIMER_VEC);
+    lapic_write(LAPIC_TIMER_ICR, (uint32_t)count);   /* (re)starts the count */
+}
 
-    /* Calculate initial count for desired frequency.
-     * elapsed ticks in ~10ms → elapsed * 100 = ticks/second.
-     * For freq_hz: initial_count = ticks_per_second / freq_hz */
-    uint32_t ticks_per_sec = elapsed * 100;
-    uint32_t initial_count = ticks_per_sec / freq_hz;
-
-    if (initial_count == 0) initial_count = 1;
-
-    /* Configure timer: periodic mode, desired vector */
-    lapic_write(LAPIC_TIMER_LVT, vector | (1 << 17)); /* bit 17 = periodic */
-    lapic_write(LAPIC_TIMER_ICR, initial_count);
-
-    kprintf("[LAPIC] Timer: %u ticks/sec, period=%u for %u Hz\n",
-            ticks_per_sec, initial_count, freq_hz);
+void lapic_timer_stop(void) {
+    lapic_write(LAPIC_TIMER_LVT, LAPIC_TIMER_LVT_MASKED | LAPIC_TIMER_VEC);
+    lapic_write(LAPIC_TIMER_ICR, 0);
 }

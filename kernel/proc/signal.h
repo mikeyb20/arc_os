@@ -24,7 +24,7 @@ typedef void (*sig_handler_t)(int);
  * the stub reloads every field on the way out. RAX is not here: it is the
  * value sig_maybe_deliver returns. RCX and R11 hold the user RIP and RFLAGS
  * (SYSCALL put them there), so a signal frame records those for rcx/r11. */
-typedef struct {
+typedef struct SyscallFrame {
     uint64_t r9;
     uint64_t r8;
     uint64_t r10;

@@ -21,10 +21,11 @@
 
 /* Global socket table */
 static Socket *socket_table[SOCKET_MAX];
-static Spinlock socket_table_lock = SPINLOCK_INIT;
+static Spinlock socket_table_lock = SPINLOCK_INIT(LOCK_LEVEL_OBJECT_TABLE, "socket table");
 static uint16_t ephemeral_port_next = 49152;
 
 int socket_create(uint16_t family, uint16_t type, uint16_t protocol) {
+    uint64_t irqf;
     (void)protocol;
     if (family != AF_INET) return -ENOSYS;
     if (type != SOCK_DGRAM && type != SOCK_STREAM) return -EINVAL;
@@ -36,11 +37,11 @@ int socket_create(uint16_t family, uint16_t type, uint16_t protocol) {
     sk->type = type;
     sk->state = SOCK_STATE_CLOSED;
     sk->refs = 1;                     /* the fd socket() installs */
-    sk->lock = (Spinlock)SPINLOCK_INIT;
+    spin_lock_init(&sk->lock, LOCK_LEVEL_OBJECT, "socket");
     wq_init(&sk->rx_wq);
     wq_init(&sk->accept_wq);
 
-    spinlock_acquire(&socket_table_lock);
+    spin_lock_irqsave(&socket_table_lock, &irqf);
     int idx = -1;
     for (int i = 0; i < SOCKET_MAX; i++) {
         if (socket_table[i] == NULL) {
@@ -49,7 +50,7 @@ int socket_create(uint16_t family, uint16_t type, uint16_t protocol) {
             break;
         }
     }
-    spinlock_release(&socket_table_lock);
+    spin_unlock_irqrestore(&socket_table_lock, irqf);
 
     if (idx < 0) {
         kfree(sk);
@@ -85,17 +86,19 @@ static void socket_reset_peer(Socket *sk) {
 }
 
 void socket_free(int idx) {
+    uint64_t irqf;
     if (idx < 0 || idx >= SOCKET_MAX) return;
-    spinlock_acquire(&socket_table_lock);
+    spin_lock_irqsave(&socket_table_lock, &irqf);
     Socket *sk = socket_table[idx];
     socket_table[idx] = NULL;
-    spinlock_release(&socket_table_lock);
+    spin_unlock_irqrestore(&socket_table_lock, irqf);
     if (sk == NULL) return;
 
-    /* Out of the table, so packet delivery no longer finds it. Interrupts are
-     * off in syscalls on one CPU, so no receive path holds it either; M1-05
-     * (SMP) needs the table lock in find_socket before this is safe there. */
-    spinlock_acquire(&sk->lock);
+    /* Out of the table, so packet delivery no longer finds it. The kernel
+     * lock (M1-05) keeps syscalls and the receive interrupt apart, so no
+     * receive path holds it either; the socket layer's own locking (lookups
+     * under the table lock) is needed before that lock can go. */
+    spin_lock_irqsave(&sk->lock, &irqf);
     sk->closed = 1;
     /* Connections a listener received but nobody accepted live only here */
     while (sk->accept_head != sk->accept_tail) {
@@ -104,7 +107,7 @@ void socket_free(int idx) {
         socket_reset_peer(child);
         kfree(child);
     }
-    spinlock_release(&sk->lock);
+    spin_unlock_irqrestore(&sk->lock, irqf);
     socket_reset_peer(sk);
     wq_wake_all(&sk->rx_wq);
     wq_wake_all(&sk->accept_wq);
@@ -123,51 +126,55 @@ void socket_release(int idx) {
 }
 
 uint16_t socket_alloc_ephemeral_port(void) {
-    spinlock_acquire(&socket_table_lock);
+    uint64_t irqf;
+    spin_lock_irqsave(&socket_table_lock, &irqf);
     uint16_t port = htons(ephemeral_port_next++);
     if (ephemeral_port_next > 65534) ephemeral_port_next = 49152;
-    spinlock_release(&socket_table_lock);
+    spin_unlock_irqrestore(&socket_table_lock, irqf);
     return port;
 }
 
 int socket_bind(Socket *sk, uint32_t ip, uint16_t port) {
+    uint64_t irqf;
     if (sk == NULL) return -EINVAL;
-    spinlock_acquire(&sk->lock);
+    spin_lock_irqsave(&sk->lock, &irqf);
     sk->local_ip = ip;
     sk->local_port = port;
-    spinlock_release(&sk->lock);
+    spin_unlock_irqrestore(&sk->lock, irqf);
     return 0;
 }
 
 int socket_listen(Socket *sk, int backlog) {
+    uint64_t irqf;
     (void)backlog;
     if (sk == NULL || sk->type != SOCK_STREAM) return -EINVAL;
-    spinlock_acquire(&sk->lock);
+    spin_lock_irqsave(&sk->lock, &irqf);
     sk->state = SOCK_STATE_LISTEN;
-    spinlock_release(&sk->lock);
+    spin_unlock_irqrestore(&sk->lock, irqf);
     return 0;
 }
 
 int socket_accept(Socket *sk, SockAddrIn *addr_out) {
+    uint64_t irqf;
     if (sk == NULL || sk->state != SOCK_STATE_LISTEN) return -EINVAL;
 
-    spinlock_acquire(&sk->lock);
+    spin_lock_irqsave(&sk->lock, &irqf);
     while (sk->accept_head == sk->accept_tail && !sk->closed) {
-        wq_sleep(&sk->accept_wq, &sk->lock);
-        spinlock_acquire(&sk->lock);
+        wq_sleep(&sk->accept_wq, &sk->lock, irqf);
+        spin_lock_irqsave(&sk->lock, &irqf);
     }
 
     if (sk->closed) {
-        spinlock_release(&sk->lock);
+        spin_unlock_irqrestore(&sk->lock, irqf);
         return -EBADF;
     }
 
     Socket *child = sk->accept_queue[sk->accept_head];
     sk->accept_head = (sk->accept_head + 1) % SOCK_BACKLOG_MAX;
-    spinlock_release(&sk->lock);
+    spin_unlock_irqrestore(&sk->lock, irqf);
 
     /* Register child socket in the global table */
-    spinlock_acquire(&socket_table_lock);
+    spin_lock_irqsave(&socket_table_lock, &irqf);
     int idx = -1;
     for (int i = 0; i < SOCKET_MAX; i++) {
         if (socket_table[i] == NULL) {
@@ -176,7 +183,7 @@ int socket_accept(Socket *sk, SockAddrIn *addr_out) {
             break;
         }
     }
-    spinlock_release(&socket_table_lock);
+    spin_unlock_irqrestore(&socket_table_lock, irqf);
 
     if (idx < 0) {
         socket_reset_peer(child);
@@ -195,9 +202,10 @@ int socket_accept(Socket *sk, SockAddrIn *addr_out) {
 }
 
 int socket_connect(Socket *sk, uint32_t ip, uint16_t port) {
+    uint64_t irqf;
     if (sk == NULL) return -EINVAL;
 
-    spinlock_acquire(&sk->lock);
+    spin_lock_irqsave(&sk->lock, &irqf);
     sk->remote_ip = ip;
     sk->remote_port = port;
 
@@ -208,14 +216,14 @@ int socket_connect(Socket *sk, uint32_t ip, uint16_t port) {
     if (sk->type == SOCK_DGRAM) {
         /* UDP: just record the remote address */
         sk->state = SOCK_STATE_ESTABLISHED;
-        spinlock_release(&sk->lock);
+        spin_unlock_irqrestore(&sk->lock, irqf);
         return 0;
     }
 
     /* TCP: send SYN */
     NetIf *nif = netif_get_default();
     if (nif == NULL) {
-        spinlock_release(&sk->lock);
+        spin_unlock_irqrestore(&sk->lock, irqf);
         return -ENETUNREACH;
     }
 
@@ -224,24 +232,25 @@ int socket_connect(Socket *sk, uint32_t ip, uint16_t port) {
     sk->snd_una = sk->snd_nxt;
     sk->state = SOCK_STATE_SYN_SENT;
     uint32_t seq = sk->snd_nxt++;
-    spinlock_release(&sk->lock);
+    spin_unlock_irqrestore(&sk->lock, irqf);
 
     tcp_send(nif, nif->ip_addr, sk->local_port,
              ip, port, seq, 0, TCP_SYN, NULL, 0);
 
     /* Wait for SYN-ACK */
-    spinlock_acquire(&sk->lock);
+    spin_lock_irqsave(&sk->lock, &irqf);
     while (sk->state == SOCK_STATE_SYN_SENT && !sk->closed) {
-        wq_sleep(&sk->rx_wq, &sk->lock);
-        spinlock_acquire(&sk->lock);
+        wq_sleep(&sk->rx_wq, &sk->lock, irqf);
+        spin_lock_irqsave(&sk->lock, &irqf);
     }
 
     int ret = (sk->state == SOCK_STATE_ESTABLISHED) ? 0 : -ECONNREFUSED;
-    spinlock_release(&sk->lock);
+    spin_unlock_irqrestore(&sk->lock, irqf);
     return ret;
 }
 
 int socket_send(Socket *sk, const void *buf, uint32_t len) {
+    uint64_t irqf;
     if (sk == NULL || buf == NULL) return -EINVAL;
     if (sk->type == SOCK_DGRAM) {
         return socket_sendto(sk, buf, len, sk->remote_ip, sk->remote_port);
@@ -262,10 +271,10 @@ int socket_send(Socket *sk, const void *buf, uint32_t len) {
         uint32_t chunk = len - sent;
         if (chunk > max_seg) chunk = max_seg;
 
-        spinlock_acquire(&sk->lock);
+        spin_lock_irqsave(&sk->lock, &irqf);
         uint32_t seq = sk->snd_nxt;
         sk->snd_nxt += chunk;
-        spinlock_release(&sk->lock);
+        spin_unlock_irqrestore(&sk->lock, irqf);
 
         tcp_send(nif, sk->local_ip, sk->local_port,
                  sk->remote_ip, sk->remote_port,
@@ -278,17 +287,18 @@ int socket_send(Socket *sk, const void *buf, uint32_t len) {
 }
 
 int socket_recv(Socket *sk, void *buf, uint32_t len) {
+    uint64_t irqf;
     if (sk == NULL || buf == NULL) return -EINVAL;
 
-    spinlock_acquire(&sk->lock);
+    spin_lock_irqsave(&sk->lock, &irqf);
     while (sk->rx_count == 0 && !sk->closed &&
            sk->state != SOCK_STATE_CLOSE_WAIT) {
-        wq_sleep(&sk->rx_wq, &sk->lock);
-        spinlock_acquire(&sk->lock);
+        wq_sleep(&sk->rx_wq, &sk->lock, irqf);
+        spin_lock_irqsave(&sk->lock, &irqf);
     }
 
     if (sk->rx_count == 0) {
-        spinlock_release(&sk->lock);
+        spin_unlock_irqrestore(&sk->lock, irqf);
         return 0;  /* EOF or closed */
     }
 
@@ -303,7 +313,7 @@ int socket_recv(Socket *sk, void *buf, uint32_t len) {
     }
     sk->rx_count -= to_copy;
 
-    spinlock_release(&sk->lock);
+    spin_unlock_irqrestore(&sk->lock, irqf);
     return (int)to_copy;
 }
 
@@ -326,22 +336,23 @@ int socket_sendto(Socket *sk, const void *buf, uint32_t len,
 
 int socket_recvfrom(Socket *sk, void *buf, uint32_t len,
                     uint32_t *src_ip, uint16_t *src_port) {
+    uint64_t irqf;
     if (sk == NULL || buf == NULL) return -EINVAL;
 
-    spinlock_acquire(&sk->lock);
+    spin_lock_irqsave(&sk->lock, &irqf);
     while (sk->rx_count == 0 && !sk->closed) {
-        wq_sleep(&sk->rx_wq, &sk->lock);
-        spinlock_acquire(&sk->lock);
+        wq_sleep(&sk->rx_wq, &sk->lock, irqf);
+        spin_lock_irqsave(&sk->lock, &irqf);
     }
 
     if (sk->rx_count == 0) {
-        spinlock_release(&sk->lock);
+        spin_unlock_irqrestore(&sk->lock, irqf);
         return 0;
     }
 
     /* For UDP, each datagram is prefixed with UdpRxMeta */
     if (sk->rx_count < sizeof(UdpRxMeta)) {
-        spinlock_release(&sk->lock);
+        spin_unlock_irqrestore(&sk->lock, irqf);
         return -EIO;
     }
 
@@ -374,7 +385,7 @@ int socket_recvfrom(Socket *sk, void *buf, uint32_t len,
     if (src_ip) *src_ip = meta.src_ip;
     if (src_port) *src_port = meta.src_port;
 
-    spinlock_release(&sk->lock);
+    spin_unlock_irqrestore(&sk->lock, irqf);
     return (int)to_copy;
 }
 
@@ -419,11 +430,12 @@ static int rx_enqueue(Socket *sk, const void *data, uint32_t len) {
 void socket_udp_deliver(uint32_t src_ip, uint16_t src_port,
                         uint32_t dst_ip, uint16_t dst_port,
                         const void *data, uint32_t len) {
+    uint64_t irqf;
     (void)dst_ip;
     Socket *sk = find_socket(dst_port, SOCK_DGRAM, 0, 0);
     if (sk == NULL) return;  /* No matching socket — drop */
 
-    spinlock_acquire(&sk->lock);
+    spin_lock_irqsave(&sk->lock, &irqf);
 
     /* Store metadata + data in rx buffer */
     UdpRxMeta meta = {
@@ -436,13 +448,14 @@ void socket_udp_deliver(uint32_t src_ip, uint16_t src_port,
         rx_enqueue(sk, data, len);
     }
 
-    spinlock_release(&sk->lock);
+    spin_unlock_irqrestore(&sk->lock, irqf);
     wq_wake(&sk->rx_wq);
 }
 
 void socket_tcp_deliver(uint32_t src_ip, uint16_t src_port,
                         uint32_t dst_ip, uint16_t dst_port,
                         const void *segment, uint32_t seg_len) {
+    uint64_t irqf;
     (void)dst_ip;
     const TcpHeader *hdr = (const TcpHeader *)segment;
     uint8_t flags = hdr->flags;
@@ -467,14 +480,14 @@ void socket_tcp_deliver(uint32_t src_ip, uint16_t src_port,
         return;
     }
 
-    spinlock_acquire(&sk->lock);
+    spin_lock_irqsave(&sk->lock, &irqf);
 
     switch (sk->state) {
     case SOCK_STATE_LISTEN:
         if (flags & TCP_SYN) {
             /* Create child socket for this connection */
             Socket *child = kmalloc(sizeof(Socket), GFP_ZERO);
-            if (child == NULL) { spinlock_release(&sk->lock); return; }
+            if (child == NULL) { spin_unlock_irqrestore(&sk->lock, irqf); return; }
 
             child->family = AF_INET;
             child->type = SOCK_STREAM;
@@ -486,7 +499,7 @@ void socket_tcp_deliver(uint32_t src_ip, uint16_t src_port,
             child->snd_nxt = 2000;  /* ISN (simplified) */
             child->snd_una = child->snd_nxt;
             child->state = SOCK_STATE_SYN_RECV;
-            child->lock = (Spinlock)SPINLOCK_INIT;
+            spin_lock_init(&child->lock, LOCK_LEVEL_OBJECT, "socket");
             wq_init(&child->rx_wq);
             wq_init(&child->accept_wq);
 
@@ -509,7 +522,7 @@ void socket_tcp_deliver(uint32_t src_ip, uint16_t src_port,
                 kfree(child);  /* Backlog full */
             }
         }
-        spinlock_release(&sk->lock);
+        spin_unlock_irqrestore(&sk->lock, irqf);
         return;
 
     case SOCK_STATE_SYN_RECV:
@@ -517,7 +530,7 @@ void socket_tcp_deliver(uint32_t src_ip, uint16_t src_port,
             sk->snd_una = ack;
             sk->state = SOCK_STATE_ESTABLISHED;
             /* Wake accept() caller on parent */
-            spinlock_release(&sk->lock);
+            spin_unlock_irqrestore(&sk->lock, irqf);
             /* Find parent listening socket and wake it */
             for (int i = 0; i < SOCKET_MAX; i++) {
                 Socket *parent = socket_table[i];
@@ -546,13 +559,13 @@ void socket_tcp_deliver(uint32_t src_ip, uint16_t src_port,
                          TCP_ACK, NULL, 0);
             }
 
-            spinlock_release(&sk->lock);
+            spin_unlock_irqrestore(&sk->lock, irqf);
             wq_wake(&sk->rx_wq);
             return;
         }
         if (flags & TCP_RST) {
             sk->state = SOCK_STATE_CLOSED;
-            spinlock_release(&sk->lock);
+            spin_unlock_irqrestore(&sk->lock, irqf);
             wq_wake(&sk->rx_wq);
             return;
         }
@@ -561,7 +574,7 @@ void socket_tcp_deliver(uint32_t src_ip, uint16_t src_port,
     case SOCK_STATE_ESTABLISHED:
         if (flags & TCP_RST) {
             sk->state = SOCK_STATE_CLOSED;
-            spinlock_release(&sk->lock);
+            spin_unlock_irqrestore(&sk->lock, irqf);
             wq_wake(&sk->rx_wq);
             return;
         }
@@ -601,7 +614,7 @@ void socket_tcp_deliver(uint32_t src_ip, uint16_t src_port,
             }
         }
 
-        spinlock_release(&sk->lock);
+        spin_unlock_irqrestore(&sk->lock, irqf);
         if (payload_len > 0 || (flags & TCP_FIN)) {
             wq_wake(&sk->rx_wq);
         }
@@ -647,5 +660,5 @@ void socket_tcp_deliver(uint32_t src_ip, uint16_t src_port,
         break;
     }
 
-    spinlock_release(&sk->lock);
+    spin_unlock_irqrestore(&sk->lock, irqf);
 }

@@ -4,6 +4,7 @@
 #include "mm/slab.h"
 #include "arch/hal.h"
 #include "proc/process.h"
+#include "proc/sched.h"
 #include "lib/mem.h"
 #include "lib/string.h"
 #include "lib/cmdline.h"
@@ -110,6 +111,35 @@ static int gen_cpuinfo(char *buf, int bufsz, void *ctx) {
         pos = procfs_append_str(buf, pos, bufsz, "\ncore type\t: ");
         pos = procfs_append_str(buf, pos, bufsz, cpu_core_type_name(core_type));
         pos = procfs_append_str(buf, pos, bufsz, "\n\n");
+    }
+    return pos;
+}
+
+/* /proc/sched_debug (M1-05): one line per CPU with a run queue. The format is
+ * arc_os's own (Linux's file is free-form debug text too): a header line, then
+ * cpu, core type, threads queued or running, context switches, threads pulled
+ * in by idle balancing, and nanoseconds idle and busy up to the CPU's last
+ * switch. About 70 bytes per CPU. */
+static int gen_sched_debug(char *buf, int bufsz, void *ctx) {
+    (void)ctx;
+    int pos = procfs_append_str(buf, 0, bufsz, "cpu core nr_running nr_switches nr_migrations idle_ns busy_ns\n");
+    for (uint32_t cpu = 0; cpu < HAL_MAX_CPUS; cpu++) {
+        SchedCpuStats st;
+        if (sched_cpu_stats(cpu, &st) != 0) continue;
+        pos = procfs_append_u64(buf, pos, bufsz, cpu);
+        pos = procfs_append_str(buf, pos, bufsz, " ");
+        pos = procfs_append_str(buf, pos, bufsz, st.core);
+        pos = procfs_append_str(buf, pos, bufsz, " ");
+        pos = procfs_append_u64(buf, pos, bufsz, st.nr_running);
+        pos = procfs_append_str(buf, pos, bufsz, " ");
+        pos = procfs_append_u64(buf, pos, bufsz, st.nr_switches);
+        pos = procfs_append_str(buf, pos, bufsz, " ");
+        pos = procfs_append_u64(buf, pos, bufsz, st.nr_migrations);
+        pos = procfs_append_str(buf, pos, bufsz, " ");
+        pos = procfs_append_u64(buf, pos, bufsz, st.idle_ns);
+        pos = procfs_append_str(buf, pos, bufsz, " ");
+        pos = procfs_append_u64(buf, pos, bufsz, st.busy_ns);
+        pos = procfs_append_str(buf, pos, bufsz, "\n");
     }
     return pos;
 }
@@ -231,6 +261,7 @@ static ProcfsFileNode cmdline_node;
 static ProcfsFileNode cpuinfo_node;
 static ProcfsFileNode slabinfo_node;
 static ProcfsFileNode kmsg_node;
+static ProcfsFileNode sched_debug_node;
 
 #define PROCFS_PID_POOL 8
 static ProcfsDirNode pid_dirs[PROCFS_PID_POOL];
@@ -298,6 +329,7 @@ static const struct {
 } root_files[] = {
     {"meminfo", &meminfo_node}, {"uptime", &uptime_node},     {"cmdline", &cmdline_node},
     {"cpuinfo", &cpuinfo_node}, {"slabinfo", &slabinfo_node}, {"kmsg", &kmsg_node},
+    {"sched_debug", &sched_debug_node},
 };
 #define ROOT_FILE_COUNT (sizeof(root_files) / sizeof(root_files[0]))
 
@@ -421,6 +453,7 @@ VfsNode *procfs_init(void) {
     procfs_init_file(&kmsg_node, 1996, NULL, NULL);
     kmsg_node.vnode.ops = &procfs_kmsg_ops;
     kmsg_node.vnode.mode = 0400;
+    procfs_init_file(&sched_debug_node, 1995, gen_sched_debug, NULL);
 
     pid_dirs_next = 0;
     pid_status_next = 0;

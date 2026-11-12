@@ -2,45 +2,48 @@
 #include "proc/sched.h"
 
 void sem_init(Semaphore *s, int32_t initial_count) {
-    s->guard = (Spinlock)SPINLOCK_INIT;
+    spin_lock_init(&s->guard, LOCK_LEVEL_OBJECT, "semaphore");
     s->count = initial_count;
     wq_init(&s->waiters);
 }
 
 void sem_wait(Semaphore *s) {
-    spinlock_acquire(&s->guard);
-
+    lockdep_assert_can_sleep("sem_wait");
+    uint64_t flags;
+    spin_lock_irqsave(&s->guard, &flags);
     while (s->count <= 0) {
         /* Sleep releases guard atomically after enqueuing */
-        wq_sleep(&s->waiters, &s->guard);
-        spinlock_acquire(&s->guard);
+        wq_sleep(&s->waiters, &s->guard, flags);
+        spin_lock_irqsave(&s->guard, &flags);
     }
-
     s->count--;
-    spinlock_release(&s->guard);
+    spin_unlock_irqrestore(&s->guard, flags);
 }
 
 void sem_post(Semaphore *s) {
-    spinlock_acquire(&s->guard);
+    uint64_t flags;
+    spin_lock_irqsave(&s->guard, &flags);
     s->count++;
     wq_wake(&s->waiters);
-    spinlock_release(&s->guard);
+    spin_unlock_irqrestore(&s->guard, flags);
 }
 
 int sem_trywait(Semaphore *s) {
-    spinlock_acquire(&s->guard);
+    uint64_t flags;
+    spin_lock_irqsave(&s->guard, &flags);
     if (s->count <= 0) {
-        spinlock_release(&s->guard);
+        spin_unlock_irqrestore(&s->guard, flags);
         return -1;
     }
     s->count--;
-    spinlock_release(&s->guard);
+    spin_unlock_irqrestore(&s->guard, flags);
     return 0;
 }
 
 int32_t sem_getvalue(Semaphore *s) {
-    spinlock_acquire(&s->guard);
+    uint64_t flags;
+    spin_lock_irqsave(&s->guard, &flags);
     int32_t val = s->count;
-    spinlock_release(&s->guard);
+    spin_unlock_irqrestore(&s->guard, flags);
     return val;
 }

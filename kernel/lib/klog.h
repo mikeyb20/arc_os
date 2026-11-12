@@ -46,6 +46,13 @@ void klog_flush(void);
 int klog_console_try_acquire(void);
 void klog_console_release(void);
 
+/* Take the consoles to draw on the screen outside the log (TTY output, VT
+ * switch, M1-05): waits a bounded time for the current owner to finish its
+ * drain. Returns 1 if taken (release with klog_console_release), 0 if the
+ * owner kept them past the bound; the caller then draws anyway (a torn line
+ * beats lost output, and the owner may be the code this interrupted). */
+int klog_console_acquire(void);
+
 /* Panic: from now on writers skip the log lock (after a bounded try) and
  * the console lock, and klog_write prints at once. Never turned off. */
 void klog_panic_mode(void);

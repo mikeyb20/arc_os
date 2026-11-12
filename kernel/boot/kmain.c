@@ -10,6 +10,7 @@
 #include "boot/bootinfo.h"
 #include "proc/thread.h"
 #include "proc/sched.h"
+#include "proc/lockdep.h"
 #include "proc/process.h"
 #include "arch/x86_64/syscall.h"
 #include "proc/init.h"
@@ -43,10 +44,14 @@
 #include "drivers/ansi.h"
 #include "drivers/vt.h"
 
-/* Dual output: serial + ANSI parser → framebuffer */
+/* Dual output: serial + ANSI parser → framebuffer. The screen is drawn as
+ * console owner (lib/klog.h), so TTY text and kernel log lines drawn from
+ * another CPU don't tear each other (M1-05). */
 static void tty_dual_output(char c) {
     serial_putchar(c);
+    int owned = klog_console_acquire();
     ansi_putchar(c);
+    if (owned) klog_console_release();
 }
 
 static const char *memmap_type_name(uint32_t type) {
@@ -407,6 +412,7 @@ static void cpu_floor_check(const BootInfo *info) {
 }
 
 void kmain(void) {
+    hal_cpu_early_init();   /* GS: spinlocks count their depth per CPU */
     serial_init();
     hardening_init();
     serial_puts("[BOOT] arc_os kernel booting...\n");
@@ -502,6 +508,8 @@ void kmain(void) {
         kprintf("[TEST] kpanic suite: panicking on purpose\n");
         KERNEL_PANIC();
     }
+    /* Suite "lockorder" (M1-05): the lock checker must stop an inverted pair */
+    if (testmode_active() && strcmp(testmode_suite(), "lockorder") == 0) lockdep_test_inversion();
 
     diag_setup(info);
 
@@ -526,18 +534,11 @@ void kmain(void) {
         }
     }
 
-    /* Boot thread becomes the idle thread */
-    sched_set_idle_thread(thread_current());
-
-    /* Initialize PIT timer at 100 Hz */
+    /* PIT at 100 Hz: uptime ticks (M1-06 replaces it). Slices come from each
+     * CPU's own timer, armed by the scheduler. */
     pit_init(100);
 
-    /* Enable interrupts — PIT will start preempting */
+    /* The boot thread becomes CPU 0's idle thread, the APs join in */
     kprintf("[BOOT] Preemptive multitasking active.\n");
-    __asm__ volatile ("sti");
-
-    /* Idle loop — HLT wakes on interrupt, then halts again */
-    for (;;) {
-        __asm__ volatile ("hlt");
-    }
+    sched_start();
 }

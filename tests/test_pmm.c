@@ -24,15 +24,7 @@ static int panics;
         panics++;      \
     } while (0)
 
-#define ARCHOS_PROC_SPINLOCK_H
-typedef struct { volatile uint32_t locked; uint64_t saved_flags; } Spinlock;
-#define SPINLOCK_INIT { .locked = 0, .saved_flags = 0 }
-static inline void spinlock_acquire(Spinlock *l) {
-    l->locked = 1;
-}
-static inline void spinlock_release(Spinlock *l) {
-    l->locked = 0;
-}
+#include "proc/spinlock.h"   /* host build: simulated interrupt flag */
 
 /* cmdline_get stub: returns `stub_arc_mem` for "arc.mem" when set */
 #define ARCHOS_LIB_CMDLINE_H
