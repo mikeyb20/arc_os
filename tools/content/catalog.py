@@ -81,8 +81,11 @@ def parse_entry(entry):
             row["size_bytes"] = link.get("length", "")
             m = DATE_IN_FILE.search(href)
             row["date"] = m.group(1) if m else ""
-        elif link.get("type") == "text/html" and href.startswith("/content/"):
-            row["book"] = urllib.parse.unquote(href[len("/content/"):].strip("/"))
+        elif link.get("type") == "text/html" and "/content/" in href:
+            row["book"] = urllib.parse.unquote(href.split("/content/", 1)[1].strip("/"))
+    if not row["book"] and row["url"].endswith(".zim"):
+        # The server names a book after its file unless the feed says otherwise.
+        row["book"] = row["url"].rsplit("/", 1)[-1][:-len(".zim")]
     return {k: clean(v) for k, v in row.items()}
 
 

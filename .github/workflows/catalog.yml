@@ -26,10 +26,15 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Candidates for the plan's categories (general, medical, food, repair/building).
+  # Candidate ZIMs for the plan's categories (general, medical, food, repair/building),
+  # chosen from a first catalog read.
   META_DEFAULT: >-
-    ^(wikipedia_en_(all|top|medicine|simple|100|wp1)|mdwiki|wikem|ifixit|appropedia|energypedia|wikibooks_en|wikivoyage_en|wikihow|
-    .*(stackexchange|cooking|food|recipe|diy|repair|survival|medic|health|first.aid|garden|woodwork|electronic|mechanic|building))
+    ^(wikipedia_en_(all|top|top1m|medicine|100)|mdwiki_en_all|wiktionary_en_all|wikibooks_en_all|wikisource_en_all|
+    wikiversity_en_all|libretexts\.org_en_(med|eng|workforce)|nhs\.uk_en_medicines|wwwnc\.cdc\.gov_en_all|
+    irp\.fas\.org_en_military-medicine|ready\.gov_en_all|zimgit-.*|ifixit_en_all|appropedia_en_all|
+    energypedia_en_all|solar\.lowtechmagazine\.com_mul_all|based\.cooking_en_all|foss\.cooking_en_all|
+    publicdomainrecipes\.com_en_all|gardenology_en_all|(cooking|diy|mechanics|electronics|woodworking|engineering|
+    gardening|medicalsciences|bicycles|3dprinting|ham|outdoors|sustainability|homebrew|lifehacks)\.stackexchange\.com_en_all)$
 
 jobs:
   catalog:
@@ -46,6 +51,8 @@ jobs:
           python3 -I tools/content/catalog.py --lang eng --save out/catalog-eng.xml \
             --meta "$(printf '%s' "$META" | tr -d ' \n')" --out out/catalog-eng.tsv
           cat out/catalog-eng.tsv
+          echo "--- first entry of the feed"
+          python3 -I -c 'import sys; d = open(sys.argv[1]).read(); i = d.find("<entry"); print(d[i:d.find("</entry>", i) + 8])' out/catalog-eng.xml
 
       - name: Upload the table
         uses: actions/upload-artifact@v4
