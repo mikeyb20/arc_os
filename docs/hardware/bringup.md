@@ -4,7 +4,20 @@ The stick boots arc_os on a real machine and shows what the kernel found, on scr
 up early. Everything runs from RAM ([ADR-0018](../decisions/0018-portable-usb-mode.md), RAM mode): the kernel and
 programs are loaded by Limine, no USB or disk driver is used, and nothing is written to the machine's disks.
 
-## 1. Build the image
+## 1. Get the image
+
+**Download (usual way).** CI publishes the image of the newest master commit that passed its tests as the
+pre-release [`bringup-latest`](https://github.com/mikeyb20/arc_os/releases/tag/bringup-latest). No login is needed:
+
+- [`arc_os-bringup.iso`](https://github.com/mikeyb20/arc_os/releases/download/bringup-latest/arc_os-bringup.iso)
+- [`arc_os-bringup.iso.sha256`](https://github.com/mikeyb20/arc_os/releases/download/bringup-latest/arc_os-bringup.iso.sha256)
+  (check with `sha256sum -c arc_os-bringup.iso.sha256` in the download folder, or compare with the hash in the
+  release notes)
+
+The release notes name the commit it was built from; write that short hash next to the photos. The release is
+replaced after every push to master, so download it again before each boot.
+
+**Build it yourself** (any commit, or offline):
 
 ```sh
 cmake -B build -DCMAKE_TOOLCHAIN_FILE=toolchain-x86_64.cmake && cmake --build build
