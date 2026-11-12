@@ -40,28 +40,28 @@ struct Process;  /* proc/process.h */
 /* Thread Control Block. The scheduler fields (cpu, on_cpu, on_rq, rq links)
  * change only under the run-queue lock of the thread's CPU (proc/sched.c). */
 typedef struct Thread {
-    tid_t           tid;
-    uint8_t         state;
+    tid_t tid;
+    uint8_t state;
     volatile uint8_t on_cpu;   /* running, or switching away: set at switch-in, cleared
                                   once the next thread on that CPU has taken over */
-    uint8_t         on_rq;     /* queued on cpu's run queue */
-    uint8_t         kernel_lock;   /* holds the big kernel lock (proc/kernel_lock.h) */
-    uint32_t        cpu;       /* CPU whose run queue holds it, or where it last ran */
-    ThreadContext   context;
+    uint8_t on_rq;     /* queued on cpu's run queue */
+    uint8_t kernel_lock;   /* holds the big kernel lock (proc/kernel_lock.h) */
+    uint32_t cpu;       /* CPU whose run queue holds it, or where it last ran */
+    ThreadContext context;
     uint8_t *stack_base;     /* Kernel stack, an alloc_pages block in the HHDM (NULL for boot thread) */
-    size_t          stack_size;
-    uint64_t        kernel_stack_top; /* Top of kernel stack for TSS.rsp0 / SYSCALL */
-    thread_entry_t  entry;
-    void           *arg;
+    size_t stack_size;
+    uint64_t kernel_stack_top; /* Top of kernel stack for TSS.rsp0 / SYSCALL */
+    thread_entry_t entry;
+    void *arg;
     void *fpu_state;      /* XSAVE area, 64-byte aligned (fpu.h); NULL for the boot thread */
-    uint64_t        fs_base;        /* User TLS pointer (arch_prctl ARCH_SET_FS) */
-    uint64_t        clear_child_tid; /* set_tid_address pointer; used by M1-16 thread exit */
+    uint64_t fs_base;        /* User TLS pointer (arch_prctl ARCH_SET_FS) */
+    uint64_t clear_child_tid; /* set_tid_address pointer; used by M1-16 thread exit */
     struct Process *proc;           /* Owning process; NULL for a thread with none (idle) */
-    struct Thread  *next;           /* wait-queue link (wq_*, condvar) */
-    struct Thread  *rq_next;        /* run-queue links */
-    struct Thread  *rq_prev;
-    CpuMask         affinity;       /* CPUs it may run on (all by default; fork copies it) */
-    LockdepThread   lockdep;        /* sleeping locks held (debug checks) */
+    struct Thread *next;           /* wait-queue link (wq_*, condvar) */
+    struct Thread *rq_next;        /* run-queue links */
+    struct Thread *rq_prev;
+    CpuMask affinity;       /* CPUs it may run on (all by default; fork copies it) */
+    LockdepThread lockdep;        /* sleeping locks held (debug checks) */
 } Thread;
 
 /* Initialize threading — creates TCB for boot thread (tid=0). */

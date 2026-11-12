@@ -327,8 +327,8 @@ static const struct {
     const char *name;
     ProcfsFileNode *node;
 } root_files[] = {
-    {"meminfo", &meminfo_node}, {"uptime", &uptime_node},     {"cmdline", &cmdline_node},
-    {"cpuinfo", &cpuinfo_node}, {"slabinfo", &slabinfo_node}, {"kmsg", &kmsg_node},
+    {"meminfo", &meminfo_node},         {"uptime", &uptime_node},     {"cmdline", &cmdline_node},
+    {"cpuinfo", &cpuinfo_node},         {"slabinfo", &slabinfo_node}, {"kmsg", &kmsg_node},
     {"sched_debug", &sched_debug_node},
 };
 #define ROOT_FILE_COUNT (sizeof(root_files) / sizeof(root_files[0]))

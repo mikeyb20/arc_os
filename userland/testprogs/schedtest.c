@@ -21,17 +21,17 @@
 #include <fcntl.h>
 #include <sys/wait.h>
 
-#define MAX_CPUS 64
+#define MAX_CPUS        64
 #define SPIN_ITERATIONS 4000000UL   /* per spread child: tens of ms under TCG */
 
 static int failures;
 
-#define CHECK(cond)                                            \
-    do {                                                       \
-        if (!(cond)) {                                         \
+#define CHECK(cond)                                             \
+    do {                                                        \
+        if (!(cond)) {                                          \
             printf("FAIL schedtest:%d: %s\n", __LINE__, #cond); \
-            failures++;                                        \
-        }                                                      \
+            failures++;                                         \
+        }                                                       \
     } while (0)
 
 typedef struct {
@@ -117,13 +117,11 @@ static void test_spread(int n) {
     }
     for (int c = 0; c < after.ncpu; c++) {
         unsigned long busy = after.busy_ns[c] - before.busy_ns[c];
-        printf("schedtest: spread cpu %d busy %lu ms (%lu%%)\n", c, busy / 1000000,
-               total ? busy * 100 / total : 0);
+        printf("schedtest: spread cpu %d busy %lu ms (%lu%%)\n", c, busy / 1000000, total ? busy * 100 / total : 0);
         /* A fair share is 1/ncpu; accept half of it */
         CHECK(busy * 2 * (unsigned long)after.ncpu >= total);
     }
-    printf("schedtest: spread %d processes over %d CPUs, %lu pulled by idle CPUs\n", reaped, after.ncpu,
-           migrations);
+    printf("schedtest: spread %d processes over %d CPUs, %lu pulled by idle CPUs\n", reaped, after.ncpu, migrations);
 }
 
 static void test_forkexec(int n, const char *self) {

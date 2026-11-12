@@ -87,10 +87,8 @@ static inline void hal_set_current_thread(Thread *t) {
 static inline uint32_t hal_cpu_index(void) {
     return 0;
 }
-static inline void hal_enable_interrupts(void) {
-}
-static inline void hal_halt_forever(void) {
-}
+static inline void hal_enable_interrupts(void) {}
+static inline void hal_halt_forever(void) {}
 
 /* Include the real thread.c implementation */
 #include "../kernel/proc/thread.c"

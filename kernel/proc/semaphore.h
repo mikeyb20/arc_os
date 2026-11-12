@@ -15,11 +15,8 @@ typedef struct {
     WaitQueue waiters;
 } Semaphore;
 
-#define SEMAPHORE_INIT(n) { \
-    .guard = SPINLOCK_INIT(LOCK_LEVEL_OBJECT, "semaphore"), \
-    .count = (n), \
-    .waiters = WAITQUEUE_INIT \
-}
+#define SEMAPHORE_INIT(n) \
+    { .guard = SPINLOCK_INIT(LOCK_LEVEL_OBJECT, "semaphore"), .count = (n), .waiters = WAITQUEUE_INIT }
 
 /* Initialize a semaphore with the given starting count. */
 void sem_init(Semaphore *s, int32_t initial_count);

@@ -32,14 +32,20 @@ static void echo_reset(void) {
 
 struct Thread;
 typedef struct WaitQueue { Spinlock lock; struct Thread *head; struct Thread *tail; } WaitQueue;
-#define WAITQUEUE_INIT { .lock = SPINLOCK_INIT(LOCK_LEVEL_WAITQUEUE, "wait queue"), .head = NULL, .tail = NULL }
-__attribute__((unused)) static void wq_init(WaitQueue *wq) { (void)wq; }
+#define WAITQUEUE_INIT \
+    { .lock = SPINLOCK_INIT(LOCK_LEVEL_WAITQUEUE, "wait queue"), .head = NULL, .tail = NULL }
+__attribute__((unused)) static void wq_init(WaitQueue *wq) {
+    (void)wq;
+}
 static void wq_sleep(WaitQueue *wq, Spinlock *lock, uint64_t flags) {
     (void)wq;
     spin_unlock_irqrestore(lock, flags);
 }
 static int wq_wake(WaitQueue *wq) { (void)wq; return 0; }
-__attribute__((unused)) static int wq_wake_all(WaitQueue *wq) { (void)wq; return 0; }
+__attribute__((unused)) static int wq_wake_all(WaitQueue *wq) {
+    (void)wq;
+    return 0;
+}
 
 /* Stubs for signal functions called by tty.c */
 static int sig_send_group_called = 0;

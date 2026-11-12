@@ -12,7 +12,8 @@ typedef struct WaitQueue {
     Thread  *tail;
 } WaitQueue;
 
-#define WAITQUEUE_INIT { .lock = SPINLOCK_INIT(LOCK_LEVEL_WAITQUEUE, "wait queue"), .head = NULL, .tail = NULL }
+#define WAITQUEUE_INIT \
+    { .lock = SPINLOCK_INIT(LOCK_LEVEL_WAITQUEUE, "wait queue"), .head = NULL, .tail = NULL }
 
 /* Initialize a wait queue. */
 void wq_init(WaitQueue *wq);

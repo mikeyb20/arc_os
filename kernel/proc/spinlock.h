@@ -31,7 +31,8 @@ typedef struct Spinlock {
 
 _Static_assert(sizeof(Spinlock) == 16, "Spinlock is embedded in hot structures");
 
-#define SPINLOCK_INIT(lvl, nm) { .locked = 0, .level = (lvl), .subkey = 0, .name = (nm) }
+#define SPINLOCK_INIT(lvl, nm) \
+    { .locked = 0, .level = (lvl), .subkey = 0, .name = (nm) }
 
 /* Initialise a lock at run time (same as SPINLOCK_INIT). */
 static inline void spin_lock_init(Spinlock *lock, uint16_t level, const char *name) {

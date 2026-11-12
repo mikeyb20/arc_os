@@ -131,7 +131,7 @@ void lapic_send_ipi_all_excluding_self(uint32_t vector) {
 
 /* Timer ticks per second at divide-by-16, measured once on the BSP. The APIC
  * timer runs from the same clock on every CPU, so APs reuse the number. */
-#define LAPIC_TIMER_MEASURE_MS 10
+#define LAPIC_TIMER_MEASURE_MS   10
 #define LAPIC_TIMER_LVT_PERIODIC (1u << 17)
 #define LAPIC_TIMER_LVT_MASKED   (1u << 16)
 static uint64_t timer_hz;

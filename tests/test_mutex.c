@@ -14,16 +14,16 @@
  * names are prefixed so they don't meet test_sched.c's real scheduler or
  * test_waitqueue.c's copy of waitqueue.c at link time. */
 #define ARCHOS_LIB_KPRINTF_H
-#define thread_current mutex_test_thread_current
+#define thread_current     mutex_test_thread_current
 #define thread_set_current mutex_test_thread_set_current
-#define context_switch mutex_test_context_switch
-#define sched_schedule mutex_test_sched_schedule
-#define sched_wake mutex_test_sched_wake
-#define sched_yield mutex_test_sched_yield   /* <pthread.h> declares the POSIX one */
-#define wq_init mutex_test_wq_init
-#define wq_sleep mutex_test_wq_sleep
-#define wq_wake mutex_test_wq_wake
-#define wq_wake_all mutex_test_wq_wake_all
+#define context_switch     mutex_test_context_switch
+#define sched_schedule     mutex_test_sched_schedule
+#define sched_wake         mutex_test_sched_wake
+#define sched_yield        mutex_test_sched_yield   /* <pthread.h> declares the POSIX one */
+#define wq_init            mutex_test_wq_init
+#define wq_sleep           mutex_test_wq_sleep
+#define wq_wake            mutex_test_wq_wake
+#define wq_wake_all        mutex_test_wq_wake_all
 
 static inline void kprintf(const char *fmt, ...) { (void)fmt; }
 

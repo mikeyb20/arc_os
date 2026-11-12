@@ -77,14 +77,14 @@ static Thread *thread_current(void) { return &stub_thread; }
 
 /* WaitQueue stub (no-op — tests are single-threaded) */
 typedef struct WaitQueue { Spinlock lock; Thread *head; Thread *tail; } WaitQueue;
-#define WAITQUEUE_INIT { .lock = SPINLOCK_INIT(LOCK_LEVEL_WAITQUEUE, "wait queue"), .head = NULL, .tail = NULL }
+#define WAITQUEUE_INIT \
+    { .lock = SPINLOCK_INIT(LOCK_LEVEL_WAITQUEUE, "wait queue"), .head = NULL, .tail = NULL }
 static void wq_init(WaitQueue *wq) { (void)wq; }
 static int wq_wake(WaitQueue *wq) { (void)wq; return 0; }
 static int wq_wake_all(WaitQueue *wq) { (void)wq; return 0; }
 /* wq_sleep: in single-threaded tests, set global flag to break loops */
 static volatile int *wq_sleep_break_flag;
-__attribute__((unused))
-static void wq_sleep(WaitQueue *wq, Spinlock *lock, uint64_t flags) {
+__attribute__((unused)) static void wq_sleep(WaitQueue *wq, Spinlock *lock, uint64_t flags) {
     (void)wq;
     spin_unlock_irqrestore(lock, flags);
     if (wq_sleep_break_flag) *wq_sleep_break_flag = 1;

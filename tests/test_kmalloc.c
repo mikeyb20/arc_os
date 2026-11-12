@@ -31,7 +31,8 @@ typedef struct Spinlock {
     uint16_t subkey;
     const char *name;
 } Spinlock;
-#define SPINLOCK_INIT(lvl, nm) { .locked = 0, .level = (lvl), .subkey = 0, .name = (nm) }
+#define SPINLOCK_INIT(lvl, nm) \
+    { .locked = 0, .level = (lvl), .subkey = 0, .name = (nm) }
 static int lock_depth, lock_max_depth, lock_errors;
 static inline void spin_lock_init(Spinlock *l, uint16_t level, const char *name) {
     l->locked = 0;

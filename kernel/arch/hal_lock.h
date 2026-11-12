@@ -30,10 +30,8 @@ static inline void irq_restore(uint64_t flags) {
 static inline int hal_irqs_enabled(void) {
     return hal_test_irq_enabled;
 }
-static inline void hal_cpu_relax(void) {
-}
-static inline void hal_irq_window(void) {
-}
+static inline void hal_cpu_relax(void) {}
+static inline void hal_irq_window(void) {}
 static inline void hal_lock_depth_inc(void) {
     hal_test_lock_depth++;
 }

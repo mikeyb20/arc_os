@@ -53,7 +53,8 @@ typedef struct WaitQueue {
     Thread  *tail;
 } WaitQueue;
 
-#define WAITQUEUE_INIT { .lock = SPINLOCK_INIT(LOCK_LEVEL_WAITQUEUE, "wait queue"), .head = NULL, .tail = NULL }
+#define WAITQUEUE_INIT \
+    { .lock = SPINLOCK_INIT(LOCK_LEVEL_WAITQUEUE, "wait queue"), .head = NULL, .tail = NULL }
 
 /* thread_current stub */
 static Thread *test_current_thread = NULL;
@@ -405,21 +406,21 @@ static int test_wake_all_empties_queue(void) {
 /* --- Test suite export --- */
 
 TestCase waitqueue_tests[] = {
-    { "init_sets_null",           test_init_sets_null },
-    { "wake_empty_returns_zero",  test_wake_empty_returns_zero },
-    { "wake_all_empty_returns_zero", test_wake_all_empty_returns_zero },
-    { "sleep_sets_blocked",       test_sleep_sets_blocked },
-    { "sleep_releases_caller_lock", test_sleep_releases_caller_lock },
-    { "sleep_adds_to_queue",      test_sleep_adds_to_queue },
-    { "wake_removes_from_queue",  test_wake_removes_from_queue },
-    { "wake_calls_sched_wake",     test_wake_calls_sched_wake },
-    { "wake_returns_one",         test_wake_returns_one },
-    { "fifo_ordering",            test_fifo_ordering },
-    { "wake_all_wakes_multiple",  test_wake_all_wakes_multiple },
-    { "wake_all_returns_count",   test_wake_all_returns_count },
-    { "sleep_wake_reuse",         test_sleep_wake_reuse },
-    { "multiple_wakes_empty",     test_multiple_wakes_empty },
-    { "wake_all_empties_queue",   test_wake_all_empties_queue },
+    {"init_sets_null", test_init_sets_null},
+    {"wake_empty_returns_zero", test_wake_empty_returns_zero},
+    {"wake_all_empty_returns_zero", test_wake_all_empty_returns_zero},
+    {"sleep_sets_blocked", test_sleep_sets_blocked},
+    {"sleep_releases_caller_lock", test_sleep_releases_caller_lock},
+    {"sleep_adds_to_queue", test_sleep_adds_to_queue},
+    {"wake_removes_from_queue", test_wake_removes_from_queue},
+    {"wake_calls_sched_wake", test_wake_calls_sched_wake},
+    {"wake_returns_one", test_wake_returns_one},
+    {"fifo_ordering", test_fifo_ordering},
+    {"wake_all_wakes_multiple", test_wake_all_wakes_multiple},
+    {"wake_all_returns_count", test_wake_all_returns_count},
+    {"sleep_wake_reuse", test_sleep_wake_reuse},
+    {"multiple_wakes_empty", test_multiple_wakes_empty},
+    {"wake_all_empties_queue", test_wake_all_empties_queue},
 };
 
 int waitqueue_test_count = sizeof(waitqueue_tests) / sizeof(waitqueue_tests[0]);

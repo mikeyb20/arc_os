@@ -29,7 +29,7 @@
 #define MEMTEST_BLOCKS  64                             /* x 4 MiB = 256 MB */
 #define TIMER_CHECK_MS  200
 #define TIMER_HZ        100                                  /* kmain starts the PIT at 100 Hz */
-#define SCHED_CHECK_MS  2000                                 /* every pinned thread has run by then */
+#define SCHED_CHECK_MS  2000 /* every pinned thread has run by then */
 
 static int passed, failed;
 
@@ -217,8 +217,8 @@ static void check_timer_irq(void) {
 
 /* ---- SMP scheduler (M1-05): a thread pinned to each CPU runs there ---- */
 
-static volatile uint32_t sched_ran;        /* pinned threads that ran on their own CPU */
-static volatile uint32_t sched_misplaced;  /* pinned threads that ran anywhere else */
+static volatile uint32_t sched_ran; /* pinned threads that ran on their own CPU */
+static volatile uint32_t sched_misplaced; /* pinned threads that ran anywhere else */
 
 static void pinned_entry(void *arg) {
     uint32_t want = (uint32_t)(uintptr_t)arg;
@@ -226,7 +226,7 @@ static void pinned_entry(void *arg) {
         __atomic_fetch_add(&sched_ran, 1, __ATOMIC_RELAXED);
     else
         __atomic_fetch_add(&sched_misplaced, 1, __ATOMIC_RELAXED);
-}   /* returns: the thread ends DEAD (thread_trampoline) */
+} /* returns: the thread ends DEAD (thread_trampoline) */
 
 static void check_sched(void) {
     sched_start_aps();
@@ -249,7 +249,7 @@ static void check_sched(void) {
     uint64_t khz = hal_tsc_info()->khz;
     uint64_t limit = khz != 0 ? khz * SCHED_CHECK_MS : CALL_MAX_CYCLES;
     while (sched_ran + sched_misplaced < started && hal_tsc_read() - start < limit) {
-        sched_yield();   /* CPU 0's pinned thread runs when this one yields */
+        sched_yield(); /* CPU 0's pinned thread runs when this one yields */
         hal_cpu_relax();
     }
     uint32_t online = hal_cpu_count();
@@ -266,7 +266,7 @@ void diag_selftest(int *passes, int *fails) {
     check_memory();
     check_tsc();
     check_timer_irq();
-    check_sched();   /* last: starts the other CPUs' schedulers */
+    check_sched(); /* last: starts the other CPUs' schedulers */
     diag_line("Self-test: %d PASS, %d FAIL", passed, failed);
     *passes = passed;
     *fails = failed;

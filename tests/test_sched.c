@@ -18,9 +18,9 @@
 #define ARCHOS_ARCH_HAL_H
 
 /* Unique names: test_thread.c links the real thread.c and its own switch stub */
-#define thread_current sched_test_thread_current
+#define thread_current     sched_test_thread_current
 #define thread_set_current sched_test_thread_set_current
-#define context_switch sched_test_context_switch
+#define context_switch     sched_test_context_switch
 
 #include "proc/thread.h"
 #include "proc/sched.h"
@@ -29,7 +29,11 @@
 static inline void kprintf(const char *fmt, ...) {
     (void)fmt;
 }
-#define KERNEL_PANIC() do { printf("  sched.c panicked\n"); abort(); } while (0)
+#define KERNEL_PANIC()                  \
+    do {                                \
+        printf("  sched.c panicked\n"); \
+        abort();                        \
+    } while (0)
 
 /* process.h: only the page table is read */
 typedef struct Process {
@@ -66,11 +70,11 @@ static void kernel_lock_resume(int was) {
 
 /* ---- Simulated CPUs (hal.h) ---- */
 
-#define HAL_MAX_CPUS 256
+#define HAL_MAX_CPUS   256
 #define HAL_CORE_OTHER 0
 #define HAL_CORE_P     1
 #define HAL_CORE_E     2
-#define TEST_CPUS 4
+#define TEST_CPUS      4
 
 static uint32_t test_cpu;
 static void *cpu_sched_ptr[TEST_CPUS];
@@ -132,12 +136,9 @@ static inline void hal_slice_timer_stop(void) {
 static inline void hal_slice_timer_init(void (*fn)(void)) {
     (void)fn;
 }
-static inline void hal_release_aps(void) {
-}
-static inline void hal_idle_wait(void) {
-}
-static inline void hal_halt_forever(void) {
-}
+static inline void hal_release_aps(void) {}
+static inline void hal_idle_wait(void) {}
+static inline void hal_halt_forever(void) {}
 
 /* thread.h: the running thread of the simulated CPU */
 Thread *sched_test_thread_current(void) {
@@ -242,10 +243,10 @@ static RunQueue *start_cpu(uint32_t cpu, Thread *idle) {
 }
 
 /* All switches leave no spinlock held */
-#define ASSERT_UNLOCKED(rq)                  \
-    do {                                     \
-        ASSERT_EQ((rq)->lock.locked, 0);     \
-        ASSERT_EQ(hal_test_lock_depth, 0);   \
+#define ASSERT_UNLOCKED(rq)                \
+    do {                                   \
+        ASSERT_EQ((rq)->lock.locked, 0);   \
+        ASSERT_EQ(hal_test_lock_depth, 0); \
     } while (0)
 
 /* ---- Queue and switch basics (one CPU) ---- */

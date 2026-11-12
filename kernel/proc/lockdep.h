@@ -17,7 +17,7 @@
 #include <stdint.h>
 
 /* Levels: work-blocks.md §7, numbered with gaps. Lower = taken first. */
-#define LOCK_LEVEL_KERNEL         0   /* big kernel lock (interim, proc/kernel_lock.h) */
+#define LOCK_LEVEL_KERNEL        0   /* big kernel lock (interim, proc/kernel_lock.h) */
 #define LOCK_LEVEL_INODE         10   /* sleeping: write, truncate, rename, directories (M1-11) */
 #define LOCK_LEVEL_MM            20   /* sleeping read-write: mmap, munmap, faults (M1-07) */
 #define LOCK_LEVEL_PAGE          30   /* sleeping, per page (M1-12) */
@@ -25,18 +25,19 @@
 #define LOCK_LEVEL_PAGE_TABLE    50   /* spinlock, per mm; today the kernel page tables */
 #define LOCK_LEVEL_PAGE_CACHE    60   /* spinlock, per address space (M1-12) */
 #define LOCK_LEVEL_SIGNAL        70   /* thread-group and signal (M1-16) */
-#define LOCK_LEVEL_OBJECT        75   /* one object's state, the lock passed to wq_sleep:
-                                         pipe, socket, tty, wait4, mutex/semaphore guards */
+/* LOCK_LEVEL_OBJECT: one object's state, the lock passed to wq_sleep (pipe,
+ * socket, tty, wait4, mutex/semaphore guards) */
+#define LOCK_LEVEL_OBJECT        75
 #define LOCK_LEVEL_OBJECT_TABLE  76   /* a table of objects looked up under an object lock (sockets) */
 #define LOCK_LEVEL_WAITQUEUE     80   /* wait-queue locks */
 #define LOCK_LEVEL_RUNQUEUE      90   /* run queues: interrupts off; two only in CPU-index order */
 #define LOCK_LEVEL_SLAB_REGISTRY 99   /* the list of slab caches */
-#define LOCK_LEVEL_SLAB         100   /* one slab cache */
-#define LOCK_LEVEL_BUDDY        101   /* buddy allocator (the only lock taken under a slab lock) */
-#define LOCK_LEVEL_LOG          109   /* kernel log ring: kprintf works under any lock */
+#define LOCK_LEVEL_SLAB          100   /* one slab cache */
+#define LOCK_LEVEL_BUDDY         101   /* buddy allocator (the only lock taken under a slab lock) */
+#define LOCK_LEVEL_LOG           109   /* kernel log ring: kprintf works under any lock */
 
 /* Spinlocks one CPU may hold at once (deepest nesting seen is about 5) */
-#define LOCKDEP_MAX_HELD 16
+#define LOCKDEP_MAX_HELD       16
 /* Sleeping locks one thread may hold at once */
 #define LOCKDEP_MAX_SLEEP_HELD 4
 
@@ -56,8 +57,7 @@ typedef struct LockdepThread {
 
 /* Checker core, no global state (host-tested). Returns NULL if a lock of
  * (level, subkey) may be taken now, else a short reason. */
-const char *lockdep_check_order(const LockdepCpu *cpu, const LockdepThread *thr, uint16_t level,
-                                uint16_t subkey);
+const char *lockdep_check_order(const LockdepCpu *cpu, const LockdepThread *thr, uint16_t level, uint16_t subkey);
 
 /* Test mode only (suite "lockorder"): take two spinlocks in the wrong order.
  * A debug build panics with "LOCK ORDER VIOLATION"; a release build says the
@@ -100,8 +100,7 @@ static inline void lockdep_sleep_release(uint16_t level) {
 static inline void lockdep_assert_can_sleep(const char *what) {
     (void)what;
 }
-static inline void lockdep_kernel_lock(void) {
-}
+static inline void lockdep_kernel_lock(void) {}
 #endif
 
 #endif /* ARCHOS_PROC_LOCKDEP_H */

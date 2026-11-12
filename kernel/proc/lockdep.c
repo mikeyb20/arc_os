@@ -16,8 +16,7 @@
 #include "proc/lockdep.h"
 #include "proc/spinlock.h"
 
-const char *lockdep_check_order(const LockdepCpu *cpu, const LockdepThread *thr, uint16_t level,
-                                uint16_t subkey) {
+const char *lockdep_check_order(const LockdepCpu *cpu, const LockdepThread *thr, uint16_t level, uint16_t subkey) {
     int max_level = -1;
     uint16_t max_subkey = 0;
     if (thr != NULL) {

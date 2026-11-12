@@ -62,7 +62,7 @@ typedef struct Thread {
     uint64_t        clear_child_tid;
     struct Process *proc;
     struct Thread  *next;
-    CpuMask         affinity;
+    CpuMask affinity;
 } Thread;
 
 #define PROC_ALIVE       0

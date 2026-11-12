@@ -28,7 +28,8 @@ static void kfree(void *ptr) { free(ptr); }
 
 struct Thread;
 typedef struct WaitQueue { Spinlock lock; struct Thread *head; struct Thread *tail; } WaitQueue;
-#define WAITQUEUE_INIT { .lock = SPINLOCK_INIT(LOCK_LEVEL_WAITQUEUE, "wait queue"), .head = NULL, .tail = NULL }
+#define WAITQUEUE_INIT \
+    { .lock = SPINLOCK_INIT(LOCK_LEVEL_WAITQUEUE, "wait queue"), .head = NULL, .tail = NULL }
 static void wq_init(WaitQueue *wq) { (void)wq; }
 static void wq_sleep(WaitQueue *wq, Spinlock *lock, uint64_t flags) {
     (void)wq;

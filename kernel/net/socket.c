@@ -487,7 +487,10 @@ void socket_tcp_deliver(uint32_t src_ip, uint16_t src_port,
         if (flags & TCP_SYN) {
             /* Create child socket for this connection */
             Socket *child = kmalloc(sizeof(Socket), GFP_ZERO);
-            if (child == NULL) { spin_unlock_irqrestore(&sk->lock, irqf); return; }
+            if (child == NULL) {
+                spin_unlock_irqrestore(&sk->lock, irqf);
+                return;
+            }
 
             child->family = AF_INET;
             child->type = SOCK_STREAM;
