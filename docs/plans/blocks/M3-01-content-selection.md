@@ -49,4 +49,21 @@ list. Spec written by M3-00a (2026-11-11).
 - Content beyond the plan's categories needs Michael's OK.
 
 **Notes.**
--
+- 2026-11-12. The list (`sources.json`, a summary with what was left out and why, the budget printout and the
+  catalog table) is in `/mnt/project-files/arc_os/content/` until the private content repo exists; nothing about
+  what ships is in this repo. Approval: see the thread's decision card.
+- **Catalog.** `library.kiwix.org`, `download.kiwix.org`, the mirrors and the web-fetch tool are all blocked from
+  cloud sessions, so `tools/content/catalog.py` reads the OPDS feed (`/catalog/v2/entries?lang=eng&count=-1`,
+  1,269 entries on 2026-11-12) in `.github/workflows/catalog.yml`, which runs on a push to the script or the
+  workflow (branches other than master) or by hand, and prints the table into its log. Sizes are the feed's `length`
+  attribute; the date comes from the file name (`_YYYY-MM.zim`, or `_YYYY-MMb.zim` for a second build in a month).
+- **Licences.** The feed has none. The book server's `/raw/<book>/meta/License` sits behind a Kiwix "Access
+  confirmation" page for automated clients, so it is not used (the script doesn't try). Licences come from each
+  source's own page; Wikimedia and Stack Exchange pages are blocked from cloud sessions, so those entries are blank.
+  **For M3-03:** read `License`, `Source` and `Date` from each ZIM's metadata when it is downloaded, fill the blanks in
+  `sources.json`, and stop if a licence differs from the one recorded; M3-04's manifests need every licence.
+- **Budget** (`tools/content/budget.py`, assumptions in its header): 22.49 GB for packs on a 32 GB disk, 764.27 GB
+  on 1 TB. Estimates count the whole ZIM as text when a source has no `nopic` flavour (an upper bound) and use
+  0.15 words per byte until M3-03 counts words.
+- Sources with images that the plan keeps (medical, repair) use the `maxi` flavour so their article streams carry
+  image lines from the first build.

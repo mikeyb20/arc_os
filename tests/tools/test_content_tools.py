@@ -7,10 +7,8 @@ import importlib.util
 import io
 import json
 import os
-import re
 import tempfile
 import unittest
-import urllib.error
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -50,7 +48,7 @@ FEED = f"""<?xml version="1.0" encoding="UTF-8"?>
   <entry>
     <name>cooking.stackexchange.com_en_all</name><category>stack_exchange</category>
     <link rel="{ZIM}" type="application/x-zim"
-          href="https://download.kiwix.org/zim/stack_exchange/cooking.stackexchange.com_en_all_2026-10.zim"
+          href="https://download.kiwix.org/zim/stack_exchange/cooking.stackexchange.com_en_all_2026-10b.zim"
           length="238098432"/>
   </entry>
   <entry><name>no_file</name><category>other</category></entry>
@@ -74,16 +72,15 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(nopic["publisher"], "openZIM")
         self.assertEqual(nopic["url"],
                          "https://download.kiwix.org/zim/wikipedia/wikipedia_en_medicine_nopic_2026-10.zim")
-        self.assertEqual(nopic["book"], "wikipedia_en_medicine_nopic_2026-10")
-        self.assertEqual(nopic["server"], catalog.SERVER)
         self.assertEqual(nopic["title"], "WikiMed Medical Encyclopedia")   # no tab or newline
 
     def test_missing_values_stay_empty(self):
         empty = self.rows[0]
-        for key in ("size_bytes", "date", "url", "book", "article_count"):
+        for key in ("size_bytes", "date", "url", "article_count", "flavour"):
             self.assertEqual(empty[key], "")
-        # no content link: book named after the file
-        self.assertEqual(self.rows[1]["book"], "cooking.stackexchange.com_en_all_2026-10")
+        # a link without .meta4 is kept as it is
+        self.assertTrue(self.rows[1]["url"].endswith("cooking.stackexchange.com_en_all_2026-10b.zim"))
+        self.assertEqual(self.rows[1]["date"], "2026-10")     # second build of the month
 
     def test_table_has_one_cell_per_column(self):
         out = io.StringIO()
@@ -91,28 +88,6 @@ class CatalogTests(unittest.TestCase):
         lines = out.getvalue().splitlines()
         self.assertEqual(len(lines), 5)
         self.assertTrue(all(len(l.split("\t")) == len(catalog.COLUMNS) for l in lines))
-
-    def test_meta_once_per_name_and_failure_leaves_blank(self):
-        calls = []
-
-        def getter(url):
-            calls.append(url)
-            if url.endswith("/Source"):
-                raise urllib.error.URLError("404")
-            if "cooking" in url:
-                return b"<!DOCTYPE html><html>Access denied</html>"
-            return b"CC-BY-SA-4.0\n"
-
-        with contextlib.redirect_stderr(io.StringIO()):
-            catalog.read_meta(self.rows, re.compile(r"^(wikipedia_|cooking)"), getter, pause=0)
-        # License + Source, once per name, from the server of its first row
-        self.assertEqual(calls[2:], [
-            "https://browse.example.org/raw/wikipedia_en_medicine_maxi_2026-10/meta/License",
-            "https://browse.example.org/raw/wikipedia_en_medicine_maxi_2026-10/meta/Source"])
-        for r in self.rows[2:]:
-            self.assertEqual((r["license"], r["source"]), ("CC-BY-SA-4.0", ""))
-        self.assertEqual(self.rows[1]["license"], "")      # an HTML page is not metadata
-        self.assertEqual(self.rows[0]["license"], "")      # not matched
 
     def test_cli_reads_saved_feed(self):
         with tempfile.TemporaryDirectory() as d:
@@ -145,7 +120,7 @@ class BudgetTests(unittest.TestCase):
         self.assertEqual(e["basis"], "nopic")
 
     def test_estimate_without_nopic_uses_whole_zim(self):
-        e = budget.estimate({"estimate": {"zim_bytes": 1000}}, words_per_byte=0.28)
+        e = budget.estimate({"estimate": {"zim_bytes": 1000, "maxi_bytes": 1000}}, words_per_byte=0.28)
         self.assertEqual((e["text"], e["words"], e["chunk_count"], e["basis"]),
                          (1000, 280, 1, "whole ZIM"))
         self.assertIsNone(e["images"])

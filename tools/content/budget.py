@@ -17,7 +17,7 @@ Pack estimate (M3-01 spec; M3-03, M3-04 and M3-04b measure the real numbers):
   chunks  = 32 B x (words / 280)
   fts     = 0.5 x text
   vectors = chunks x 384 x 1 B           (counted from the first build of a tier)
-  words   = given in the entry, else nopic bytes x WORDS_PER_NOPIC_BYTE (ASSUMED)
+  words   = given in the entry, else text bytes x WORDS_PER_NOPIC_BYTE (ASSUMED)
 Images are not in packs yet (M3-08); `maxi - nopic` is reported as the image share.
 """
 
@@ -39,7 +39,10 @@ CHUNK_RECORD_BYTES = 32        # chunk record size (pack-v1.md)
 CHUNK_WORDS = 280              # target words per chunk (content-lane.md)
 FTS_RATIO = 0.5                # ASSUMED: FTS index / text, measured by M3-04
 VECTOR_BYTES = 384             # ASSUMED: 384 dimensions x int8, measured by M3-04b
-WORDS_PER_NOPIC_BYTE = None    # ASSUMED: set from a measured anchor (see --words)
+# ASSUMED until M3-03 counts words in a real stream: ~6.7 bytes of nopic ZIM per word.
+# Set high on purpose (English Wikipedia's ~4.5-5 billion words in its 52.7 GB nopic ZIM
+# would be ~0.09, an unchecked reading), so chunk and vector estimates err large.
+WORDS_PER_NOPIC_BYTE = 0.15
 
 # Models per tier (knowledge-os.md §4; ASSUMED until M2-06 measures them).
 MODELS = {
@@ -113,7 +116,8 @@ def estimate(entry, words_per_byte=WORDS_PER_NOPIC_BYTE):
            "chunk_count": chunks, "basis": basis}
     out["total"] = out["text"] + out["chunks"] + out["fts"] + out["vectors"]
     maxi = est.get("maxi_bytes")
-    out["images"] = maxi - nopic if isinstance(maxi, int) and maxi >= nopic else None
+    out["images"] = (maxi - nopic if basis == "nopic" and isinstance(maxi, int) and maxi >= nopic
+                     else None)
     return out
 
 

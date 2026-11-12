@@ -6,21 +6,17 @@ library.kiwix.org, so .github/workflows/catalog.yml runs this on a GitHub runner
 prints the table into its log; it also runs on the build host.
 
   catalog.py [--lang eng] [--from FEED.xml] [--save FEED.xml] [--out TABLE.tsv]
-             [--meta REGEX]
 
 Reads the OPDS feed (catalog v2) and writes one tab-separated row per ZIM, sorted by
 category, name, flavour: the values exactly as the catalog gives them, nothing
-estimated. `--meta REGEX` also reads the License and Source metadata of every ZIM
-whose name matches, from the ZIM itself through the server's /raw/<book>/meta/<key>
-endpoint (one ZIM per name: metadata doesn't change between flavours); a ZIM without
-that metadata leaves the cell empty, which the content list reports as a gap.
+estimated. The feed carries no licence: that comes from the source's own pages, or
+from the ZIM's License metadata once M3-03 downloads it. (Kiwix's content server puts
+an access check in front of /raw/ metadata, so it is not read from here.)
 """
 
 import argparse
 import re
 import sys
-import time
-import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -29,10 +25,10 @@ SERVER = "https://library.kiwix.org"
 FEED = SERVER + "/catalog/v2/entries?lang={lang}&count=-1"
 ZIM_LINK_REL = "http://opds-spec.org/acquisition/open-access"
 AGENT = "arc_os-content-catalog"
-META_KEYS = ("License", "Source")
 COLUMNS = ("category", "name", "flavour", "date", "size_bytes", "article_count",
-           "media_count", "title", "creator", "publisher", "tags", "url", "book", "server")
-DATE_IN_FILE = re.compile(r"_(\d{4}-\d{2})\.zim(?:\.meta4)?$")
+           "media_count", "title", "creator", "publisher", "tags", "url")
+# file names end in _YYYY-MM.zim, or _YYYY-MMb.zim for a second build in a month
+DATE_IN_FILE = re.compile(r"_(\d{4}-\d{2})[a-z]?\.zim(?:\.meta4)?$")
 
 
 def local(tag):
@@ -81,16 +77,6 @@ def parse_entry(entry):
             row["size_bytes"] = link.get("length", "")
             m = DATE_IN_FILE.search(href)
             row["date"] = m.group(1) if m else ""
-        elif link.get("type") == "text/html" and "/content/" in href:
-            # the server that serves the book's content (and its /raw/ metadata)
-            base, book = href.split("/content/", 1)
-            row["book"] = urllib.parse.unquote(book.strip("/"))
-            row["server"] = base if base.startswith("https://") else SERVER + base
-    if not row["book"] and row["url"].endswith(".zim"):
-        # The server names a book after its file unless the feed says otherwise.
-        row["book"] = row["url"].rsplit("/", 1)[-1][:-len(".zim")]
-    if not row["server"]:
-        row["server"] = SERVER
     return {k: clean(v) for k, v in row.items()}
 
 
@@ -107,33 +93,6 @@ def fetch(url, timeout=120):
         return resp.read()
 
 
-def read_meta(rows, pattern, getter=fetch, pause=0.2):
-    """Add License and Source columns for rows whose name matches `pattern`."""
-    seen = {}
-    for row in rows:
-        for key in META_KEYS:
-            row[key.lower()] = ""
-        if not pattern.search(row["name"]) or not row["book"]:
-            continue
-        if row["name"] not in seen:
-            meta = {}
-            for key in META_KEYS:
-                url = f"{row['server']}/raw/{urllib.parse.quote(row['book'])}/meta/{key}"
-                try:
-                    value = getter(url).decode("utf-8", "replace").strip()
-                except (urllib.error.URLError, OSError) as e:
-                    print(f"catalog: {url}: {e}", file=sys.stderr)
-                    value = ""
-                if value.startswith("<"):
-                    # an HTML page (error or access page), not a metadata value
-                    print(f"catalog: {url}: not metadata: {clean(value)[:300]}", file=sys.stderr)
-                    value = ""
-                meta[key.lower()] = clean(value)
-                time.sleep(pause)
-            seen[row["name"]] = meta
-        row.update(seen[row["name"]])
-
-
 def write_table(rows, out, columns):
     out.write("\t".join(columns) + "\n")
     for r in rows:
@@ -146,7 +105,6 @@ def main(argv=None):
     ap.add_argument("--from", dest="src", help="read a saved feed instead of the server")
     ap.add_argument("--save", help="also save the raw feed here")
     ap.add_argument("--out", help="write the table here (default: stdout)")
-    ap.add_argument("--meta", help="read License and Source for names matching this regex")
     a = ap.parse_args(argv)
 
     if a.src:
@@ -158,15 +116,11 @@ def main(argv=None):
         with open(a.save, "wb") as f:
             f.write(data)
     rows = parse_feed(data)
-    columns = COLUMNS
-    if a.meta:
-        read_meta(rows, re.compile(a.meta))
-        columns = COLUMNS + tuple(k.lower() for k in META_KEYS)
     if a.out:
         with open(a.out, "w", encoding="utf-8") as f:
-            write_table(rows, f, columns)
+            write_table(rows, f, COLUMNS)
     else:
-        write_table(rows, sys.stdout, columns)
+        write_table(rows, sys.stdout, COLUMNS)
     print(f"catalog: {len(rows)} entries", file=sys.stderr)
     return 0
 
