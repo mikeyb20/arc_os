@@ -166,7 +166,7 @@ assistant and viewers lay out from the framebuffer size, never a fixed one.
 |---|---|---|---|---|---|---|---|
 | M3-00a | Plan the content lane | S | D | P | M3-02 | Specs for M3-01, M3-03 and M3-04 written: keyword-only packs first, vectors once M2-06 picks the embedder (says whether M3-04 splits); decides whether the pack steps after ZIM extraction are written in C on the lane libraries, so they could later run on arc_os | done (#30) |
 | M3-00 | Plan M3 | S | D | P | M2-06 | Specs for the other M3 blocks written (M3-04b included; M3-05 comes from M4-00); content-lane specs corrected from M2-06 | todo |
-| M3-01 | Content selection, licences, size budget | M | R | C | M3-00a, M0-07 | Source list per category and tier approved by Michael | in progress |
+| M3-01 | Content selection, licences, size budget | M | R | C | M3-00a, M0-07 | Source list per category and tier approved by Michael | review (#34) |
 | M3-02 | `libarcpack`: doc store, chunks, manifests | M | D | L | M2-00a, M2-02, M2-04, M0-07 | One library reads packs on Linux inside the syscall inventory (on arc_os from M3-07) | done |
 | M3-03 | ZIM → doc store + chunks (host) | L | R | C | M3-01, M3-02 | Medical pack built twice with identical chunk IDs | todo |
 | M3-04 | FTS5, tier selector, `.arcpkg` (host) | M | R | C | M3-03, M5-02 | 32 GB keyword-only pack set built and sized; `tiers.json` for each storage tier | todo |
