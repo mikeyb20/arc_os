@@ -33,6 +33,7 @@ APT_PACKAGES=(
     strace python3 python3-pip python3-jsonschema jq zstd clang-format
     git curl ca-certificates file
     g++-14    # host GCC of the same major as the musl toolchain: llama.cpp reference build (M2-03)
+    zbar-tools    # zbarimg: reference QR decoder for the host round-trip test (M1-04b), never in the kernel
 )
 
 log() { printf '[dev-setup] %s\n' "$*"; }
