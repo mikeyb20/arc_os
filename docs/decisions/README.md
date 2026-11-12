@@ -30,3 +30,4 @@ Rules:
 | [0018](0018-portable-usb-mode.md) | Portable mode: runs entirely from the USB key | Accepted |
 | [0019](0019-efficiency-budgets-and-allocators.md) | Efficiency rules, budgets and kernel allocators | Accepted |
 | [0020](0020-code-hygiene-ratchets.md) | Code hygiene ratchets and block review | Accepted |
+| [0021](0021-parallel-lanes-stacking-review.md) | Parallel kernel lanes, stacked blocks and independent review | Proposed |
