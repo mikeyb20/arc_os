@@ -6,27 +6,29 @@
 
 ## 1. Summary
 
-<!-- Totals computed by script from the §4 tables on 2026-11-11. Recompute when blocks change. -->
+<!-- Totals computed by script from the §4 tables on 2026-11-12. Recompute when blocks change. -->
 
 | Milestone | Blocks | Session units | With allowance |
 |---|---|---|---|
 | M0 Lock-in decisions | 10 | 8.0 | 10.5 |
-| M1 Compute kernel | 23 | 29.0 | 41.7 |
+| M1 Compute kernel | 25 | 30.5 | 43.5 |
 | M2 Toolchain + first LLM | 9 | 8.0 | 9.7 |
 | M3 Knowledge layer | 15 | 14.5 | 18.8 |
 | M4 Real hardware | 15 | 16.0 | 21.1 |
-| M5 Packages + installer | 7 | 7.5 | 9.6 |
-| **Total** | **79** | **83.0** | **111.5** |
+| M5 Packages + installer | 9 | 8.5 | 10.3 |
+| **Total** | **83** | **85.5** | **113.9** |
 
-- **79 blocks**: 16 small, 51 medium, 12 large. The 38 deep (D) blocks carry
-  45 of the 83 session units.
+- **83 blocks**: 19 small, 52 medium, 12 large. The 39 deep (D) blocks carry
+  45.5 of the 85.5 session units.
 - **Session units:** S = 0.5, M = 1, L = 2. "With allowance" adds debugging and rework: D blocks × 1.5, R blocks
   × 1.2; Linux-first blocks (lane L) × 1.2 and × 1.1, because they are debugged natively on Linux instead of in
   QEMU under TCG. That allowance is an estimate, not a measurement; recheck it after M1, the first milestone with
-  real numbers. Budget about **111 sessions**.
-- **M1 is the big one:** 23 blocks and 29 units, 17 of them deep. It gives the kernel virtual memory, SMP, threads,
+  real numbers. Budget about **114 sessions**.
+- **M1 is the big one:** 25 blocks and 30.5 units, 17 of them deep. It gives the kernel virtual memory, SMP, threads,
   a page cache and ext2.
-- **Critical path:** 28 blocks, 30 units (§5); 25.5 units are left after the 21 blocks done by 2026-11-11 (the lane blocks done so far are off the path). Running lanes in parallel shortens the calendar, not the compute.
+- **Critical path:** 26 blocks, 27 units (§5); 21.5 units are left after the 24 blocks merged by 2026-11-12. That
+  assumes unlimited lanes; with the two kernel lanes of §5 the estimate to the end is about 27.5 units
+  ([`parallel-lanes.md`](parallel-lanes.md) §2), against 44.5 with one. Lanes shorten the calendar, not the compute.
 
 ## 2. How blocks work
 
@@ -36,7 +38,7 @@
   **L** ~800–1500, two sessions.
 - **Tier:** **R** = routine; a faster, cheaper model is enough and Michael skims the PR. **D** = deep; use the
   strongest model, and Michael reads the header/interface diff and the tests.
-- **Lane:** **K** kernel · **U** user space and ports · **C** content pipeline on a Linux host · **I** infra and
+- **Lane:** **K** kernel (**KA** kernel lane A, memory and files; **KB** kernel lane B, CPU, time, devices and threads; §5) · **U** user space and ports · **C** content pipeline on a Linux host · **I** infra and
   integration · **H** needs Michael with real hardware · **P** planning · **L** Linux-first user space (§5).
 - **Specs:** M0 and M1 have full specs in [`blocks/`](blocks/). M2–M5 get theirs from a planning block
   (`M2-00` … `M5-00`) run just before the milestone, because they depend on what M1 and M2 measure. The
@@ -69,7 +71,10 @@ Start every block with `/os/implement-block <ID>`. These rules are what keep ses
 9. **Stay in scope.** Anything outside the block becomes a line in Notes, not code. If a block passes 1.5× its
    size, stop, hand off, and split it.
 10. **Batch the hardware.** Real-hardware checks happen at four checkpoints (M1-04, M1-22, M4-14, M5-06), not after
-    every change.
+    every change, plus a laptop smoke boot (about 15 minutes) after each hardware-sensitive block: M1-05, M1-06,
+    M1-09, M1-19 and M1-21 (M1-06 and M1-21 on both machines). At most one hardware-sensitive block may be merged
+    without its smoke boot; the next one waits for it, other blocks don't. Each such block adds a report or
+    self-test line that proves it on hardware ([`parallel-lanes.md`](parallel-lanes.md) §6.2; Michael, 2026-11-12).
 11. **Ask once, early, with a default.** Questions to Michael go on a decision card at the start of a block; work
     continues on the default while he decides.
 12. **Review effort follows the tier.** R: CI green plus a skim. D: interfaces and tests read closely.
@@ -83,6 +88,13 @@ Start every block with `/os/implement-block <ID>`. These rules are what keep ses
     subsystem does, its main structures and their invariants, its locks, and where to start reading the code, and
     points at headers instead of copying them (ADR-0020 §8). Goal: Michael can maintain arc_os offline without an
     assistant; the M5 key carries `docs/`. Cost about half a session per milestone, inside that block.
+15. **Independent review before Michael's** (ADR-0021, Michael 2026-11-12). Every D-tier kernel PR, and every R-tier
+    PR that touches locking or interrupt code, gets a review by a fresh thread that didn't write it, given only
+    the PR, the block spec and the ADRs it cites. It re-runs the block-review evidence (build, the targeted QEMU
+    test, `tools/hygiene.py`), checks lock order, IRQ safety, error paths, leaks and the cross-lane pairs in
+    [`parallel-lanes.md`](parallel-lanes.md) §3.3, and posts one PR comment with CONFIRMED or PLAUSIBLE findings
+    (`file:line` and a failure scenario each), or "no issues found". The author fixes CONFIRMED findings as new
+    commits before Michael reviews; the PR body links the comment. The reviewer never pushes to the branch.
 
 ## 4. Block list
 
@@ -110,23 +122,25 @@ Start every block with `/os/implement-block <ID>`. These rules are what keep ses
 | M1-02b | Slab allocator | M | D | K | M1-02 | kmalloc/kfree O(1) from slab caches; first-fit heap gone (ADR-0019) | done |
 | M1-03 | Per-CPU entry paths + x2APIC | M | D | K | M0-06 | `-smp 4` in xAPIC and x2APIC modes; no global syscall stack | done |
 | M1-04 | Hardware bring-up kit + first hardware boot | M | R | K+H | M1-01, M1-02, M1-03 | Both machines boot from USB; boot report photographed | review (#31) |
+| M1-04b | QR encoder (host-tested) | M | R | K | M1-04 | Plain-text QR codes round-trip through `zbarimg` on the host for every supported version; no allocation | todo |
+| M1-04c | Report, log and panic as QR codes | S | R | KB | M1-04b, M1-05 | `arc.qr=1` pages decode from a QEMU screendump to the serial `[REPORT]` text; panic screen carries a code | todo |
 | M1-05 | SMP scheduler | L | D | K | M1-03, M1-02b | Threads run on all CPUs; lock order checked at runtime | todo |
-| M1-06 | Clocks, timers, tickless idle | M | D | K | M1-05 | `clock_gettime`, `nanosleep`; idle CPUs get no timer interrupts | todo |
-| M1-07 | VMAs, demand paging, anonymous mmap | L | D | K | M1-02, M1-05 | musl malloc works; bad pointers give `-EFAULT`; TLB shootdown | todo |
-| M1-08 | Copy-on-write fork + 2 MiB pages | M | D | K | M1-07 | COW fork; huge pages for large anonymous memory | todo |
-| M1-09 | Driver model, MSI-X, DMA helpers | M | D | K | M1-05 | virtio on the bus model with MSI-X | todo |
-| M1-10 | Async block layer + GPT | M | D | K | M1-09 | Many requests in flight; partitions found by label | todo |
-| M1-11 | VFS rework: inodes, 64-bit offsets | L | D | K | M0-06 | Files past 4 GiB; every filesystem converted | todo |
-| M1-12 | Page cache + file mmap | L | D | K | M1-07, M1-10, M1-11 | `read`/`write` and `mmap` always agree | todo |
-| M1-13 | ext2 read + mount by label | M | R | K | M1-10, M1-11, M1-12 | Reads `mke2fs` images incl. 5 GiB sparse files | todo |
-| M1-14 | Memory reclaim + writeback | M | D | K | M1-12, M1-13 | 2 GiB file in 512 MB RAM; no flusher timer when clean | todo |
-| M1-15 | ext2 write | L | D | K | M1-13, M1-14 | `e2fsck`-clean after every scenario | todo |
-| M1-16 | Threads I: clone, thread groups, futex | L | D | K | M1-01, M1-05, M1-07 | musl pthread create, join and mutex | todo |
-| M1-17 | Threads II: futex, signals, affinity | M | D | K | M1-06, M1-16 | Timed waits, thread-directed signals, CPU pinning | todo |
-| M1-18 | AF_UNIX sockets + poll/select | M | R | K | M1-06, M1-11 | Echo server over a UNIX socket; poll with timeouts | todo |
-| M1-19 | Hardening: SMEP, SMAP, NX, W^X | M | D | K | M1-07 | All suites pass with SMEP/SMAP/NX on | todo |
-| M1-20 | Syscall gap fill | M | R | K | M1-11, M1-17, M1-18 | Every inventory syscall done, or `-ENOSYS` with a reason | todo |
-| M1-21 | Power base: idle states, HWP, RAPL | M | R | K | M1-06 | MWAIT/HLT idle; EPP by profile; energy readout | todo |
+| M1-06 | Clocks, timers, tickless idle | M | D | KB | M1-05 | `clock_gettime`, `nanosleep`; idle CPUs get no timer interrupts | todo |
+| M1-07 | VMAs, demand paging, anonymous mmap | L | D | KA | M1-02, M1-05 | musl malloc works; bad pointers give `-EFAULT`; TLB shootdown | todo |
+| M1-08 | Copy-on-write fork + 2 MiB pages | M | D | KB | M1-07 | COW fork; huge pages for large anonymous memory | todo |
+| M1-09 | Driver model, MSI-X, DMA helpers | M | D | KB | M1-05 | virtio on the bus model with MSI-X | todo |
+| M1-10 | Async block layer + GPT | M | D | KB | M1-09 | Many requests in flight; partitions found by label | todo |
+| M1-11 | VFS rework: inodes, 64-bit offsets | L | D | KA | M0-06 | Files past 4 GiB; every filesystem converted | todo |
+| M1-12 | Page cache + file mmap | L | D | KA | M1-07, M1-10, M1-11 | `read`/`write` and `mmap` always agree | todo |
+| M1-13 | ext2 read + mount by label | M | R | KA | M1-10, M1-11, M1-12 | Reads `mke2fs` images incl. 5 GiB sparse files | todo |
+| M1-14 | Memory reclaim + writeback | M | D | KA | M1-12, M1-13 | 2 GiB file in 512 MB RAM; no flusher timer when clean | todo |
+| M1-15 | ext2 write | L | D | KA | M1-13, M1-14 | `e2fsck`-clean after every scenario | todo |
+| M1-16 | Threads I: clone, thread groups, futex | L | D | KB | M1-01, M1-05, M1-07 | musl pthread create, join and mutex | todo |
+| M1-17 | Threads II: futex, signals, affinity | M | D | KB | M1-06, M1-16 | Timed waits, thread-directed signals, CPU pinning | todo |
+| M1-18 | AF_UNIX sockets + poll/select | M | R | KB | M1-06, M1-11 | Echo server over a UNIX socket; poll with timeouts | todo |
+| M1-19 | Hardening: SMEP, SMAP, NX, W^X | M | D | KA | M1-07 | All suites pass with SMEP/SMAP/NX on | todo |
+| M1-20 | Syscall gap fill | M | R | KB | M1-11, M1-17, M1-18 | Every inventory syscall done, or `-ENOSYS` with a reason | todo |
+| M1-21 | Power base: idle states, HWP, RAPL | M | R | KB | M1-06 | MWAIT/HLT idle; EPP by profile; energy readout | todo |
 | M1-22 | M1 done-test + second hardware boot | M | R | K+H | M1-04, M1-08, M1-15, M1-19, M1-20, M1-21 | 10 GB ext2 mmap test passes; both machines reach the shell | todo |
 
 ### M2 — Toolchain and first LLM (specs from M2-00a and M2-00)
@@ -143,7 +157,7 @@ Start every block with `/os/implement-block <ID>`. These rules are what keep ses
 | M2-05 | `ask` command + M2 done-test | S | R | U | M2-04b | `ask "what is hypothermia"` answers in QEMU (4 CPUs, 4 GB) | todo |
 | M2-06 | Measure on the laptop, shortlist models | M | R | H | M2-05 | Tokens/s and RAM per tier recorded; mmap vs 2 MiB anonymous loading compared and chosen (ADR-0019); plan §4 updated | todo |
 
-### M3 — Knowledge layer (specs from M3-00; M3-02 and M3-06a from M2-00a; M3-01, M3-03 and M3-04 from M3-00a, with [`content-lane.md`](content-lane.md))
+### M3 — Knowledge layer (specs from M3-00; M3-02 and M3-06a from M2-00a; M3-01, M3-03 and M3-04 from M3-00a, with [`content-lane.md`](content-lane.md); M3-05 from M4-00)
 
 M3-00 sets the smallest supported screen at 1366×768, common on the low-tier reference laptops: the reader,
 assistant and viewers lay out from the framebuffer size, never a fixed one.
@@ -151,13 +165,13 @@ assistant and viewers lay out from the framebuffer size, never a fixed one.
 | ID | Block | Size | Tier | Lane | Needs | Done when | Status |
 |---|---|---|---|---|---|---|---|
 | M3-00a | Plan the content lane | S | D | P | M3-02 | Specs for M3-01, M3-03 and M3-04 written: keyword-only packs first, vectors once M2-06 picks the embedder (says whether M3-04 splits); decides whether the pack steps after ZIM extraction are written in C on the lane libraries, so they could later run on arc_os | done (#30) |
-| M3-00 | Plan M3 | S | D | P | M2-06 | Specs for the other M3 blocks written, M3-04b included; content-lane specs corrected from M2-06 | todo |
+| M3-00 | Plan M3 | S | D | P | M2-06 | Specs for the other M3 blocks written (M3-04b included; M3-05 comes from M4-00); content-lane specs corrected from M2-06 | todo |
 | M3-01 | Content selection, licences, size budget | M | R | C | M3-00a, M0-07 | Source list per category and tier approved by Michael | in progress |
 | M3-02 | `libarcpack`: doc store, chunks, manifests | M | D | L | M2-00a, M2-02, M2-04, M0-07 | One library reads packs on Linux inside the syscall inventory (on arc_os from M3-07) | done |
 | M3-03 | ZIM → doc store + chunks (host) | L | R | C | M3-01, M3-02 | Medical pack built twice with identical chunk IDs | todo |
 | M3-04 | FTS5, tier selector, `.arcpkg` (host) | M | R | C | M3-03, M5-02 | 32 GB keyword-only pack set built and sized; `tiers.json` for each storage tier | todo |
 | M3-04b | Pack vectors (host) | M | R | C | M3-00, M3-04 | Each 32 GB pack gets `vectors/<embedder>/` from M2-06's embedder as a new minor version with unchanged chunk IDs; tier sizes re-measured | todo |
-| M3-05 | UTF-8 console, PSF2, `/dev/input`, `/dev/fb0` | M | D | K | M3-00 | fbdev `mmap` and `input_event` work from user space | todo |
+| M3-05 | UTF-8 console, PSF2, `/dev/input`, `/dev/fb0` | M | D | KB | M4-00 | fbdev `mmap` and `input_event` work from user space | todo |
 | M3-06a | Retriever I: keyword search | S | D | L | M3-02 | FTS5 keyword search over packs on Linux; works with no `arc-llm` | done |
 | M3-06 | Retriever II: vector rerank | S | D | U | M3-00, M3-06a | Vector rerank with the embedder chosen in M2-06; keyword-only still works without `arc-llm` | todo |
 | M3-07 | Library reader (no LLM) | M | R | U | M3-05, M3-06 | Search, open, follow links, bookmarks | todo |
@@ -176,23 +190,23 @@ xHCI quirk does, or a USB key on those machines stays invisible.
 
 | ID | Block | Size | Tier | Lane | Needs | Done when | Status |
 |---|---|---|---|---|---|---|---|
-| M4-00 | Plan M4 | S | D | P | M1-22 | M4 block specs written | todo |
-| M4-01 | xHCI controller | L | D | K | M4-00 | Ports reset, devices addressed, control transfers work | todo |
-| M4-02 | USB core: enumeration and transfers | M | D | K | M4-01 | Descriptors read, config set, bulk and interrupt transfers | todo |
-| M4-03 | USB HID keyboard + mouse | M | R | K | M4-02, M3-05 | USB input arrives on `/dev/input` | todo |
-| M4-04 | USB mass storage (BOT) | M | R | K | M4-02 | USB stick is a block device | todo |
-| M4-05 | NVMe | M | D | K | M4-00 | Laptop's NVMe readable and writable | todo |
-| M4-06 | AHCI | M | R | K | M4-00 | SATA disks readable and writable (QEMU; no SATA test machine now) | todo |
-| M4-07 | PS/2 mouse + keyboard on `/dev/input` | S | R | K | M4-00, M3-05 | PS/2 devices report `input_event`s | todo |
-| M4-08 | Intel e1000e (82574 in QEMU) + I219 | M | R | K | M4-00 | Packets flow in QEMU; I219 paths ready for hardware | todo |
+| M4-00 | Plan M4 | S | D | P | M1-22 | M4 block specs and the M3-05 spec written | todo |
+| M4-01 | xHCI controller | L | D | KA | M4-00 | Ports reset, devices addressed, control transfers work | todo |
+| M4-02 | USB core: enumeration and transfers | M | D | KA | M4-01 | Descriptors read, config set, bulk and interrupt transfers | todo |
+| M4-03 | USB HID keyboard + mouse | M | R | KB | M4-02, M3-05 | USB input arrives on `/dev/input` | todo |
+| M4-04 | USB mass storage (BOT) | M | R | KA | M4-02 | USB stick is a block device | todo |
+| M4-05 | NVMe | M | D | KA | M4-00 | Laptop's NVMe readable and writable | todo |
+| M4-06 | AHCI | M | R | KA | M4-00 | SATA disks readable and writable (QEMU; no SATA test machine now) | todo |
+| M4-07 | PS/2 mouse + keyboard on `/dev/input` | S | R | KB | M4-00, M3-05 | PS/2 devices report `input_event`s | todo |
+| M4-08 | Intel e1000e (82574 in QEMU) + I219 | M | R | KB | M4-00 | Packets flow in QEMU; I219 paths ready for hardware | todo |
 | M4-09 | DHCP + DNS | M | R | U | M4-08 | Address from DHCP; names resolve | todo |
-| M4-10 | Realtek RTL8111/8168 | M | R | K | M4-00 | Driver follows the datasheet, with Linux's `r8169` read as reference only (GPL, no code copied); hardware test when a Realtek machine is available | todo |
-| M4-11 | uACPI: power-off, reboot, buttons, lid | L | D | K | M4-00 | Power button and lid events; clean power-off | todo |
-| M4-12 | Battery, profiles, backlight, APST, `power` | M | R | K | M4-05, M4-11 | Battery %, critical shutdown, profiles change watts | todo |
+| M4-10 | Realtek RTL8111/8168 | M | R | KB | M4-00 | Driver follows the datasheet, with Linux's `r8169` read as reference only (GPL, no code copied); hardware test when a Realtek machine is available | todo |
+| M4-11 | uACPI: power-off, reboot, buttons, lid | L | D | KB | M4-00 | Power button and lid events; clean power-off | todo |
+| M4-12 | Battery, profiles, backlight, APST, `power` | M | R | KB | M4-05, M4-11 | Battery %, critical shutdown, profiles change watts | todo |
 | M4-13 | Maps part 2: map viewer | M | R | U | M4-03 | Pre-rendered tiles; pan and zoom by keyboard or mouse | todo |
 | M4-14 | Hardware test campaign | M | R | H | M3-11, M4-04, M4-06, M4-07, M4-09, M4-10, M4-12, M4-13 | M3's test passes on both machines with and without a cable; watts per profile | todo |
 
-### M5 — Packages and installer (specs from M5-00; M5-02 from M2-00a)
+### M5 — Packages and installer (specs from M5-00; M5-02 from M2-00a; M5-01 and M5-03 from M5-00a)
 
 M5 follows ADR-0018: the key builder writes the portable layout straight onto the stick, sized to fill it; the
 installer copies the same layout to an internal disk only where a machine allows it; `e2fsck` runs at boot after
@@ -200,37 +214,55 @@ an unclean shutdown.
 
 | ID | Block | Size | Tier | Lane | Needs | Done when | Status |
 |---|---|---|---|---|---|---|---|
-| M5-00 | Plan M5 | S | D | P | M4-14 | M5 block specs written; self-hosting decided (§6) | todo |
-| M5-01 | Port e2fsprogs (`mke2fs`, `e2fsck`) | M | R | U | M5-00 | Both run on arc_os against real partitions | todo |
+| M5-00a | Plan the Linux-first M5 blocks | S | D | P | M1-15 | Specs for M5-01, M5-03 and M5-03b written; ext2 features match M1-13/M1-15 | todo |
+| M5-00 | Plan M5 | S | D | P | M4-14 | Specs for M5-04, M5-05 and M5-06 written; M5-01/M5-03 specs corrected from M4; self-hosting decided (§6) | todo |
+| M5-01 | Port e2fsprogs (`mke2fs`, `e2fsck`) | M | R | L | M5-00a | Both pass on Linux inside the syscall inventory against image files (on arc_os from M5-03b) | todo |
 | M5-02 | `arcpkg` tool | M | R | L | M2-00a, M2-02, M2-04, M0-07 | install, remove, list, verify, switch role; offline; tested on Linux in a temporary root (on arc_os from M5-03) | done |
-| M5-03 | Installer | L | D | U | M5-01, M5-02 | Disk detected, GPT written, system copied, tier and models chosen | todo |
-| M5-04 | USB key image builder (host) | M | R | I | M5-03 | One image with installer, packages, packs, models, sources | todo |
+| M5-03 | Installer | L | D | L | M5-01, M5-02 | On Linux against image files: GPT written, system copied, tier and models chosen, inside the syscall inventory | todo |
+| M5-03b | Installer on arc_os | S | R | U | M5-03, M4-14, M5-00 | M5-01 and M5-03 tests pass in QEMU and find real disks through M4's drivers | todo |
+| M5-04 | USB key image builder (host) | M | R | I | M5-03b | One image with installer, packages, packs, models, sources | todo |
 | M5-05 | GGUF wrapper + recovery | M | R | U | M5-02 | Any GGUF becomes an `.arcpkg`; `arcpkg verify` repairs from the key | todo |
 | M5-06 | Blank-machine test | M | R | H | M5-04, M5-05 | A blank machine becomes a working system from one USB key, offline; the key runs on the USB-only machine without touching its disk | todo |
 
 ## 5. Order, critical path and parallel lanes
 
-**Default order:** one block at a time, top to bottom in §4. A block starts only when everything in its Needs is
-`done`.
+**Order** (ADR-0021, Michael 2026-11-12; details and numbers in [`parallel-lanes.md`](parallel-lanes.md)). Blocks run
+in order within each lane. A block starts when everything in its Needs is `done`, or, within the same lane only,
+when its parent is in `review` with green CI and a clean independent review (§3 rule 15): **stacking**.
 
-**Critical path** (the longest dependency chain: 28 blocks, 30 session units; it was 35 blocks and 36.5 units
-before the M4 drivers and the content lane moved earlier on 2026-11-10):
+- **Two kernel lanes from the merge of M1-05.** Nothing kernel runs beside M1-05 except M1-04b, whose new files
+  share nothing with it.
+  - **Lane KA, memory and files:** M1-07 → M1-11 → M1-12 → M1-13 → M1-14 → M1-15 → M1-19; after M1-22, M4-01 →
+    M4-02 → M4-04, M4-05, M4-06.
+  - **Lane KB, CPU, time, devices and threads:** M1-09 → M1-10 → M1-04c → M1-06 → M1-21 → M1-16 → M1-17 → M1-18 →
+    M1-20 → M1-08; after M1-22, M3-05, M4-08, M4-10, M4-11, M4-12, then M4-07 and M4-03.
+  - Lane KA owns §7 lock levels 1–6 and lane KB levels 7–10; only the owning lane changes a level's rules.
+  - Two blocks that edit the same file never run at once (`fat32.c`: M1-10 merges before M1-11 starts; `vmm.c`:
+    M1-07, M1-08, M1-12, M1-19 never at once; `fd.c`: M1-16 starts after M1-11 merges). Add-only shared lists
+    (`hal.h`, `helpers.md`, `budgets.md`, `locking.md`, this file) are exempt: the second PR rebases.
+  - A block that uses the other lane's interface starts only after the producing block has **merged** (M1-10 →
+    M1-12, M1-07 and M1-11 → M1-16, M1-11 → M1-18, M1-06 → M1-17 and M1-18).
+  - WIP limit: two unmerged PRs per lane, four kernel PRs in total.
+- **Stacking rules.** Depth 1 (one unmerged PR under the new block). Never across lanes. Never while a decision
+  card on the parent is open, on a planning block, or on a hardware-sensitive parent whose smoke boot (§3 rule 10)
+  hasn't happened when the child builds on the same hardware behaviour. Review fixes on a parent go on as new
+  commits, and a parent is never force-pushed once a child exists (PRs merge as merge commits, so the child then
+  just merges `origin/master`). The child's PR targets the parent's branch and is retargeted to `master` when the
+  parent merges. Michael merges every PR, in order within each lane.
+
+**Critical path** (the longest dependency chain, assuming unlimited lanes: 26 blocks, 27 session units):
 
 M0-01 → M0-03 → M0-04 → M0-05 → M0-06 → M1-03 → M1-05 → M1-07 → M1-12 → M1-13 → M1-14 → M1-15 → M1-22 →
-M2-00 → M2-04b → M2-05 → M2-06 → M3-00 → M3-05 → M3-07 → M3-10 → M3-11 → M4-14 → M5-00 → M5-01 → M5-03 →
-M5-04 → M5-06
+M2-00 → M2-04b → M2-05 → M2-06 → M3-00 → M3-06 → M3-09 → M3-11 → M4-14 → M5-00 → M5-03b → M5-04 → M5-06
 
-The M4 drivers now run beside M2 and M3 in the kernel lane, and the content lane beside M1, so neither is on the
-path; the knowledge layer (console, reader, maps, M3 done-test) is.
+With one kernel lane the real limit was the lane itself: M1 and then the M4 drivers queued behind each other
+(about 44.5 units left from M1-05, against about 27.5 with two lanes and the 2026-11-12 trims).
 
 Inside M1 the chain is per-CPU entry → SMP scheduler → VMAs → page cache → ext2 read → reclaim → ext2 write →
 done-test (12 of M1's 28 units). The other M1 blocks hang off that chain and slot in whenever their Needs are met.
 
-**Parallel lanes.** Two sessions at once only when they don't touch the same files:
-- M0-07 (schemas) at any time.
-- In M1, after M1-05: time (M1-06 → M1-21), drivers and storage (M1-09 → M1-10), the VFS (M1-11, which only needs
-  M0-06) and memory (M1-07 → M1-08) are separate areas.
-- **After M1-22 the kernel lane goes straight to M4** (Michael, 2026-11-10): M4-00 plans right after M1-22, and
+**Other lanes.** Two sessions at once only when they don't touch the same files:
+- **After M1-22 the kernel lanes go straight to M4** (Michael, 2026-11-10): M4-00 plans right after M1-22, and
   xHCI, USB core, USB storage and NVMe (M4-01, M4-02, M4-04, M4-05) are built while the user-space lane runs
   M2-00 → M2-04b → M2-05 and M3. Real hardware is the biggest unknown, and the USB-only machine can't use the
   key before USB storage exists. M4-03 and M4-07 still wait for M3-05 (`/dev/input`); M4-14 waits for M3-11.
@@ -251,8 +283,12 @@ that ABI are built and debugged on Linux while M1 is still in progress, then run
   row in its "Lane additions" tables with the M1 block that owns it.
 - **Conventions:** [`lane-l.md`](lane-l.md) (tree, `--root`, installed paths, tests, 4 GB rules). M2-04 writes the
   stack's JSON library, so M3-02 and M5-02 need M2-04.
+- **Second round (Michael, 2026-11-12):** M5-00a (after M1-15, when the ext2 features are final) writes specs for
+  M5-01 (`mke2fs`/`e2fsck`) and the installer core M5-03, built and tested on Linux against disk image files under
+  the same syscall check; M5-03b runs both on arc_os after M4-14. The installer sees disks only through block
+  devices and Linux ioctls, so it doesn't wait for M4's drivers.
 - **On arc_os:** M2-04b runs M2-01…M2-04 in QEMU after M1-22. M3-02 and M3-06a reach arc_os through M3-07 and
-  M3-11; M5-02 through M5-03. A difference from Linux there is a kernel bug, not an app bug.
+  M3-11; M5-02, M5-01 and M5-03 through M5-03b. A difference from Linux there is a kernel bug, not an app bug.
 - **What stays later:** the vector half of the retriever (M3-06) waits for the embedder chosen in M2-06; anything
   that needs `/dev/fb0` or `/dev/input` waits for M3-05.
 
@@ -270,6 +306,7 @@ Parallel sessions shorten the calendar; they don't save compute.
 | M0-03 | Archive location for outside sources | Release assets on arc_os; private material in a private repo |
 | Before M1-04 | In the old work computer's firmware setup, check that Secure Boot can be turned off and booting from USB is allowed (a BIOS password left by the former employer blocks both). No specs to send: the M1-04 boot report records them | Assume it can. If it can't, you decide whether a reference-class laptop (knowledge-os.md §4) replaces it |
 | M1-04 | Boot both machines from the USB stick; photograph the boot report and self-test | — |
+| After M1-05, M1-06, M1-09, M1-19, M1-21 merge | Laptop smoke boot from the `bringup-latest` image (M1-06 and M1-21 on both machines); photos, or QR text once M1-04c is in | The next hardware-sensitive block waits; other blocks continue |
 | M1-22 | Boot both machines to the shell; read idle watts on the laptop | — |
 | Before M2-06 | Allow a Remote Control session on the laptop (QEMU with KVM, model downloads) | — |
 | Before M3-01 | Create a private repo for the content lists (`sources.json`) and add it to the project (`arc_os` is public) | Kept in project files, `/mnt/project-files/arc_os/content/`, until the repo exists |
@@ -319,6 +356,13 @@ Parallel sessions shorten the calendar; they don't save compute.
 
   Never sleep while holding a spinlock. The fault path never takes an inode lock. Never take a page fault while
   holding a page lock: prefault the user buffer, copy with faults disabled, and retry on a short copy.
+
+  **Lane ownership** (ADR-0021): levels 1–6 belong to kernel lane KA and levels 7–10 to lane KB (§5); only the
+  owning lane adds a lock to a level or changes its rules. Where they meet: block I/O completion (KB, M1-10) wakes
+  page-cache waiters (KA, M1-12) and takes only wait-queue and leaf locks. If M1-05 adds a big kernel lock,
+  `docs/kernel/locking.md` lists the subsystems still under it, one row each; only the lane that owns a subsystem
+  edits its row (KA: VFS, ramfs, fd tables, mm; KB: process list, PID counter, signals, sockets), and the block
+  that moves the last subsystem off removes the lock.
 
 ## 8. Constraints found while planning
 
@@ -409,3 +453,10 @@ Secure Boot through a signed shim and our own key.
   move to a new block, M3-04b (after M2-06, spec from M3-00), which adds vectors as a new minor pack version with
   the same chunk IDs; M3-11 needs it. M3-03 grows from M to L (extractor and `packbuild`). Totals 79 blocks,
   83 units; critical path unchanged.
+- **2026-11-12** — Parallel lanes (Michael approved all six decisions in
+  [`parallel-lanes.md`](parallel-lanes.md); ADR-0021): two kernel lanes from the merge of M1-05 (KA memory and
+  files, KB CPU, time, devices and threads, split by §7 lock levels), stacking within a lane, independent review of
+  kernel PRs (§3 rule 15), laptop smoke boots after hardware-sensitive blocks (§3 rule 10). New blocks M1-04b (QR
+  encoder, can run beside M1-05) and M1-04c (report, log and panic as QR codes), the bring-up-image release in CI
+  (infra PR, no block). M3-05's spec moves to M4-00 and it needs only M4-00. Second Linux-first round: M5-00a, M5-01
+  and M5-03 on Linux, M5-03b on arc_os. Totals 83 blocks, 85.5 units; critical path 26 blocks, 27 units.
