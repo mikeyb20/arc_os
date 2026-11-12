@@ -281,6 +281,15 @@ Static Linux programs may run thanks to the ABI, but that is not a goal.
 
 ## 11. Review history
 
+- **2026-11-12 — Parallel lanes** (Michael approved; ADR-0021, [`parallel-lanes.md`](parallel-lanes.md)). Process
+  only, no locked technical decision changed:
+  - Two kernel lanes from the merge of M1-05, split by lock level.
+  - Stacking within a lane.
+  - Independent review of kernel PRs.
+  - Laptop smoke boots after hardware-sensitive blocks.
+  - QR codes for exact text from real hardware (M1-04b, M1-04c; new scope, approved).
+  - M3-05 planned by M4-00.
+  - A second Linux-first round for M5-01 and M5-03 (M5-00a, M5-03b).
 - **2026-11-10 — Architecture review** (approved by Michael; no locked decision changed, so no new ADR). Kept every
   lock-in. Gave exec-through-the-page-cache an owner (M1-12): exec copied whole programs into a 4 MiB-capped
   buffer and arc-llm is 7.7 MB. Moved the M4 drivers to run right after M1-22 beside M2 and M3, and started a

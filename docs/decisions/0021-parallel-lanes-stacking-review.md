@@ -1,7 +1,7 @@
 # ADR-0021: Parallel kernel lanes, stacked blocks and independent review
 
-- **Status:** Proposed (draft for Michael, 2026-11-12). Not binding. Each part becomes Accepted only with
-  Michael's explicit OK, and only the approved parts are kept.
+- **Status:** Accepted (Michael, 2026-11-12: all six parts, decision card in the project thread "Plan parallel build
+  lanes")
 - **Date:** 2026-11-12
 - **Amends:** `docs/plans/work-blocks.md` §3 (rules 10 and 13; new rule 15) and §5 (order and lanes). Supersedes
   no ADR. Details and numbers: [`docs/plans/parallel-lanes.md`](../plans/parallel-lanes.md).
@@ -18,10 +18,10 @@
 - Real hardware has run nothing yet. The laptops have no serial port, and the bring-up image isn't published by
   CI.
 
-## Decision (proposed)
+## Decision
 1. **Two kernel lanes after M1-05 merges.**
    - Lane A, memory and files: M1-07, M1-11, M1-12, M1-13, M1-14, M1-15, M1-19.
-   - Lane B, CPU, time, devices and threads: M1-09, M1-10, M1-06, M1-21, M1-16, M1-17, M1-18, M1-20, M1-08.
+   - Lane B, CPU, time, devices and threads: M1-09, M1-10, M1-04c, M1-06, M1-21, M1-16, M1-17, M1-18, M1-20, M1-08.
    - Lane A owns §7 locks 1–6 and lane B owns 7–10. Only the owning lane changes a lock's rules, or its row in
      the big-kernel-lock coverage table if M1-05 adds one.
    - Two blocks that edit the same file never run at the same time, except the add-only shared lists and the
@@ -49,10 +49,13 @@
      M1-21 on both machines).
    - At most one hardware-sensitive block may be merged without its smoke boot.
    - Each such block adds a report or self-test line that proves it on hardware.
-5. **(Separate yes/no, new scope) Block M1-04b:** the boot report, log tail and panic screen drawn as plain-text QR
-   codes (`ARC1` header, page counter, CRC32, no links possible), with our own encoder and a host round-trip test
-   against `zbarimg`.
-6. **(Separate yes/no) Dependency trims.**
+5. **QR codes (new scope, approved).**
+   - The boot report, the log tail and the panic screen are drawn as plain-text QR codes (`ARC1` header, page
+     counter, CRC32, no links possible), with our own encoder and a host round-trip test against `zbarimg`.
+   - The work is split in two:
+     - M1-04b, the encoder: new files only, so it runs beside M1-05.
+     - M1-04c, the drawing: after M1-05, in lane B.
+6. **Dependency trims.**
    - M3-05's spec is written by M4-00, and M3-05 needs only M1-22.
    - New planning block M5-00a (needs M1-15) makes M5-01 and the installer core Linux-first.
    - A new S block M5-03b runs the installer on arc_os after M4-14.
@@ -66,7 +69,7 @@
 - Rules out:
   - a third kernel lane (it buys about 1.5 units);
   - stacking across lanes or deeper than one;
-  - running any kernel block beside M1-05;
+  - running any kernel block beside M1-05, except M1-04b (new files only);
   - loosening any test or review rule to go faster.
 
 ## Verification
