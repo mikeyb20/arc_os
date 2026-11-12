@@ -56,7 +56,6 @@ typedef struct RunQueue {
     Thread *idle;
     Thread *prev;               /* switched away from, until sched_finish_switch */
     Thread *migrate;            /* preempted thread its affinity sends elsewhere */
-    uint64_t cr3;               /* address space loaded on this CPU */
     uint64_t last_switch_tsc;
     uint64_t idle_cycles;
     uint64_t busy_cycles;
@@ -246,7 +245,10 @@ static void rq_account(RunQueue *rq, const Thread *prev) {
 void sched_schedule(void) {
     RunQueue *rq = this_rq();
     Thread *prev = rq->curr;
-    if (prev->state != THREAD_RUNNING) lockdep_assert_can_sleep("blocking in sched_schedule");
+    /* No spinlock across a switch, blocking or not: the next thread here
+     * could spin on it forever with interrupts off */
+    lockdep_assert_can_sleep(prev->state != THREAD_RUNNING ? "blocking in sched_schedule"
+                                                           : "yielding in sched_schedule");
     int had_kernel_lock = kernel_lock_suspend();
 
     spin_lock(&rq->lock);   /* interrupts are off (caller) */
@@ -289,13 +291,12 @@ void sched_schedule(void) {
     /* This CPU's entry stacks (TSS.RSP0 and SYSCALL) for the new thread */
     if (next->kernel_stack_top != 0) hal_set_kernel_stack(next->kernel_stack_top);
 
-    /* Address space: compare with what this CPU has loaded, not with prev's
-     * (prev may have run elsewhere) */
+    /* Address space: compare with what this CPU has loaded right now, not
+     * with prev's (prev may have run elsewhere) and not with a cached copy
+     * (exec, fork and init load CR3 themselves, and a freed PML4 comes back
+     * as the next process's: a stale copy could skip a needed load) */
     uint64_t cr3 = thread_cr3(next);
-    if (cr3 != rq->cr3) {
-        hal_switch_address_space(cr3);
-        rq->cr3 = cr3;
-    }
+    if (cr3 != hal_get_address_space()) hal_switch_address_space(cr3);
 
     /* Slices only while a real thread runs: idle CPUs get no timer interrupts */
     if (slice_timer_ready) {
@@ -403,7 +404,6 @@ void sched_init(void) {
     boot->cpu = 0;
     boot->on_cpu = 1;
     rq->curr = boot;
-    rq->cr3 = hal_get_address_space();
     rq->last_switch_tsc = hal_tsc_read();
     rq_online(rq);
     kprintf("[SCHED] Per-CPU run queues, round robin, %lu ms slices\n", (uint64_t)(SCHED_SLICE_NS / 1000000));
@@ -456,9 +456,7 @@ void sched_ap_start(void) {
         for (;;) hal_halt_forever();
     }
     Thread *idle = rq->idle;
-    uint64_t cr3 = vmm_get_kernel_pml4();   /* off the bootloader's page tables */
-    hal_switch_address_space(cr3);
-    rq->cr3 = cr3;
+    hal_switch_address_space(vmm_get_kernel_pml4());   /* off the bootloader's page tables */
 
     spin_lock(&rq->lock);   /* interrupts are off; the idle thread releases it */
     rq->last_switch_tsc = hal_tsc_read();

@@ -235,6 +235,20 @@ TEST(order_kernel_lock_first) {
     return 0;
 }
 
+/* Taking the kernel lock back after a sleep may happen under a sleeping lock
+ * (a mutex held across the sleep), never under a spinlock (review finding 2) */
+TEST(kernel_lock_resume_under_mutex) {
+    LockdepThread t = {.level = {LOCK_LEVEL_INODE}, .depth = 1};
+    ASSERT_TRUE(lockdep_check_kernel_lock(NULL, &t, 1) == NULL);
+    ASSERT_TRUE(lockdep_check_kernel_lock(NULL, &t, 0) != NULL);
+    static const Spinlock wq = SPINLOCK_INIT(LOCK_LEVEL_WAITQUEUE, "wq");
+    const Spinlock *h[] = {&wq};
+    LockdepCpu c = held_cpu(h, 1);
+    ASSERT_TRUE(lockdep_check_kernel_lock(&c, NULL, 1) != NULL);
+    ASSERT_TRUE(lockdep_check_kernel_lock(NULL, NULL, 0) == NULL);
+    return 0;
+}
+
 /* --- Test suite export --- */
 
 TestCase spinlock_tests[] = {
@@ -253,6 +267,7 @@ TestCase spinlock_tests[] = {
     TEST_ENTRY(order_run_queues_by_cpu),
     TEST_ENTRY(order_sleeping_locks),
     TEST_ENTRY(order_kernel_lock_first),
+    TEST_ENTRY(kernel_lock_resume_under_mutex),
 };
 
 int spinlock_test_count = sizeof(spinlock_tests) / sizeof(spinlock_tests[0]);

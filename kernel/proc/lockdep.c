@@ -38,6 +38,14 @@ const char *lockdep_check_order(const LockdepCpu *cpu, const LockdepThread *thr,
     return (int)level == max_level ? "same level, not in subkey order" : "lower level than a lock held";
 }
 
+const char *lockdep_check_kernel_lock(const LockdepCpu *cpu, const LockdepThread *thr, int resuming) {
+    if (cpu != NULL && cpu->depth > 0) return "a spinlock is held";
+    /* Taking it back after a sleep may happen under a sleeping lock: anyone
+     * waiting for that lock sleeps too, and sleeping gives the kernel lock up */
+    if (!resuming && thr != NULL && thr->depth > 0) return "a sleeping lock is held";
+    return NULL;
+}
+
 #include "lib/kprintf.h"
 
 void lockdep_test_inversion(void) {
@@ -87,13 +95,14 @@ static int lockdep_active(void) {
     return !__atomic_load_n(&lockdep_off, __ATOMIC_RELAXED);
 }
 
-void lockdep_acquire(const Spinlock *lock) {
+void lockdep_acquire(const Spinlock *lock, int trylock) {
     if (!lockdep_active()) return;
     LockdepCpu *cpu = sched_this_lockdep();
     if (cpu == NULL) return;   /* this CPU's run queue doesn't exist yet (early boot) */
     uint64_t flags = irq_save();
     Thread *t = thread_current();
-    const char *why = lockdep_check_order(cpu, t ? &t->lockdep : NULL, lock->level, lock->subkey);
+    /* A trylock never waits, so it can't deadlock: record it, skip the order */
+    const char *why = trylock ? NULL : lockdep_check_order(cpu, t ? &t->lockdep : NULL, lock->level, lock->subkey);
     if (why == NULL && cpu->depth >= LOCKDEP_MAX_HELD) why = "too many spinlocks held";
     if (why != NULL) {
         lockdep_fail("taking", lock->name, lock->level, why);
@@ -153,13 +162,11 @@ void lockdep_sleep_release(uint16_t level) {
     }
 }
 
-void lockdep_kernel_lock(void) {
+void lockdep_kernel_lock(int resuming) {
     if (!lockdep_active()) return;
-    LockdepCpu *cpu = sched_this_lockdep();
     Thread *t = thread_current();
-    if ((cpu != NULL && cpu->depth > 0) || (t != NULL && t->lockdep.depth > 0)) {
-        lockdep_fail("taking", "kernel lock", LOCK_LEVEL_KERNEL, "another lock is held");
-    }
+    const char *why = lockdep_check_kernel_lock(sched_this_lockdep(), t != NULL ? &t->lockdep : NULL, resuming);
+    if (why != NULL) lockdep_fail("taking", "kernel lock", LOCK_LEVEL_KERNEL, why);
 }
 
 #endif /* ARC_LOCKDEP */

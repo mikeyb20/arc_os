@@ -32,6 +32,17 @@ static void hal_serial_putchar(char c) {
         capture_buf[capture_pos++] = c;
     }
 }
+static uint32_t test_cpu_index;   /* the simulated CPU klog runs on */
+static uint32_t hal_cpu_index(void) {
+    return test_cpu_index;
+}
+static uint64_t hal_tsc_read(void) {
+    return 0;
+}
+static uint64_t hal_tsc_to_ns(uint64_t cycles) {
+    (void)cycles;
+    return 0;   /* rate unknown: klog_console_acquire falls back to its pause cap */
+}
 /* The real spinlock.h: host builds (ARC_HOST_TEST) simulate the interrupt flag */
 #include "proc/spinlock.h"
 
@@ -328,6 +339,27 @@ static int test_console_owner_and_resync(void) {
     return 0;
 }
 
+/* klog_console_acquire: free -> taken; owned by this CPU (an interrupt
+ * echoing a key over a drain) -> 0 at once; owned elsewhere -> 0 after the
+ * bound (review finding 4) */
+static int test_console_acquire_same_cpu(void) {
+    kprintf("\n");
+    test_cpu_index = 0;
+    ASSERT_EQ(klog_console_acquire(), 1);
+    ASSERT_EQ(console_owner, 1u);
+    ASSERT_EQ(klog_console_acquire(), 0);   /* this CPU: no wait */
+    test_cpu_index = 2;
+    ASSERT_EQ(klog_console_acquire(), 0);   /* another CPU: bounded wait, then 0 */
+    test_cpu_index = 0;
+    klog_console_release();
+    test_cpu_index = 2;
+    ASSERT_EQ(klog_console_acquire(), 1);
+    ASSERT_EQ(console_owner, 3u);
+    klog_console_release();
+    test_cpu_index = 0;
+    return 0;
+}
+
 /* --- Test suite export --- */
 
 TestCase kprintf_tests[] = {
@@ -359,6 +391,7 @@ TestCase kprintf_tests[] = {
     {"ring_wraps_and_read_clamps", test_ring_wraps_and_read_clamps},
     {"set_buffer_keeps_newest", test_set_buffer_keeps_newest},
     {"console_owner_and_resync", test_console_owner_and_resync},
+    {"console_acquire_same_cpu", test_console_acquire_same_cpu},
 };
 
 int kprintf_test_count = sizeof(kprintf_tests) / sizeof(kprintf_tests[0]);

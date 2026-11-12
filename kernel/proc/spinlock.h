@@ -44,7 +44,7 @@ static inline void spin_lock_init(Spinlock *lock, uint16_t level, const char *na
 
 /* Take lock without touching the interrupt flag. */
 static inline void spin_lock(Spinlock *lock) {
-    lockdep_acquire(lock);
+    lockdep_acquire(lock, 0);
     hal_lock_depth_inc();
     while (__atomic_exchange_n(&lock->locked, 1, __ATOMIC_ACQUIRE)) {
         while (__atomic_load_n(&lock->locked, __ATOMIC_RELAXED)) hal_cpu_relax();
@@ -54,7 +54,7 @@ static inline void spin_lock(Spinlock *lock) {
 /* Take lock if it is free. Returns 1 if taken. */
 static inline int spin_trylock(Spinlock *lock) {
     if (__atomic_exchange_n(&lock->locked, 1, __ATOMIC_ACQUIRE)) return 0;
-    lockdep_acquire(lock);
+    lockdep_acquire(lock, 1);
     hal_lock_depth_inc();
     return 1;
 }

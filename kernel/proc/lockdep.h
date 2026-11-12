@@ -59,6 +59,11 @@ typedef struct LockdepThread {
  * (level, subkey) may be taken now, else a short reason. */
 const char *lockdep_check_order(const LockdepCpu *cpu, const LockdepThread *thr, uint16_t level, uint16_t subkey);
 
+/* Checker core for the kernel lock (host-tested): NULL if it may be taken
+ * now. At syscall entry (resuming 0) nothing may be held; taking it back
+ * after a sleep (resuming 1) may happen under sleeping locks, not spinlocks. */
+const char *lockdep_check_kernel_lock(const LockdepCpu *cpu, const LockdepThread *thr, int resuming);
+
 /* Test mode only (suite "lockorder"): take two spinlocks in the wrong order.
  * A debug build panics with "LOCK ORDER VIOLATION"; a release build says the
  * checker is off and returns. */
@@ -73,19 +78,23 @@ void lockdep_test_inversion(void);
 #endif
 
 #if ARC_LOCKDEP
-/* Spinlock hooks (spinlock.h): check, then record / forget the lock. */
-void lockdep_acquire(const struct Spinlock *lock);
+/* Spinlock hooks (spinlock.h): check, then record / forget the lock. A
+ * trylock (trylock 1) is recorded without the order check. */
+void lockdep_acquire(const struct Spinlock *lock, int trylock);
 void lockdep_release(const struct Spinlock *lock);
 /* Sleeping lock hooks (mutex.c). */
 void lockdep_sleep_acquire(uint16_t level, const char *name);
 void lockdep_sleep_release(uint16_t level);
 /* About to sleep (schedule away while blocking): no spinlock may be held. */
 void lockdep_assert_can_sleep(const char *what);
-/* About to take the kernel lock: no other lock may be held. */
-void lockdep_kernel_lock(void);
+/* About to take the kernel lock: no other lock may be held at syscall entry
+ * (resuming 0); when taking it back after a sleep (resuming 1) only
+ * spinlocks count. */
+void lockdep_kernel_lock(int resuming);
 #else
-static inline void lockdep_acquire(const struct Spinlock *lock) {
+static inline void lockdep_acquire(const struct Spinlock *lock, int trylock) {
     (void)lock;
+    (void)trylock;
 }
 static inline void lockdep_release(const struct Spinlock *lock) {
     (void)lock;
@@ -100,7 +109,9 @@ static inline void lockdep_sleep_release(uint16_t level) {
 static inline void lockdep_assert_can_sleep(const char *what) {
     (void)what;
 }
-static inline void lockdep_kernel_lock(void) {}
+static inline void lockdep_kernel_lock(int resuming) {
+    (void)resuming;
+}
 #endif
 
 #endif /* ARCHOS_PROC_LOCKDEP_H */

@@ -7,7 +7,8 @@ table below and adds a row; a new level goes in the gaps and in `kernel/proc/loc
 ## The order
 
 A lock may be taken only while every lock already held has a **lower** level (outermost = lowest number). Two
-locks of the same level may be held together only when both carry a subkey and the new one's subkey is higher.
+locks of the same level may be held together only when the new one carries a subkey higher than every held lock
+of that level (a lock without a subkey counts as 0). Give every lock of a nestable level a subkey.
 
 | Level | Name in `lockdep.h` | Kind | Locks today | From |
 |---|---|---|---|---|
@@ -37,10 +38,12 @@ while one socket's lock is held. Timer-queue locks (M1-06) go between 101 and 10
 Each rule panics with `LOCK ORDER VIOLATION`, the lock being taken and the locks held:
 
 1. A spinlock is taken out of order (a lower level than one held, or the same level without a higher subkey).
+   `spin_trylock` is recorded but not order-checked: it never waits, so it can't deadlock.
 2. A sleeping lock (mutex) is taken out of order, or while any spinlock is held.
-3. A thread blocks (`sched_schedule` with the thread not `RUNNING`) or waits on a semaphore while holding a
-   spinlock.
-4. The kernel lock is taken while any other lock is held.
+3. A thread enters `sched_schedule` (blocking or yielding) or waits on a semaphore while holding a spinlock.
+4. The kernel lock is taken at syscall entry while any other lock is held. Taking it back after a sleep
+   (`kernel_lock_resume`) only rules out spinlocks: a mutex may be held across the sleep, because anyone waiting
+   for that mutex sleeps too, and sleeping gives the kernel lock up.
 5. More than 16 spinlocks are held on one CPU, or more than 4 sleeping locks by one thread.
 
 Release builds compile the checks away. QEMU suite `lockorder` takes a wait-queue-level lock and then a
@@ -67,8 +70,9 @@ guarantee while user code runs on every CPU:
   device interrupt handler (keyboard, virtio-net) holds it while it runs (`kernel_lock_irq`).
 - It is held only with interrupts off. A thread that blocks gives it up inside `sched_schedule` and takes it
   back when it runs again, so sleeping with it is allowed.
-- The timer, IPIs and the scheduler never take it. Wait queues, pipes, sockets and the tty keep their own locks
-  as well, so they are already correct without it.
+- The timer, IPIs and the scheduler never take it. Wait queues and the scheduler are correct without it. Pipes,
+  sockets and the tty have locks too, but parts of their state are still touched outside those locks (pipe data
+  and reader/writer counts, the tty input buffer), so they stay under it until their row below is removed.
 
 It goes away piece by piece as subsystems get their own locks. **BKL coverage** (ADR-0021): one row per
 subsystem still under it. Only the lane that owns a subsystem edits its row; the block that moves the last one
@@ -79,6 +83,7 @@ off removes the lock.
 | mm: user address spaces, `brk`, page-table setup in exec and fork | KA | M1-07 |
 | VFS, ramfs, devfs, procfs, FAT32, path lookup | KA | M1-11 |
 | fd tables (open, close, dup, fork copy) | KA | M1-11 |
+| Pipe buffers and reader/writer counts (`pipe.c` moves bytes and checks counts outside `pipe->lock`) | KA | M1-11 |
 | Process list, PID counter, fork/exec/exit/wait bookkeeping, credentials | KB | M1-16 |
 | Signal state (`SigState`, delivery, stop and continue) | KB | M1-16 |
 | Network stack outside the socket locks (interfaces, ARP, IP, UDP/TCP demux) | KB | M1-18 |

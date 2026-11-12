@@ -44,3 +44,6 @@ threads, per-thread masks, CPU affinity and the CPU description files llama.cpp 
 - From M1-05: `sched_set_affinity(t, mask)` (moves a queued thread at once; a running one at its next
   schedule; refuses a mask with no online CPU) and `sched_core_mask(SCHED_CORE_P/E, &mask)` exist; the syscalls
   only translate the user mask (`proc/cpumask.h`, 256 bits). `getcpu` can read `hal_cpu_index()`.
+  `sched_select_cpu` reads the 32-byte `t->affinity` without the run-queue lock while `sched_set_affinity`
+  writes it under the lock; once user space can change a running thread's mask, a torn read can pick CPU 0
+  outside the mask until the next schedule fixes it. Take a consistent snapshot there (M1-05 review, item 6).

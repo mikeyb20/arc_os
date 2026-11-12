@@ -17,7 +17,6 @@
 #include "mm/vmm.h"
 #include "mm/kmalloc.h"
 #include "arch/x86_64/syscall.h"
-#include "arch/x86_64/paging.h"
 #include "arch/x86_64/usermode.h"
 #include "lib/kprintf.h"
 #include "lib/mem.h"
@@ -322,7 +321,7 @@ static int64_t sys_execve(uint64_t path_addr, uint64_t argv_addr, uint64_t envp_
     p->brk_start = result.brk_start;
     p->brk_current = result.brk_start;
     sig_exec_reset(&p->sig);
-    paging_write_cr3(new_pml4);
+    hal_switch_address_space(new_pml4);
     vmm_free_user_pages(old_pml4);
 
     kdebug("[EXEC] pid=%u loaded '%s' argc=%u envc=%u entry=0x%lx\n", p->pid, abs, strings->argc, strings->envc,

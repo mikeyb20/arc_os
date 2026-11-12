@@ -110,8 +110,9 @@ static inline uint64_t hal_tsc_read(void) {
 static inline uint64_t hal_tsc_to_ns(uint64_t cycles) {
     return cycles;   /* 1 GHz */
 }
+static uint64_t cpu_cr3[TEST_CPUS];   /* what each simulated CPU has loaded */
 static inline uint64_t hal_get_address_space(void) {
-    return 0x1000;
+    return cpu_cr3[test_cpu];
 }
 static int kstack_sets;
 static uint64_t kstack_last;
@@ -124,6 +125,7 @@ static uint64_t cr3_last;
 static inline void hal_switch_address_space(uint64_t cr3) {
     cr3_writes++;
     cr3_last = cr3;
+    cpu_cr3[test_cpu] = cr3;
 }
 static int timer_starts, timer_stops;
 static inline void hal_slice_timer_start(uint64_t ns) {
@@ -204,6 +206,7 @@ static void reset_sched_state(void) {
     kstack_last = 0;
     cr3_writes = 0;
     cr3_last = 0;
+    for (int i = 0; i < TEST_CPUS; i++) cpu_cr3[i] = 0x1000;   /* kernel PML4 */
     timer_starts = timer_stops = 0;
     ctx_switch_count = 0;
     ctx_switch_old = ctx_switch_new = NULL;
@@ -407,6 +410,34 @@ static int test_sched_cr3_from_thread_proc(void) {
     sched_add_thread(k2);
     sched_schedule();         /* k -> k2: same page tables, no write */
     ASSERT_EQ(cr3_writes, 2);
+    return 0;
+}
+
+/* exec loads its new PML4 itself and frees the old one, which the next fork
+ * gets back: a switch to that child must still load CR3 (review finding 1) */
+static int test_sched_cr3_after_exec(void) {
+    reset_sched_state();
+    static Process pa, pc;
+    pa.page_table = 0xA000;
+    Thread *boot = make_thread(0, 100, THREAD_RUNNING);
+    Thread *a = make_thread(1, 200, THREAD_CREATED);
+    Thread *c = make_thread(2, 300, THREAD_CREATED);
+    a->proc = &pa;
+    boot_cpu(boot);
+    boot->state = THREAD_DEAD;
+    sched_add_thread(a);
+    sched_schedule();                   /* boot -> a: the scheduler loads 0xA000 */
+    ASSERT_EQ(cpu_cr3[0], 0xA000);
+    pa.page_table = 0xC000;             /* a execs: loads its new PML4 itself */
+    hal_switch_address_space(0xC000);
+    pc.page_table = 0xA000;             /* a fork child gets the freed PML4 back */
+    c->proc = &pc;
+    a->state = THREAD_DEAD;
+    sched_add_thread(c);
+    int before = cr3_writes;
+    sched_schedule();                   /* a -> c must load 0xA000 again */
+    ASSERT_EQ(cr3_writes, before + 1);
+    ASSERT_EQ(cpu_cr3[0], 0xA000);
     return 0;
 }
 
@@ -734,6 +765,7 @@ TestCase sched_tests[] = {
     {"idle_not_requeued", test_sched_idle_not_requeued},
     {"yield", test_sched_yield},
     {"cr3_from_thread_proc", test_sched_cr3_from_thread_proc},
+    {"cr3_after_exec", test_sched_cr3_after_exec},
     {"kernel_stack_follows_thread", test_sched_kernel_stack_follows_thread},
     {"kernel_lock_across_switch", test_sched_kernel_lock_across_switch},
     {"slice_timer_only_when_busy", test_sched_slice_timer_only_when_busy},

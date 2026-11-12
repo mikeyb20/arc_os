@@ -4,7 +4,8 @@
  * Invariants: held only with interrupts off; holder is the thread that took
  * it (NULL in an interrupt handler or when free); a thread holds it at most
  * once (no recursion); a thread that switches away gives it up first.
- * Locks: this is lock level 0 itself; it is taken with no other lock held.
+ * Locks: this is lock level 0 itself; it is taken with no other lock held
+ * (taken back after a sleep, only spinlocks are ruled out).
  * Cost: one atomic exchange to take, one store to release. Contention costs
  * the waiting CPU's time, not other CPUs': user code never waits for it. */
 
@@ -21,10 +22,10 @@ static int kernel_lock_try(void) {
     return __atomic_exchange_n(&kernel_lock_word, 1, __ATOMIC_ACQUIRE) == 0;
 }
 
-void kernel_lock(void) {
-    lockdep_kernel_lock();
+/* Spin for the lock word, then record the holder. */
+static void kernel_lock_acquire(void) {
     while (!kernel_lock_try()) {
-        /* Wait with interrupts let in: nothing is held, and a CPU that stays
+        /* Wait with interrupts let in: no spinlock is held, and a CPU that stays
          * deaf while it waits would miss halt IPIs (panic) and stall its timer */
         while (__atomic_load_n(&kernel_lock_word, __ATOMIC_RELAXED)) {
             hal_irq_window();
@@ -34,6 +35,11 @@ void kernel_lock(void) {
     Thread *t = thread_current();
     kernel_lock_holder = t;
     if (t != NULL) t->kernel_lock = 1;
+}
+
+void kernel_lock(void) {
+    lockdep_kernel_lock(0);
+    kernel_lock_acquire();
 }
 
 void kernel_lock_irq(void) {
@@ -62,5 +68,7 @@ int kernel_lock_suspend(void) {
 }
 
 void kernel_lock_resume(int was) {
-    if (was) kernel_lock();
+    if (!was) return;
+    lockdep_kernel_lock(1);   /* sleeping locks may be held across the sleep */
+    kernel_lock_acquire();
 }
