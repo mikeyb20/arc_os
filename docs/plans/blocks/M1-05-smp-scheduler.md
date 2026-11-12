@@ -68,3 +68,16 @@ written lock ordering that debug builds check at runtime.
   AVX2 check runs on the APs through `hal_run_on_other_cpus` (IPI 0xF3) while they idle; it relies on no user
   thread existing (diagnostic mode never starts init), which must stay true once APs run threads. `arc.bench`'s
   context-switch partner threads are never reaped (diagnostic mode only).
+- From M1-05 (handoff): every CPU schedules from its own run queue; the boot thread is CPU 0's idle thread.
+  Process, VFS, fd and signal state still had no locks, so an interim **big kernel lock** (level 0,
+  `proc/kernel_lock.h`) is held from syscall entry to exit and by the keyboard and virtio-net IRQ handlers;
+  it is dropped across `sched_schedule` and retaken after. User code runs in parallel, kernel code mostly
+  doesn't yet. M1-07, M1-11 and M1-16 shrink it (`docs/kernel/locking.md` lists what it covers).
+- Slice timer: LAPIC periodic 100 ms per CPU, armed only while a non-idle thread runs (3 APIC writes per such
+  switch); the PIT now only counts uptime. M1-06 replaces both with per-CPU one-shot timers.
+- Debug builds (`ARC_DEBUG=1`, the default) run the lock-order checker on every acquisition; per-CPU held
+  lists live in the run queue, so locks taken before `sched_init` aren't tracked. Release builds compile it out.
+- Not done: the panic still stops other CPUs with the ordinary halt IPI, not an NMI (a CPU spinning with
+  interrupts off keeps running); `arc.selftest`'s AVX2 check still relies on diagnostic mode never starting init.
+- Tests: `qemu.sched` takes about 2 minutes under TCG (10 000 fork/exec rounds), so its timeout is 400 s.
+  Exec no longer logs its segments at info level (each line redrew the framebuffer: ~50 ms per exec in TCG).

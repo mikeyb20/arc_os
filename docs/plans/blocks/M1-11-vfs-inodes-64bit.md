@@ -44,3 +44,7 @@ cache and ext2. Today's `VfsNode` read/write take 32-bit offsets, which caps fil
 **Notes.**
 - From M1-01: procfs inode numbers overlap. `meminfo` is 2001 and `/proc/<pid>` is 2000 + pid, so it shares a
   number with `/proc/1`; `/proc/cpuinfo` took 1998 to stay clear. 64-bit inodes should give procfs a real scheme.
+- From M1-05: the VFS, ramfs, devfs, procfs, FAT32 and fd tables have no locks of their own; the interim big
+  kernel lock (held for every syscall) covers them. The inode lock is level 10 in `docs/kernel/locking.md`;
+  this block takes the VFS out from under the kernel lock and updates that file's list. `/proc/sched_debug` took
+  inode 1995.

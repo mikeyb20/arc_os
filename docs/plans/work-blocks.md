@@ -121,10 +121,10 @@ Start every block with `/os/implement-block <ID>`. These rules are what keep ses
 | M1-02 | Page descriptors + buddy allocator | M | D | K | M0-02 | Descriptor array from the PMM; 2 MiB blocks available | done |
 | M1-02b | Slab allocator | M | D | K | M1-02 | kmalloc/kfree O(1) from slab caches; first-fit heap gone (ADR-0019) | done |
 | M1-03 | Per-CPU entry paths + x2APIC | M | D | K | M0-06 | `-smp 4` in xAPIC and x2APIC modes; no global syscall stack | done |
-| M1-04 | Hardware bring-up kit + first hardware boot | M | R | K+H | M1-01, M1-02, M1-03 | Both machines boot from USB; boot report photographed | review (#31) |
+| M1-04 | Hardware bring-up kit + first hardware boot | M | R | K+H | M1-01, M1-02, M1-03 | Both machines boot from USB; boot report photographed | done |
 | M1-04b | QR encoder (host-tested) | M | R | K | M1-04 | Plain-text QR codes round-trip through `zbarimg` on the host for every supported version; no allocation | todo |
 | M1-04c | Report, log and panic as QR codes | S | R | KB | M1-04b, M1-05 | `arc.qr=1` pages decode from a QEMU screendump to the serial `[REPORT]` text; panic screen carries a code | todo |
-| M1-05 | SMP scheduler | L | D | K | M1-03, M1-02b | Threads run on all CPUs; lock order checked at runtime | todo |
+| M1-05 | SMP scheduler | L | D | K | M1-03, M1-02b | Threads run on all CPUs; lock order checked at runtime | review |
 | M1-06 | Clocks, timers, tickless idle | M | D | KB | M1-05 | `clock_gettime`, `nanosleep`; idle CPUs get no timer interrupts | todo |
 | M1-07 | VMAs, demand paging, anonymous mmap | L | D | KA | M1-02, M1-05 | musl malloc works; bad pointers give `-EFAULT`; TLB shootdown | todo |
 | M1-08 | Copy-on-write fork + 2 MiB pages | M | D | KB | M1-07 | COW fork; huge pages for large anonymous memory | todo |
@@ -340,8 +340,10 @@ Parallel sessions shorten the calendar; they don't save compute.
   `spin_unlock_irqrestore(lock, flags)`), never the lock itself, so locks may be released in any order.
 - **ABI structs** live in `kernel/include/uapi/`, carry `_Static_assert`s, and `tests/test_abi_layout.c` checks
   them against the host's Linux headers.
-- **Lock order**, outermost first. Debug builds check it from M1-05; M1-05 copies this into
-  `docs/kernel/locking.md`. It follows the order Linux documents for the same structures.
+- **Lock order**, outermost first. Debug builds check it from M1-05; [`docs/kernel/locking.md`](../kernel/locking.md)
+  holds the full table with each lock's level (`kernel/proc/lockdep.h`), including the interim big kernel lock
+  (level 0, before everything) and the object locks M1-05 added between 7 and 8 (pipe, socket, tty, wait4 and
+  mutex guards; the socket table just above them). It follows the order Linux documents for the same structures.
   1. inode lock (sleeping; write, truncate, rename, directory changes)
   2. mm lock (sleeping read-write; mmap, munmap, mprotect, page faults)
   3. page lock (sleeping, per page)
@@ -460,3 +462,8 @@ Secure Boot through a signed shim and our own key.
   encoder, can run beside M1-05) and M1-04c (report, log and panic as QR codes), the bring-up-image release in CI
   (infra PR, no block). M3-05's spec moves to M4-00 and it needs only M4-00. Second Linux-first round: M5-00a, M5-01
   and M5-03 on Linux, M5-03b on arc_os. Totals 83 blocks, 85.5 units; critical path 26 blocks, 27 units.
+- **2026-11-12** — M1-05 (SMP scheduler): process, VFS, fd and signal state had no locks (one CPU with interrupts
+  off kept syscalls apart), so an interim big kernel lock (level 0) now covers every syscall and the keyboard and
+  virtio-net interrupt handlers; M1-07, M1-11 and M1-16 take their subsystems out from under it (their Notes and
+  `docs/kernel/locking.md` list what it covers). §7's lock order gains the object locks (pipe, socket, tty,
+  wait4, mutex guards) between the signal and wait-queue locks.
