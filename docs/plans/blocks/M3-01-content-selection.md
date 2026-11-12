@@ -36,8 +36,8 @@ list. Spec written by M3-00a (2026-11-11).
    (budget, picks per tier, flags) goes to Michael with a decision card to approve or change it.
 
 **Done when.**
-- [ ] Michael approved the list.
-- [ ] `sources.json` is in the private repo (or project files) and `budget.py` reproduces the budget.
+- [x] Michael approved the list.
+- [x] `sources.json` is in the private repo (or project files) and `budget.py` reproduces the budget.
 
 **Watch out.**
 - `download.kiwix.org` is blocked from cloud sessions; catalog pages may be too. If they are, the laptop (Remote
@@ -51,7 +51,8 @@ list. Spec written by M3-00a (2026-11-11).
 **Notes.**
 - 2026-11-12. The list (`sources.json`, a summary with what was left out and why, the budget printout and the
   catalog table) is in `/mnt/project-files/arc_os/content/` until the private content repo exists; nothing about
-  what ships is in this repo. Approval: see the thread's decision card.
+  what ships is in this repo. Michael approved it as listed on 2026-11-12 (decision card in the content-lane
+  thread), including iFixit (CC BY-NC-SA 3.0) and LibreTexts Medicine (CC BY-NC-SA 4.0, 1 TB only).
 - **Catalog.** `library.kiwix.org`, `download.kiwix.org`, the mirrors and the web-fetch tool are all blocked from
   cloud sessions, so `tools/content/catalog.py` reads the OPDS feed (`/catalog/v2/entries?lang=eng&count=-1`,
   1,269 entries on 2026-11-12) in `.github/workflows/catalog.yml`, which runs on a push to the script or the
