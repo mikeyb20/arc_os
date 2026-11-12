@@ -1,9 +1,10 @@
 # Parallel lanes — building more at once without losing accuracy
 
-> **Status: PROPOSED (2026-11-12)** for Michael's review. Nothing here applies until Michael says yes to the
-> decision it belongs to (§1). Until then [`work-blocks.md`](work-blocks.md) is unchanged and stays the build order:
-> one kernel block at a time. The draft decision record is
-> [ADR-0021](../decisions/0021-parallel-lanes-stacking-review.md) (Proposed).
+> **Status: APPROVED (Michael, 2026-11-12, all six decisions in §1).** Applied in
+> [`work-blocks.md`](work-blocks.md) (§3 rules 10 and 15, §5, §6, §7, new rows) and recorded in
+> [ADR-0021](../decisions/0021-parallel-lanes-stacking-review.md). This file keeps the reasoning and the numbers;
+> where the two differ, work-blocks.md wins. One change while applying: the QR block is split into M1-04b
+> (encoder, new files only, runs beside M1-05) and M1-04c (drawing, after M1-05), so the encoder can start now.
 
 Read at `origin/master` `ba05a67` (PR #31 merged). Numbers come from a small scheduling script that reads the §4
 tables of `work-blocks.md` (kept in project files: `arc_os/plans/lane-schedule-sim.py`). Units are the plan's session units
@@ -11,7 +12,7 @@ tables of `work-blocks.md` (kept in project files: `arc_os/plans/lane-schedule-s
 
 ## 1. Decisions for Michael
 
-| # | Decision | Recommendation | Default if no answer |
+| # | Decision (all approved 2026-11-12) | Recommendation | Default if no answer |
 |---|---|---|---|
 | D1 | Two kernel lanes after M1-05 merges (§3) | **Yes.** It is the one change that moves the finish date a lot: the remaining work takes about 30 units instead of 44.5 | Stay at one kernel lane |
 | D2 | Start the next block in a lane when the previous PR is CI-green and has a clean independent review, branched on top of it (§4) | **Yes**, within a lane, at most one unmerged PR underneath | Wait for each merge |
@@ -76,7 +77,7 @@ rules for the same lock.
 | 4 | M1-13 ext2 read | 1 | M1-17 |
 | 5 | M1-14 reclaim + writeback | 1 | M1-18 |
 | 6 | M1-15 ext2 write | 2 | M1-20, M1-08 |
-| 7 | M1-19 hardening | 1 | (idle or M1-04b) |
+| 7 | M1-19 hardening | 1 | (idle) |
 
 **Lane B — CPU, time, devices, threads:**
 
@@ -92,9 +93,10 @@ rules for the same lock.
 | 8 | M1-20 syscall gap fill | 1 | |
 | 9 | M1-08 COW fork + huge pages | 1 | Edits `vmm.c`, so it waits until lane A is in ext2 code (M1-15), not in `vmm.c` |
 
-M1-22 runs once both lanes finish (about 12 units after M1-05 merges, against 22 in one lane). If D5 is approved,
-M1-04b (QR codes, 2 units) goes into lane B right after M1-09 (§6.4). Lane B has about 1 unit of slack, so that
-moves M1-22 out by about 1 unit, in exchange for exact text from every smoke boot from M1-06 on.
+M1-22 runs once both lanes finish (about 12 units after M1-05 merges, against 22 in one lane). With D5 approved,
+the QR work is split: M1-04b (encoder, 1 unit) runs now beside M1-05, because its files are all new, and M1-04c
+(drawing, 0.5 units) goes into lane B after M1-10, before M1-06. Lane B has about 1 unit of slack, so M1-22 doesn't
+move, and every smoke boot from M1-06 on gets exact text.
 
 **After M1-22**, the same two lanes carry on. Lane A takes storage and USB: M4-00, M4-01 xHCI, M4-02 USB core,
 M4-04 USB storage, M4-05 NVMe, M4-06 AHCI. Lane B takes M3-05 (console, fb, input; critical path), M4-08 e1000e,
@@ -251,7 +253,7 @@ loop above makes it regular without making it per-PR.
 
 **Missing from tomorrow's boot:** today's Features line prints AVX2, FMA, BMI2, XSAVE, MWAIT, SMEP, SMAP, NX,
 1G-PAGES and RDRAND. It doesn't print TSC-deadline, ARAT, HWP or RAPL, which M1-06 and M1-21 need. The first block
-after M1-05 that touches `kernel/diag/report.c` adds them: M1-04b if D5 is approved, otherwise M1-06 (item 3). Tomorrow's photos still settle the CPU
+after M1-05 that touches `kernel/diag/report.c` adds them: M1-04c (item 3). Tomorrow's photos still settle the CPU
 floor, the TSC source, PIT behaviour, the memory map, the ACPI tables and the PCI devices.
 
 ### 6.3 Getting exact text off a machine with no serial port
@@ -262,14 +264,14 @@ have no serial port. The screen is the only output. The options:
 | Option | Exact text | Available | Cost |
 |---|---|---|---|
 | Photos, transcribed | No (digits misread, long hex lines) | Now | Transcription time; errors |
-| QR codes drawn by arc_os, read by a phone | **Yes** | After M1-04b | One block (§6.4) |
+| QR codes drawn by arc_os, read by a phone | **Yes** | After M1-04c | M1-04b + M1-04c (§6.4) |
 | Log file on the USB stick | Yes | After M4-04 (USB storage) | In plan |
 | Network log (netconsole-style) | Yes | After M4-08 (I219), plus new code | Not planned |
 | USB serial adapter | Yes | After xHCI + a USB serial driver | Not planned |
 
 QR is the only exact channel before M4, and it keeps working afterwards for panics that happen before storage is up.
 
-### 6.4 Proposal D5: block M1-04b, QR codes for the report, the log and panics
+### 6.4 D5: blocks M1-04b and M1-04c, QR codes for the report, the log and panics
 
 **What Michael sees:** the bring-up stick gets a fourth menu entry, "boot report as QR codes" (`arc.qr=1`). The
 report, self-test and bench pages are each drawn as numbered QR codes, one per screen, each held for 10 s or until
@@ -305,18 +307,18 @@ modules reliably off a screen.
 | `kernel/diag/qr.c`, `qr.h` | Encoder: byte mode, versions 10–30, level M, Reed–Solomon over GF(256), the 8 masks with the standard penalty score, format and version bits. Static buffers only, no allocation, so the panic path can use it | ~450 |
 | `kernel/diag/qr_pages.c` | Split text into pages, header and CRC, scale and center, page timer | ~150 |
 | `kernel/drivers/fb_console.c` | One function to draw a 1-bit bitmap scaled, while the console is paused | ~40 |
-| `kernel/diag/report.c`, panic screen, `make-iso.sh` | `arc.qr=1`, panic code, fourth menu entry; commit in the report's first line; TSC-DEADLINE, ARAT, HWP and RAPL on the Features line | ~70 |
+| `kernel/diag/report.c`, panic screen, `make-iso.sh` | `arc.qr=1`, panic code, fourth menu entry; commit in the report's first line; TSC-DEADLINE, ARAT, HWP and EPP on the Features line (RAPL has no CPUID bit on Intel; M1-21 reports it) | ~70 |
 | `tests/test_qr.c` + check script | Host round trip: encode about 50 texts (empty, 1 byte, exact capacity, every version, random bytes), render to PGM, decode with `zbarimg` (Ubuntu `zbar-tools`, host only, added to `dev-setup.sh`) and compare byte for byte. Plus known-answer tests for Reed–Solomon and the format bits | ~250 |
 | QEMU suite `qr` | Boot `arc.qr=1`, take a QEMU `screendump`, decode it, compare with the `[REPORT]` lines on serial | ~80 |
 
-That totals about 1,000 lines with tests, at the line between M and L, so call it **L, tier R**: one to two
-sessions. Own code, no outside library: an encoder is small and fully checked by the decoder round trip, and a
+That totals about 1,000 lines with tests. As applied, it is two blocks: **M1-04b** (encoder, CRC, text pages and
+host round trip; M, R) and **M1-04c** (drawing, panic code, menu entries, QEMU screendump test; S, R). Own code, no outside library: an encoder is small and fully checked by the decoder round trip, and a
 kernel library would add an outside component to archive. A crc32 helper doesn't exist yet (`docs/kernel/helpers.md`), so this block adds it to `kernel/lib` and lists it there.
 
 **Conflict with M1-05:** yes, a small one. M1-05 makes `kprintf` and the log ring SMP-safe, and may change who
-owns the console, and the QR code reads the log ring and pauses the console. So **M1-04b goes after M1-05
-merges**: in lane B right after M1-09 if D1 is approved, otherwise right after M1-05. It doesn't touch scheduler,
-memory or VFS code, so it never blocks a critical-path block.
+owns the console, and the QR code reads the log ring and pauses the console. So the drawing half (**M1-04c**) goes
+after M1-05 merges, in lane B. The encoder half (**M1-04b**) adds only new files (plus add-only lines in the CMake
+lists, `helpers.md` and `dev-setup.sh`), so it runs now, beside M1-05.
 
 **Is a QR code safe to scan?** A QR code is only text. The risk is what the phone does with that text: open a
 link, join a Wi-Fi network, call a number. Ours always starts with `ARC1` and can't contain a link, so the phone
@@ -342,13 +344,18 @@ Also checked and **not** proposed: making the reader (M3-07), image viewer (M3-0
 Linux-first. They need `/dev/fb0` and `/dev/input`, which cloud sessions don't have, and faking them would test
 the fake. M3-00 can revisit this.
 
-## 8. If Michael approves
+## 8. Applied (2026-11-12)
 
-One docs PR applies the approved parts:
-- work-blocks.md §5: the lanes and the stacking rule; §3: rule 15 (independent review) and rule 10 extended
-  (smoke boots).
-- New rows for M1-04b, M5-00a and M5-03b, as approved, with totals recomputed by script.
-- ADR-0021 set to Accepted with only the approved decisions.
-- `docs/kernel/locking.md`: lane ownership of the lock levels.
+PR #32 applies all six:
+- work-blocks.md:
+  - §5: the lanes and the stacking rule.
+  - §3: rule 15 (independent review) and rule 10 extended (smoke boots).
+  - §6: a smoke-boot row.
+  - §7: the lane ownership of lock levels. `docs/kernel/locking.md` doesn't exist yet; M1-05 creates it from §7.
+  - New rows for M1-04b, M1-04c, M5-00a and M5-03b, with totals recomputed by script (83 blocks, 85.5 units).
+- Specs for M1-04b and M1-04c in `blocks/`.
+- `/os/implement-block` and `/os/block-status` know about stacked starts.
+- ADR-0021 set to Accepted.
 
-The CI image publishing (D4 item 1) is a separate small infra PR. Kernel lanes start when M1-05 merges.
+The CI image publishing (D4 item 1) is a separate small infra PR. Kernel lanes start when M1-05 merges, and M1-04b
+can start now.

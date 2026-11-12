@@ -5,7 +5,8 @@ M0 and M1 have full specs here. M2–M5 get theirs from their planning block (`M
 the milestone starts, because they depend on what M1 and M2 measure. The Linux-first lane (lane L in
 work-blocks.md §5: M2-01…M2-04, M3-02, M3-06a, M5-02) gets its specs earlier, from `M2-00a`, and shares the
 conventions in [`../lane-l.md`](../lane-l.md). The content lane (M3-01, M3-03, M3-04) gets its specs from
-`M3-00a` and shares [`../content-lane.md`](../content-lane.md).
+`M3-00a` and shares [`../content-lane.md`](../content-lane.md). The second Linux-first round (M5-01, M5-03, M5-03b) gets its specs
+from `M5-00a`, and M3-05 from `M4-00` (work-blocks.md §5, 2026-11-12).
 
 ## Template
 

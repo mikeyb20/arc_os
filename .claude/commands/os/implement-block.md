@@ -6,8 +6,10 @@ The rules behind each step are in `docs/plans/work-blocks.md` §3.
 ## 1. Find the block
 - `ls docs/plans/blocks/<ID>-*.md`. No file means the milestone's planning block (`M2-00a`, `M2-00` … `M5-00`) hasn't run
   yet: stop and say so.
-- In the §4 table of `docs/plans/work-blocks.md`, check that every block in Needs is `done`. If not, stop and say
-  which one is missing.
+- In the §4 table of `docs/plans/work-blocks.md`, check that every block in Needs is `done`, or is the one parent
+  this block stacks on (work-blocks §5: same lane, parent in `review` with green CI and a clean independent review,
+  no open decision card on it). If not, stop and say which one is missing. A stacked block branches from the
+  parent's branch and its PR targets that branch.
 
 ## 2. Load only what the block lists
 - Read the block file, including Notes (a handoff from an earlier session if the block is half done).
