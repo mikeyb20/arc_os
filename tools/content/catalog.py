@@ -31,7 +31,7 @@ ZIM_LINK_REL = "http://opds-spec.org/acquisition/open-access"
 AGENT = "arc_os-content-catalog"
 META_KEYS = ("License", "Source")
 COLUMNS = ("category", "name", "flavour", "date", "size_bytes", "article_count",
-           "media_count", "title", "creator", "publisher", "tags", "url", "book")
+           "media_count", "title", "creator", "publisher", "tags", "url", "book", "server")
 DATE_IN_FILE = re.compile(r"_(\d{4}-\d{2})\.zim(?:\.meta4)?$")
 
 
@@ -82,10 +82,15 @@ def parse_entry(entry):
             m = DATE_IN_FILE.search(href)
             row["date"] = m.group(1) if m else ""
         elif link.get("type") == "text/html" and "/content/" in href:
-            row["book"] = urllib.parse.unquote(href.split("/content/", 1)[1].strip("/"))
+            # the server that serves the book's content (and its /raw/ metadata)
+            base, book = href.split("/content/", 1)
+            row["book"] = urllib.parse.unquote(book.strip("/"))
+            row["server"] = base if base.startswith("https://") else SERVER + base
     if not row["book"] and row["url"].endswith(".zim"):
         # The server names a book after its file unless the feed says otherwise.
         row["book"] = row["url"].rsplit("/", 1)[-1][:-len(".zim")]
+    if not row["server"]:
+        row["server"] = SERVER
     return {k: clean(v) for k, v in row.items()}
 
 
@@ -102,7 +107,7 @@ def fetch(url, timeout=120):
         return resp.read()
 
 
-def read_meta(rows, pattern, getter=fetch):
+def read_meta(rows, pattern, getter=fetch, pause=0.2):
     """Add License and Source columns for rows whose name matches `pattern`."""
     seen = {}
     for row in rows:
@@ -113,12 +118,18 @@ def read_meta(rows, pattern, getter=fetch):
         if row["name"] not in seen:
             meta = {}
             for key in META_KEYS:
-                url = f"{SERVER}/raw/{urllib.parse.quote(row['book'])}/meta/{key}"
+                url = f"{row['server']}/raw/{urllib.parse.quote(row['book'])}/meta/{key}"
                 try:
-                    meta[key.lower()] = clean(getter(url).decode("utf-8", "replace"))
-                except (urllib.error.URLError, OSError):
-                    meta[key.lower()] = ""
-                time.sleep(0.2)
+                    value = getter(url).decode("utf-8", "replace").strip()
+                except (urllib.error.URLError, OSError) as e:
+                    print(f"catalog: {url}: {e}", file=sys.stderr)
+                    value = ""
+                if value.startswith("<"):
+                    # an HTML page (error or access page), not a metadata value
+                    print(f"catalog: {url}: not metadata: {clean(value)[:300]}", file=sys.stderr)
+                    value = ""
+                meta[key.lower()] = clean(value)
+                time.sleep(pause)
             seen[row["name"]] = meta
         row.update(seen[row["name"]])
 
