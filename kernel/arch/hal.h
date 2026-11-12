@@ -29,6 +29,10 @@
 #include "arch/x86_64/cpu.h"     /* CPU features, floor, core types */
 #include "arch/x86_64/percpu.h"  /* this_cpu(), per-CPU kernel stacks */
 #include "arch/x86_64/smp.h"     /* APIC switch-over, AP start */
+#include "arch/x86_64/tsc.h"     /* TSC frequency (M1-04) */
+#include "arch/x86_64/debug_exit.h"   /* hal_debug_exit: QEMU test-mode exit */
+#include "arch/x86_64/ipi.h"     /* halt the other CPUs on panic */
+#include "arch/x86_64/lapic.h"   /* APIC mode for the boot report */
 
 /* ==================================================================
  * CPU Initialization & Control
@@ -68,6 +72,31 @@ static inline void hal_disable_interrupts(void) {
     __asm__ volatile ("cli");
 }
 
+/* Interrupts off, halt; returns only on an NMI (callers loop). */
+static inline void hal_halt_forever(void) {
+    __asm__ volatile("cli; hlt");
+}
+
+/* Index of the CPU this runs on (0 = BSP); safe from the first line of boot. */
+static inline uint32_t hal_cpu_index(void) {
+    return percpu_current_index();
+}
+
+/* Halt every other CPU (panic). Does nothing before the APs are started. */
+static inline void hal_stop_other_cpus(void) {
+    if (smp_active()) ipi_halt_all();
+}
+
+/* Registers and backtrace for a panic raised by code (lib/panic.h). */
+static inline void hal_panic_capture(PanicInfo *pi, void *frame_address) {
+    arch_panic_capture(pi, frame_address);
+}
+
+/* Spin-wait hint for busy loops bounded by time (PAUSE on x86). */
+static inline void hal_cpu_relax(void) {
+    __asm__ volatile("pause" ::: "memory");
+}
+
 /* Halt the CPU until the next interrupt. */
 static inline void hal_halt(void) {
     __asm__ volatile ("hlt");
@@ -83,6 +112,61 @@ static inline uint64_t hal_save_irq_state(void) {
 /* Restore previously saved interrupt state. */
 static inline void hal_restore_irq_state(uint64_t flags) {
     __asm__ volatile ("push %0; popf" : : "r"(flags) : "memory", "cc");
+}
+
+/* ---- CPU description and cross-CPU calls (boot report, self-test; M1-04) ---- */
+
+/* Brand string ("" when the CPU has none). */
+static inline void hal_cpu_brand(char *buf, size_t size) {
+    cpu_brand(buf, size);
+}
+
+/* Vendor string ("GenuineIntel"), family, model, stepping. */
+static inline const char *hal_cpu_vendor(void) {
+    return cpu_features()->vendor;
+}
+
+static inline void hal_cpu_signature(uint32_t *family, uint32_t *model, uint32_t *stepping) {
+    cpu_signature(family, model, stepping);
+}
+
+/* Notable features present, space separated. */
+static inline void hal_cpu_feature_names(char *buf, size_t size) {
+    cpu_feature_names(buf, size);
+}
+
+/* APIC ID and core type name ("P", "E", "-") of online CPU index cpu.
+ * Returns 0, or -1 when that CPU is not online. */
+static inline int hal_cpu_info(uint32_t cpu, uint32_t *apic_id, const char **core) {
+    uint8_t type;
+    if (cpu_describe(cpu, apic_id, &type) != 0) return -1;
+    *core = cpu_core_type_name(type);
+    return 0;
+}
+
+/* Highest CPU index hal_cpu_info accepts, plus one. */
+#define HAL_MAX_CPUS CPU_MAX
+
+/* CPUs online (BSP + APs that came up). */
+static inline uint32_t hal_cpu_count(void) {
+    return smp_cpu_count();
+}
+
+/* Interrupt controller mode: "x2APIC", "xAPIC" (once hal_smp_init ran). */
+static inline const char *hal_apic_mode(void) {
+    return lapic_x2apic() ? "x2APIC" : "xAPIC";
+}
+
+/* Run fn(arg) on every other online CPU and wait up to max_cycles TSC cycles.
+ * Returns how many ran it. Boot diagnostics only, from the BSP. */
+static inline uint32_t hal_run_on_other_cpus(void (*fn)(void *), void *arg, uint64_t max_cycles) {
+    return ipi_call_others(fn, arg, max_cycles);
+}
+
+/* Self-test only (arc.selftest=1, no user thread exists): AVX2 sum of buf on
+ * this CPU after checking XCR0; see fpu_avx2_selftest. */
+static inline int hal_avx2_selftest(const uint32_t *buf, uint64_t count, uint32_t *sum, uint64_t *xcr0) {
+    return fpu_avx2_selftest(buf, count, sum, xcr0);
 }
 
 /* ==================================================================
@@ -136,6 +220,26 @@ static inline uint64_t hal_timer_ticks(void) {
 /* Get approximate uptime in milliseconds. */
 static inline uint64_t hal_timer_uptime_ms(void) {
     return pit_get_uptime_ms();
+}
+
+/* Measure the TSC frequency (boot, BSP, after the CPU features are read). */
+static inline void hal_tsc_calibrate(void) {
+    tsc_calibrate();
+}
+
+/* The TSC frequency and where it came from. */
+static inline const TscInfo *hal_tsc_info(void) {
+    return tsc_info();
+}
+
+/* Raw time-stamp counter. */
+static inline uint64_t hal_tsc_read(void) {
+    return cpu_rdtsc();
+}
+
+/* TSC cycles to nanoseconds (0 when the frequency is unknown). */
+static inline uint64_t hal_tsc_to_ns(uint64_t cycles) {
+    return tsc_cycles_to_ns(cycles);
 }
 
 /* ==================================================================

@@ -8,7 +8,7 @@
 
 /* --- testmode.c with the debug-exit port stubbed --- */
 
-#define ARCHOS_ARCH_X86_64_DEBUG_EXIT_H
+#define ARCHOS_ARCH_HAL_H
 static jmp_buf  exit_jmp;
 static int      exit_called;
 static uint32_t exit_value;
@@ -19,6 +19,9 @@ static void hal_debug_exit(uint32_t value) {
     exit_called = 1;
     exit_value = value;
     longjmp(exit_jmp, 1);
+}
+static void hal_halt_forever(void) {
+    abort();
 }
 
 #include "../kernel/lib/testmode.c"
@@ -140,25 +143,13 @@ TEST(end_hook_runs_once_before_exit) {
     }
     ASSERT_EQ(end_hook_calls, 1);
     ASSERT_EQ(exit_called, 1);
-    /* A panic ends the run without the hook */
+    /* A panic ends the run through testmode_exit, which skips the hook */
     end_hook_calls = 0;
     if (setjmp(exit_jmp) == 0) {
-        kernel_panic_halt();
+        testmode_exit(TESTMODE_PANIC_CODE);
     }
     ASSERT_EQ(end_hook_calls, 0);
     testmode_set_end_hook(NULL);
-    testmode_init("");
-    return 0;
-}
-
-TEST(panic_exits_with_panic_code) {
-    testmode_init("arc.test=smoke");
-    exit_called = 0;
-    if (setjmp(exit_jmp) == 0) {
-        kernel_panic_halt();
-    }
-    ASSERT_EQ(exit_called, 1);
-    ASSERT_EQ(exit_value, TESTMODE_PANIC_CODE);
     testmode_init("");
     return 0;
 }
@@ -176,6 +167,5 @@ TestCase cmdline_tests[] = {
     TEST_ENTRY(init_exit_status_clamped),
     TEST_ENTRY(init_exit_ignored_outside_test_mode),
     TEST_ENTRY(end_hook_runs_once_before_exit),
-    TEST_ENTRY(panic_exits_with_panic_code),
 };
 int cmdline_test_count = sizeof(cmdline_tests) / sizeof(cmdline_tests[0]);

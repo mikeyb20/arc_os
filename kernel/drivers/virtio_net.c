@@ -130,6 +130,7 @@ int virtio_net_init(void) {
 
     net_initialized = 1;
     kprintf("[VIRTIO-NET] Initialized (%d RX buffers)\n", RX_BUF_COUNT);
+    pci_set_driver(pci, "virtio-net");   /* boot report (M1-04) */
     return 0;
 }
 

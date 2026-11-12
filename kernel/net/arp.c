@@ -56,7 +56,7 @@ void arp_rx(struct NetIf *nif, const void *data, uint32_t len) {
 
     /* If this is a request for our IP, send reply */
     if (ntohs(pkt->oper) == ARP_OP_REQUEST && pkt->tpa == nif->ip_addr) {
-        kprintf("[ARP] Request for our IP, sending reply\n");
+        kdebug("[ARP] Request for our IP, sending reply\n");
 
         ArpPacket reply;
         reply.htype = htons(ARP_HTYPE_ETHER);

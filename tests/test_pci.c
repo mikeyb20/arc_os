@@ -15,7 +15,7 @@ static inline void kprintf(const char *fmt, ...) { (void)fmt; }
 /* We simulate a 256-bus × 32-device × 8-function config space.
  * Only a small portion is populated; the rest returns 0xFFFFFFFF (no device). */
 
-#define FAKE_MAX_SLOTS 8
+#define FAKE_MAX_SLOTS 80
 
 typedef struct {
     uint8_t bus, device, function;
@@ -163,6 +163,42 @@ static int test_pci_multifunction(void) {
     return 0;
 }
 
+/* M1-04: with the table full, a multi-function device's functions are still
+ * found (and counted as dropped): the header type is read from the device, not
+ * from the last table entry */
+static int test_pci_multifunction_after_table_full(void) {
+    fake_reset();
+    for (int i = 0; i < PCI_MAX_DEVICES; i++) {
+        fake_add((uint8_t)(i / 32), (uint8_t)(i % 32), 0, 0x8086, (uint16_t)i, 0x02, 0x00);
+    }
+    FakeSlot *mf = fake_add(5, 0, 0, 0x8086, 0x1111, 0x0C, 0x03);
+    mf->config[3] = (0x80U << 16);
+    fake_add(5, 0, 1, 0x8086, 0x2222, 0x0C, 0x03);
+    pci_init();
+    ASSERT_EQ(pci_get_device_count(), PCI_MAX_DEVICES);
+    ASSERT_EQ(pci_get_dropped_count(), 2);
+    return 0;
+}
+
+static int test_pci_driver_and_class_names(void) {
+    fake_reset();
+    fake_add(0, 2, 0, 0x8086, 0x10d3, 0x02, 0x00);
+    pci_init();
+    const PciDevice *d = pci_get_device(0);
+    ASSERT_TRUE(d->driver == NULL);
+    pci_set_driver(d, "e1000e");
+    ASSERT_STR_EQ(pci_get_device(0)->driver, "e1000e");
+    PciDevice outside = *d;
+    pci_set_driver(&outside, "nope");   /* not a table entry: ignored */
+    ASSERT_STR_EQ(pci_get_device(0)->driver, "e1000e");
+    ASSERT_STR_EQ(pci_class_name(0x01, 0x08), "NVMe");
+    ASSERT_STR_EQ(pci_class_name(0x01, 0x06), "SATA");
+    ASSERT_STR_EQ(pci_class_name(0x02, 0x00), "ethernet");
+    ASSERT_STR_EQ(pci_class_name(0x0C, 0x03), "USB");
+    ASSERT_STR_EQ(pci_class_name(0xEE, 0x00), "other");
+    return 0;
+}
+
 static int test_pci_bar_io_base(void) {
     /* I/O BAR: bit 0 = 1, base in bits [31:2] */
     ASSERT_EQ(pci_bar_io_base(0xC041), 0xC040);
@@ -183,12 +219,14 @@ static int test_pci_get_device_bounds(void) {
 /* --- Test suite export --- */
 
 TestCase pci_tests[] = {
-    { "pci_empty_bus",         test_pci_empty_bus },
-    { "pci_single_device",    test_pci_single_device },
-    { "pci_find_device",      test_pci_find_device },
-    { "pci_multifunction",    test_pci_multifunction },
-    { "pci_bar_io_base",      test_pci_bar_io_base },
-    { "pci_get_device_bounds", test_pci_get_device_bounds },
+    {"pci_empty_bus", test_pci_empty_bus},
+    {"pci_single_device", test_pci_single_device},
+    {"pci_find_device", test_pci_find_device},
+    {"pci_multifunction", test_pci_multifunction},
+    {"pci_multifunction_after_table_full", test_pci_multifunction_after_table_full},
+    {"pci_driver_and_class_names", test_pci_driver_and_class_names},
+    {"pci_bar_io_base", test_pci_bar_io_base},
+    {"pci_get_device_bounds", test_pci_get_device_bounds},
 };
 
 int pci_test_count = sizeof(pci_tests) / sizeof(pci_tests[0]);

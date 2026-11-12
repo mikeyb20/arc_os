@@ -1,7 +1,7 @@
 #include "lib/testmode.h"
 #include "lib/cmdline.h"
 #include "lib/kprintf.h"
-#include "arch/x86_64/debug_exit.h"
+#include "arch/hal.h"
 
 static bool g_active;
 static char g_suite[TESTMODE_SUITE_MAX];
@@ -44,13 +44,5 @@ void testmode_process_exited(int pid, int status) {
 void testmode_exit(int code) {
     hal_debug_exit((uint32_t)code & 0x7f);
     /* No isa-debug-exit device (real hardware, plain QEMU): just stop. */
-    for (;;) __asm__ volatile ("cli; hlt");
-}
-
-void kernel_panic_halt(void) {
-    if (g_active) {
-        kprintf("ARC_TEST PANIC suite=%s\n", g_suite);
-        testmode_exit(TESTMODE_PANIC_CODE);
-    }
-    for (;;) __asm__ volatile ("cli; hlt");
+    for (;;) hal_halt_forever();
 }

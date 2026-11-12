@@ -14,6 +14,7 @@
 
 /* Stub kprintf */
 static inline void kprintf(const char *fmt, ...) { (void)fmt; }
+#define kdebug(...) ((void)0)
 #define KERNEL_PANIC() do { } while(0)
 
 /* Reproduce types from thread.h (since we guard it) */

@@ -109,6 +109,10 @@ extern int arc_string_test_count;
 extern TestCase arc_printf_tests[];
 extern int arc_printf_test_count;
 extern TestCase ansi_tests[];
+extern TestCase panic_tests[];
+extern TestCase smbios_tests[];
+extern int smbios_test_count;
+extern int panic_test_count;
 extern int ansi_test_count;
 
 static void run_suite(const char *suite_name, TestCase *tests, int count) {
@@ -185,6 +189,8 @@ int main(int argc, char **argv) {
         { "arc_printf",   arc_printf_tests,   &arc_printf_test_count },
         { "ansi",         ansi_tests,         &ansi_test_count },
         { "cmdline",      cmdline_tests,      &cmdline_test_count },
+        { "panic",        panic_tests,        &panic_test_count },
+        { "smbios",       smbios_tests,       &smbios_test_count },
     };
     /* clang-format on */
     int suite_count = (int)(sizeof(suites) / sizeof(suites[0]));

@@ -75,7 +75,7 @@ Thread *thread_create(thread_entry_t entry, void *arg) {
     /* RSP points to the return address (what ret will pop) */
     t->context.rsp = (uint64_t)&stack_top[-1];
 
-    kprintf("[PROC] Created thread tid=%u\n", t->tid);
+    kdebug("[PROC] Created thread tid=%u\n", t->tid);
     return t;
 }
 

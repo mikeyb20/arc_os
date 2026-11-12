@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Build a bootable arc_os ISO from build/.
 #
-# Usage: make-iso.sh [-o OUTPUT.iso] [-c "kernel cmdline"] [EXTRA_MODULE ...]
+# Usage: make-iso.sh [-o OUTPUT.iso] [-c "kernel cmdline"] [-B] [EXTRA_MODULE ...]
 #   -o  output ISO path (default build/arc_os.iso)
 #   -c  kernel command line, e.g. "arc.test=smoke" for kernel test mode
+#   -B  bring-up stick (M1-04, default build/arc_os-bringup.iso): a 10 s boot
+#       menu whose default entry is the boot report with self-test and benchmark,
+#       then the boot report alone, then normal boot (docs/hardware/bringup.md)
 #   EXTRA_MODULE  files added under /boot/ and loaded as Limine modules after
 #                 the standard programs (test programs, suite lists)
 # With no arguments it builds the normal build/arc_os.iso.
@@ -17,15 +20,24 @@ LIMINE_DIR="$PROJECT_DIR/limine"
 BUILD_DIR="$PROJECT_DIR/build"
 OUTPUT="$BUILD_DIR/arc_os.iso"
 CMDLINE=""
-while getopts "o:c:" opt; do
+BRINGUP=0
+while getopts "o:c:B" opt; do
     case "$opt" in
         o) OUTPUT="$OPTARG" ;;
         c) CMDLINE="$OPTARG" ;;
-        *) echo "usage: $0 [-o output.iso] [-c cmdline] [extra modules...]" >&2; exit 2 ;;
+        B) BRINGUP=1 ;;
+        *) echo "usage: $0 [-o output.iso] [-c cmdline] [-B] [extra modules...]" >&2; exit 2 ;;
     esac
 done
 shift $((OPTIND - 1))
 EXTRA_MODULES=("$@")
+if [ "$BRINGUP" = 1 ]; then
+    if [ -n "$CMDLINE" ] || [ ${#EXTRA_MODULES[@]} -gt 0 ]; then
+        echo "Error: -B takes no -c or extra modules." >&2
+        exit 2
+    fi
+    case "$OUTPUT" in "$BUILD_DIR/arc_os.iso") OUTPUT="$BUILD_DIR/arc_os-bringup.iso" ;; esac
+fi
 
 # One staging directory per output, so several ISOs can be built in parallel
 ISO_ROOT="$BUILD_DIR/iso_root-$(basename "$OUTPUT" .iso)"
@@ -61,6 +73,21 @@ for mod in "${EXTRA_MODULES[@]}"; do
     cp "$mod" "$ISO_ROOT/boot/$name"
     echo "    module_path: boot():/boot/$name" >> "$CONF"
 done
+
+# Bring-up stick: two more entries that repeat the arc_os entry's lines with a
+# diagnostic command line, listed before it so the first one is the default
+if [ "$BRINGUP" = 1 ]; then
+    ENTRY="$(sed -n '/^\/arc_os$/,$p' "$PROJECT_DIR/limine.conf" | tail -n +2)"
+    {
+        echo "timeout: 10"
+        echo "default_entry: 1"
+        echo
+        printf '/arc_os boot report, self-test and benchmark\n%s\n    cmdline: arc.selftest=1 arc.bench=1\n\n' "$ENTRY"
+        printf '/arc_os boot report\n%s\n    cmdline: arc.report=1\n\n' "$ENTRY"
+        echo "/arc_os normal boot"
+        echo "$ENTRY"
+    } > "$CONF"
+fi
 
 # Copy all userland binaries
 BINARIES="init login shell hello echo cat wc head tail touch mkdir rm ls stat chmod chown cp mv ps kill uname grep free"

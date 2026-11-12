@@ -24,4 +24,9 @@ uint64_t pit_get_ticks(void);
 /* Get approximate uptime in milliseconds. */
 uint64_t pit_get_uptime_ms(void);
 
+/* TSC cycles that pass while PIT channel 2 counts down `ms` milliseconds
+ * (1-54 ms), polled. Returns 0 if the count hasn't ended after max_cycles TSC
+ * cycles (PIT missing or clock-gated). Boot-time calibration only (M1-04). */
+uint64_t pit_measure_tsc(uint32_t ms, uint64_t max_cycles);
+
 #endif /* ARCHOS_ARCH_X86_64_PIT_H */

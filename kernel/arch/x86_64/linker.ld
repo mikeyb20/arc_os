@@ -14,10 +14,17 @@ SECTIONS {
 
     .text ALIGN(4096) : {
         *(.text .text.*)
+        _text_end = .;
     }
 
     .rodata ALIGN(4096) : {
         *(.rodata .rodata.*)
+    }
+
+    /* Function symbols for panic backtraces (tools/gen-ksyms.py). Placed after
+     * all code so the second kernel link moves no function. */
+    .ksyms ALIGN(16) : {
+        KEEP(*(.ksyms))
     }
 
     .data ALIGN(4096) : {

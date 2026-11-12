@@ -7,6 +7,7 @@
 #include "lib/mem.h"
 #include "lib/string.h"
 #include "lib/cmdline.h"
+#include "lib/klog.h"
 
 /* Scratch buffer for content generation */
 #define PROCFS_SCRATCH_SIZE 2048   /* /proc/cpuinfo: ~80 bytes per CPU */
@@ -209,6 +210,19 @@ static const VfsOps procfs_file_ops = {
     .read = procfs_file_read,
 };
 
+/* /proc/kmsg (M1-04): the kernel log ring as Linux /proc/kmsg text ("<6>..."
+ * per line), read without consuming it. Offset 0 is the oldest byte still in
+ * the ring, so a reader may skip bytes the ring overwrites meanwhile. */
+static int procfs_kmsg_read(VfsNode *node, void *buf, uint32_t offset, uint32_t size) {
+    (void)node;
+    uint64_t pos = klog_tail() + offset;
+    return (int)klog_read(&pos, buf, size);
+}
+
+static const VfsOps procfs_kmsg_ops = {
+    .read = procfs_kmsg_read,
+};
+
 /* --- Static node pools --- */
 
 static ProcfsFileNode meminfo_node;
@@ -216,6 +230,7 @@ static ProcfsFileNode uptime_node;
 static ProcfsFileNode cmdline_node;
 static ProcfsFileNode cpuinfo_node;
 static ProcfsFileNode slabinfo_node;
+static ProcfsFileNode kmsg_node;
 
 #define PROCFS_PID_POOL 8
 static ProcfsDirNode pid_dirs[PROCFS_PID_POOL];
@@ -282,7 +297,7 @@ static const struct {
     ProcfsFileNode *node;
 } root_files[] = {
     {"meminfo", &meminfo_node}, {"uptime", &uptime_node},     {"cmdline", &cmdline_node},
-    {"cpuinfo", &cpuinfo_node}, {"slabinfo", &slabinfo_node},
+    {"cpuinfo", &cpuinfo_node}, {"slabinfo", &slabinfo_node}, {"kmsg", &kmsg_node},
 };
 #define ROOT_FILE_COUNT (sizeof(root_files) / sizeof(root_files[0]))
 
@@ -403,6 +418,9 @@ VfsNode *procfs_init(void) {
     procfs_init_file(&cmdline_node, 1999, gen_cmdline, NULL);
     procfs_init_file(&cpuinfo_node, 1998, gen_cpuinfo, NULL);
     procfs_init_file(&slabinfo_node, 1997, gen_slabinfo, NULL);
+    procfs_init_file(&kmsg_node, 1996, NULL, NULL);
+    kmsg_node.vnode.ops = &procfs_kmsg_ops;
+    kmsg_node.vnode.mode = 0400;
 
     pid_dirs_next = 0;
     pid_status_next = 0;

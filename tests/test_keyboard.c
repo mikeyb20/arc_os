@@ -84,6 +84,8 @@ static void kb_reset(void) {
     shift_held = 0;
     ctrl_held = 0;
     caps_lock = 0;
+    extended = 0;
+    grabbed = 0;
     tty_cap_reset();
 }
 
@@ -177,6 +179,50 @@ static int test_kb_e0_prefix_ignored(void) {
     return 0;
 }
 
+/* M1-04: keyboards wrap PgUp/PgDn in fake shifts (E0 2A ... E0 AA); they
+ * must not change the shift state, and PgUp/PgDn type nothing */
+static int test_kb_fake_shift_ignored(void) {
+    kb_reset();
+    press_key(0xE0);
+    press_key(0x2A);  /* fake shift press */
+    press_key(0xE0);
+    press_key(0x49);  /* PgUp */
+    press_key(0xE0);
+    press_key(0xC9);  /* PgUp release */
+    press_key(0xE0);
+    press_key(0xAA);  /* fake shift release */
+    press_key(0x1E);  /* 'a' */
+    ASSERT_EQ(tty_cap_pos, 1);
+    ASSERT_EQ(tty_captured[0], 'a');
+    return 0;
+}
+
+/* Other extended keys still act like their plain twins (right Ctrl) */
+static int test_kb_extended_ctrl(void) {
+    kb_reset();
+    press_key(0xE0);
+    press_key(0x1D);  /* right Ctrl */
+    ASSERT_EQ(ctrl_held, 1);
+    press_key(0xE0);
+    press_key(0x9D);
+    ASSERT_EQ(ctrl_held, 0);
+    return 0;
+}
+
+/* The boot report pager grabs the keyboard: keys are counted, not typed */
+static int test_kb_grab_counts_keys(void) {
+    kb_reset();
+    uint32_t before = keyboard_key_count();
+    keyboard_grab(1);
+    press_key(0x1E);
+    press_key(0x9E);  /* release: not counted */
+    press_key(0x39);
+    keyboard_grab(0);
+    ASSERT_EQ(tty_cap_pos, 0);
+    ASSERT_EQ(keyboard_key_count() - before, 2u);
+    return 0;
+}
+
 static int test_kb_shift_release_unsets(void) {
     kb_reset();
     press_key(0x2A);  /* Left shift press */
@@ -204,18 +250,21 @@ static int test_kb_caps_lock_toggle(void) {
 /* --- Test suite export --- */
 
 TestCase keyboard_tests[] = {
-    { "a_key",                   test_kb_a_key },
-    { "shift_a",                 test_kb_shift_a },
-    { "release_ignored",         test_kb_release_ignored },
-    { "enter",                   test_kb_enter },
-    { "backspace",               test_kb_backspace },
-    { "space",                   test_kb_space },
-    { "ctrl_c",                  test_kb_ctrl_c },
-    { "shift_1_exclaim",         test_kb_shift_1_exclaim },
-    { "init_registers_vector_33",test_kb_init_registers_vector_33 },
-    { "e0_prefix_ignored",      test_kb_e0_prefix_ignored },
-    { "shift_release_unsets",    test_kb_shift_release_unsets },
-    { "caps_lock_toggle",        test_kb_caps_lock_toggle },
+    {"a_key", test_kb_a_key},
+    {"shift_a", test_kb_shift_a},
+    {"release_ignored", test_kb_release_ignored},
+    {"enter", test_kb_enter},
+    {"backspace", test_kb_backspace},
+    {"space", test_kb_space},
+    {"ctrl_c", test_kb_ctrl_c},
+    {"shift_1_exclaim", test_kb_shift_1_exclaim},
+    {"init_registers_vector_33", test_kb_init_registers_vector_33},
+    {"e0_prefix_ignored", test_kb_e0_prefix_ignored},
+    {"fake_shift_ignored", test_kb_fake_shift_ignored},
+    {"extended_ctrl", test_kb_extended_ctrl},
+    {"grab_counts_keys", test_kb_grab_counts_keys},
+    {"shift_release_unsets", test_kb_shift_release_unsets},
+    {"caps_lock_toggle", test_kb_caps_lock_toggle},
 };
 
 int keyboard_test_count = sizeof(keyboard_tests) / sizeof(keyboard_tests[0]);

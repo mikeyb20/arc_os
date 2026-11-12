@@ -81,7 +81,10 @@ static int ipv4_send(struct NetIf *nif, uint32_t dst_ip, uint8_t protocol,
     return 0;
 }
 
-static void kprintf(const char *fmt, ...) { (void)fmt; }
+static inline void kprintf(const char *fmt, ...) {
+    (void)fmt;
+}
+#define kdebug(...) ((void)0)
 
 /* Include icmp.c */
 #include "../kernel/net/icmp.c"

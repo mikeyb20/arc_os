@@ -5,8 +5,8 @@ The kernel is built with -mgeneral-regs-only, because while a thread is in the
 kernel its x87/SSE/AVX registers still hold its user values. This check
 disassembles kernel.elf and fails on any instruction that names an XMM, YMM,
 ZMM or AVX-512 mask register, outside the functions listed in ALLOWED. The
-XSAVE helpers in fpu.c (XSAVE, XSAVEOPT, XRSTOR, FXSAVE) name no register, so
-the list is empty today.
+XSAVE helpers in fpu.c (XSAVE, XSAVEOPT, XRSTOR, FXSAVE) name no register;
+the one allowed function is the self-test's AVX2 checksum.
 
     python3 tools/no-simd-check.py [--objdump x86_64-elf-objdump] build/kernel.elf
 
@@ -19,7 +19,10 @@ import shutil
 import subprocess
 import sys
 
-ALLOWED = set()   # function names allowed to touch vector registers
+# Function names allowed to touch vector registers. Only the M1-04 self-test's
+# AVX2 checksum (Michael's OK 2026-11-11, ADR-0003 note): it runs under
+# arc.selftest=1 before any user thread exists and zeroes YMM before returning.
+ALLOWED = {"selftest_avx2_sum"}
 
 VECTOR_REG = re.compile(r"%(?:[xyz]mm[0-9]+|k[0-7])\b")
 FUNC = re.compile(r"^[0-9a-f]+ <([^>]+)>:$")
@@ -51,7 +54,8 @@ def main():
         if ":\t" not in line:
             continue
         insns += 1
-        if VECTOR_REG.search(line) and func not in ALLOWED:
+        # NASM local labels show up as <func.label>: they belong to func
+        if VECTOR_REG.search(line) and func.split(".")[0] not in ALLOWED:
             hits.append(f"{func}: {line.strip()}")
 
     if insns == 0:

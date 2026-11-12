@@ -1,8 +1,9 @@
 #include "arch/x86_64/isr.h"
 #include "arch/x86_64/pic.h"
 #include "arch/x86_64/lapic.h"
+#include "arch/x86_64/percpu.h"
 #include "lib/kprintf.h"
-#include "lib/testmode.h"
+#include "lib/panic.h"
 #include <stddef.h>
 
 static isr_handler_t handlers[ISR_COUNT];
@@ -54,30 +55,93 @@ void isr_register_handler(int vector, isr_handler_t handler) {
     }
 }
 
-static void default_exception_handler(InterruptFrame *frame) {
-    kprintf("\n!!! EXCEPTION: %s (vector %lu, error=0x%lx)\n",
-            exception_names[frame->vector], frame->vector, frame->error_code);
-    kprintf("  RIP = 0x%lx  RSP = 0x%lx\n", frame->rip, frame->rsp);
-    kprintf("  RAX = 0x%lx  RBX = 0x%lx  RCX = 0x%lx  RDX = 0x%lx\n",
-            frame->rax, frame->rbx, frame->rcx, frame->rdx);
-    kprintf("  RSI = 0x%lx  RDI = 0x%lx  RBP = 0x%lx\n",
-            frame->rsi, frame->rdi, frame->rbp);
-    kprintf("  R8  = 0x%lx  R9  = 0x%lx  R10 = 0x%lx  R11 = 0x%lx\n",
-            frame->r8, frame->r9, frame->r10, frame->r11);
-    kprintf("  R12 = 0x%lx  R13 = 0x%lx  R14 = 0x%lx  R15 = 0x%lx\n",
-            frame->r12, frame->r13, frame->r14, frame->r15);
-    kprintf("  CS  = 0x%lx  SS  = 0x%lx  RFLAGS = 0x%lx\n",
-            frame->cs, frame->ss, frame->rflags);
+/* Backtrace (M1-04): follow the saved-RBP chain. The kernel keeps frame
+ * pointers (-fno-omit-frame-pointer). A frame is followed only while it lies
+ * on the stack being walked, within BT_STACK_WINDOW above its RSP, so a
+ * corrupt RBP ends the walk instead of faulting in the panic path. */
+#define BT_STACK_WINDOW   (64u * 1024)
+#define KERNEL_HALF_START 0xFFFF800000000000ULL
 
-    /* Page fault: print CR2 (faulting address) */
-    if (frame->vector == EXCEPTION_PAGE_FAULT) {
-        uint64_t cr2;
-        __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
-        kprintf("  CR2 = 0x%lx (faulting address)\n", cr2);
+static uint32_t backtrace_from(uint64_t rbp, uint64_t rsp, uint64_t *out, uint32_t n, uint32_t max) {
+    while (n < max) {
+        if (rbp < KERNEL_HALF_START || (rbp & 7) != 0 || rbp < rsp || rbp - rsp >= BT_STACK_WINDOW) break;
+        const uint64_t *f = (const uint64_t *)rbp;
+        if (f[1] == 0) break;
+        out[n++] = f[1];   /* return address */
+        if (f[0] <= rbp) break;   /* the chain must climb the stack */
+        rbp = f[0];
     }
+    return n;
+}
 
-    kprintf("!!! System halted.\n");
-    kernel_panic_halt();
+static void panic_add_reg(PanicInfo *pi, const char *name, uint64_t value) {
+    if (pi->nregs < PANIC_MAX_REGS) {
+        pi->reg_names[pi->nregs] = name;
+        pi->reg_values[pi->nregs] = value;
+        pi->nregs++;
+    }
+}
+
+static uint64_t read_cr2(void) {
+    uint64_t v;
+    __asm__ volatile("mov %%cr2, %0" : "=r"(v));
+    return v;
+}
+
+static uint64_t read_cr3(void) {
+    uint64_t v;
+    __asm__ volatile("mov %%cr3, %0" : "=r"(v));
+    return v;
+}
+
+void arch_panic_capture(PanicInfo *pi, void *frame_address) {
+    uint64_t rsp, rflags;
+    __asm__ volatile("mov %%rsp, %0" : "=r"(rsp));
+    __asm__ volatile("pushf; pop %0" : "=r"(rflags));
+    pi->cpu = percpu_current_index();
+    panic_add_reg(pi, "RSP", rsp);
+    panic_add_reg(pi, "RBP", (uint64_t)(uintptr_t)frame_address);
+    panic_add_reg(pi, "RFLAGS", rflags);
+    panic_add_reg(pi, "CR3", read_cr3());
+    pi->nframes = backtrace_from((uint64_t)(uintptr_t)frame_address, rsp, pi->frames, 0, PANIC_MAX_FRAMES);
+}
+
+/* Unhandled CPU exception: the panic report with the interrupted registers. */
+static void default_exception_handler(InterruptFrame *frame) {
+    if (!panic_begin()) panic_halt();
+
+    PanicInfo pi = {.reason = exception_names[frame->vector]};
+    pi.cpu = percpu_current_index();
+    panic_add_reg(&pi, "RIP", frame->rip);
+    panic_add_reg(&pi, "RSP", frame->rsp);
+    panic_add_reg(&pi, "RBP", frame->rbp);
+    panic_add_reg(&pi, "RFLAGS", frame->rflags);
+    panic_add_reg(&pi, "RAX", frame->rax);
+    panic_add_reg(&pi, "RBX", frame->rbx);
+    panic_add_reg(&pi, "RCX", frame->rcx);
+    panic_add_reg(&pi, "RDX", frame->rdx);
+    panic_add_reg(&pi, "RSI", frame->rsi);
+    panic_add_reg(&pi, "RDI", frame->rdi);
+    panic_add_reg(&pi, "R8", frame->r8);
+    panic_add_reg(&pi, "R9", frame->r9);
+    panic_add_reg(&pi, "R10", frame->r10);
+    panic_add_reg(&pi, "R11", frame->r11);
+    panic_add_reg(&pi, "R12", frame->r12);
+    panic_add_reg(&pi, "R13", frame->r13);
+    panic_add_reg(&pi, "R14", frame->r14);
+    panic_add_reg(&pi, "R15", frame->r15);
+    panic_add_reg(&pi, "CS", frame->cs);
+    panic_add_reg(&pi, "SS", frame->ss);
+    panic_add_reg(&pi, "ERROR", frame->error_code);
+    panic_add_reg(&pi, "VECTOR", frame->vector);
+    panic_add_reg(&pi, "CR2", read_cr2());
+    panic_add_reg(&pi, "CR3", read_cr3());
+
+    pi.frames[pi.nframes++] = frame->rip;
+    if ((frame->cs & 3) == 0) {   /* never walk a user stack */
+        pi.nframes = backtrace_from(frame->rbp, frame->rsp, pi.frames, pi.nframes, PANIC_MAX_FRAMES);
+    }
+    panic_report(&pi);
 }
 
 void isr_dispatch(InterruptFrame *frame) {

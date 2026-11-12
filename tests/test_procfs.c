@@ -366,14 +366,34 @@ TEST(readdir_root) {
     VfsNode *root = procfs_init();
     VfsDirEntry entries[16];
     int count = root->ops->readdir(root, entries, 16);
-    /* meminfo + uptime + cmdline + cpuinfo + slabinfo + 3 non-terminated PIDs (0, 1, 2) */
-    ASSERT_EQ(count, 8);
+    /* meminfo + uptime + cmdline + cpuinfo + slabinfo + kmsg + 3 non-terminated PIDs (0, 1, 2) */
+    ASSERT_EQ(count, 9);
     ASSERT_STR_EQ(entries[0].name, "meminfo");
     ASSERT_STR_EQ(entries[1].name, "uptime");
     ASSERT_STR_EQ(entries[2].name, "cmdline");
     ASSERT_STR_EQ(entries[3].name, "cpuinfo");
     ASSERT_STR_EQ(entries[4].name, "slabinfo");
-    ASSERT_STR_EQ(entries[5].name, "0");
+    ASSERT_STR_EQ(entries[5].name, "kmsg");
+    ASSERT_STR_EQ(entries[6].name, "0");
+    return 0;
+}
+
+/* /proc/kmsg reads the real log ring (lib/klog.c, built by test_kprintf.c) */
+TEST(kmsg_reads_log) {
+    VfsNode *root = procfs_init();
+    VfsNode *n = root->ops->lookup(root, "kmsg");
+    ASSERT_TRUE(n != NULL);
+    ASSERT_EQ(n->mode, 0400);
+    const char msg[] = "procfs kmsg test line\n";
+    klog_write(3, msg, sizeof(msg) - 1);
+    static char buf[300 * 1024];
+    int got = n->ops->read(n, buf, 0, sizeof(buf) - 1);
+    ASSERT_TRUE(got > 0);
+    ASSERT_EQ((uint64_t)got, klog_head() - klog_tail());
+    buf[got] = '\0';
+    ASSERT_TRUE(strstr(buf, "<3>procfs kmsg test line\n") != NULL);
+    /* Reading from an offset past the head returns nothing */
+    ASSERT_EQ(n->ops->read(n, buf, (uint32_t)got, 16), 0);
     return 0;
 }
 
@@ -405,6 +425,6 @@ TestCase procfs_tests[] = {
     TEST_ENTRY(lookup_non_numeric),    TEST_ENTRY(meminfo_content),    TEST_ENTRY(meminfo_partial_read),
     TEST_ENTRY(uptime_content),        TEST_ENTRY(cmdline_content),    TEST_ENTRY(cpuinfo_content),
     TEST_ENTRY(slabinfo_content),      TEST_ENTRY(pid_status_content), TEST_ENTRY(readdir_root),
-    TEST_ENTRY(readdir_pid_dir),       TEST_ENTRY(no_create_ops),
+    TEST_ENTRY(readdir_pid_dir),       TEST_ENTRY(no_create_ops),      TEST_ENTRY(kmsg_reads_log),
 };
 int procfs_test_count = sizeof(procfs_tests) / sizeof(procfs_tests[0]);

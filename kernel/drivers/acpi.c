@@ -3,6 +3,8 @@
 #include "lib/kprintf.h"
 #include "lib/mem.h"
 
+#define ACPI_DMAR_FLAGS_OFFSET 37   /* after the header and the host address width */
+
 static AcpiInfo acpi_info;
 static int acpi_initialized;
 
@@ -101,20 +103,39 @@ static void parse_madt(const AcpiMadt *madt) {
     }
 }
 
+/* Remember a listed table for the boot report. */
+static void record_table(const AcpiSdtHeader *header, int checksum_ok) {
+    acpi_info.tables_listed++;
+    if (acpi_info.table_count >= ACPI_MAX_TABLES) return;
+    AcpiTableEntry *t = &acpi_info.tables[acpi_info.table_count++];
+    memcpy(t->signature, header->signature, 4);
+    t->signature[4] = '\0';
+    t->length = header->length;
+    t->checksum_ok = checksum_ok;
+}
+
 /* Process an SDT entry (check signature, dispatch to parser). */
 static void process_sdt(uint64_t phys) {
     const AcpiSdtHeader *header = (const AcpiSdtHeader *)phys_to_virt(phys);
 
     if (!acpi_checksum(header, header->length)) {
         kprintf("[ACPI] Bad checksum for table '%.4s'\n", header->signature);
+        record_table(header, 0);
         return;
     }
+    record_table(header, 1);
 
     kprintf("[ACPI] Found table '%.4s' (length=%u)\n",
             header->signature, header->length);
 
     if (memcmp(header->signature, "APIC", 4) == 0) {
         parse_madt((const AcpiMadt *)header);
+    } else if (memcmp(header->signature, "DMAR", 4) == 0 && header->length > ACPI_DMAR_FLAGS_OFFSET) {
+        acpi_info.dmar_present = 1;
+        acpi_info.dmar_flags = ((const uint8_t *)header)[ACPI_DMAR_FLAGS_OFFSET];
+        kprintf("[ACPI] DMAR: interrupt remapping %s, x2APIC opt-out %s\n",
+                (acpi_info.dmar_flags & ACPI_DMAR_INTR_REMAP) ? "supported" : "no",
+                (acpi_info.dmar_flags & ACPI_DMAR_X2APIC_OPT_OUT) ? "SET" : "no");
     }
     /* Future: FACP (FADT), HPET, MCFG, etc. */
 }
@@ -142,6 +163,9 @@ int acpi_init(uint64_t rsdp_phys) {
     }
 
     kprintf("[ACPI] RSDP revision=%u OEM='%.6s'\n", rsdp->revision, rsdp->oem_id);
+    acpi_info.rsdp_revision = rsdp->revision;
+    memcpy(acpi_info.oem_id, rsdp->oem_id, 6);
+    acpi_info.oem_id[6] = '\0';
 
     if (rsdp->revision >= 2) {
         /* ACPI 2.0+ — use XSDT (64-bit pointers) */

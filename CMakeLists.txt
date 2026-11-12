@@ -23,6 +23,14 @@ add_custom_target(iso
     VERBATIM
 )
 
+# Bring-up USB stick (M1-04): boot menu with the boot report, self-test and benchmark
+add_custom_target(iso-bringup
+    COMMAND bash ${CMAKE_SOURCE_DIR}/tools/make-iso.sh -B
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    COMMENT "Creating the bring-up ISO (build/arc_os-bringup.iso)"
+    VERBATIM
+)
+
 add_custom_target(run
     COMMAND bash ${CMAKE_SOURCE_DIR}/tools/run.sh
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}

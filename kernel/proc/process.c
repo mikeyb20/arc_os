@@ -70,7 +70,7 @@ Process *proc_create(thread_entry_t entry, void *arg) {
 
     sched_add_thread(t);
 
-    kprintf("[PROC] Created process pid=%u (thread tid=%u)\n", p->pid, t->tid);
+    kdebug("[PROC] Created process pid=%u (thread tid=%u)\n", p->pid, t->tid);
     return p;
 }
 
@@ -81,7 +81,7 @@ Process *proc_create_user(void) {
     proc_setup(p);
     p->page_table = vmm_create_user_pml4();
 
-    kprintf("[PROC] Created user process pid=%u (pml4=0x%lx)\n", p->pid, p->page_table);
+    kdebug("[PROC] Created user process pid=%u (pml4=0x%lx)\n", p->pid, p->page_table);
     return p;
 }
 
@@ -194,7 +194,7 @@ Process *proc_fork(Process *parent, const ForkContext *user_ctx) {
     proc_set_main_thread(child, t);
     sched_add_thread(t);
 
-    kprintf("[PROC] Forked pid=%u -> pid=%u\n", parent->pid, child->pid);
+    kdebug("[PROC] Forked pid=%u -> pid=%u\n", parent->pid, child->pid);
     return child;
 }
 

@@ -49,8 +49,8 @@ static void init_thread_entry(void *arg) {
         kprintf("[INIT] FATAL: out of memory for user stack\n");
         return;
     }
-    kprintf("[INIT] User stack mapped: 0x%lx - 0x%lx\n",
-            USER_STACK_TOP - (USER_STACK_PAGES * PAGE_SIZE), USER_STACK_TOP);
+    kprintf("[INIT] User stack mapped: 0x%lx - 0x%lx\n", (uint64_t)(USER_STACK_TOP - (USER_STACK_PAGES * PAGE_SIZE)),
+            (uint64_t)USER_STACK_TOP);
 
     /* argv = { path }, envp = { HOME=/, TERM=linux } as Linux gives init */
     ExecStrings *strings = kmalloc(sizeof(ExecStrings), 0);

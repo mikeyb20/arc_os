@@ -81,7 +81,7 @@ static int64_t sys_exit(uint64_t status, uint64_t a1, uint64_t a2, uint64_t a3, 
     (void)a4;
     (void)a5;
     Process *p = proc_current();
-    kprintf("[SYSCALL] exit(%lu) from pid=%u\n", status & 0xFF, p->pid);
+    kdebug("[SYSCALL] exit(%lu) from pid=%u\n", status & 0xFF, p->pid);
     /* Only the low 8 bits of the status reach the parent (Linux) */
     proc_exit(p, (int32_t)(status & 0xFF), 0);
 }
@@ -323,8 +323,8 @@ static int64_t sys_execve(uint64_t path_addr, uint64_t argv_addr, uint64_t envp_
     paging_write_cr3(new_pml4);
     vmm_free_user_pages(old_pml4);
 
-    kprintf("[EXEC] pid=%u loaded '%s' argc=%u envc=%u entry=0x%lx\n",
-            p->pid, abs, strings->argc, strings->envc, result.entry_point);
+    kdebug("[EXEC] pid=%u loaded '%s' argc=%u envc=%u entry=0x%lx\n", p->pid, abs, strings->argc, strings->envc,
+           result.entry_point);
 
     /* 6. Initial stack, clean CPU state, enter the program */
     proc_enter_user(p, &result, strings, raw, stack_buf);

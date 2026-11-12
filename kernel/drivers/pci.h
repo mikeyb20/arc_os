@@ -55,6 +55,7 @@ typedef struct {
     uint8_t irq_line;
     uint8_t irq_pin;
     uint32_t bar[6];
+    const char *driver;   /* bound driver's name, or NULL (until the bus model, M1-09) */
 } PciDevice;
 
 /* Read a 32-bit value from PCI config space. offset must be 4-byte aligned. */
@@ -74,6 +75,16 @@ void pci_enable_bus_master(const PciDevice *dev);
 
 /* Extract I/O port base address from a BAR value (clears flag bits). */
 uint16_t pci_bar_io_base(uint32_t bar);
+
+/* Record that driver `name` (a static string) now runs dev: the boot report
+ * shows it. M1-09's bus model replaces this with real binding. */
+void pci_set_driver(const PciDevice *dev, const char *name);
+
+/* Short name of a PCI class code ("storage", "network", ...; "other"). */
+const char *pci_class_name(uint8_t class_code, uint8_t subclass);
+
+/* Devices found after the table was full (not recorded). */
+int pci_get_dropped_count(void);
 
 /* Get the number of discovered devices. */
 int pci_get_device_count(void);

@@ -59,3 +59,12 @@ written lock ordering that debug builds check at runtime.
   SYSCALL MSRs, XSAVE and APIC set up; give each its idle thread and own stack here. `percpu_get(i)` and
   `percpu_index_of_apic(id)` (O(log n)) map indexes and APIC IDs; `cpu_count` counts online CPUs. `kprintf` is not
   SMP-safe yet (interleaved lines when APs print). `MAX_CPUS` is 256: an affinity mask is 32 bytes.
+- From M1-04: `kprintf` now appends to the kernel log ring (`lib/klog.c`) under an IRQ-safe leaf lock (§7 level
+  10) and one console owner prints; writers never wait for a console. One `kprintf` call of up to 128 bytes lands
+  in the ring in one piece; a line built from several calls can still have another CPU's message spliced into it.
+  TTY/VT output still draws on the framebuffer without the console owner (`fb_console.c` header): put it under
+  `klog_console_try_acquire` here, or the screen can tear when both draw. A panic stops the other CPUs with the
+  ordinary halt IPI, so a CPU spinning with interrupts off keeps running: consider an NMI. The `arc.selftest`
+  AVX2 check runs on the APs through `hal_run_on_other_cpus` (IPI 0xF3) while they idle; it relies on no user
+  thread existing (diagnostic mode never starts init), which must stay true once APs run threads. `arc.bench`'s
+  context-switch partner threads are never reaped (diagnostic mode only).

@@ -44,3 +44,9 @@
 - From M1-03: LAPIC registers go through `lapic_read`/`lapic_write` (xAPIC MMIO or x2APIC MSRs); TSC-deadline is an
   MSR in both modes. `smp_init` bounds its wait for APs with raw `rdtsc` (2^32 cycles) until a calibrated TSC exists;
   switch it to the clocksource here.
+- From M1-04: `arch/x86_64/tsc.c` already calibrates the TSC at boot (`hal_tsc_calibrate`, `hal_tsc_info`,
+  `hal_tsc_to_ns`), in this order: CPUID 0x15 (crystal × ratio), else PIT channel 2 for 50 ms
+  (`pit_measure_tsc`, bounded by 2^32 cycles), else CPUID 0x16 base frequency. It also keeps the PIT figure when
+  CPUID gives one, so the boot report and `arc.selftest` compare them; it records invariant TSC and
+  TSC-deadline support. The spec's order puts 0x16 before the PIT: decide here (0x16 is the base clock, which
+  is not always the TSC rate). `diag_delay_ms` (diag only) busy-waits on the TSC; replace it with the clocksource.
