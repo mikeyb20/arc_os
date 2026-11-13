@@ -51,12 +51,16 @@ def kvm_usable():
     return os.access("/dev/kvm", os.R_OK | os.W_OK)
 
 
+# Suites the kernel runs itself before init, ending in a panic: no suite file
+KERNEL_SUITES = ("kpanic", "lockorder")
+
+
 def build_iso(args, iso):
     suite_file = os.path.join(SUITE_DIR, f"{args.suite}.suite")
     modules = []
     if os.path.isfile(suite_file):
         modules.append(suite_file)
-    elif args.suite != "kpanic":
+    elif args.suite not in KERNEL_SUITES:
         log(f"no suite file {suite_file}")
         sys.exit(2)
     for m in args.module:
@@ -106,7 +110,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--suite", required=True,
-                    help="suite name: tests/qemu/suites/<suite>.suite ('kpanic' needs none)")
+                    help="suite name: tests/qemu/suites/<suite>.suite ('kpanic' and 'lockorder' need none)")
     ap.add_argument("--build-dir", default=os.path.join(ROOT, "build"),
                     help="cross build directory with kernel.elf and programs")
     ap.add_argument("--module", action="append", default=[],
@@ -192,10 +196,12 @@ def main():
             log(f"{head}: PASS (exit value {args.expect_exit:#x})")
             return 0
     elif args.expect_panic:
-        if panicked:
+        if not panicked:
+            problems.append("expected a kernel panic, none seen")
+        problems.extend(f"expected output not found: /{rx}/" for rx in missing)
+        if not problems:
             log(f"{head}: kernel panic after {elapsed:.1f}s, as expected")
             return 0
-        problems.append("expected a kernel panic, none seen")
     else:
         if timed_out:
             problems.append(f"timeout after {args.timeout:.0f}s")

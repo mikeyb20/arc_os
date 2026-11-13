@@ -40,3 +40,6 @@ supports them, and DMA memory comes from one helper (ADR-0006, ADR-0005).
 - From M1-03: `lapic_x2apic()` says which mode runs; I/O APIC routes take an 8-bit APIC ID (`ioapic_route_isa`
   warns and skips routing if the BSP's ID is above 255). MSI destinations above 255 need interrupt remapping (out
   of scope, as the spec says).
+- From M1-05: device interrupt handlers (keyboard, virtio-net) take the big kernel lock with `kernel_lock_irq`
+  around the code that touches unlocked kernel state (tty, network stack). Drivers on the new bus model should
+  keep their own IRQ-safe locks (levels in `docs/kernel/locking.md`) so they can drop it.

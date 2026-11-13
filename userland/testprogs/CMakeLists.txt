@@ -1,6 +1,6 @@
-# arc_os — Test-only user programs (M0-02, M0-05, M0-10, M1-01). Shipped only on test ISOs.
+# arc_os — Test-only user programs (M0-02, M0-05, M0-10, M1-01, M1-05). Shipped only on test ISOs.
 
-foreach(prog testfail abi_check forkreap)
+foreach(prog testfail abi_check forkreap schedtest)
     arc_user_program(${prog} ${prog}.c)
 endforeach()
 

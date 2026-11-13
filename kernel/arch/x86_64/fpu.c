@@ -5,7 +5,7 @@
 #include "arch/x86_64/cpuid.h"
 #include "arch/x86_64/msr.h"
 #include "proc/thread.h"
-#include "proc/spinlock.h"
+#include "arch/hal_lock.h"
 #include "mm/kmalloc.h"
 #include "lib/mem.h"
 #include "lib/kprintf.h"

@@ -69,9 +69,18 @@ void lapic_send_ipi(uint32_t apic_id, uint32_t vector);
 /* Send a fixed IPI to all CPUs except self. */
 void lapic_send_ipi_all_excluding_self(uint32_t vector);
 
-/* Initialize the LAPIC timer in periodic mode with the given vector.
- * freq_hz is the desired tick frequency (e.g., 100 for 100 Hz). */
-void lapic_timer_init(uint32_t vector, uint32_t freq_hz);
+/* Vector of the local APIC timer (the scheduler's slice timer, M1-05) */
+#define LAPIC_TIMER_VEC 0xEF
+
+/* BSP, once: measure the APIC timer against the TSC and make fn the timer
+ * handler (called after EOI, interrupts off) on every CPU. */
+void lapic_timer_setup(void (*fn)(void));
+
+/* This CPU: fire the timer every period_ns, starting period_ns from now. */
+void lapic_timer_periodic(uint64_t period_ns);
+
+/* This CPU: stop the timer. */
+void lapic_timer_stop(void);
 
 /* Read a LAPIC register (xAPIC MMIO offset). */
 uint32_t lapic_read(uint32_t reg);

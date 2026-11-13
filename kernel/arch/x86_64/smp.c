@@ -7,7 +7,9 @@
  * sees which bootloader that is.
  * Invariants: every CPU runs in the APIC mode the BSP chose; an AP is counted
  * in cpu_count only after its GDT, TSS, IDT, GS, SYSCALL MSRs, FPU and APIC are
- * set up. APs stay in HLT with interrupts on until M1-05 gives them threads.
+ * set up. APs stay in HLT with interrupts on until smp_release_aps lets them
+ * into the scheduler (sched_ap_start, M1-05), which moves them off the
+ * bootloader's stack onto their idle threads.
  * Locks: none. smp_init runs on the BSP before interrupts are enabled; APs only
  * write their own PerCpu block and the aps_online counter (atomic). */
 
@@ -23,6 +25,7 @@
 #include "arch/x86_64/syscall.h"
 #include "arch/x86_64/cpuid.h"
 #include "mm/vmm.h"
+#include "proc/sched.h"
 #include "lib/kprintf.h"
 
 _Static_assert(ACPI_MAX_CPUS == MAX_CPUS, "MADT CPU list and per-CPU table sizes");
@@ -34,6 +37,7 @@ _Static_assert(BOOTINFO_MAX_CPUS == MAX_CPUS, "boot CPU list and per-CPU table s
 #define AP_WAIT_TSC_CYCLES (1ULL << 32)
 
 static volatile uint32_t aps_online;
+static volatile int aps_released;   /* set once by smp_release_aps */
 
 /* CPU index each AP read back through its own GS base (proves GS is per CPU).
  * The BSP prints them: APs don't print, so the log stays readable. */
@@ -55,11 +59,17 @@ static void ap_entry(uint64_t arg) {
     cpu->online = 1;
     __atomic_add_fetch(&aps_online, 1, __ATOMIC_SEQ_CST);   /* publishes the stores above */
 
-    /* AP idle loop: M1-05 gives application processors threads */
-    __asm__ volatile ("sti");
-    for (;;) {
-        __asm__ volatile ("hlt");
+    /* Idle with interrupts on (self-test IPIs reach it) until the scheduler
+     * lets it in; the release IPI ends the HLT */
+    while (!__atomic_load_n(&aps_released, __ATOMIC_ACQUIRE)) {
+        __asm__ volatile("sti; hlt; cli" ::: "memory");
     }
+    sched_ap_start();
+}
+
+void smp_release_aps(void) {
+    __atomic_store_n(&aps_released, 1, __ATOMIC_RELEASE);
+    if (cpu_count > 1) lapic_send_ipi_all_excluding_self(IPI_VEC_SCHEDULE);
 }
 
 /* Switch from the PIC to the local APIC + I/O APIC on the BSP. */

@@ -39,7 +39,7 @@ static uint32_t line_pos;
 static uint32_t tty_fg_pgid;
 
 /* Wait queue for tty_read blocking */
-static Spinlock tty_lock = SPINLOCK_INIT;
+static Spinlock tty_lock = SPINLOCK_INIT(LOCK_LEVEL_OBJECT, "tty");
 static WaitQueue tty_read_wq = WAITQUEUE_INIT;
 
 /* Linux's default termios (tty_std_termios) and window size */
@@ -137,6 +137,7 @@ void tty_input_char(char c) {
 }
 
 int tty_read(void *buf, uint32_t count) {
+    uint64_t irqf;
     if (count == 0) return 0;
 
     /* Track foreground process group for Ctrl+C / Ctrl+Z */
@@ -146,12 +147,12 @@ int tty_read(void *buf, uint32_t count) {
     }
 
     /* Sleep until a complete line is available */
-    spinlock_acquire(&tty_lock);
+    spin_lock_irqsave(&tty_lock, &irqf);
     while (lines_ready == 0) {
-        wq_sleep(&tty_read_wq, &tty_lock);
-        spinlock_acquire(&tty_lock);
+        wq_sleep(&tty_read_wq, &tty_lock, irqf);
+        spin_lock_irqsave(&tty_lock, &irqf);
     }
-    spinlock_release(&tty_lock);
+    spin_unlock_irqrestore(&tty_lock, irqf);
 
     /* Copy from ring buffer up to count bytes, stop after '\n' */
     char *out = (char *)buf;
@@ -200,12 +201,13 @@ void tty_set_termios(const struct termios *t) {
 }
 
 void tty_flush_input(void) {
-    spinlock_acquire(&tty_lock);   /* IRQ-safe: the keyboard IRQ fills these */
+    uint64_t irqf;
+    spin_lock_irqsave(&tty_lock, &irqf);   /* IRQ-safe: the keyboard IRQ fills these */
     read_head = 0;
     read_tail = 0;
     lines_ready = 0;
     line_pos = 0;
-    spinlock_release(&tty_lock);
+    spin_unlock_irqrestore(&tty_lock, irqf);
 }
 
 void tty_get_winsize(struct winsize *ws) {

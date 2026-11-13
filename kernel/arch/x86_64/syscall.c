@@ -14,6 +14,7 @@
 #include "proc/signal.h"
 #include "proc/thread.h"
 #include "proc/proc_syscalls.h"
+#include "proc/kernel_lock.h"
 #include "fs/fs_syscalls.h"
 #include "fs/vfs.h"
 #include "mm/mm_syscalls.h"
@@ -67,12 +68,21 @@ uint64_t syscall_user_rsp(void) {
 
 /* --- Dispatcher --- */
 
+/* Syscalls run under the kernel lock (proc/kernel_lock.h, M1-05): taken here,
+ * released by syscall_exit_work, or by proc_enter_user for execve. */
 int64_t syscall_dispatch(uint64_t num, uint64_t a0, uint64_t a1, uint64_t a2,
                          uint64_t a3, uint64_t a4, uint64_t a5) {
+    kernel_lock();
     if (num >= ARC_NR_SYSCALLS || syscall_table[num] == NULL) {
         return -ENOSYS;
     }
     return syscall_table[num](a0, a1, a2, a3, a4, a5);
+}
+
+int64_t syscall_exit_work(SyscallFrame *frame, int64_t syscall_ret) {
+    int64_t ret = sig_maybe_deliver(frame, syscall_ret);
+    kernel_unlock();
+    return ret;
 }
 
 /* --- Registration --- */

@@ -48,9 +48,9 @@ idle_timer_irqs_5s     0           max  irqs   M1-06  smoke     off
 # removes an instance lowers the limit in the same PR (the checker warns when a
 # count is 20% under). Run `python3 tools/hygiene.py` to see every location.
 # arch_includes_outside_arch: 43 -> 26 in M1-03 (kmain, sched, init, process);
-# 26 -> 24 in M1-04 (kprintf.c, testmode.c).
+# 26 -> 24 in M1-04 (kprintf.c, testmode.c); 24 -> 23 in M1-05 (proc_syscalls.c).
 dup_windows                 12   max  regions  M0-09  hygiene
 dup_static_names            2    max  copies   M0-09  hygiene
-arch_includes_outside_arch  24   max  includes M0-09  hygiene
+arch_includes_outside_arch  23   max  includes M0-09  hygiene
 long_functions              3    max  funcs    M0-09  hygiene
 untracked_todos             0    max  todos    M0-09  hygiene

@@ -12,6 +12,9 @@
  * number of CPUs online. */
 uint32_t smp_init(const BootInfo *info, const AcpiInfo *acpi);
 
+/* Let the APs (idling since smp_init) enter sched_ap_start. BSP, once. */
+void smp_release_aps(void);
+
 /* Check if SMP is active (more than 1 CPU online). */
 int smp_active(void);
 

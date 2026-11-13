@@ -58,6 +58,10 @@ static void switch_partner(void *arg) {
 static uint64_t run_switch(uint32_t n) {
     Thread *t = thread_create(switch_partner, NULL);
     if (t == NULL) return 0;
+    CpuMask cpu0;   /* same CPU as this thread, even once the self-test started the others */
+    cpumask_clear(&cpu0);
+    cpumask_set(&cpu0, 0);
+    sched_set_affinity(t, &cpu0);
     rounds_left = n;
     sched_add_thread(t);
     uint64_t start = hal_tsc_read();

@@ -1,0 +1,8 @@
+# qemu.sched (M1-05): the SMP scheduler on 4 CPUs. Exit status = failed checks.
+# 64 CPU-bound processes share the CPUs fairly (/proc/sched_debug busy time)
+spread    /boot/schedtest spread 64
+# fork/exec/wait 10 000 times; the leak budgets (0 pages, 0 heap bytes) show
+# free memory back at its baseline
+forkexec  /boot/schedtest forkexec 10000
+# a pipe ping-pong whose wakeups cross CPUs
+pingpong  /boot/schedtest pingpong 10000

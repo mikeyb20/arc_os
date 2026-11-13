@@ -86,6 +86,23 @@ add_test(NAME qemu.smp.x2apic COMMAND ${_qemu_test} --suite userland --name smp-
     --expect "\\[SMP\\] All 4 CPUs online \\(x2APIC\\)")
 set_tests_properties(qemu.smp.x2apic PROPERTIES SKIP_RETURN_CODE 77)
 
+# SMP scheduler (M1-05): 64 CPU-bound processes over all 4 CPUs, 10 000
+# fork/exec/wait rounds with no leak (the suite's budgets: 0 pages, 0 heap
+# bytes), a pipe ping-pong across CPUs; the debug build's lock checker stops a
+# deliberately inverted pair of spinlocks
+add_test(NAME qemu.sched COMMAND ${_qemu_test} --suite sched --module schedtest --timeout 400
+    --expect "\\[SCHED\\] 4 CPUs scheduling"
+    --expect "schedtest: spread 64 processes over 4 CPUs"
+    --expect "schedtest: forkexec 10000 rounds"
+    --expect "schedtest: pingpong 10000 round trips"
+    --expect "ARC_TEST budget pages_leaked 0$"
+    --expect "ARC_TEST budget heap_leaked_bytes 0$")
+# About 2 minutes under TCG (10 000 fork/exec rounds), seconds under KVM
+set_tests_properties(qemu.sched PROPERTIES TIMEOUT 420)
+add_test(NAME qemu.lockorder COMMAND ${_qemu_test} --suite lockorder --expect-panic --timeout 30
+    --expect "LOCK ORDER VIOLATION: taking test outer \\(page tables\\) \\(level 50\\)"
+    --expect "held: test inner \\(wait queue\\) \\(level 80\\)")
+
 # Harness self-checks: a failing program is reported by name and reason,
 # and a kernel panic ends the run within seconds instead of at the timeout.
 add_test(NAME qemu.selftest.fail COMMAND ${_qemu_test} --suite selftest --module testfail)
@@ -114,11 +131,13 @@ add_test(NAME qemu.diag COMMAND ${_qemu_test} --suite diag
     --expect "\\[REPORT\\] ACPI +revision"
     --expect "\\[REPORT\\] PCI +[0-9]+ devices"
     --expect "\\[REPORT\\] SELFTEST PASS avx2 +4 CPUs"
+    --expect "\\[REPORT\\] SELFTEST PASS sched +4 of 4 CPUs ran a pinned thread"
     --expect "\\[REPORT\\] BENCH context switch"
-    --expect "ARC_TEST DONE pass=5 fail=0")
+    --expect "ARC_TEST DONE pass=6 fail=0")
 
 set_tests_properties(qemu.smoke qemu.mem.buddy qemu.mem.cap qemu.userland qemu.abi qemu.musl qemu.fpu qemu.cpufloor
-    qemu.smp.xapic qemu.smp.x2apic qemu.selftest.fail qemu.selftest.panic qemu.panic.fault qemu.diag
+    qemu.smp.xapic qemu.smp.x2apic qemu.sched qemu.lockorder qemu.selftest.fail qemu.selftest.panic
+    qemu.panic.fault qemu.diag
     PROPERTIES LABELS qemu TIMEOUT 180 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     FIXTURES_SETUP qemu_logs)
 

@@ -134,11 +134,9 @@ static int elf_load_segment(const Elf64_Phdr *phdr, uint64_t bias, const void *d
         *highest_addr = seg_top;
     }
 
-    kprintf("[ELF] Loaded segment: vaddr=0x%lx memsz=0x%lx filesz=0x%lx flags=%s%s%s\n",
-            start, phdr->p_memsz, phdr->p_filesz,
-            (phdr->p_flags & PF_R) ? "r" : "-",
-            (phdr->p_flags & PF_W) ? "w" : "-",
-            (phdr->p_flags & PF_X) ? "x" : "-");
+    kdebug("[ELF] Loaded segment: vaddr=0x%lx memsz=0x%lx filesz=0x%lx flags=%s%s%s\n", start, phdr->p_memsz,
+           phdr->p_filesz, (phdr->p_flags & PF_R) ? "r" : "-", (phdr->p_flags & PF_W) ? "w" : "-",
+           (phdr->p_flags & PF_X) ? "x" : "-");
     return 0;
 }
 
@@ -221,7 +219,7 @@ int elf_load(const void *data, size_t size, uint64_t pml4_phys, ElfLoadResult *r
     result->phent = (uint16_t)sizeof(Elf64_Phdr);
     result->stack_exec = (uint8_t)stack_exec;
 
-    kprintf("[ELF] Loaded: %s entry=0x%lx brk_start=0x%lx\n",
-            ehdr->e_type == ET_DYN ? "static-PIE" : "static", entry, result->brk_start);
+    kdebug("[ELF] Loaded: %s entry=0x%lx brk_start=0x%lx\n", ehdr->e_type == ET_DYN ? "static-PIE" : "static", entry,
+           result->brk_start);
     return 0;
 }

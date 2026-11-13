@@ -16,29 +16,47 @@
 #define ARCHOS_MM_PMM_H
 #define ARCHOS_LIB_KPRINTF_H
 #define ARCHOS_LIB_MEM_H        /* libc memset/memcpy */
-#define ARCHOS_PROC_SPINLOCK_H  /* the real spinlock uses cli/popf */
+#define ARCHOS_PROC_SPINLOCK_H  /* stubbed below: records nesting */
 
 /* The descriptor array globals live in test_pmm.c's copy of pmm.c: rename */
 #define pmm_page_array  kt_page_array
 #define pmm_max_pfn     kt_max_pfn
 #define pmm_hhdm_offset kt_hhdm_offset
 
-/* Spinlock stub that records nesting */
-typedef struct {
+/* Spinlock stub that records nesting (same API as proc/spinlock.h) */
+#include "proc/lockdep.h"
+typedef struct Spinlock {
     volatile uint32_t locked;
-    uint64_t saved_flags;
+    uint16_t level;
+    uint16_t subkey;
+    const char *name;
 } Spinlock;
-#define SPINLOCK_INIT { .locked = 0, .saved_flags = 0 }
+#define SPINLOCK_INIT(lvl, nm) \
+    { .locked = 0, .level = (lvl), .subkey = 0, .name = (nm) }
 static int lock_depth, lock_max_depth, lock_errors;
-static inline void spinlock_acquire(Spinlock *l) {
+static inline void spin_lock_init(Spinlock *l, uint16_t level, const char *name) {
+    l->locked = 0;
+    l->level = level;
+    l->subkey = 0;
+    l->name = name;
+}
+static inline void spin_lock(Spinlock *l) {
     if (l->locked) lock_errors++;   /* would deadlock */
     l->locked = 1;
     if (++lock_depth > lock_max_depth) lock_max_depth = lock_depth;
 }
-static inline void spinlock_release(Spinlock *l) {
+static inline void spin_unlock(Spinlock *l) {
     if (!l->locked) lock_errors++;
     l->locked = 0;
     lock_depth--;
+}
+static inline void spin_lock_irqsave(Spinlock *l, uint64_t *flags) {
+    *flags = 0;
+    spin_lock(l);
+}
+static inline void spin_unlock_irqrestore(Spinlock *l, uint64_t flags) {
+    (void)flags;
+    spin_unlock(l);
 }
 
 static inline void kprintf(const char *fmt, ...) { (void)fmt; }
