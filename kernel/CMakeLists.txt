@@ -29,6 +29,7 @@ set(KERNEL_C_SOURCES
     lib/panic.c
     lib/cmdline.c
     lib/testmode.c
+    lib/crc32.c
     arch/x86_64/debug_exit.c
     arch/x86_64/serial.c
     arch/x86_64/gdt.c
@@ -104,6 +105,8 @@ set(KERNEL_C_SOURCES
     diag/report.c
     diag/selftest.c
     diag/bench.c
+    diag/qr.c
+    diag/qr_text.c
 )
 
 set(KERNEL_SOURCES ${KERNEL_ASM_SOURCES} ${KERNEL_C_SOURCES})

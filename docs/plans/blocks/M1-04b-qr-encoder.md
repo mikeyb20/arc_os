@@ -57,10 +57,10 @@ Nothing in the kernel calls the encoder yet. The only shared files are add-only 
    with "run tools/dev-setup.sh apt" if `zbarimg` is missing; it never skips.
 
 **Done when.**
-- [ ] `ctest --test-dir build-tests -L host -R qr` passes, including the round trip for every version 1–30.
-- [ ] The kernel builds with the new files; `tools/no-simd-check.py` and `tools/hygiene.py` pass with no count
+- [x] `ctest --test-dir build-tests -L host -R qr` passes, including the round trip for every version 1–30.
+- [x] The kernel builds with the new files; `tools/no-simd-check.py` and `tools/hygiene.py` pass with no count
       raised (every function under 100 lines).
-- [ ] Notes say what M1-04c needs to know (API, buffer sizes, measured encode time on the host).
+- [x] Notes say what M1-04c needs to know (API, buffer sizes, measured encode time on the host).
 
 **Cost.** One encode is linear in the module count for each of the 8 masks: about 8 × 19k modules × 4 rules at
 version 30, around a million simple operations. It runs only on diagnostic and panic paths, never on a hot path.
@@ -77,3 +77,31 @@ Memory: the caller's `QrCode` (about 6 KiB at version 30), static in M1-04c.
 - No `zbar` code goes into the kernel. It's only the reference decoder on the build host.
 
 **Notes.**
+- Built: `kernel/lib/crc32.{c,h}` (`crc32(crc, data, len)`, zlib-style chaining), `kernel/diag/qr.{c,h}` and
+  `kernel/diag/qr_text.{c,h}`, host suite `qr` (22 tests, about 60 `zbarimg` decodes, 1.4 s). Nothing in the
+  kernel calls them yet.
+- For M1-04c: keep one `static QrCode` (7,132 bytes, not the 6 KiB estimated above; never on a kernel stack).
+  `qr_encode(buf, len, 30, &qr)` returns the version; draw `qr_module(&qr, x, y)` for x, y in `0..qr.size-1` plus
+  a 4-module light border. Text: `qr_text_sanitize` into a buffer (an escape is 4 bytes, so worst case 4 × the
+  input), then `qr_text_paginate` into a `QrTextPage` array, then `qr_text_page` into a `char[QR_BYTES_MAX]` per
+  page. The QEMU report (1,981 bytes) is 2 pages at version 30. Every payload fits `qr_capacity(max_version)`.
+- Encode time on the build host (Xeon 2.1 GHz): version 30 = 4.1 ms at -O2 and 8.9 ms at -O0 (the kernel builds
+  without -O); version 10 = 0.6 / 1.6 ms. The mask penalty dominates. The Cost estimate above (about a million
+  operations) was low by a few times; it still only runs on diagnostic and panic paths.
+- Kernel image grows about 11 KB (qr 8.3 KB, qr_text 2.5 KB, crc32 1.2 KB of text, plus backtrace names):
+  328,564 on top of M1-05's 317,173, so `kernel_image_bytes` went from 310,000 to 345,000 (measured + 5%) with a
+  reason line in `tests/budgets.txt`. M1-04c adds drawing code and the 7 KB static `QrCode` (bss counts).
+- Choices: mask rule 3 counts the literal 11-module windows `10111010000` and `00001011101`, with modules outside
+  the symbol counted as light (they are the quiet zone); scaled look-alikes are not counted. A different reading
+  only picks a different mask, and every mask decodes (tested). Pages reserve room for the longest header their
+  page count allows and for the `all` line on every page, so the split never changes (about 1% unused). If the
+  text doesn't end in a newline, one goes before the `all` line and belongs to no page's CRC.
+- Proof beyond the round trip: a decoder repairs a few wrong modules, so tests also read both format copies and
+  every data bit back by the standard's layout and demand an exact match, and check every block's Reed–Solomon
+  syndromes are zero. Mutation runs (not in CI) confirmed the suite catches a wrong mask formula, one flipped
+  format or data bit, a wrong version-bit layout, a skipped column, one-sided rule 3, wrong rules 1, 2 and 4, and
+  picking the worst mask. The terminator is invisible in byte mode (data always ends 4 bits short of a byte, and
+  the byte padding supplies those zeros), so no test can see it; it stays for the standard.
+- `zbar-tools` is a host-only test tool from Ubuntu's apt, like QEMU and xorriso. Neither the kernel build nor any
+  shipped file needs it. It joins the known gap that apt host packages aren't archived for an offline rebuild
+  (owner M5-04).

@@ -14,6 +14,7 @@ Kernel and user space are separate worlds: the same function in `kernel/lib` and
 | Formatted output, log levels, format into a buffer | `kprintf`, `kprintf_level`, `kdebug` (hot paths), `ksnprintf`, `kvsnprintf` | `kernel/lib/kprintf.h` |
 | Kernel log ring (`/proc/kmsg` text), console owner | `klog_read`, `klog_tail`, `klog_head`, `klog_console_try_acquire` / `_release`, `klog_console_acquire` (bounded wait, for screen drawing outside the log), `klog_set_console_level` | `kernel/lib/klog.h` |
 | Kernel command line | `cmdline_get`, `cmdline_raw` | `kernel/lib/cmdline.h` |
+| CRC-32 (IEEE 802.3, zlib-compatible chaining) | `crc32` | `kernel/lib/crc32.h` |
 | Test mode | `testmode_*` | `kernel/lib/testmode.h` |
 | Panic stop with report and screen | `KERNEL_PANIC()` (`kernel/lib/kprintf.h`); exception paths: `panic_begin`, `panic_report`, `hal_panic_capture` | `kernel/lib/panic.h` |
 | Kernel address to function name | `ksym_lookup` | `kernel/lib/ksyms.h` |
@@ -51,6 +52,8 @@ Kernel and user space are separate worlds: the same function in `kernel/lib` and
 | PCI driver binding, class names | `pci_set_driver`, `pci_class_name` | `kernel/drivers/pci.h` |
 | One screen row of text (pagers, banners) | `fb_console_write_row` | `kernel/drivers/fb_console.h` |
 | Boot report line, TSC-timed delay (diagnostic mode) | `diag_line`, `diag_delay_ms` | `kernel/diag/diag.h` |
+| QR code from bytes (byte mode, level M, versions 1-30; no allocation) | `qr_encode`, `qr_capacity`, `qr_module` | `kernel/diag/qr.h` |
+| Text as numbered `ARC1` QR pages: sanitize (no links), split, header and CRCs | `qr_text_sanitize`, `qr_text_paginate`, `qr_text_page` | `kernel/diag/qr_text.h` |
 | CPU features, x86-64-v3 floor, core type | `cpu_features`, `cpu_floor_missing`, `cpu_core_type_detect`, `cpu_describe` | `kernel/arch/x86_64/cpu.h` (via `arch/hal.h`) |
 | Signal actions and masks (rt_sigaction, fork, execve) | `sig_set_action`, `sig_fork_copy`, `sig_exec_reset` | `kernel/proc/signal.h` |
 | Linux ABI values and structs | `__NR_*`, errno, flags, `struct stat`, ... | `kernel/include/uapi/` |
