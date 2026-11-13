@@ -165,7 +165,7 @@ int vfs_bind_mount(const char *src, const char *target) {
     return err;
 }
 
-static int append(char *buf, int pos, int size, const char *s) {
+static int mounts_append(char *buf, int pos, int size, const char *s) {
     while (*s != '\0' && pos < size - 1) buf[pos++] = *s++;
     buf[pos] = '\0';
     return pos;
@@ -177,12 +177,12 @@ int vfs_format_mounts(char *buf, int size) {
     buf[0] = '\0';
     uint32_t n = mounts_published();
     for (uint32_t i = 0; i < n; i++) {
-        pos = append(buf, pos, size, mounts[i].source);
-        pos = append(buf, pos, size, " ");
-        pos = append(buf, pos, size, mounts[i].path);
-        pos = append(buf, pos, size, " ");
-        pos = append(buf, pos, size, mounts[i].sb->type);
-        pos = append(buf, pos, size, (mounts[i].sb->flags & SB_RDONLY) ? " ro 0 0\n" : " rw 0 0\n");
+        pos = mounts_append(buf, pos, size, mounts[i].source);
+        pos = mounts_append(buf, pos, size, " ");
+        pos = mounts_append(buf, pos, size, mounts[i].path);
+        pos = mounts_append(buf, pos, size, " ");
+        pos = mounts_append(buf, pos, size, mounts[i].sb->type);
+        pos = mounts_append(buf, pos, size, (mounts[i].sb->flags & SB_RDONLY) ? " ro 0 0\n" : " rw 0 0\n");
     }
     return pos;
 }
