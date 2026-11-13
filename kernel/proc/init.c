@@ -109,24 +109,24 @@ int init_launch(const BootInfo *info) {
         return -1;
     }
 
-    /* Allocate FD table */
-    p->fd_table = kmalloc(sizeof(FdTable), 0);
+    p->fd_table = fd_table_new();
     if (p->fd_table == NULL) {
         kprintf("[INIT] FATAL: cannot allocate fd table\n");
         return -1;
     }
-    fd_table_init(p->fd_table);
 
-    /* fds 0, 1, 2 = /dev/tty, inherited by every process (Linux programs expect
-     * them open). Without them a process's first open() returned 0-2, so
-     * opendir() in the shell took fd 1 and printf output went to a directory. */
-    for (int fd = 0; fd < 3; fd++) {
-        if (fd_alloc(p->fd_table) != fd ||
-            vfs_open("/dev/tty", O_RDWR, fd_get(p->fd_table, fd)) != 0) {
-            fd_free(p->fd_table, fd);
-            kprintf("[INIT] WARNING: no /dev/tty for fd %d (falls back to the TTY driver)\n", fd);
-            break;
+    /* fds 0, 1, 2 = one open /dev/tty, inherited by every process (Linux
+     * programs expect them open). Without them a process's first open()
+     * returned 0-2, so opendir() in the shell took fd 1 and printf output went
+     * to a directory. */
+    File *tty = NULL;
+    if (vfs_open("/dev/tty", O_RDWR, 0, &tty) == 0) {
+        for (int fd = 0; fd < 3; fd++) {
+            File *f = fd == 0 ? tty : fget_ref(tty);
+            if (fd_install_at(p->fd_table, fd, f, 0) != 0) fput(f);
         }
+    } else {
+        kprintf("[INIT] WARNING: no /dev/tty (fds 0-2 fall back to the console)\n");
     }
 
     /* Create kernel thread that will load ELF and transition to user mode */

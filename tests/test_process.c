@@ -182,18 +182,25 @@ static void mm_switch(Mm *next) {
     mm_switch_last = next;
 }
 
-/* FD stubs: fork's table copy is a real allocation, so reaping must free it */
+/* FD stubs: fork's table copy is a real allocation; proc_release_fds drops
+ * it (the real one calls fd_table_put), at exit or when fork fails */
 struct FdTable {
-    int dummy;
+    int heap;
 };
 static void *kmalloc(size_t size, uint32_t flags);
+static void kfree(void *ptr);
 static FdTable *fd_table_dup(const FdTable *src) {
-    return src != NULL ? kmalloc(sizeof(FdTable), 0) : NULL;
+    if (src == NULL) return NULL;
+    FdTable *t = kmalloc(sizeof(FdTable), 0);
+    if (t != NULL) t->heap = 1;
+    return t;
 }
 static int release_fds_calls;
 static void proc_release_fds(Process *p) {
-    (void)p;
     release_fds_calls++;
+    FdTable *t = p->fd_table;
+    p->fd_table = NULL;
+    if (t != NULL && t->heap) kfree(t);
 }
 
 /* Arch stubs */
@@ -573,8 +580,9 @@ static Process *make_zombie_child(Process *parent) {
     memset(&ctx, 0, sizeof(ctx));
     Process *c = proc_fork(parent, &ctx);
     if (c == NULL) return NULL;
-    mm_put(c->mm);   /* proc_exit drops the address space */
+    mm_put(c->mm);   /* proc_exit drops the address space and the fds */
     c->mm = NULL;
+    proc_release_fds(c);
     c->state = PROC_ZOMBIE;
     c->exit_status = 7;
     return c;
@@ -609,8 +617,8 @@ static int test_reap_frees_everything(void) {
     ASSERT_EQ(mm_put_calls, puts_before);         /* the mm went at exit */
     ASSERT_EQ(thread_destroy_calls, 1);           /* stack, FPU area, TCB */
     ASSERT_TRUE(thread_destroy_last == ct);
-    /* The fd table and the PCB: the two allocations fork made that remain */
-    ASSERT_EQ(kmalloc_call_count - kfree_call_count, live_before - 2);
+    /* The PCB: the one allocation fork made that remains after exit */
+    ASSERT_EQ(kmalloc_call_count - kfree_call_count, live_before - 1);
     ASSERT_TRUE(proc_get_by_pid(pid) == NULL);
     return 0;
 }

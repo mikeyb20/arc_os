@@ -13,12 +13,21 @@ of that level (a lock without a subkey counts as 0). Give every lock of a nestab
 | Level | Name in `lockdep.h` | Kind | Locks today | From |
 |---|---|---|---|---|
 | 0 | `LOCK_LEVEL_KERNEL` | big kernel lock | `kernel_lock` (see below) | M1-05, interim |
-| 10 | `LOCK_LEVEL_INODE` | sleeping | inode lock: write, truncate, rename, directory changes | M1-11 |
+| 7 | `LOCK_LEVEL_FILE_POS` | sleeping | `File.pos_lock`: the position of a seekable open file (read, write, lseek, getdents) | M1-11 |
+| 8 | `LOCK_LEVEL_RENAME` | sleeping | `rename_mutex` (vfs.c): one rename at a time, held from before either path is resolved | M1-11 |
+| 10 | `LOCK_LEVEL_INODE` | sleeping, read-write | `Inode.lock` (`RwSem`): a directory's entries (lookup shared, changes exclusive), a regular file's data and size (read shared, write and truncate exclusive); a pipe's reader and writer mutexes | M1-11 |
+| 11 | `LOCK_LEVEL_INODE_2` | sleeping, read-write | rename's second directory | M1-11 |
+| 12 | `LOCK_LEVEL_INODE_CHILD` | sleeping, read-write | a directory being removed or replaced (rmdir, rename) | M1-11 |
 | 20 | `LOCK_LEVEL_MM` | sleeping, read-write | `Mm.lock` (`RwSem`), per address space: VMA changes write, page faults and fork read | M1-07 |
 | 30 | `LOCK_LEVEL_PAGE` | sleeping, per page | page lock | M1-12 |
 | 40 | `LOCK_LEVEL_MAPPING` | sleeping | mapping-tree lock (VMAs mapping a file; reclaim, truncate) | M1-12 |
+| 45 | `LOCK_LEVEL_FS_IO` | sleeping | a filesystem's device reads: the FAT32 volume's `io_lock` (cluster buffer, chain cursors) | M1-11 |
 | 50 | `LOCK_LEVEL_PAGE_TABLE` | spinlock | `Mm.pt_lock`, per address space (inside `Mm.lock`); the kernel page tables (`vmm.c`) | M1-05, M1-07 |
 | 60 | `LOCK_LEVEL_PAGE_CACHE` | spinlock | page-cache index lock, per address space | M1-12 |
+| 62 | `LOCK_LEVEL_MOUNT` | spinlock | adding to the mount table (readers take no lock: entries are published, never removed) | M1-11 |
+| 63 | `LOCK_LEVEL_DCACHE` | spinlock | the dentry cache: hash chains, LRU list, count | M1-11 |
+| 64 | `LOCK_LEVEL_ICACHE` | spinlock | the inode cache: hash chains; a hashed inode's count goes 1 → 0 only under it | M1-11 |
+| 65 | `LOCK_LEVEL_FD_TABLE` | spinlock | one fd table's slots and bitmaps | M1-11 |
 | 70 | `LOCK_LEVEL_SIGNAL` | spinlock | thread-group and signal lock | M1-16 |
 | 75 | `LOCK_LEVEL_OBJECT` | spinlock | one object's state, the lock handed to `wq_sleep`: pipe, socket, tty, wait4, mutex and semaphore guards | M1-05 |
 | 76 | `LOCK_LEVEL_OBJECT_TABLE` | spinlock | a table looked up under an object lock: the socket table | M1-05 |
@@ -29,7 +38,7 @@ of that level (a lock without a subkey counts as 0). Give every lock of a nestab
 | 101 | `LOCK_LEVEL_BUDDY` | spinlock | buddy allocator (the only lock taken under a slab lock) | M1-02 |
 | 109 | `LOCK_LEVEL_LOG` | spinlock | kernel log ring: `kprintf` works under any lock | M1-04 |
 
-Levels 75 and 76 are additions to §7's list: the pipe, socket and tty locks are the "condition" locks passed to
+Levels 7, 8, 11, 12, 45 and 62–65 are M1-11's additions (see "VFS locks" below). Levels 75 and 76 are additions to §7's list: the pipe, socket and tty locks are the "condition" locks passed to
 `wq_sleep`, so they sit just above the signal lock and below the wait-queue locks; the socket table is looked up
 while one socket's lock is held. Timer-queue locks (M1-06) go between 101 and 109.
 
@@ -80,13 +89,39 @@ off removes the lock.
 
 | Subsystem still under the kernel lock | Lane | Taken off by |
 |---|---|---|
-| VFS, ramfs, devfs, procfs, FAT32, path lookup | KA | M1-11 |
-| fd tables (open, close, dup, fork copy) | KA | M1-11 |
-| Pipe buffers and reader/writer counts (`pipe.c` moves bytes and checks counts outside `pipe->lock`) | KA | M1-11 |
 | Process list, PID counter, fork/exec/exit/wait bookkeeping, credentials | KB | M1-16 |
 | Signal state (`SigState`, delivery, stop and continue) | KB | M1-16 |
 | Network stack outside the socket locks (interfaces, ARP, IP, UDP/TCP demux) | KB | M1-18 |
 | TTY line discipline and VT/ANSI state (the keyboard IRQ holds the lock) | KB | M1-09 |
+
+M1-11 took the VFS, ramfs, devfs, procfs, FAT32, path lookup, fd tables and pipes off this list: they are
+correct without the kernel lock (it is still taken at every syscall entry for the rows above). What they read
+from other subsystems stays covered by those rows: a process's cwd, umask and credentials, and procfs's walks of
+the process list (the process row, M1-16); the tty line discipline (the TTY row).
+
+## VFS locks (M1-11)
+
+- Order, outermost first: `File.pos_lock` (7) → `rename_mutex` (8) → directory or file `Inode.lock`
+  (10, then 11 and 12 in rename and rmdir) → `Mm.lock` (20, a page fault in a user copy) → FAT32 `io_lock` (45)
+  → the VFS spinlocks (62–65), which are leaves apart from the slab allocator.
+- User memory may be touched under the sleeping VFS locks (a fault takes only mm locks, which come after them),
+  never under the spinlocks. FAT32 copies to the user outside `io_lock` (it reads a cluster into a kernel buffer
+  first), so `io_lock` can later sit under a page lock (30) in M1-12's `readpage`.
+- Path lookup holds one directory lock at a time, shared; a component found in the dentry cache takes no
+  directory lock at all. Directory changes take the parent exclusive and remove the affected dentry before the
+  filesystem changes anything, so lookups never cache a name being removed.
+- Rename takes `rename_mutex` before it resolves either path. Only rename moves a directory, so the resolved
+  paths stay true while it is held, and their text gives the exact ancestry (one mount, no directory hard
+  links): the ancestor parent is locked first (10, then 11), then a replaced directory (12), and a directory
+  can't be moved into itself. Resolving first and locking after would let another rename change the tree in
+  between (a detached cycle, or an ABBA with rmdir that the level checks can't see).
+- `iput` that frees an inode runs its filesystem's `evict_inode` with no lock held; `fput` never runs under a
+  spinlock. Pipes: `rd_mutex` and `wr_mutex` (level 10) serialise readers and writers and are held across user
+  copies but dropped while waiting; `pipe->lock` (75) guards head, tail and the counts and is the wait-queue
+  condition lock. A release wakes the other side before dropping `pipe->lock` (after it, the other end's last
+  release may free the pipe).
+- Directory changes re-check `I_DEAD` under the parent's lock (create, mkdir, rename's target), since the
+  directory may be removed between resolving and locking it.
 
 ## Address-space locks (M1-07)
 

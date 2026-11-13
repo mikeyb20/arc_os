@@ -1,558 +1,225 @@
-/* arc_os — Host-side tests for procfs */
+/* arc_os — /proc on the real procfs.c (M1-11): fixed files, per-process
+ * directories made per lookup and freed after, /proc/self, /proc/mounts,
+ * partial reads, kmsg permissions, the root listing and
+ * /proc/sys/vm/drop_caches. */
 
 #include "test_framework.h"
-#include <stdint.h>
-#include <stddef.h>
+#include "vfs_env.h"
 
-/* Guard all kernel headers that procfs.c includes */
-#define ARCHOS_FS_VFS_H
-#define ARCHOS_FS_PROCFS_H
-#define ARCHOS_MM_PMM_H
-#define ARCHOS_BOOT_BOOTINFO_H
-#define ARCHOS_MM_KMALLOC_H
-#define ARCHOS_MM_SLAB_H
-#define ARCHOS_MM_MM_H
-#define ARCHOS_MM_VMM_H
-#define ARCHOS_ARCH_HAL_H
-#define ARCHOS_PROC_PROCESS_H
-#define ARCHOS_PROC_THREAD_H
-#define ARCHOS_PROC_SCHED_H
-#define ARCHOS_PROC_SIGNAL_H
-#define ARCHOS_PROC_WAITQUEUE_H
-#define ARCHOS_PROC_SPINLOCK_H
-#define ARCHOS_LIB_MEM_H
-#define ARCHOS_LIB_STRING_H
-#define ARCHOS_LIB_CMDLINE_H
+#include "fs/vfs_internal.h"
+#include "uapi/errno.h"
+#include "uapi/fcntl.h"
 
-static const char *cmdline_raw(void) { return "arc.test=smoke"; }
-
-/* VFS types (inline — match vfs.h) */
-#define VFS_FILE      0
-#define VFS_DIRECTORY 1
-#define VFS_NAME_MAX  256
-
-typedef struct VfsNode VfsNode;
-typedef struct VfsDirEntry VfsDirEntry;
+static char text[4096];
 
 typedef struct {
-    int      (*read)(VfsNode *node, void *buf, uint32_t offset, uint32_t size);
-    int      (*write)(VfsNode *node, const void *buf, uint32_t offset, uint32_t size);
-    VfsNode *(*lookup)(VfsNode *dir, const char *name);
-    VfsNode *(*create)(VfsNode *dir, const char *name, uint8_t type);
-    int      (*unlink)(VfsNode *dir, const char *name);
-    int      (*readdir)(VfsNode *dir, VfsDirEntry *entries, uint32_t max);
-    void     (*truncate)(VfsNode *node, uint64_t size);
-} VfsOps;
+    DirContext ctx;
+    char names[512];
+} Names;
 
-struct VfsNode {
-    uint64_t       inode_num;
-    uint8_t        type;
-    uint64_t       size;
-    uint32_t       mode;
-    uint32_t       uid;
-    uint32_t       gid;
-    const VfsOps  *ops;
-    void          *private_data;
-};
-
-struct VfsDirEntry {
-    char     name[VFS_NAME_MAX];
-    uint64_t inode_num;
-    uint8_t  type;
-};
-
-/* PMM constants */
-#define PAGE_SIZE 4096
-
-/* HeapStats type */
-typedef struct {
-    size_t total_used;
-    size_t total_free;
-    size_t heap_mapped;
-    size_t large_bytes;
-} HeapStats;
-
-/* SlabInfo type (slab.h) */
-typedef struct {
-    const char *name;
-    uint32_t object_size;
-    uint64_t active_objs;
-    uint64_t total_objs;
-    uint64_t slabs;
-    uint32_t objs_per_slab;
-    uint32_t pages_per_slab;
-} SlabInfo;
-
-/* Process states */
-#define PROC_ALIVE       0
-#define PROC_ZOMBIE      1
-#define PROC_TERMINATED  2
-#define PROC_STOPPED     3
-
-/* Minimal Process struct — only fields procfs accesses */
-typedef struct Process {
-    uint32_t        pid;
-    uint32_t        pgid;
-    uint8_t         state;
-    uint32_t        uid;
-    uint32_t        gid;
-    struct Mm *mm;
-    struct Process *parent;
-    struct Process *next;
-} Process;
-
-/* mm.h / vmm.h stubs: /proc/<pid>/maps pins the mm around the formatting */
-#define ENOMEM 12
-typedef struct Mm {
-    int users;
-    const char *maps;
-} Mm;
-static int mm_gets, mm_puts;
-static void mm_get(Mm *mm) {
-    mm_gets++;
-    mm->users++;
+static int names_actor(DirContext *ctx, const char *name, size_t len, uint64_t ino, uint8_t dtype, loff_t next) {
+    (void)ino, (void)dtype, (void)next;
+    Names *n = (Names *)ctx;
+    size_t at = strlen(n->names);
+    snprintf(n->names + at, sizeof(n->names) - at, "%s%.*s", at ? " " : "", (int)len, name);
+    return 0;
 }
-static void mm_put(Mm *mm) {
-    mm_puts++;
-    mm->users--;
+
+static int list(const char *path, Names *n) {
+    File *d;
+    int err = vfs_open(path, O_RDONLY | O_DIRECTORY, 0, &d);
+    if (err != 0) return err;
+    memset(n, 0, sizeof(*n));
+    n->ctx.actor = names_actor;
+    err = vfs_iterate(d, &n->ctx);
+    fput(d);
+    return err;
 }
-static int mm_format_maps(Mm *mm, char *buf, int bufsz) {
-    int n = (int)strlen(mm->maps);
-    if (n > bufsz) n = bufsz;
-    memcpy(buf, mm->maps, (size_t)n);
+
+TEST(meminfo_fields) {
+    vfs_env_setup();
+    ASSERT_TRUE(vfs_env_read_file("/proc/meminfo", text, sizeof(text)) > 0);
+    ASSERT_TRUE(strstr(text, "MemTotal: 4096 kB\n") != NULL);
+    ASSERT_TRUE(strstr(text, "HeapUsed: ") != NULL);
+    ASSERT_TRUE(strstr(text, "HeapLarge: ") != NULL);
+    return 0;
+}
+
+TEST(fixed_files) {
+    vfs_env_setup();
+    vfs_env_uptime_ms = 12340;
+    ASSERT_TRUE(vfs_env_read_file("/proc/uptime", text, sizeof(text)) > 0);
+    ASSERT_TRUE(strncmp(text, "12.34", 5) == 0);
+    ASSERT_TRUE(vfs_env_read_file("/proc/cmdline", text, sizeof(text)) > 0);
+    ASSERT_STR_EQ(text, "arc.test=vfs\n");
+    ASSERT_TRUE(vfs_env_read_file("/proc/cpuinfo", text, sizeof(text)) > 0);
+    ASSERT_TRUE(strstr(text, "processor") != NULL);
+    ASSERT_TRUE(vfs_env_read_file("/proc/slabinfo", text, sizeof(text)) > 0);
+    ASSERT_TRUE(strstr(text, "host") != NULL);
+    ASSERT_TRUE(vfs_env_read_file("/proc/sched_debug", text, sizeof(text)) > 0);
+    ASSERT_TRUE(vfs_env_read_file("/proc/kmsg", text, sizeof(text)) > 0);
+    ASSERT_STR_EQ(text, "<6>[BOOT] host\n");
+    struct stat st;
+    ASSERT_EQ(vfs_stat("/proc/meminfo", &st), 0);
+    ASSERT_EQ(st.st_mode, S_IFREG | 0444);
+    ASSERT_EQ(vfs_stat("/proc/nothing", &st), -ENOENT);
+    return 0;
+}
+
+TEST(proc_mounts_lists_the_table) {
+    vfs_env_setup();
+    ASSERT_TRUE(vfs_env_read_file("/proc/mounts", text, sizeof(text)) > 0);
+    ASSERT_TRUE(strncmp(text, "ramfs / ramfs rw 0 0\n", 21) == 0);
+    ASSERT_TRUE(strstr(text, "proc /proc proc rw 0 0\n") != NULL);
+    return 0;
+}
+
+TEST(partial_reads_continue) {
+    vfs_env_setup();
+    char whole[1024];
+    int64_t total = vfs_env_read_file("/proc/meminfo", whole, sizeof(whole));
+    ASSERT_TRUE(total > 20);
+    File *f;
+    ASSERT_EQ(vfs_open("/proc/meminfo", O_RDONLY, 0, &f), 0);
+    char parts[1024];
+    int64_t got = 0;
+    for (;;) {
+        IoBuf b = iob_kernel(parts + got, 7);
+        int64_t n = vfs_read(f, &b);
+        ASSERT_TRUE(n >= 0);
+        if (n == 0) break;
+        got += n;
+    }
+    fput(f);
+    ASSERT_EQ(got, total);
+    ASSERT_MEM_EQ(parts, whole, (size_t)total);
+    return 0;
+}
+
+TEST(kmsg_is_root_only) {
+    vfs_env_setup();
+    vfs_env_as(1000, 1000);
+    File *f;
+    ASSERT_EQ(vfs_open("/proc/kmsg", O_RDONLY, 0, &f), -EACCES);
+    ASSERT_EQ(vfs_open("/proc/meminfo", O_RDONLY, 0, &f), 0);
+    fput(f);
+    ASSERT_EQ(vfs_open("/proc/meminfo", O_WRONLY, 0, &f), -EACCES);
+    vfs_env_as(0, 0);
+    return 0;
+}
+
+TEST(pid_directory_files) {
+    vfs_env_setup();
+    static char fake_mm;
+    vfs_env_proc.mm = (struct Mm *)&fake_mm;
+    ASSERT_TRUE(vfs_env_read_file("/proc/1/status", text, sizeof(text)) > 0);
+    ASSERT_TRUE(strncmp(text, "Pid: 1\n", 7) == 0);
+    ASSERT_TRUE(vfs_env_read_file("/proc/self/status", text, sizeof(text)) > 0);
+    ASSERT_TRUE(strncmp(text, "Pid: 1\n", 7) == 0);
+    ASSERT_TRUE(vfs_env_read_file("/proc/1/maps", text, sizeof(text)) > 0);
+    ASSERT_TRUE(strstr(text, "r-xp") != NULL);
+    vfs_env_proc.mm = NULL;
+    struct stat st;
+    ASSERT_EQ(vfs_stat("/proc/2", &st), -ENOENT);
+    ASSERT_EQ(vfs_stat("/proc/1x", &st), -ENOENT);
+    ASSERT_EQ(vfs_stat("/proc/1/none", &st), -ENOENT);
+    ASSERT_EQ(vfs_stat("/proc/1", &st), 0);
+    ASSERT_TRUE(S_ISDIR(st.st_mode));
+    struct stat status;
+    ASSERT_EQ(vfs_stat("/proc/1/status", &status), 0);
+    ASSERT_NEQ(status.st_ino, st.st_ino);   /* every proc inode has its own number */
+    ASSERT_NEQ(status.st_ino, 2);
+    Names n;
+    ASSERT_EQ(list("/proc/1", &n), 0);
+    ASSERT_STR_EQ(n.names, ". .. status maps");
+    return 0;
+}
+
+TEST(pid_entries_are_freed) {
+    vfs_env_setup();
+    struct stat st;
+    ASSERT_EQ(vfs_stat("/proc/1/status", &st), 0);   /* warm up the path to /proc */
+    VfsEnvUsage before, after;
+    vfs_env_usage(&before);
+    for (int i = 0; i < 10; i++) {
+        ASSERT_TRUE(vfs_env_read_file("/proc/1/status", text, sizeof(text)) > 0);
+        ASSERT_EQ(vfs_stat("/proc/self", &st), 0);
+    }
+    vfs_env_usage(&after);
+    ASSERT_TRUE(vfs_env_no_leak(&before, &after));
+    return 0;
+}
+
+TEST(root_listing_and_no_new_names) {
+    vfs_env_setup();
+    Names n;
+    ASSERT_EQ(list("/proc", &n), 0);
+    ASSERT_STR_EQ(n.names, ". .. meminfo uptime cmdline cpuinfo slabinfo kmsg sched_debug mounts sys self 1");
+    File *f;
+    ASSERT_EQ(vfs_open("/proc/new", O_CREAT | O_WRONLY, 0644, &f), -EACCES);   /* no create op */
+    ASSERT_EQ(vfs_mkdir("/proc/d", 0755), -EPERM);                            /* no mkdir op */
+    vfs_env_as(1000, 1000);
+    ASSERT_EQ(vfs_mkdir("/proc/d", 0755), -EACCES);   /* 0555 root: no write permission first */
+    vfs_env_as(0, 0);
+    return 0;
+}
+
+static int64_t write_str(const char *path, const char *s) {
+    File *f;
+    int err = vfs_open(path, O_WRONLY, 0, &f);
+    if (err != 0) return err;
+    IoBuf b = iob_kernel((void *)s, strlen(s));
+    int64_t n = vfs_write(f, &b);
+    fput(f);
     return n;
 }
-static uint64_t mm_anon_pages(void) {
-    return 3;
-}
-static uint64_t vmm_user_table_pages(void) {
-    return 2;
-}
-/* kmalloc.h: the maps file's scratch buffer */
-static void *kmalloc(size_t size, uint32_t flags) {
-    (void)flags;
-    return malloc(size);
-}
-static void kfree(void *p) {
-    free(p);
-}
-static Process *test_current;
-static Process *proc_current(void) {
-    return test_current;
-}
 
-/* --- Stub control values --- */
+/* Writing 2 empties the dentry cache; only root may; bad values are EINVAL */
+TEST(drop_caches_empties_the_dentry_cache) {
+    vfs_env_setup();
+    Names n;
+    ASSERT_EQ(list("/proc/sys", &n), 0);
+    ASSERT_STR_EQ(n.names, ". .. vm");
+    ASSERT_EQ(list("/proc/sys/vm", &n), 0);
+    ASSERT_STR_EQ(n.names, ". .. drop_caches");
+    struct stat st;
+    ASSERT_EQ(vfs_stat("/proc/sys/vm/drop_caches", &st), 0);
+    ASSERT_EQ(st.st_mode, S_IFREG | 0200);
 
-static uint64_t stub_total_pages = 32768;   /* 128 MB */
-static uint64_t stub_free_pages = 16384;    /* 64 MB */
-static uint64_t stub_uptime_ms = 12345;
-static HeapStats stub_heap_stats = {
-    .total_used = 4096,
-    .total_free = 12288,
-    .heap_mapped = 16384,
-    .large_bytes = 32768,
-};
-
-/* Test processes */
-static Process test_procs[4];
-static int test_proc_count = 0;
-
-static void setup_test_procs(void) {
-    memset(test_procs, 0, sizeof(test_procs));
-    test_procs[0].pid = 0;
-    test_procs[0].pgid = 0;
-    test_procs[0].state = PROC_ALIVE;
-    test_procs[0].parent = NULL;
-
-    test_procs[1].pid = 1;
-    test_procs[1].pgid = 1;
-    test_procs[1].state = PROC_ALIVE;
-    test_procs[1].parent = &test_procs[0];
-
-    test_procs[2].pid = 2;
-    test_procs[2].pgid = 2;
-    test_procs[2].state = PROC_ZOMBIE;
-    test_procs[2].parent = &test_procs[0];
-
-    test_procs[3].pid = 99;
-    test_procs[3].pgid = 99;
-    test_procs[3].state = PROC_TERMINATED;
-    test_procs[3].parent = NULL;
-
-    test_proc_count = 4;
-}
-
-/* --- Kernel function stubs --- */
-
-static uint64_t pmm_get_total_pages(void) { return stub_total_pages; }
-static uint64_t pmm_get_free_pages(void) { return stub_free_pages; }
-static uint64_t pmm_get_descriptor_bytes(void) {
-    return 1024 * 1024;
-}
-static uint64_t pit_get_uptime_ms(void) { return stub_uptime_ms; }
-
-/* CPU queries (arch/hal.h -> cpu.h): CPUs 0 (P-core) and 2 (E-core) online */
-#define CPU_MAX 16
-typedef struct {
-    char vendor[13];
-} CpuFeatures;
-static const CpuFeatures stub_features = {"GenuineIntel"};
-static const CpuFeatures *cpu_features(void) {
-    return &stub_features;
-}
-static int cpu_describe(uint32_t cpu, uint32_t *apic_id, uint8_t *core_type) {
-    if (cpu != 0 && cpu != 2) return -1;
-    *apic_id = cpu * 2;
-    *core_type = cpu == 0 ? 0x40 : 0x20;
+    ASSERT_EQ(vfs_mkdir("/tmp/proc_dc", 0755), 0);
+    ASSERT_EQ(vfs_stat("/tmp/proc_dc", &st), 0);   /* a lookup: /tmp and dc are cached */
+    ASSERT_TRUE(dcache_count() > 0);
+    ASSERT_EQ(write_str("/proc/sys/vm/drop_caches", "2\n"), 2);
+    ASSERT_EQ(dcache_count(), 0);
+    ASSERT_EQ(vfs_stat("/tmp/proc_dc", &st), 0);   /* names still resolve, through the filesystem */
+    ASSERT_TRUE(S_ISDIR(st.st_mode));
+    ASSERT_EQ(write_str("/proc/sys/vm/drop_caches", "1"), 1);   /* page cache: nothing yet */
+    ASSERT_EQ(write_str("/proc/sys/vm/drop_caches", "4"), 1);   /* Linux's "quiet" bit: nothing to drop */
+    ASSERT_EQ(write_str("/proc/sys/vm/drop_caches", "5"), -EINVAL);
+    ASSERT_EQ(write_str("/proc/sys/vm/drop_caches", "x"), -EINVAL);
+    ASSERT_EQ(write_str("/proc/sys/vm/drop_caches", ""), 0);   /* an empty write does nothing */
+    File *f;
+    ASSERT_EQ(vfs_open("/proc/sys/vm/drop_caches", O_RDONLY, 0, &f), 0);   /* root passes the mode bits */
+    char c;
+    IoBuf rb = iob_kernel(&c, 1);
+    ASSERT_EQ(vfs_read(f, &rb), -EINVAL);   /* but there is nothing to read */
+    fput(f);
+    vfs_env_as(1000, 1000);
+    ASSERT_EQ(write_str("/proc/sys/vm/drop_caches", "2"), -EACCES);
+    vfs_env_as(0, 0);
+    ASSERT_EQ(vfs_rmdir("/tmp/proc_dc"), 0);
     return 0;
 }
-static const char *cpu_core_type_name(uint8_t type) {
-    return type == 0x40 ? "P" : type == 0x20 ? "E" : "-";
-}
-
-/* sched.h: run queues on CPUs 0 and 2 */
-#define HAL_MAX_CPUS CPU_MAX
-typedef struct {
-    uint32_t nr_running;
-    uint64_t nr_switches;
-    uint64_t nr_migrations;
-    uint64_t idle_ns;
-    uint64_t busy_ns;
-    const char *core;
-} SchedCpuStats;
-static int sched_cpu_stats(uint32_t cpu, SchedCpuStats *out) {
-    if (cpu != 0 && cpu != 2) return -1;
-    out->nr_running = cpu == 0 ? 2 : 0;
-    out->nr_switches = 100 + cpu;
-    out->nr_migrations = cpu;
-    out->idle_ns = 5000000000ULL;
-    out->busy_ns = cpu == 0 ? 7 : 0;
-    out->core = cpu == 0 ? "P" : "E";
-    return 0;
-}
-
-static void kmalloc_get_stats(HeapStats *out) {
-    *out = stub_heap_stats;
-}
-
-/* Two slab caches */
-static int slab_get_info(unsigned n, SlabInfo *out) {
-    static const SlabInfo caches[] = {
-        {"kmem_cache", 120, 3, 34, 1, 34, 1},
-        {"kmalloc-1024", 1024, 9, 16, 2, 8, 2},
-    };
-    if (n >= 2) return -1;
-    *out = caches[n];
-    return 0;
-}
-
-static Process *proc_get_by_pid(uint32_t pid) {
-    for (int i = 0; i < test_proc_count; i++) {
-        if (test_procs[i].pid == pid && test_procs[i].state != PROC_TERMINATED) {
-            return &test_procs[i];
-        }
-    }
-    return NULL;
-}
-
-static int proc_foreach(void (*cb)(Process *p, void *ctx), void *ctx) {
-    int count = 0;
-    for (int i = 0; i < test_proc_count; i++) {
-        if (test_procs[i].state != PROC_TERMINATED) {
-            cb(&test_procs[i], ctx);
-            count++;
-        }
-    }
-    return count;
-}
-
-/* Declare procfs_init before including the .c */
-VfsNode *procfs_init(void);
-
-#include "../kernel/fs/procfs.c"
-
-/* --- Tests --- */
-
-TEST(init_returns_non_null) {
-    VfsNode *root = procfs_init();
-    ASSERT_TRUE(root != NULL);
-    return 0;
-}
-
-TEST(root_is_directory) {
-    VfsNode *root = procfs_init();
-    ASSERT_EQ(root->type, VFS_DIRECTORY);
-    return 0;
-}
-
-TEST(lookup_meminfo) {
-    VfsNode *root = procfs_init();
-    VfsNode *n = root->ops->lookup(root, "meminfo");
-    ASSERT_TRUE(n != NULL);
-    ASSERT_EQ(n->type, VFS_FILE);
-    return 0;
-}
-
-TEST(lookup_uptime) {
-    VfsNode *root = procfs_init();
-    VfsNode *n = root->ops->lookup(root, "uptime");
-    ASSERT_TRUE(n != NULL);
-    ASSERT_EQ(n->type, VFS_FILE);
-    return 0;
-}
-
-TEST(lookup_pid) {
-    setup_test_procs();
-    VfsNode *root = procfs_init();
-    VfsNode *n = root->ops->lookup(root, "1");
-    ASSERT_TRUE(n != NULL);
-    ASSERT_EQ(n->type, VFS_DIRECTORY);
-    return 0;
-}
-
-TEST(lookup_nonexistent_pid) {
-    setup_test_procs();
-    VfsNode *root = procfs_init();
-    VfsNode *n = root->ops->lookup(root, "999");
-    ASSERT_TRUE(n == NULL);
-    return 0;
-}
-
-TEST(lookup_non_numeric) {
-    VfsNode *root = procfs_init();
-    VfsNode *n = root->ops->lookup(root, "blah");
-    ASSERT_TRUE(n == NULL);
-    return 0;
-}
-
-TEST(meminfo_content) {
-    VfsNode *root = procfs_init();
-    VfsNode *n = root->ops->lookup(root, "meminfo");
-
-    char buf[512] = {0};
-    int rd = n->ops->read(n, buf, 0, sizeof(buf) - 1);
-    ASSERT_TRUE(rd > 0);
-    ASSERT_TRUE(strstr(buf, "MemTotal:") != NULL);
-    ASSERT_TRUE(strstr(buf, "MemFree:") != NULL);
-    ASSERT_TRUE(strstr(buf, "HeapUsed:") != NULL);
-    ASSERT_TRUE(strstr(buf, "PageDescriptors: 1024 kB") != NULL);
-    ASSERT_TRUE(strstr(buf, "HeapLarge: 32768 B") != NULL);
-    ASSERT_TRUE(strstr(buf, "AnonPages: 12 kB") != NULL);
-    ASSERT_TRUE(strstr(buf, "PageTables: 8 kB") != NULL);
-    return 0;
-}
-
-/* /proc/self is the caller's own pid directory */
-TEST(lookup_self) {
-    setup_test_procs();
-    VfsNode *root = procfs_init();
-    test_current = NULL;
-    ASSERT_TRUE(root->ops->lookup(root, "self") == NULL);   /* no process */
-    test_current = &test_procs[1];
-    VfsNode *n = root->ops->lookup(root, "self");
-    ASSERT_TRUE(n != NULL);
-    ASSERT_EQ(n->type, VFS_DIRECTORY);
-    VfsNode *st = n->ops->lookup(n, "status");
-    ASSERT_TRUE(st != NULL);
-    char buf[512] = {0};
-    ASSERT_TRUE(st->ops->read(st, buf, 0, sizeof(buf) - 1) > 0);
-    ASSERT_TRUE(strstr(buf, "Pid: 1") != NULL);
-    test_current = NULL;
-    return 0;
-}
-
-/* maps is mm_format_maps' text, read with the mm pinned; no mm, no lines */
-TEST(pid_maps_content) {
-    setup_test_procs();
-    static Mm mm = {1, "00400000-00401000 r-xp 00000000 00:00 0 \n"};
-    test_procs[1].mm = &mm;
-    mm_gets = mm_puts = 0;
-    VfsNode *root = procfs_init();
-    VfsNode *dir = root->ops->lookup(root, "1");
-    VfsNode *n = dir->ops->lookup(dir, "maps");
-    ASSERT_TRUE(n != NULL);
-    char buf[256] = {0};
-    int rd = n->ops->read(n, buf, 0, sizeof(buf) - 1);
-    ASSERT_EQ(rd, (int)strlen(mm.maps));
-    ASSERT_STR_EQ(buf, mm.maps);
-    ASSERT_EQ(mm_gets, 1);
-    ASSERT_EQ(mm_puts, 1);
-    ASSERT_EQ(mm.users, 1);
-    rd = n->ops->read(n, buf, 9, 8);   /* offset into the text */
-    ASSERT_EQ(rd, 8);
-    ASSERT_TRUE(memcmp(buf, "00401000", 8) == 0);
-    test_procs[1].mm = NULL;
-    ASSERT_EQ(n->ops->read(n, buf, 0, sizeof(buf)), 0);
-    return 0;
-}
-
-TEST(meminfo_partial_read) {
-    VfsNode *root = procfs_init();
-    VfsNode *n = root->ops->lookup(root, "meminfo");
-
-    /* Read only first 10 bytes */
-    char buf[16] = {0};
-    int rd = n->ops->read(n, buf, 0, 10);
-    ASSERT_EQ(rd, 10);
-    ASSERT_MEM_EQ(buf, "MemTotal: ", 10);
-
-    /* Read with offset past content */
-    char buf2[16] = {0};
-    rd = n->ops->read(n, buf2, 9999, 10);
-    ASSERT_EQ(rd, 0);
-    return 0;
-}
-
-TEST(uptime_content) {
-    stub_uptime_ms = 12345;
-    VfsNode *root = procfs_init();
-    VfsNode *n = root->ops->lookup(root, "uptime");
-
-    char buf[64] = {0};
-    int rd = n->ops->read(n, buf, 0, sizeof(buf) - 1);
-    ASSERT_TRUE(rd > 0);
-    ASSERT_STR_EQ(buf, "12.345\n");
-    return 0;
-}
-
-TEST(cmdline_content) {
-    VfsNode *root = procfs_init();
-    VfsNode *n = root->ops->lookup(root, "cmdline");
-    ASSERT_TRUE(n != NULL);
-    char buf[64] = {0};
-    int rd = n->ops->read(n, buf, 0, sizeof(buf) - 1);
-    ASSERT_TRUE(rd > 0);
-    ASSERT_STR_EQ(buf, "arc.test=smoke\n");
-    return 0;
-}
-
-TEST(cpuinfo_content) {
-    VfsNode *root = procfs_init();
-    VfsNode *n = root->ops->lookup(root, "cpuinfo");
-    ASSERT_TRUE(n != NULL);
-    char buf[512] = {0};
-    int rd = n->ops->read(n, buf, 0, sizeof(buf) - 1);
-    ASSERT_TRUE(rd > 0);
-    ASSERT_STR_EQ(buf, "processor\t: 0\nvendor_id\t: GenuineIntel\napicid\t\t: 0\ncore type\t: P\n\n"
-                       "processor\t: 2\nvendor_id\t: GenuineIntel\napicid\t\t: 4\ncore type\t: E\n\n");
-    return 0;
-}
-
-TEST(slabinfo_content) {
-    VfsNode *root = procfs_init();
-    VfsNode *n = root->ops->lookup(root, "slabinfo");
-    ASSERT_TRUE(n != NULL);
-    char buf[256] = {0};
-    int rd = n->ops->read(n, buf, 0, sizeof(buf) - 1);
-    ASSERT_TRUE(rd > 0);
-    ASSERT_STR_EQ(buf, "# name objsize active total slabs\n"
-                       "kmem_cache 120 3 34 1\n"
-                       "kmalloc-1024 1024 9 16 2\n");
-    return 0;
-}
-
-TEST(sched_debug_content) {
-    VfsNode *root = procfs_init();
-    VfsNode *n = root->ops->lookup(root, "sched_debug");
-    ASSERT_TRUE(n != NULL);
-    char buf[256] = {0};
-    int rd = n->ops->read(n, buf, 0, sizeof(buf) - 1);
-    ASSERT_TRUE(rd > 0);
-    ASSERT_STR_EQ(buf, "cpu core nr_running nr_switches nr_migrations idle_ns busy_ns\n"
-                       "0 P 2 100 0 5000000000 7\n"
-                       "2 E 0 102 2 5000000000 0\n");
-    return 0;
-}
-
-TEST(pid_status_content) {
-    setup_test_procs();
-    VfsNode *root = procfs_init();
-    VfsNode *pid_dir = root->ops->lookup(root, "1");
-    ASSERT_TRUE(pid_dir != NULL);
-
-    VfsNode *status = pid_dir->ops->lookup(pid_dir, "status");
-    ASSERT_TRUE(status != NULL);
-
-    char buf[256] = {0};
-    int rd = status->ops->read(status, buf, 0, sizeof(buf) - 1);
-    ASSERT_TRUE(rd > 0);
-    ASSERT_TRUE(strstr(buf, "Pid: 1") != NULL);
-    ASSERT_TRUE(strstr(buf, "State: running") != NULL);
-    ASSERT_TRUE(strstr(buf, "PPid: 0") != NULL);
-    ASSERT_TRUE(strstr(buf, "Pgid: 1") != NULL);
-    ASSERT_TRUE(strstr(buf, "Uid: 0") != NULL);
-    ASSERT_TRUE(strstr(buf, "Gid: 0") != NULL);
-    return 0;
-}
-
-TEST(readdir_root) {
-    setup_test_procs();
-    VfsNode *root = procfs_init();
-    VfsDirEntry entries[16];
-    int count = root->ops->readdir(root, entries, 16);
-    /* meminfo + uptime + cmdline + cpuinfo + slabinfo + kmsg + sched_debug + self + 3 non-terminated PIDs (0, 1, 2) */
-    ASSERT_EQ(count, 11);
-    ASSERT_STR_EQ(entries[0].name, "meminfo");
-    ASSERT_STR_EQ(entries[1].name, "uptime");
-    ASSERT_STR_EQ(entries[2].name, "cmdline");
-    ASSERT_STR_EQ(entries[3].name, "cpuinfo");
-    ASSERT_STR_EQ(entries[4].name, "slabinfo");
-    ASSERT_STR_EQ(entries[5].name, "kmsg");
-    ASSERT_STR_EQ(entries[6].name, "sched_debug");
-    ASSERT_STR_EQ(entries[7].name, "self");
-    ASSERT_STR_EQ(entries[8].name, "0");
-    return 0;
-}
-
-/* /proc/kmsg reads the real log ring (lib/klog.c, built by test_kprintf.c) */
-TEST(kmsg_reads_log) {
-    VfsNode *root = procfs_init();
-    VfsNode *n = root->ops->lookup(root, "kmsg");
-    ASSERT_TRUE(n != NULL);
-    ASSERT_EQ(n->mode, 0400);
-    const char msg[] = "procfs kmsg test line\n";
-    klog_write(3, msg, sizeof(msg) - 1);
-    static char buf[300 * 1024];
-    int got = n->ops->read(n, buf, 0, sizeof(buf) - 1);
-    ASSERT_TRUE(got > 0);
-    ASSERT_EQ((uint64_t)got, klog_head() - klog_tail());
-    buf[got] = '\0';
-    ASSERT_TRUE(strstr(buf, "<3>procfs kmsg test line\n") != NULL);
-    /* Reading from an offset past the head returns nothing */
-    ASSERT_EQ(n->ops->read(n, buf, (uint32_t)got, 16), 0);
-    return 0;
-}
-
-TEST(readdir_pid_dir) {
-    setup_test_procs();
-    VfsNode *root = procfs_init();
-    VfsNode *pid_dir = root->ops->lookup(root, "0");
-    ASSERT_TRUE(pid_dir != NULL);
-
-    VfsDirEntry entries[4];
-    int count = pid_dir->ops->readdir(pid_dir, entries, 4);
-    ASSERT_EQ(count, 2);
-    ASSERT_STR_EQ(entries[0].name, "status");
-    ASSERT_STR_EQ(entries[1].name, "maps");
-    return 0;
-}
-
-TEST(no_create_ops) {
-    VfsNode *root = procfs_init();
-    ASSERT_TRUE(root->ops->create == NULL);
-    ASSERT_TRUE(root->ops->unlink == NULL);
-    return 0;
-}
-
-/* --- Suite --- */
 
 TestCase procfs_tests[] = {
-    TEST_ENTRY(init_returns_non_null), TEST_ENTRY(root_is_directory),  TEST_ENTRY(lookup_meminfo),
-    TEST_ENTRY(lookup_uptime),         TEST_ENTRY(lookup_pid),         TEST_ENTRY(lookup_nonexistent_pid),
-    TEST_ENTRY(lookup_non_numeric),    TEST_ENTRY(meminfo_content),    TEST_ENTRY(meminfo_partial_read),
-    TEST_ENTRY(uptime_content),        TEST_ENTRY(cmdline_content),    TEST_ENTRY(cpuinfo_content),
-    TEST_ENTRY(slabinfo_content),      TEST_ENTRY(pid_status_content), TEST_ENTRY(readdir_root),
-    TEST_ENTRY(readdir_pid_dir),       TEST_ENTRY(no_create_ops),      TEST_ENTRY(kmsg_reads_log),
-    TEST_ENTRY(sched_debug_content),   TEST_ENTRY(lookup_self),        TEST_ENTRY(pid_maps_content),
+    TEST_ENTRY(meminfo_fields),
+    TEST_ENTRY(fixed_files),
+    TEST_ENTRY(proc_mounts_lists_the_table),
+    TEST_ENTRY(partial_reads_continue),
+    TEST_ENTRY(kmsg_is_root_only),
+    TEST_ENTRY(pid_directory_files),
+    TEST_ENTRY(pid_entries_are_freed),
+    TEST_ENTRY(root_listing_and_no_new_names),
+    TEST_ENTRY(drop_caches_empties_the_dentry_cache),
 };
 int procfs_test_count = sizeof(procfs_tests) / sizeof(procfs_tests[0]);

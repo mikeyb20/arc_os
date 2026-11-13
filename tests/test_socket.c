@@ -209,17 +209,15 @@ TEST(socket_free_works) {
     return 0;
 }
 
-/* M0-10: a socket lives while any fd-table entry refers to it */
+/* M0-10: a socket lives until its File goes (dup and fork share the File
+ * since M1-11, so the socket holds one reference) */
 TEST(socket_refs_free_on_last_release) {
     reset_sockets();
     int idx = socket_create(AF_INET, SOCK_DGRAM, 0);
     ASSERT_TRUE(idx >= 0);
     ASSERT_EQ(socket_get(idx)->refs, 1);
-    socket_addref(idx);                       /* dup or fork */
-    socket_release(idx);
-    ASSERT_TRUE(socket_get(idx) != NULL);
     kfree_count = 0;
-    socket_release(idx);                      /* last close */
+    socket_release(idx);                      /* the File's release */
     ASSERT_TRUE(socket_get(idx) == NULL);
     ASSERT_EQ(kfree_count, 1);
     socket_release(idx);                      /* stale index: no-op */

@@ -157,7 +157,8 @@ static void test_stat(void) {
     CHECK(sizeof(struct stat) == 144);
     CHECK(stat("/boot", &st) == 0 && S_ISDIR(st.st_mode) && st.st_nlink == 2);
     CHECK(stat("/boot/shell", &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0);
-    CHECK(st.st_blksize == 4096 && st.st_blocks == (st.st_size + 511) / 512);
+    /* ramfs allocates whole 4 KiB pages (sparse files count only theirs) */
+    CHECK(st.st_blksize == 4096 && st.st_blocks == (st.st_size + 4095) / 4096 * 8);
     long size = st.st_size;
     int fd = open("/boot/shell", O_RDONLY);
     CHECK(fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_size == size);
@@ -439,7 +440,12 @@ static void test_execve_errors(void) {
     argv[0] = "/nonexistent";
     argv[1] = NULL;
     CHECK(raw3(__NR_execve, (long)"/nonexistent", (long)argv, 0) == -ENOENT);
-    CHECK(raw3(__NR_execve, (long)"/etc/passwd", (long)argv, 0) == -ENOEXEC);
+    CHECK(raw3(__NR_execve, (long)"/etc/passwd", (long)argv, 0) == -EACCES); /* 0644: no x bit */
+    int nfd = open("/tmp/notelf", O_CREAT | O_WRONLY | O_TRUNC, 0755);
+    CHECK(nfd >= 0 && write(nfd, "hello\n", 6) == 6);
+    close(nfd);
+    CHECK(raw3(__NR_execve, (long)"/tmp/notelf", (long)argv, 0) == -ENOEXEC);
+    CHECK(unlink("/tmp/notelf") == 0);
 }
 
 /* Block in read() on a pipe with a pattern in XMM7 and a private FS base; the

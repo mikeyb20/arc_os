@@ -29,6 +29,13 @@ int copy_from_user(void *dst, const void *src, size_t len) {
     return 0;
 }
 
+size_t copy_from_user_partial(void *dst, const void *src, size_t len) {
+    uint64_t start = (uint64_t)src;
+    if (src == NULL || start >= USER_ADDR_LIMIT) return 0;
+    if (len > USER_ADDR_LIMIT - start) len = (size_t)(USER_ADDR_LIMIT - start);   /* stop at the user half's end */
+    return len - hal_copy_user(dst, src, len);
+}
+
 int copy_to_user(void *dst, const void *src, size_t len) {
     if (len == 0) return 0;
     if (!user_ptr_valid(dst, len)) return -EFAULT;

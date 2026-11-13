@@ -19,6 +19,7 @@ void rwsem_init(RwSem *s, uint16_t level) {
     s->writers_waiting = 0;
     s->writer = NULL;
     s->level = level;
+    s->write_level = level;
     wq_init(&s->waiters);
 }
 
@@ -57,7 +58,11 @@ void rwsem_up_read(RwSem *s) {
 }
 
 void rwsem_down_write(RwSem *s) {
-    lockdep_sleep_acquire(s->level, "rwsem write");
+    rwsem_down_write_nested(s, s->level);
+}
+
+void rwsem_down_write_nested(RwSem *s, uint16_t level) {
+    lockdep_sleep_acquire(level, "rwsem write");
     uint64_t flags;
     spin_lock_irqsave(&s->guard, &flags);
     s->writers_waiting++;
@@ -68,17 +73,19 @@ void rwsem_down_write(RwSem *s) {
     s->writers_waiting--;
     s->readers = -1;
     s->writer = thread_current();
+    s->write_level = level;
     spin_unlock_irqrestore(&s->guard, flags);
 }
 
 void rwsem_up_write(RwSem *s) {
     uint64_t flags;
+    uint16_t level = s->write_level;
     spin_lock_irqsave(&s->guard, &flags);
     s->readers = 0;
     s->writer = NULL;
     wq_wake_all(&s->waiters);
     spin_unlock_irqrestore(&s->guard, flags);
-    lockdep_sleep_release(s->level);
+    lockdep_sleep_release(level);
 }
 
 int rwsem_write_held(const RwSem *s) {

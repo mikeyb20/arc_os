@@ -1,4 +1,4 @@
-# arc_os — Test-only user programs (M0-02, M0-05, M0-10, M1-01, M1-05, M1-07). Shipped only on test ISOs.
+# arc_os — Test-only user programs (M0-02, M0-05, M0-10, M1-01, M1-05, M1-07, M1-11). Shipped only on test ISOs.
 
 foreach(prog testfail abi_check forkreap schedtest)
     arc_user_program(${prog} ${prog}.c)
@@ -39,11 +39,17 @@ if(EXISTS "${ARC_MUSL_PREFIX}gcc")
                 -o ${CMAKE_BINARY_DIR}/mmtest ${CMAKE_CURRENT_SOURCE_DIR}/mmtest.c
         DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/mmtest.c
         COMMENT "musl -static mmtest")
+    # M1-11: files, directories, fds and mounts through the VFS as musl calls them (qemu.vfs)
+    add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/fstest
+        COMMAND ${MUSL_CC} -static -O2 -Wall -Wextra -Werror -std=gnu11
+                -o ${CMAKE_BINARY_DIR}/fstest ${CMAKE_CURRENT_SOURCE_DIR}/fstest.c
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/fstest.c
+        COMMENT "musl -static fstest")
     list(APPEND _musl_outputs ${CMAKE_BINARY_DIR}/start_musl ${CMAKE_BINARY_DIR}/sig_fpu ${CMAKE_BINARY_DIR}/fpu_avx
-         ${CMAKE_BINARY_DIR}/mmtest)
+         ${CMAKE_BINARY_DIR}/mmtest ${CMAKE_BINARY_DIR}/fstest)
 else()
     message(WARNING "musl toolchain not found at ${ARC_MUSL_PREFIX}gcc (tools/dev-setup.sh musl): "
-                    "qemu.musl and qemu.fpu will fail")
+                    "qemu.musl, qemu.fpu, qemu.mm and qemu.vfs will fail")
 endif()
 
 find_program(MUSL_GCC musl-gcc)

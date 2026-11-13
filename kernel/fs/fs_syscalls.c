@@ -1,9 +1,16 @@
 /* arc_os — file and directory syscalls (Linux x86_64 numbers, ADR-0001).
  *
- * Moved out of arch/x86_64/syscall.c by M0-05. Handlers return -errno on
- * failure. Every user buffer goes through the copy helpers (user_access.h):
- * read and write move data through a kernel bounce buffer, so the file
- * systems and drivers below only ever see kernel memory (M1-07). */
+ * Owns: the syscall layer of the VFS: fds to Files, user paths (cwd- or
+ * dirfd-relative) to absolute ones, and the Linux argument and errno rules.
+ * Handlers return -errno on failure. Data moves straight between user memory
+ * and the filesystem through IoBuf (vfs.h); no bounce buffer.
+ *
+ * Every handler that uses an fd takes a File reference (fd_get) and drops it
+ * before returning, so a concurrent close can't free the File under it.
+ * fds 0-2 with nothing in them still mean the terminal (devfs_console) for
+ * read, write and ioctl, for processes started without a table entry.
+ *
+ * Locks: none of its own; see vfs.h and fd.h. */
 
 #include "fs/fs_syscalls.h"
 #include "arch/hal.h"
@@ -14,7 +21,6 @@
 #include "proc/process.h"
 #include "proc/fd.h"
 #include "proc/signal.h"
-#include "drivers/tty.h"
 #include "mm/kmalloc.h"
 #include "lib/mem.h"
 #include "lib/string.h"
@@ -22,442 +28,420 @@
 #include "uapi/unistd.h"
 #include "uapi/stat.h"
 #include "uapi/dirent.h"
-#include "uapi/termios.h"
 #include "uapi/uio.h"
 
-/* Standard file descriptor numbers: with no fd-table entry they mean the TTY */
-#define FD_STDIN   0
-#define FD_STDOUT  1
-#define FD_STDERR  2
+/* Largest transfer one read or write makes (Linux MAX_RW_COUNT) */
+#define MAX_RW_COUNT 0x7FFFF000ULL
 
-/* getdents64: smallest record (one-character name) and the most entries one
- * directory listing may return. The VFS readdir op lists from the start every
- * time, so a call costs O(offset + batch) entries and a kmalloc of that many
- * VfsDirEntry (272 B each, at most 68 KiB); M1-11 replaces this with a cursor. */
-#define DIRENT_NAME_OFF      19
-#define DIRENT_MIN_RECLEN    24
-#define GETDENTS_MAX_ENTRIES 256
+/* readv/writev: at most this many iovecs (Linux UIO_MAXIOV), copied in
+ * batches of IOV_BATCH (kernel stack: 32 x 16 B) */
+#define IOV_MAX_COUNT 1024
+#define IOV_BATCH     32
 
-/* read/write move at most this much through one kernel buffer; a regular file
- * takes several rounds, a pipe or terminal one (a short transfer ends the
- * call). Small calls use the stack. */
-#define RW_CHUNK       (64u * 1024)
-#define RW_STACK_BYTES 256u
+/* getdents64 record: name offset and alignment */
+#define DIRENT_NAME_OFF 19
 
-int fs_user_path(uint64_t path_addr, char *abs, size_t size) {
+/* --- fds and paths --- */
+
+static FdTable *cur_fds(void) {
+    Process *p = proc_current();
+    return p != NULL ? p->fd_table : NULL;
+}
+
+/* The File at fd (a reference), or NULL */
+static File *get_file(int64_t fd) {
+    if (fd < 0 || fd >= MAX_FDS) return NULL;
+    return fd_get(cur_fds(), (int)fd);
+}
+
+/* get_file, but fds 0-2 with nothing in them are the terminal */
+static File *get_stdio_file(int64_t fd) {
+    File *f = get_file(fd);
+    if (f == NULL && fd >= 0 && fd <= 2) f = devfs_console();
+    return f;
+}
+
+/* The *at calls find dirfd's directory by the path it was opened by (the
+ * walk starts from a path, not an inode; M1-13 changes that). If that path no
+ * longer leads to the same directory (renamed or removed since), refuse with
+ * -ENOENT rather than act in whatever now has that name. */
+static int dir_path_current(File *dir) {
+    PathLoc loc;
+    if (vfs_resolve(dir->path, &loc) != 0) return 0;
+    int same = loc.inode == dir->inode;
+    loc_put(&loc);
+    return same;
+}
+
+/* Copy a user path and make it absolute against dirfd (AT_FDCWD: the cwd).
+ * An empty path gives -ENOENT, or 1 with AT_EMPTY_PATH allowed (the caller
+ * then works on dirfd itself). */
+static int at_path(int64_t dirfd, uint64_t path_addr, char *abs, size_t size, int allow_empty) {
     char path[PATH_MAX];
     long len = strncpy_from_user(path, (const char *)path_addr, sizeof(path));
     if (len < 0) return (int)len;   /* -EFAULT or -ENAMETOOLONG */
+    if (len == 0) return allow_empty ? 1 : -ENOENT;
     Process *p = proc_current();
-    const char *cwd = (p != NULL) ? p->cwd : "/";
-    return path_normalize(cwd, path, abs, size);
-}
-
-/* A regular file (not a pipe, socket or terminal): a full chunk means more
- * may follow at once */
-static int rw_loops(const VfsFile *file) {
-    return file != NULL && file->node != NULL && file->node->type == VFS_FILE && !devfs_is_tty(file->node);
-}
-
-/* A bounce buffer of up to RW_CHUNK bytes for count: the stack one, or
- * kmalloc. *size gets its size; NULL when out of memory. */
-static uint8_t *rw_buffer(uint8_t *stack_buf, uint64_t count, uint32_t *size) {
-    if (count <= RW_STACK_BYTES) {
-        *size = RW_STACK_BYTES;
-        return stack_buf;
+    if (path[0] == '/' || (int32_t)dirfd == AT_FDCWD) {
+        return path_normalize(p != NULL ? p->cwd : "/", path, abs, size);
     }
-    *size = count < RW_CHUNK ? (uint32_t)count : RW_CHUNK;
-    return kmalloc(*size, 0);
+    File *dir = get_file(dirfd);
+    if (dir == NULL) return -EBADF;
+    int err = (!S_ISDIR(dir->inode->mode) || dir->path == NULL) ? -ENOTDIR : path_normalize(dir->path, path, abs, size);
+    if (err == 0 && !dir_path_current(dir)) err = -ENOENT;
+    fput(dir);
+    return err;
 }
 
-/* read(fd, buf, count) — 0. An unwritable buffer gives -EFAULT; a regular
- * file's offset then stays where the copied bytes end. */
-static int64_t sys_read(uint64_t fd, uint64_t buf_addr, uint64_t count,
-                        uint64_t a3, uint64_t a4, uint64_t a5) {
-    (void)a3; (void)a4; (void)a5;
-    if (count == 0) return 0;
-    if (!user_ptr_valid((void *)buf_addr, count)) return -EFAULT;
+int fs_user_path(uint64_t path_addr, char *abs, size_t size) {
+    return at_path(AT_FDCWD, path_addr, abs, size, 0);
+}
 
-    Process *p = proc_current();
-    VfsFile *file = (p != NULL && p->fd_table != NULL) ? fd_get(p->fd_table, (int)fd) : NULL;
-    /* stdin with no fd-table entry (nothing dup2'd over it) reads the TTY */
-    if (file == NULL && fd != FD_STDIN) return -EBADF;
-    if (count > 0x7FFFF000ULL) count = 0x7FFFF000ULL;   /* Linux MAX_RW_COUNT */
+/* --- read and write --- */
 
-    uint8_t stack_buf[RW_STACK_BYTES];
-    uint32_t size;
-    uint8_t *kbuf = rw_buffer(stack_buf, count, &size);
-    if (kbuf == NULL) return -ENOMEM;
-    int64_t total = 0;
-    while ((uint64_t)total < count) {
-        uint32_t n = (count - (uint64_t)total < size) ? (uint32_t)(count - (uint64_t)total) : size;
-        int64_t r = file != NULL ? vfs_read(file, kbuf, n) : tty_read(kbuf, n);
-        if (r < 0) {
-            if (total == 0) total = r;
-            break;
-        }
-        if (r > 0 && copy_to_user((uint8_t *)buf_addr + total, kbuf, (size_t)r) != 0) {
-            if (rw_loops(file)) file->offset -= (uint64_t)r;   /* not delivered: read again */
-            if (total == 0) total = -EFAULT;
-            break;
-        }
-        total += r;
-        if ((uint32_t)r < n || !rw_loops(file)) break;
-    }
-    if (kbuf != stack_buf) kfree(kbuf);
-    return total;
+static int64_t rw_file(File *f, uint64_t buf_addr, uint64_t count, int write) {
+    if (count > MAX_RW_COUNT) count = MAX_RW_COUNT;
+    if (count != 0 && !user_ptr_valid((const void *)buf_addr, count)) return -EFAULT;
+    IoBuf b = iob_user(buf_addr, count);
+    int64_t r = write ? vfs_write(f, &b) : vfs_read(f, &b);
+    if (r == -EPIPE) sig_send(proc_current()->pid, SIGPIPE);
+    return r;
+}
+
+/* read(fd, buf, count) — 0 */
+static int64_t sys_read(uint64_t fd, uint64_t buf_addr, uint64_t count, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a3, (void)a4, (void)a5;
+    File *f = get_stdio_file((int64_t)fd);
+    if (f == NULL) return -EBADF;
+    int64_t r = rw_file(f, buf_addr, count, 0);
+    fput(f);
+    return r;
 }
 
 /* write(fd, buf, count) — 1 */
-static int64_t sys_write(uint64_t fd, uint64_t buf_addr, uint64_t count,
-                         uint64_t a3, uint64_t a4, uint64_t a5) {
-    (void)a3; (void)a4; (void)a5;
-    if (count == 0) return 0;
-    if (!user_ptr_valid((const void *)buf_addr, count)) return -EFAULT;
-
-    Process *p = proc_current();
-    VfsFile *file = (p != NULL && p->fd_table != NULL) ? fd_get(p->fd_table, (int)fd) : NULL;
-    /* stdout/stderr with no fd-table entry write to the TTY */
-    if (file == NULL && fd != FD_STDOUT && fd != FD_STDERR) return -EBADF;
-    if (count > 0x7FFFF000ULL) count = 0x7FFFF000ULL;
-
-    uint8_t stack_buf[RW_STACK_BYTES];
-    uint32_t size;
-    uint8_t *kbuf = rw_buffer(stack_buf, count, &size);
-    if (kbuf == NULL) return -ENOMEM;
-    int64_t total = 0;
-    while ((uint64_t)total < count) {
-        uint32_t n = (count - (uint64_t)total < size) ? (uint32_t)(count - (uint64_t)total) : size;
-        if (copy_from_user(kbuf, (const uint8_t *)buf_addr + total, n) != 0) {
-            if (total == 0) total = -EFAULT;
-            break;
-        }
-        int64_t r = file != NULL ? vfs_write(file, kbuf, n) : tty_write(kbuf, n);
-        if (r < 0) {
-            if (r == -EPIPE) sig_send(p->pid, SIGPIPE);
-            if (total == 0) total = r;
-            break;
-        }
-        total += r;
-        if ((uint32_t)r < n) break;
-    }
-    if (kbuf != stack_buf) kfree(kbuf);
-    return total;
+static int64_t sys_write(uint64_t fd, uint64_t buf_addr, uint64_t count, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a3, (void)a4, (void)a5;
+    File *f = get_stdio_file((int64_t)fd);
+    if (f == NULL) return -EBADF;
+    int64_t r = rw_file(f, buf_addr, count, 1);
+    fput(f);
+    return r;
 }
 
-/* readv/writev: at most this many iovecs (Linux UIO_MAXIOV) */
-#define IOV_MAX_COUNT 1024
-/* iovecs copied in per batch (kernel stack: 32 x 16 B) */
-#define IOV_BATCH 32
-
-/* Shared body of readv and writev: one read/write per iovec, in order. Stops
- * at the first error or short transfer; returns the bytes moved, or the error
- * if nothing moved (Linux semantics for blocking files). */
+/* readv/writev: one transfer per iovec, in order. Stops at the first error
+ * or short transfer; returns the bytes moved, or the error if none moved. */
 static int64_t do_rw_vector(uint64_t fd, uint64_t iov_addr, uint64_t iovcnt, int write) {
     if ((int64_t)iovcnt < 0 || iovcnt > IOV_MAX_COUNT) return -EINVAL;
+    File *f = get_stdio_file((int64_t)fd);
+    if (f == NULL) return -EBADF;
     struct iovec iov[IOV_BATCH];
-    int64_t total = 0;
-    for (uint64_t done = 0; done < iovcnt; ) {
-        uint64_t n = iovcnt - done;
-        if (n > IOV_BATCH) n = IOV_BATCH;
-        if (copy_from_user(iov, (const void *)(iov_addr + done * sizeof(struct iovec)),
-                           n * sizeof(struct iovec)) != 0)
-            return total > 0 ? total : -EFAULT;
-        for (uint64_t i = 0; i < n; i++) {
-            uint64_t len = iov[i].iov_len;
-            if (len == 0) continue;
-            /* VFS counts are 32-bit (M1-11): move at most 1 GiB per call */
-            if (len > 0x40000000ULL) len = 0x40000000ULL;
-            int64_t r = write ? sys_write(fd, (uint64_t)iov[i].iov_base, len, 0, 0, 0)
-                              : sys_read(fd, (uint64_t)iov[i].iov_base, len, 0, 0, 0);
-            if (r < 0) return total > 0 ? total : r;
-            total += r;
-            if ((uint64_t)r < len) return total;
+    int64_t total = 0, err = 0;
+    int stop = 0;
+    for (uint64_t done = 0; done < iovcnt && !stop; done += IOV_BATCH) {
+        uint64_t n = iovcnt - done < IOV_BATCH ? iovcnt - done : IOV_BATCH;
+        if (copy_from_user(iov, (const void *)(iov_addr + done * sizeof(struct iovec)), n * sizeof(struct iovec))) {
+            err = -EFAULT;
+            break;
         }
-        done += n;
+        for (uint64_t i = 0; i < n && !stop; i++) {
+            uint64_t len = iov[i].iov_len;
+            if (len > MAX_RW_COUNT - (uint64_t)total) len = MAX_RW_COUNT - (uint64_t)total;
+            if (len == 0) continue;
+            int64_t r = rw_file(f, (uint64_t)iov[i].iov_base, len, write);
+            if (r < 0)
+                err = r;
+            else
+                total += r;
+            stop = r < 0 || (uint64_t)r < len;   /* an error or a short transfer ends the call */
+        }
     }
-    return total;
+    fput(f);
+    return total > 0 ? total : err;
 }
 
 /* readv(fd, iov, iovcnt) — 19 */
-static int64_t sys_readv(uint64_t fd, uint64_t iov_addr, uint64_t iovcnt,
-                         uint64_t a3, uint64_t a4, uint64_t a5) {
-    (void)a3; (void)a4; (void)a5;
+static int64_t sys_readv(uint64_t fd, uint64_t iov_addr, uint64_t iovcnt, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a3, (void)a4, (void)a5;
     return do_rw_vector(fd, iov_addr, iovcnt, 0);
 }
 
 /* writev(fd, iov, iovcnt) — 20. musl's stdio writes through this. */
-static int64_t sys_writev(uint64_t fd, uint64_t iov_addr, uint64_t iovcnt,
-                          uint64_t a3, uint64_t a4, uint64_t a5) {
-    (void)a3; (void)a4; (void)a5;
+static int64_t sys_writev(uint64_t fd, uint64_t iov_addr, uint64_t iovcnt, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a3, (void)a4, (void)a5;
     return do_rw_vector(fd, iov_addr, iovcnt, 1);
 }
 
-/* open(path, flags, mode) — 2. mode is ignored: new files get 0666 & ~umask. */
-static int64_t sys_open(uint64_t path_addr, uint64_t flags, uint64_t mode,
-                        uint64_t a3, uint64_t a4, uint64_t a5) {
-    (void)mode; (void)a3; (void)a4; (void)a5;
-    Process *p = proc_current();
-    if (p == NULL || p->fd_table == NULL) return -EBADF;
-
-    char abs[PATH_MAX];
-    int perr = fs_user_path(path_addr, abs, PATH_MAX);
-    if (perr != 0) return perr;
-
-    int fd = fd_alloc(p->fd_table);
-    if (fd < 0) return -EMFILE;
-    VfsFile *file = fd_get(p->fd_table, fd);
-    int err = vfs_open(abs, (uint32_t)flags, file);
-    if (err != 0) {
-        fd_free(p->fd_table, fd);
-        return err;
+static int64_t prw(uint64_t fd, uint64_t buf_addr, uint64_t count, uint64_t pos, int write) {
+    File *f = get_file((int64_t)fd);
+    if (f == NULL) return -EBADF;
+    if (count > MAX_RW_COUNT) count = MAX_RW_COUNT;
+    int64_t r;
+    if (count != 0 && !user_ptr_valid((const void *)buf_addr, count)) {
+        r = -EFAULT;
+    } else {
+        IoBuf b = iob_user(buf_addr, count);
+        r = write ? vfs_pwrite(f, &b, (loff_t)pos) : vfs_pread(f, &b, (loff_t)pos);
     }
+    fput(f);
+    return r;
+}
+
+/* pread64(fd, buf, count, offset) — 17 */
+static int64_t sys_pread64(uint64_t fd, uint64_t buf, uint64_t count, uint64_t pos, uint64_t a4, uint64_t a5) {
+    (void)a4, (void)a5;
+    return prw(fd, buf, count, pos, 0);
+}
+
+/* pwrite64(fd, buf, count, offset) — 18 */
+static int64_t sys_pwrite64(uint64_t fd, uint64_t buf, uint64_t count, uint64_t pos, uint64_t a4, uint64_t a5) {
+    (void)a4, (void)a5;
+    return prw(fd, buf, count, pos, 1);
+}
+
+/* --- open, close, fds --- */
+
+/* openat(dirfd, path, flags, mode) — 257 */
+static int64_t sys_openat(uint64_t dirfd, uint64_t path_addr, uint64_t flags, uint64_t mode, uint64_t a4, uint64_t a5) {
+    (void)a4, (void)a5;
+    FdTable *t = cur_fds();
+    if (t == NULL) return -EBADF;
+    char abs[PATH_MAX];
+    int err = at_path((int64_t)dirfd, path_addr, abs, sizeof(abs), 0);
+    if (err != 0) return err;
+    File *f;
+    err = vfs_open(abs, (uint32_t)flags, (uint32_t)mode, &f);
+    if (err != 0) return err;
+    int fd = fd_install(t, f, 0, (flags & O_CLOEXEC) != 0);
+    if (fd < 0) fput(f);
     return fd;
 }
 
+/* open(path, flags, mode) — 2 */
+static int64_t sys_open(uint64_t path_addr, uint64_t flags, uint64_t mode, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a3;
+    return sys_openat((uint64_t)(int64_t)AT_FDCWD, path_addr, flags, mode, a4, a5);
+}
+
 /* close(fd) — 3 */
-static int64_t sys_close(uint64_t fd, uint64_t a1, uint64_t a2,
-                         uint64_t a3, uint64_t a4, uint64_t a5) {
-    (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
-    Process *p = proc_current();
-    if (p == NULL || p->fd_table == NULL) return -EBADF;
-    if (fd_get(p->fd_table, (int)fd) == NULL) return -EBADF;
-    fd_close(p->fd_table, (int)fd);
-    return 0;
+static int64_t sys_close(uint64_t fd, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a1, (void)a2, (void)a3, (void)a4, (void)a5;
+    if ((int64_t)fd < 0 || fd >= MAX_FDS) return -EBADF;
+    return fd_close(cur_fds(), (int)fd);
 }
 
-static uint32_t mode_type_bits(uint8_t vfs_type) {
-    switch (vfs_type) {
-    case VFS_DIRECTORY: return S_IFDIR;
-    case VFS_PIPE:      return S_IFIFO;
-    case VFS_SOCKET:    return S_IFSOCK;
-    default:            return S_IFREG;
-    }
+/* dup(oldfd) — 32: lowest free fd */
+static int64_t sys_dup(uint64_t oldfd, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a1, (void)a2, (void)a3, (void)a4, (void)a5;
+    File *f = get_file((int64_t)oldfd);
+    if (f == NULL) return -EBADF;
+    int fd = fd_install(cur_fds(), f, 0, 0);
+    if (fd < 0) fput(f);
+    return fd;
 }
 
-/* Fill a Linux struct stat. Times are 0 until the clock work (M1-06). */
-static void stat_fill(struct stat *out, uint64_t ino, uint8_t vfs_type, uint64_t size,
-                      uint32_t mode, uint32_t uid, uint32_t gid) {
-    memset(out, 0, sizeof(*out));
-    out->st_ino = ino;
-    out->st_nlink = (vfs_type == VFS_DIRECTORY) ? 2 : 1;
-    out->st_mode = mode_type_bits(vfs_type) | (mode & 07777);
-    out->st_uid = uid;
-    out->st_gid = gid;
-    out->st_size = (int64_t)size;
-    out->st_blksize = 4096;
-    out->st_blocks = (int64_t)((size + 511) / 512);
+static int64_t dup_to(uint64_t oldfd, uint64_t newfd, int cloexec) {
+    if (newfd >= MAX_FDS) return -EBADF;
+    File *f = get_file((int64_t)oldfd);
+    if (f == NULL) return -EBADF;
+    int err = fd_install_at(cur_fds(), (int)newfd, f, cloexec);   /* closes what newfd held */
+    if (err != 0) fput(f);
+    return err != 0 ? err : (int64_t)newfd;
 }
 
-/* stat(path, statbuf) — 4 */
-static int64_t sys_stat(uint64_t path_addr, uint64_t stat_addr, uint64_t a2,
-                        uint64_t a3, uint64_t a4, uint64_t a5) {
-    (void)a2;
-    (void)a3;
-    (void)a4;
-    (void)a5;
-    char abs[PATH_MAX];
-    int perr = fs_user_path(path_addr, abs, PATH_MAX);
-    if (perr != 0) return perr;
-
-    VfsStat vs;
-    int err = vfs_stat(abs, &vs);
-    if (err != 0) return err;
-    struct stat st;
-    stat_fill(&st, vs.inode_num, vs.type, vs.size, vs.mode, vs.uid, vs.gid);
-    return copy_to_user((void *)stat_addr, &st, sizeof(st));
+/* dup2(oldfd, newfd) — 33 */
+static int64_t sys_dup2(uint64_t oldfd, uint64_t newfd, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a2, (void)a3, (void)a4, (void)a5;
+    if (oldfd == newfd) {   /* Linux: newfd back if oldfd is open, else -EBADF */
+        File *f = get_file((int64_t)oldfd);
+        if (f == NULL) return -EBADF;
+        fput(f);
+        return (int64_t)newfd;
+    }
+    return dup_to(oldfd, newfd, 0);
 }
 
-/* fstat(fd, statbuf) — 5 */
-static int64_t sys_fstat(uint64_t fd, uint64_t stat_addr, uint64_t a2,
-                         uint64_t a3, uint64_t a4, uint64_t a5) {
-    (void)a2;
-    (void)a3;
-    (void)a4;
-    (void)a5;
-    Process *p = proc_current();
-    if (p == NULL || p->fd_table == NULL) return -EBADF;
-
-    VfsFile *file = fd_get(p->fd_table, (int)fd);
-    if (file == NULL) return -EBADF;
-
-    struct stat st;
-    if (file->node == NULL) {
-        /* Sockets have no VfsNode (the fd stores the socket index) */
-        stat_fill(&st, 0, VFS_SOCKET, 0, 0777, 0, 0);
-    } else {
-        VfsNode *n = file->node;
-        stat_fill(&st, n->inode_num, n->type, n->size, n->mode, n->uid, n->gid);
-    }
-    return copy_to_user((void *)stat_addr, &st, sizeof(st));
+/* dup3(oldfd, newfd, flags) — 292: dup2 with O_CLOEXEC; equal fds are -EINVAL */
+static int64_t sys_dup3(uint64_t oldfd, uint64_t newfd, uint64_t flags, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a3, (void)a4, (void)a5;
+    if ((flags & ~(uint64_t)O_CLOEXEC) != 0 || oldfd == newfd) return -EINVAL;
+    return dup_to(oldfd, newfd, (flags & O_CLOEXEC) != 0);
 }
 
-/* lseek(fd, offset, whence) — 8 */
-static int64_t sys_lseek(uint64_t fd, uint64_t offset, uint64_t whence,
-                         uint64_t a3, uint64_t a4, uint64_t a5) {
-    (void)a3; (void)a4; (void)a5;
-    Process *p = proc_current();
-    if (p == NULL || p->fd_table == NULL) return -EBADF;
-
-    VfsFile *file = fd_get(p->fd_table, (int)fd);
-    if (file == NULL) return -EBADF;
-    if (file->node == NULL || file->node->type == VFS_PIPE) return -ESPIPE;
-
-    return vfs_seek(file, (int64_t)offset, (int)whence);
-}
-
-/* ioctl(fd, request, arg) — 16. Terminal requests only: job control
- * (TIOCSPGRP/TIOCGPGRP), termios (TCGETS, TCSETS, TCSETSW, TCSETSF; stored,
- * not yet applied) and window size. Anything else, or a non-terminal fd,
- * gets -ENOTTY. */
-static int64_t sys_ioctl(uint64_t fd, uint64_t request, uint64_t arg,
-                         uint64_t a3, uint64_t a4, uint64_t a5) {
-    (void)a3; (void)a4; (void)a5;
-    Process *p = proc_current();
-    if (p == NULL) return -EBADF;
-
-    VfsFile *file = (p->fd_table != NULL) ? fd_get(p->fd_table, (int)fd) : NULL;
-    if (file != NULL) {
-        if (!devfs_is_tty(file->node)) return -ENOTTY;
-    } else if (fd > FD_STDERR) {
-        return -EBADF;   /* 0-2 with no entry are the TTY, as in read/write */
-    }
-
-    switch (request) {
-    case TIOCSPGRP: {
-        int32_t pgid;
-        if (get_user(pgid, arg) != 0) return -EFAULT;
-        if (pgid <= 0) return -EINVAL;
-        tty_set_fg_pgid((uint32_t)pgid);
-        return 0;
-    }
-    case TIOCGPGRP:
-        return put_user((int32_t)tty_get_fg_pgid(), arg);
-    case TCGETS: {
-        struct termios t;
-        tty_get_termios(&t);
-        return copy_to_user((void *)arg, &t, sizeof(t));
-    }
-    case TCSETS:
-    case TCSETSW:     /* output is written synchronously: nothing to drain */
-    case TCSETSF: {
-        struct termios t;
-        if (copy_from_user(&t, (const void *)arg, sizeof(t)) != 0) return -EFAULT;
-        if (request == TCSETSF) tty_flush_input();
-        tty_set_termios(&t);
-        return 0;
-    }
-    case TIOCGWINSZ: {
-        struct winsize ws;
-        tty_get_winsize(&ws);
-        return copy_to_user((void *)arg, &ws, sizeof(ws));
-    }
-    case TIOCSWINSZ: {
-        struct winsize ws;
-        if (copy_from_user(&ws, (const void *)arg, sizeof(ws)) != 0) return -EFAULT;
-        tty_set_winsize(&ws);
-        return 0;
+/* fcntl(fd, cmd, arg) — 72: F_DUPFD, F_DUPFD_CLOEXEC, F_GETFD, F_SETFD,
+ * F_GETFL, F_SETFL (O_APPEND and O_NONBLOCK change; the rest are kept) */
+static int64_t sys_fcntl(uint64_t fd, uint64_t cmd, uint64_t arg, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a3, (void)a4, (void)a5;
+    FdTable *t = cur_fds();
+    File *f = get_file((int64_t)fd);
+    if (f == NULL) return -EBADF;
+    int64_t r;
+    switch (cmd) {
+    case F_DUPFD:
+    case F_DUPFD_CLOEXEC:
+        if ((int64_t)arg < 0 || arg >= MAX_FDS) {
+            r = -EINVAL;
+            break;
+        }
+        r = fd_install(t, fget_ref(f), (int)arg, cmd == F_DUPFD_CLOEXEC);
+        if (r < 0) fput(f);   /* the reference fd_install didn't take */
+        break;
+    case F_GETFD:
+        r = fd_get_cloexec(t, (int)fd);
+        r = r < 0 ? r : (r ? FD_CLOEXEC : 0);
+        break;
+    case F_SETFD:
+        r = fd_set_cloexec(t, (int)fd, (arg & FD_CLOEXEC) != 0);
+        break;
+    case F_GETFL:
+        r = __atomic_load_n(&f->flags, __ATOMIC_RELAXED);
+        break;
+    case F_SETFL: {
+        const uint32_t settable = O_APPEND | O_NONBLOCK;
+        uint32_t old = __atomic_load_n(&f->flags, __ATOMIC_RELAXED);
+        __atomic_store_n(&f->flags, (old & ~settable) | ((uint32_t)arg & settable), __ATOMIC_RELAXED);
+        r = 0;
+        break;
     }
     default:
-        return -ENOTTY;
+        r = -EINVAL;
     }
+    fput(f);
+    return r;
 }
 
-/* Initialize a pipe fd entry */
-static void pipe_setup_fd(FdTable *ft, int fd, VfsNode *node, uint32_t flags) {
-    VfsFile *f = fd_get(ft, fd);
-    f->node = node;
-    f->offset = 0;
-    f->flags = flags;
-}
-
-/* pipe(pipefd[2]) — 22 */
-static int64_t sys_pipe(uint64_t pipefd_addr, uint64_t a1, uint64_t a2,
-                        uint64_t a3, uint64_t a4, uint64_t a5) {
-    (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+/* pipe2(pipefd[2], flags) — 293: O_CLOEXEC and O_NONBLOCK */
+static int64_t sys_pipe2(uint64_t pipefd_addr, uint64_t flags, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a2, (void)a3, (void)a4, (void)a5;
+    if ((flags & ~(uint64_t)(O_CLOEXEC | O_NONBLOCK)) != 0) return -EINVAL;
     if (!user_ptr_valid((void *)pipefd_addr, 2 * sizeof(int32_t))) return -EFAULT;   /* before creating */
-
-    Process *p = proc_current();
-    if (p == NULL || p->fd_table == NULL) return -EBADF;
-
-    VfsNode *read_node, *write_node;
-    int err = pipe_create(&read_node, &write_node);
+    FdTable *t = cur_fds();
+    if (t == NULL) return -EBADF;
+    File *rd, *wr;
+    int err = pipe_create(&rd, &wr, (uint32_t)flags);
     if (err != 0) return err;
-
-    int rfd = fd_alloc(p->fd_table);
+    int cloexec = (flags & O_CLOEXEC) != 0;
+    int rfd = fd_install(t, rd, 0, cloexec);
     if (rfd < 0) {
-        pipe_close(read_node);
-        pipe_close(write_node);
-        return -EMFILE;
+        fput(rd);
+        fput(wr);
+        return rfd;
     }
-    int wfd = fd_alloc(p->fd_table);
+    int wfd = fd_install(t, wr, 0, cloexec);
     if (wfd < 0) {
-        fd_free(p->fd_table, rfd);
-        pipe_close(read_node);
-        pipe_close(write_node);
-        return -EMFILE;
+        fd_close(t, rfd);
+        fput(wr);
+        return wfd;
     }
-
-    pipe_setup_fd(p->fd_table, rfd, read_node, O_RDONLY);
-    pipe_setup_fd(p->fd_table, wfd, write_node, O_WRONLY);
-
-    int32_t fds[2] = {(int32_t)rfd, (int32_t)wfd};
+    int32_t fds[2] = {rfd, wfd};
     if (copy_to_user((void *)pipefd_addr, fds, sizeof(fds)) != 0) {
-        fd_close(p->fd_table, rfd);   /* Linux: the fds go again */
-        fd_close(p->fd_table, wfd);
+        fd_close(t, rfd);   /* Linux: the fds go again */
+        fd_close(t, wfd);
         return -EFAULT;
     }
     return 0;
 }
 
-/* dup(oldfd) — 32: lowest free fd */
-static int64_t sys_dup(uint64_t oldfd, uint64_t a1, uint64_t a2,
-                       uint64_t a3, uint64_t a4, uint64_t a5) {
-    (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
-    Process *p = proc_current();
-    if (p == NULL || p->fd_table == NULL) return -EBADF;
-
-    VfsFile *src = fd_get(p->fd_table, (int)oldfd);
-    if (src == NULL) return -EBADF;
-
-    int newfd = fd_alloc(p->fd_table);
-    if (newfd < 0) return -EMFILE;
-
-    FdEntry *dst_entry = &p->fd_table->entries[newfd];
-    dst_entry->file = *src;
-    fd_file_addref(&dst_entry->file);
-    return (int64_t)newfd;
+/* pipe(pipefd[2]) — 22 */
+static int64_t sys_pipe(uint64_t pipefd_addr, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a1;
+    return sys_pipe2(pipefd_addr, 0, a2, a3, a4, a5);
 }
 
-/* dup2(oldfd, newfd) — 33 */
-static int64_t sys_dup2(uint64_t oldfd, uint64_t newfd, uint64_t a2,
-                        uint64_t a3, uint64_t a4, uint64_t a5) {
-    (void)a2; (void)a3; (void)a4; (void)a5;
-    Process *p = proc_current();
-    if (p == NULL || p->fd_table == NULL) return -EBADF;
-    if (oldfd >= MAX_FDS || newfd >= MAX_FDS) return -EBADF;
+/* --- Positions, sizes, ioctl --- */
 
-    VfsFile *src = fd_get(p->fd_table, (int)oldfd);
-    if (src == NULL) return -EBADF;
-    if (oldfd == newfd) return (int64_t)newfd;
-
-    /* If newfd is open, close it first. src stays valid: oldfd != newfd. */
-    fd_close(p->fd_table, (int)newfd);
-
-    FdEntry *dst_entry = &p->fd_table->entries[newfd];
-    dst_entry->file = *src;
-    dst_entry->in_use = 1;
-    fd_file_addref(&dst_entry->file);
-    return (int64_t)newfd;
+/* lseek(fd, offset, whence) — 8 */
+static int64_t sys_lseek(uint64_t fd, uint64_t offset, uint64_t whence, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a3, (void)a4, (void)a5;
+    File *f = get_file((int64_t)fd);
+    if (f == NULL) return -EBADF;
+    int64_t r = vfs_llseek(f, (loff_t)offset, (int)whence);
+    fput(f);
+    return r;
 }
+
+/* ftruncate(fd, length) — 77 */
+static int64_t sys_ftruncate(uint64_t fd, uint64_t length, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a2, (void)a3, (void)a4, (void)a5;
+    File *f = get_file((int64_t)fd);
+    if (f == NULL) return -EBADF;
+    int64_t r = vfs_ftruncate(f, (loff_t)length);
+    fput(f);
+    return r;
+}
+
+/* fsync(fd) — 74 */
+static int64_t sys_fsync(uint64_t fd, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a1, (void)a2, (void)a3, (void)a4, (void)a5;
+    File *f = get_file((int64_t)fd);
+    if (f == NULL) return -EBADF;
+    int64_t r = vfs_fsync(f);
+    fput(f);
+    return r;
+}
+
+/* ioctl(fd, request, arg) — 16: the file's own requests (terminal ones on
+ * /dev/tty), -ENOTTY for anything else */
+static int64_t sys_ioctl(uint64_t fd, uint64_t request, uint64_t arg, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a3, (void)a4, (void)a5;
+    File *f = get_stdio_file((int64_t)fd);
+    if (f == NULL) return -EBADF;
+    int64_t r = (f->fop != NULL && f->fop->ioctl != NULL) ? f->fop->ioctl(f, request, arg) : -ENOTTY;
+    fput(f);
+    return r;
+}
+
+/* --- stat --- */
+
+/* fstat(fd, statbuf) — 5 */
+static int64_t sys_fstat(uint64_t fd, uint64_t stat_addr, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a2, (void)a3, (void)a4, (void)a5;
+    File *f = get_file((int64_t)fd);
+    if (f == NULL) return -EBADF;
+    struct stat st;
+    vfs_fill_stat(f->inode, &st);
+    fput(f);
+    return copy_to_user((void *)stat_addr, &st, sizeof(st));
+}
+
+/* newfstatat(dirfd, path, statbuf, flags) — 262. No symlinks exist yet, so
+ * AT_SYMLINK_NOFOLLOW changes nothing; AT_EMPTY_PATH stats dirfd itself. */
+static int64_t sys_newfstatat(uint64_t dirfd, uint64_t path_addr, uint64_t stat_addr, uint64_t flags, uint64_t a4,
+                              uint64_t a5) {
+    if ((flags & ~(uint64_t)(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH)) != 0) return -EINVAL;
+    char abs[PATH_MAX];
+    int err = at_path((int64_t)dirfd, path_addr, abs, sizeof(abs), (flags & AT_EMPTY_PATH) != 0);
+    if (err == 1) {   /* empty path with AT_EMPTY_PATH: dirfd itself */
+        if ((int32_t)dirfd != AT_FDCWD) return sys_fstat(dirfd, stat_addr, 0, 0, a4, a5);
+        Process *p = proc_current();
+        strncpy(abs, p != NULL ? p->cwd : "/", sizeof(abs));
+        err = 0;
+    }
+    if (err != 0) return err;
+    struct stat st;
+    err = vfs_stat(abs, &st);
+    if (err != 0) return err;
+    return copy_to_user((void *)stat_addr, &st, sizeof(st));
+}
+
+/* stat(path, statbuf) — 4 */
+static int64_t sys_stat(uint64_t path_addr, uint64_t stat_addr, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a2, (void)a3;
+    return sys_newfstatat((uint64_t)(int64_t)AT_FDCWD, path_addr, stat_addr, 0, a4, a5);
+}
+
+/* lstat(path, statbuf) — 6 */
+static int64_t sys_lstat(uint64_t path_addr, uint64_t stat_addr, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a2, (void)a3;
+    return sys_newfstatat((uint64_t)(int64_t)AT_FDCWD, path_addr, stat_addr, AT_SYMLINK_NOFOLLOW, a4, a5);
+}
+
+/* --- Directories and names --- */
 
 /* getcwd(buf, size) — 79: returns the length including the NUL */
-static int64_t sys_getcwd(uint64_t buf_addr, uint64_t size, uint64_t a2,
-                          uint64_t a3, uint64_t a4, uint64_t a5) {
-    (void)a2; (void)a3; (void)a4; (void)a5;
+static int64_t sys_getcwd(uint64_t buf_addr, uint64_t size, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a2, (void)a3, (void)a4, (void)a5;
     Process *p = proc_current();
     if (p == NULL) return -ENOENT;
-
     size_t cwd_len = strlen(p->cwd) + 1;
     if (size < cwd_len) return -ERANGE;
     if (copy_to_user((void *)buf_addr, p->cwd, cwd_len) != 0) return -EFAULT;
@@ -465,86 +449,113 @@ static int64_t sys_getcwd(uint64_t buf_addr, uint64_t size, uint64_t a2,
 }
 
 /* chdir(path) — 80 */
-static int64_t sys_chdir(uint64_t path_addr, uint64_t a1, uint64_t a2,
-                         uint64_t a3, uint64_t a4, uint64_t a5) {
-    (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+static int64_t sys_chdir(uint64_t path_addr, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a1, (void)a2, (void)a3, (void)a4, (void)a5;
     Process *p = proc_current();
     if (p == NULL) return -ENOENT;
-
     char abs[PATH_MAX];
-    int perr = fs_user_path(path_addr, abs, PATH_MAX);
-    if (perr != 0) return perr;
+    int err = fs_user_path(path_addr, abs, sizeof(abs));
+    if (err != 0) return err;
+    PathLoc loc;
+    err = vfs_resolve(abs, &loc);
+    if (err != 0) return err;
+    if (!S_ISDIR(loc.inode->mode))
+        err = -ENOTDIR;
+    else
+        err = inode_permission(loc.inode, X_OK);
+    loc_put(&loc);
+    if (err == 0) strncpy(p->cwd, abs, PATH_MAX);
+    return err;
+}
 
-    VfsNode *node = vfs_resolve(abs);
-    if (node == NULL) return -ENOENT;
-    if (node->type != VFS_DIRECTORY) return -ENOTDIR;
-
-    strncpy(p->cwd, abs, PATH_MAX);
-    return 0;
+/* mkdirat(dirfd, path, mode) — 258 */
+static int64_t sys_mkdirat(uint64_t dirfd, uint64_t path_addr, uint64_t mode, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a3, (void)a4, (void)a5;
+    char abs[PATH_MAX];
+    int err = at_path((int64_t)dirfd, path_addr, abs, sizeof(abs), 0);
+    return err != 0 ? err : vfs_mkdir(abs, (uint32_t)mode);
 }
 
 /* mkdir(path, mode) — 83 */
-static int64_t sys_mkdir(uint64_t path_addr, uint64_t mode, uint64_t a2,
-                         uint64_t a3, uint64_t a4, uint64_t a5) {
-    (void)a2; (void)a3; (void)a4; (void)a5;
+static int64_t sys_mkdir(uint64_t path_addr, uint64_t mode, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a2;
+    return sys_mkdirat((uint64_t)(int64_t)AT_FDCWD, path_addr, mode, a3, a4, a5);
+}
+
+/* unlinkat(dirfd, path, flags) — 263: AT_REMOVEDIR makes it rmdir */
+static int64_t sys_unlinkat(uint64_t dirfd, uint64_t path_addr, uint64_t flags, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a3, (void)a4, (void)a5;
+    if ((flags & ~(uint64_t)AT_REMOVEDIR) != 0) return -EINVAL;
     char abs[PATH_MAX];
-    int perr = fs_user_path(path_addr, abs, PATH_MAX);
-    if (perr != 0) return perr;
-    return vfs_mkdir(abs, (uint32_t)mode);
+    int err = at_path((int64_t)dirfd, path_addr, abs, sizeof(abs), 0);
+    if (err != 0) return err;
+    return (flags & AT_REMOVEDIR) ? vfs_rmdir(abs) : vfs_unlink(abs);
 }
 
 /* unlink(path) — 87 */
-static int64_t sys_unlink(uint64_t path_addr, uint64_t a1, uint64_t a2,
-                          uint64_t a3, uint64_t a4, uint64_t a5) {
-    (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+static int64_t sys_unlink(uint64_t path_addr, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a1, (void)a2;
+    return sys_unlinkat((uint64_t)(int64_t)AT_FDCWD, path_addr, 0, a3, a4, a5);
+}
+
+/* rmdir(path) — 84 */
+static int64_t sys_rmdir(uint64_t path_addr, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a1, (void)a2;
+    return sys_unlinkat((uint64_t)(int64_t)AT_FDCWD, path_addr, AT_REMOVEDIR, a3, a4, a5);
+}
+
+/* renameat(olddirfd, oldpath, newdirfd, newpath) — 264 */
+static int64_t sys_renameat(uint64_t odfd, uint64_t old_addr, uint64_t ndfd, uint64_t new_addr, uint64_t a4,
+                            uint64_t a5) {
+    (void)a4, (void)a5;
+    char oldp[PATH_MAX], newp[PATH_MAX];
+    int err = at_path((int64_t)odfd, old_addr, oldp, sizeof(oldp), 0);
+    if (err == 0) err = at_path((int64_t)ndfd, new_addr, newp, sizeof(newp), 0);
+    return err != 0 ? err : vfs_rename(oldp, newp);
+}
+
+/* rename(oldpath, newpath) — 82 */
+static int64_t sys_rename(uint64_t old_addr, uint64_t new_addr, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a2, (void)a3;
+    return sys_renameat((uint64_t)(int64_t)AT_FDCWD, old_addr, (uint64_t)(int64_t)AT_FDCWD, new_addr, a4, a5);
+}
+
+/* Change attributes of the inode at a user path. */
+static int64_t path_setattr(uint64_t path_addr, const InodeAttr *attr) {
     char abs[PATH_MAX];
-    int perr = fs_user_path(path_addr, abs, PATH_MAX);
-    if (perr != 0) return perr;
-    return vfs_unlink(abs);
+    int err = fs_user_path(path_addr, abs, sizeof(abs));
+    if (err != 0) return err;
+    PathLoc loc;
+    err = vfs_resolve(abs, &loc);
+    if (err != 0) return err;
+    err = vfs_setattr(loc.inode, attr);
+    loc_put(&loc);
+    return err;
 }
 
 /* chmod(path, mode) — 90 */
-static int64_t sys_chmod(uint64_t path_addr, uint64_t mode, uint64_t a2,
-                         uint64_t a3, uint64_t a4, uint64_t a5) {
-    (void)a2; (void)a3; (void)a4; (void)a5;
-    char abs[PATH_MAX];
-    int perr = fs_user_path(path_addr, abs, PATH_MAX);
-    if (perr != 0) return perr;
-
-    VfsNode *node = vfs_resolve(abs);
-    if (node == NULL) return -ENOENT;
-
-    Process *p = proc_current();
-    if (p == NULL) return -EPERM;
-    if (p->euid != 0 && p->euid != node->uid) return -EPERM;
-
-    node->mode = (uint32_t)mode & 07777;
-    return 0;
+static int64_t sys_chmod(uint64_t path_addr, uint64_t mode, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a2, (void)a3, (void)a4, (void)a5;
+    InodeAttr attr = {.valid = ATTR_MODE, .mode = (uint32_t)mode & 07777};
+    return path_setattr(path_addr, &attr);
 }
 
 /* chown(path, uid, gid) — 92: root only; -1 leaves a field unchanged */
-static int64_t sys_chown(uint64_t path_addr, uint64_t new_uid, uint64_t new_gid,
-                         uint64_t a3, uint64_t a4, uint64_t a5) {
-    (void)a3; (void)a4; (void)a5;
-    char abs[PATH_MAX];
-    int perr = fs_user_path(path_addr, abs, PATH_MAX);
-    if (perr != 0) return perr;
-
-    VfsNode *node = vfs_resolve(abs);
-    if (node == NULL) return -ENOENT;
-
-    Process *p = proc_current();
-    if (p == NULL || p->euid != 0) return -EPERM;
-
-    if ((uint32_t)new_uid != (uint32_t)-1) node->uid = (uint32_t)new_uid;
-    if ((uint32_t)new_gid != (uint32_t)-1) node->gid = (uint32_t)new_gid;
-    return 0;
+static int64_t sys_chown(uint64_t path_addr, uint64_t uid, uint64_t gid, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a3, (void)a4, (void)a5;
+    InodeAttr attr = {.uid = (uint32_t)uid, .gid = (uint32_t)gid};
+    if ((uint32_t)uid != (uint32_t)-1) attr.valid |= ATTR_UID;
+    if ((uint32_t)gid != (uint32_t)-1) attr.valid |= ATTR_GID;
+    if (attr.valid == 0) {   /* nothing to change: still a permission and existence check */
+        Process *p = proc_current();
+        if (p == NULL || p->euid != 0) return -EPERM;
+    }
+    return path_setattr(path_addr, &attr);
 }
 
 /* umask(mask) — 95: returns the previous mask */
-static int64_t sys_umask(uint64_t new_mask, uint64_t a1, uint64_t a2,
-                         uint64_t a3, uint64_t a4, uint64_t a5) {
-    (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+static int64_t sys_umask(uint64_t new_mask, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a1, (void)a2, (void)a3, (void)a4, (void)a5;
     Process *p = proc_current();
     if (p == NULL) return 0;
     uint32_t old = p->umask;
@@ -552,95 +563,89 @@ static int64_t sys_umask(uint64_t new_mask, uint64_t a1, uint64_t a2,
     return (int64_t)old;
 }
 
-static uint8_t dirent_type(uint8_t vfs_type) {
-    switch (vfs_type) {
-    case VFS_FILE:      return DT_REG;
-    case VFS_DIRECTORY: return DT_DIR;
-    case VFS_PIPE:      return DT_FIFO;
-    case VFS_SOCKET:    return DT_SOCK;
-    default:            return DT_UNKNOWN;
+/* getdents64: records go straight to the user buffer from the directory walk */
+typedef struct {
+    DirContext ctx;   /* first: the actor gets &ctx */
+    uint64_t dirp;
+    uint64_t count;
+    uint64_t used;
+    int err;
+} GetdentsCtx;
+
+static int getdents_actor(DirContext *ctx, const char *name, size_t len, uint64_t ino, uint8_t dtype, loff_t next) {
+    GetdentsCtx *g = (GetdentsCtx *)ctx;
+    uint64_t reclen = (DIRENT_NAME_OFF + len + 1 + 7) & ~7ULL;
+    if (g->used + reclen > g->count) {
+        if (g->used == 0) g->err = -EINVAL;   /* not even one record fits */
+        return 1;
     }
+    uint8_t rec[(DIRENT_NAME_OFF + VFS_NAME_MAX + 1 + 7) & ~7] __attribute__((aligned(8)));
+    struct linux_dirent64 *d = (struct linux_dirent64 *)rec;
+    memset(rec, 0, reclen);
+    d->d_ino = ino;
+    d->d_off = next;
+    d->d_reclen = (uint16_t)reclen;
+    d->d_type = dtype;
+    memcpy(d->d_name, name, len);
+    if (copy_to_user((uint8_t *)g->dirp + g->used, rec, reclen) != 0) {
+        g->err = -EFAULT;
+        return 1;
+    }
+    g->used += reclen;
+    return 0;
 }
 
-/* getdents64(fd, dirp, count) — 217. The fd's offset is the index of the next
- * entry; d_off of each record is the index after it. Returns bytes filled,
- * 0 at the end, -EINVAL if not even one record fits. */
-static int64_t sys_getdents64(uint64_t fd, uint64_t dirp, uint64_t count,
-                              uint64_t a3, uint64_t a4, uint64_t a5) {
-    (void)a3; (void)a4; (void)a5;
-    Process *p = proc_current();
-    if (p == NULL || p->fd_table == NULL) return -EBADF;
-    VfsFile *file = fd_get(p->fd_table, (int)fd);
-    if (file == NULL) return -EBADF;
-    if (file->node == NULL || file->node->type != VFS_DIRECTORY) return -ENOTDIR;
-    if (count == 0) return -EINVAL;
-    if (!user_ptr_valid((void *)dirp, count)) return -EFAULT;
-    if (count > 0x7FFFF000ULL) count = 0x7FFFF000ULL;
-
-    uint64_t start = file->offset;
-    if (start >= GETDENTS_MAX_ENTRIES) return 0;
-    uint64_t batch = count / DIRENT_MIN_RECLEN + 1;
-    uint64_t want = start + batch;
-    if (want > GETDENTS_MAX_ENTRIES) want = GETDENTS_MAX_ENTRIES;
-
-    VfsDirEntry *list = kmalloc(want * sizeof(VfsDirEntry), 0);
-    if (list == NULL) return -ENOMEM;
-    int n = vfs_readdir_node(file->node, list, (uint32_t)want);
-    if (n < 0) {
-        kfree(list);
-        return n;
-    }
-
-    /* Each record is built here, then copied out */
-    uint8_t rec[(DIRENT_NAME_OFF + VFS_NAME_MAX + 7) & ~7] __attribute__((aligned(8)));
-    struct linux_dirent64 *d = (struct linux_dirent64 *)rec;
-    uint64_t pos = 0;
-    uint64_t i = start;
-    for (; i < (uint64_t)n; i++) {
-        list[i].name[VFS_NAME_MAX - 1] = '\0';
-        uint64_t namelen = strlen(list[i].name);
-        uint64_t reclen = (DIRENT_NAME_OFF + namelen + 1 + 7) & ~7ULL;
-        if (pos + reclen > count) break;
-
-        memset(rec, 0, reclen);
-        d->d_ino = list[i].inode_num;
-        d->d_off = (int64_t)(i + 1);
-        d->d_reclen = (uint16_t)reclen;
-        d->d_type = dirent_type(list[i].type);
-        memcpy(d->d_name, list[i].name, namelen);
-        if (copy_to_user((uint8_t *)dirp + pos, rec, reclen) != 0) {
-            kfree(list);
-            return -EFAULT;
-        }
-        pos += reclen;
-    }
-    kfree(list);
-
-    if (pos == 0 && i < (uint64_t)n) return -EINVAL;   /* buffer too small */
-    file->offset = i;
-    return (int64_t)pos;
+/* getdents64(fd, dirp, count) — 217. d_off of a record is the position after
+ * it (lseek(fd, d_off, SEEK_SET) resumes there). Returns bytes filled, 0 at
+ * the end, -EINVAL if not even one record fits. */
+static int64_t sys_getdents64(uint64_t fd, uint64_t dirp, uint64_t count, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a3, (void)a4, (void)a5;
+    File *f = get_file((int64_t)fd);
+    if (f == NULL) return -EBADF;
+    if (count > MAX_RW_COUNT) count = MAX_RW_COUNT;
+    GetdentsCtx g = {.ctx = {.actor = getdents_actor}, .dirp = dirp, .count = count};
+    /* count 0: no record fits, -EINVAL (as Linux), not -EFAULT */
+    int err = count == 0 || user_ptr_valid((void *)dirp, count) ? vfs_iterate(f, &g.ctx) : -EFAULT;
+    fput(f);
+    if (g.used > 0) return (int64_t)g.used;
+    return err != 0 ? err : g.err;
 }
 
 void fs_syscalls_init(void) {
-    syscall_register(__NR_read,       sys_read);
-    syscall_register(__NR_write,      sys_write);
-    syscall_register(__NR_readv,      sys_readv);
-    syscall_register(__NR_writev,     sys_writev);
-    syscall_register(__NR_open,       sys_open);
-    syscall_register(__NR_close,      sys_close);
-    syscall_register(__NR_stat,       sys_stat);
-    syscall_register(__NR_fstat,      sys_fstat);
-    syscall_register(__NR_lseek,      sys_lseek);
-    syscall_register(__NR_ioctl,      sys_ioctl);
-    syscall_register(__NR_pipe,       sys_pipe);
-    syscall_register(__NR_dup,        sys_dup);
-    syscall_register(__NR_dup2,       sys_dup2);
-    syscall_register(__NR_getcwd,     sys_getcwd);
-    syscall_register(__NR_chdir,      sys_chdir);
-    syscall_register(__NR_mkdir,      sys_mkdir);
-    syscall_register(__NR_unlink,     sys_unlink);
-    syscall_register(__NR_chmod,      sys_chmod);
-    syscall_register(__NR_chown,      sys_chown);
-    syscall_register(__NR_umask,      sys_umask);
+    syscall_register(__NR_read, sys_read);
+    syscall_register(__NR_write, sys_write);
+    syscall_register(__NR_open, sys_open);
+    syscall_register(__NR_close, sys_close);
+    syscall_register(__NR_stat, sys_stat);
+    syscall_register(__NR_fstat, sys_fstat);
+    syscall_register(__NR_lstat, sys_lstat);
+    syscall_register(__NR_lseek, sys_lseek);
+    syscall_register(__NR_ioctl, sys_ioctl);
+    syscall_register(__NR_pread64, sys_pread64);
+    syscall_register(__NR_pwrite64, sys_pwrite64);
+    syscall_register(__NR_readv, sys_readv);
+    syscall_register(__NR_writev, sys_writev);
+    syscall_register(__NR_pipe, sys_pipe);
+    syscall_register(__NR_dup, sys_dup);
+    syscall_register(__NR_dup2, sys_dup2);
+    syscall_register(__NR_fcntl, sys_fcntl);
+    syscall_register(__NR_fsync, sys_fsync);
+    syscall_register(__NR_ftruncate, sys_ftruncate);
+    syscall_register(__NR_getcwd, sys_getcwd);
+    syscall_register(__NR_chdir, sys_chdir);
+    syscall_register(__NR_rename, sys_rename);
+    syscall_register(__NR_mkdir, sys_mkdir);
+    syscall_register(__NR_rmdir, sys_rmdir);
+    syscall_register(__NR_unlink, sys_unlink);
+    syscall_register(__NR_chmod, sys_chmod);
+    syscall_register(__NR_chown, sys_chown);
+    syscall_register(__NR_umask, sys_umask);
     syscall_register(__NR_getdents64, sys_getdents64);
+    syscall_register(__NR_openat, sys_openat);
+    syscall_register(__NR_mkdirat, sys_mkdirat);
+    syscall_register(__NR_newfstatat, sys_newfstatat);
+    syscall_register(__NR_unlinkat, sys_unlinkat);
+    syscall_register(__NR_renameat, sys_renameat);
+    syscall_register(__NR_dup3, sys_dup3);
+    syscall_register(__NR_pipe2, sys_pipe2);
 }

@@ -1,127 +1,114 @@
+/* arc_os — FAT32, read-only (M1-11).
+ *
+ * The ESP format (ADR-0008); arc_os keeps its own files on ext2, so FAT32
+ * needs lookup, read and getdents only. 8.3 names, no long file names.
+ *
+ * Inodes: a directory entry's position is its inode number,
+ * (directory's first cluster << 16) | entry index, so files without clusters
+ * get one too; the root is FAT32_ROOT_INO. Inodes live in the inode cache and
+ * the dentry cache (M1-11 fixed the old node cache, which never freed one).
+ *
+ * Locking: the FAT is read once at mount and never changes. vol->io_lock
+ * (LOCK_LEVEL_FS_IO, above the page lock for M1-12's readpage) serializes the
+ * block device and each inode's chain cursor; user copies and dir_emit happen
+ * after it is released. */
+
 #include "fs/fat32.h"
 #include "drivers/blkdev.h"
 #include "mm/kmalloc.h"
+#include "proc/mutex.h"
+#include "proc/lockdep.h"
 #include "lib/mem.h"
 #include "lib/string.h"
 #include "lib/kprintf.h"
+#include "uapi/errno.h"
 
 #define SECTOR_SIZE 512
 #define CASE_OFFSET ('a' - 'A')
+#define FAT32_ROOT_INO 1
 
-/* --- Node cache: avoids duplicate VfsNodes for the same cluster --- */
+typedef struct Fat32Volume {
+    SuperBlock sb;   /* first: sb->priv is not needed to find the volume */
+    BlockDevice *dev;
+    uint8_t sectors_per_cluster;
+    uint32_t bytes_per_cluster;
+    uint32_t fat_start;      /* first sector of the FAT */
+    uint32_t data_start;     /* first sector of the data region */
+    uint32_t root_cluster;
+    uint32_t total_clusters;
+    uint32_t *fat;           /* the whole first FAT, read at mount */
+    uint32_t fat_sectors;
+    Mutex io_lock;
+} Fat32Volume;
 
-#define NODE_CACHE_SIZE 256
+/* Inode.priv */
+typedef struct Fat32Inode {
+    uint32_t first_cluster;
+    uint64_t parent_ino;     /* directories: ".." for getdents */
+    /* Chain cursor: cluster number cur_cluster is the cur_index-th of the
+     * chain (io_lock). Sequential reads walk the FAT once, not once per call. */
+    uint32_t cur_index;
+    uint32_t cur_cluster;
+} Fat32Inode;
 
-static struct {
-    uint32_t cluster;
-    VfsNode *node;
-} node_cache[NODE_CACHE_SIZE];
-static int node_cache_count;
+static const InodeOps fat32_dir_iops;
+static const FileOps fat32_dir_fops;
+static const FileOps fat32_file_fops;
 
-static VfsNode *cache_lookup(uint32_t cluster) {
-    for (int i = 0; i < node_cache_count; i++) {
-        if (node_cache[i].cluster == cluster)
-            return node_cache[i].node;
-    }
-    return NULL;
+static Fat32Volume *vol_of(const Inode *inode) {
+    return (Fat32Volume *)inode->sb;
 }
 
-static void cache_insert(uint32_t cluster, VfsNode *node) {
-    if (node_cache_count < NODE_CACHE_SIZE) {
-        node_cache[node_cache_count].cluster = cluster;
-        node_cache[node_cache_count].node = node;
-        node_cache_count++;
-    }
+static Fat32Inode *fi_of(const Inode *inode) {
+    return (Fat32Inode *)inode->priv;
 }
 
-/* --- Forward declarations for VfsOps --- */
+/* --- Clusters --- */
 
-static int fat32_read(VfsNode *node, void *buf, uint32_t offset, uint32_t size);
-static int fat32_write(VfsNode *node, const void *buf, uint32_t offset, uint32_t size);
-static VfsNode *fat32_lookup(VfsNode *dir, const char *name);
-static VfsNode *fat32_create(VfsNode *dir, const char *name, uint8_t type);
-static int fat32_unlink(VfsNode *dir, const char *name);
-static int fat32_readdir(VfsNode *dir, VfsDirEntry *entries, uint32_t max);
-static void fat32_truncate(VfsNode *node, uint64_t size);
-
-static const VfsOps fat32_file_ops = {
-    .read     = fat32_read,
-    .write    = fat32_write,
-    .truncate = fat32_truncate,
-};
-
-static const VfsOps fat32_dir_ops = {
-    .read    = fat32_read,
-    .lookup  = fat32_lookup,
-    .create  = fat32_create,
-    .unlink  = fat32_unlink,
-    .readdir = fat32_readdir,
-};
-
-static uint64_t next_fat_inode = 0x10000;  /* Start high to avoid collision with ramfs */
-
-/* --- Cluster helpers --- */
-
-static uint32_t cluster_to_sector(Fat32Volume *vol, uint32_t cluster) {
-    return vol->data_start + (cluster - 2) * vol->sectors_per_cluster;
+static int cluster_valid(const Fat32Volume *vol, uint32_t cluster) {
+    return cluster >= 2 && cluster < vol->total_clusters + 2;
 }
 
-static uint32_t fat32_next_cluster(Fat32Volume *vol, uint32_t cluster) {
+/* Next cluster of the chain, or 0 at its end (or at a bad entry) */
+static uint32_t fat32_next_cluster(const Fat32Volume *vol, uint32_t cluster) {
     uint32_t entry = vol->fat[cluster] & FAT32_ENTRY_MASK;
-    if (entry >= FAT32_EOC) return 0;  /* End of chain */
-    if (entry == FAT32_BAD_CLUSTER) return 0;
-    return entry;
+    return cluster_valid(vol, entry) ? entry : 0;
 }
 
 static inline uint32_t fat32_entry_cluster(const Fat32DirEntry *e) {
     return ((uint32_t)e->first_cluster_hi << 16) | e->first_cluster_lo;
 }
 
-static inline void fat32_set_entry_cluster(Fat32DirEntry *e, uint32_t cluster) {
-    e->first_cluster_lo = cluster & 0xFFFF;
-    e->first_cluster_hi = (cluster >> 16) & 0xFFFF;
-}
-
+/* Read one cluster into buf. io_lock held. */
 static int fat32_read_cluster(Fat32Volume *vol, uint32_t cluster, void *buf) {
-    uint32_t sector = cluster_to_sector(vol, cluster);
-    return vol->dev->read(vol->dev, sector, vol->sectors_per_cluster, buf);
+    uint64_t sector = vol->data_start + (uint64_t)(cluster - 2) * vol->sectors_per_cluster;
+    return vol->dev->read(vol->dev, sector, vol->sectors_per_cluster, buf) != 0 ? -EIO : 0;
 }
 
-static int fat32_write_cluster(Fat32Volume *vol, uint32_t cluster, const void *buf) {
-    uint32_t sector = cluster_to_sector(vol, cluster);
-    return vol->dev->write(vol->dev, sector, vol->sectors_per_cluster, buf);
-}
-
-/* --- FAT manipulation --- */
-
-static uint32_t fat32_alloc_cluster(Fat32Volume *vol) {
-    for (uint32_t i = 2; i < vol->total_clusters + 2; i++) {
-        if ((vol->fat[i] & FAT32_ENTRY_MASK) == FAT32_FREE) {
-            vol->fat[i] = (vol->fat[i] & ~FAT32_ENTRY_MASK) | (FAT32_EOC & FAT32_ENTRY_MASK);
-            vol->fat_dirty = 1;
-            return i;
-        }
+/* The index-th cluster of fi's chain, or 0 past its end. io_lock held.
+ * Moves the cursor; a chain longer than the volume is cut off (a FAT loop). */
+static uint32_t chain_cluster(Fat32Volume *vol, Fat32Inode *fi, uint32_t index) {
+    if (fi->cur_cluster == 0 || index < fi->cur_index) {
+        fi->cur_index = 0;
+        fi->cur_cluster = cluster_valid(vol, fi->first_cluster) ? fi->first_cluster : 0;
     }
-    return 0;  /* Disk full */
+    while (fi->cur_cluster != 0 && fi->cur_index < index) {
+        if (fi->cur_index >= vol->total_clusters) return 0;
+        fi->cur_cluster = fat32_next_cluster(vol, fi->cur_cluster);
+        fi->cur_index++;
+    }
+    return fi->cur_index == index ? fi->cur_cluster : 0;
 }
 
-static void fat32_free_chain(Fat32Volume *vol, uint32_t cluster) {
-    while (cluster != 0 && cluster < vol->total_clusters + 2) {
-        uint32_t next = fat32_next_cluster(vol, cluster);
-        vol->fat[cluster] = (vol->fat[cluster] & ~FAT32_ENTRY_MASK) | FAT32_FREE;
-        vol->fat_dirty = 1;
-        cluster = next;
-    }
-}
-
-static uint32_t fat32_extend_chain(Fat32Volume *vol, uint32_t last) {
-    uint32_t new_cluster = fat32_alloc_cluster(vol);
-    if (new_cluster == 0) return 0;
-    if (last != 0) {
-        vol->fat[last] = (vol->fat[last] & ~FAT32_ENTRY_MASK) | (new_cluster & FAT32_ENTRY_MASK);
-        vol->fat_dirty = 1;
-    }
-    return new_cluster;
+/* Read the index-th cluster of inode's chain into buf: 1, 0 past the end,
+ * or -EIO. */
+static int read_chain_cluster(Inode *inode, uint32_t index, void *buf) {
+    Fat32Volume *vol = vol_of(inode);
+    mutex_lock(&vol->io_lock);
+    uint32_t c = chain_cluster(vol, fi_of(inode), index);
+    int r = c == 0 ? 0 : fat32_read_cluster(vol, c, buf);
+    mutex_unlock(&vol->io_lock);
+    return c == 0 ? 0 : (r == 0 ? 1 : r);
 }
 
 /* --- 8.3 name conversion --- */
@@ -206,242 +193,54 @@ static int fat32_name_match(const Fat32DirEntry *entry, const char *name) {
     return memcmp(entry->name, fat_name, 11) == 0;
 }
 
-/* --- Node allocation --- */
+/* --- Inodes --- */
 
-static VfsNode *fat32_alloc_node(Fat32Volume *vol, uint8_t type,
-                                  uint32_t first_cluster,
-                                  uint32_t dir_cluster, uint32_t entry_idx) {
-    /* Check cache first */
-    if (first_cluster != 0) {
-        VfsNode *cached = cache_lookup(first_cluster);
-        if (cached) return cached;
-    }
+static uint64_t entry_ino(uint32_t dir_cluster, uint32_t idx) {
+    return ((uint64_t)dir_cluster << 16) | idx;
+}
 
-    Fat32NodeInfo *info = kmalloc(sizeof(Fat32NodeInfo), GFP_ZERO);
-    if (!info) return NULL;
+/* Linux vfat defaults (umask 022): everything rwxr-xr-x, write bits off for
+ * read-only entries. */
+static uint32_t entry_mode(const Fat32DirEntry *e) {
+    uint32_t mode = (e->attr & FAT32_ATTR_DIRECTORY) ? (S_IFDIR | 0755) : (S_IFREG | 0755);
+    if (e->attr & FAT32_ATTR_READ_ONLY) mode &= ~0222u;
+    return mode;
+}
 
-    VfsNode *node = kmalloc(sizeof(VfsNode), GFP_ZERO);
-    if (!node) {
-        kfree(info);
+/* The inode for an entry (from the cache, or new). NULL when out of memory. */
+static Inode *fat32_iget(Fat32Volume *vol, uint64_t ino, uint32_t mode, uint32_t first_cluster, loff_t size,
+                         uint64_t parent_ino) {
+    Inode *inode = icache_get(&vol->sb, ino);
+    if (inode != NULL) return inode;
+    Fat32Inode *fi = kmalloc(sizeof(*fi), GFP_ZERO);
+    inode = fi != NULL ? inode_new(&vol->sb, ino, mode) : NULL;
+    if (inode == NULL) {
+        kfree(fi);
         return NULL;
     }
-
-    info->vol = vol;
-    info->first_cluster = first_cluster;
-    info->dir_cluster = dir_cluster;
-    info->dir_entry_idx = entry_idx;
-
-    node->inode_num = next_fat_inode++;
-    node->type = type;
-    node->size = 0;
-    node->mode = (type == VFS_DIRECTORY) ? 0755 : 0644;
-    node->ops = (type == VFS_DIRECTORY) ? &fat32_dir_ops : &fat32_file_ops;
-    node->private_data = info;
-
-    if (first_cluster != 0) {
-        cache_insert(first_cluster, node);
-    }
-
-    return node;
+    fi->first_cluster = first_cluster;
+    fi->parent_ino = parent_ino;
+    inode->priv = fi;
+    inode->size = S_ISDIR(mode) ? 0 : size;
+    inode->blocks = ((uint64_t)size + 511) / 512;
+    inode->nlink = S_ISDIR(mode) ? 2 : 1;
+    inode->iop = S_ISDIR(mode) ? &fat32_dir_iops : NULL;
+    inode->fop = S_ISDIR(mode) ? &fat32_dir_fops : &fat32_file_fops;
+    return icache_add(inode);   /* a racing lookup's copy wins; ours is freed */
 }
 
-static Fat32NodeInfo *to_fat32(VfsNode *node) {
-    return (Fat32NodeInfo *)node->private_data;
+static void fat32_evict(Inode *inode) {
+    kfree(inode->priv);
 }
 
-/* --- Cluster chain read/write --- */
+static const SuperOps fat32_sops = {
+    .evict_inode = fat32_evict,
+};
 
-static int fat32_read_chain(Fat32Volume *vol, uint32_t start_cluster,
-                             uint32_t offset, void *buf, uint32_t size) {
-    if (start_cluster == 0) return 0;
+/* --- Directory walk --- */
 
-    uint32_t bpc = vol->bytes_per_cluster;
-    uint8_t *cluster_buf = kmalloc(bpc, 0);
-    if (!cluster_buf) return -ENOMEM;
-
-    uint32_t bytes_read = 0;
-    uint32_t cluster = start_cluster;
-    uint32_t cluster_offset = 0;  /* Byte offset from start of chain */
-
-    /* Skip clusters until we reach the offset */
-    while (cluster != 0 && cluster_offset + bpc <= offset) {
-        cluster_offset += bpc;
-        cluster = fat32_next_cluster(vol, cluster);
-    }
-
-    /* Read data */
-    while (cluster != 0 && bytes_read < size) {
-        if (fat32_read_cluster(vol, cluster, cluster_buf) != 0) {
-            kfree(cluster_buf);
-            return -EIO;
-        }
-
-        uint32_t in_cluster_off = 0;
-        if (cluster_offset < offset) {
-            in_cluster_off = offset - cluster_offset;
-        }
-
-        uint32_t avail = bpc - in_cluster_off;
-        uint32_t to_copy = size - bytes_read;
-        if (to_copy > avail) to_copy = avail;
-
-        memcpy((uint8_t *)buf + bytes_read, cluster_buf + in_cluster_off, to_copy);
-        bytes_read += to_copy;
-
-        cluster_offset += bpc;
-        cluster = fat32_next_cluster(vol, cluster);
-    }
-
-    kfree(cluster_buf);
-    return (int)bytes_read;
-}
-
-/* Zero-fill and write a newly allocated cluster. Returns 0 on success, -EIO on failure. */
-static int fat32_init_cluster(Fat32Volume *vol, uint32_t cluster, uint8_t *cluster_buf) {
-    memset(cluster_buf, 0, vol->bytes_per_cluster);
-    return fat32_write_cluster(vol, cluster, cluster_buf) != 0 ? -EIO : 0;
-}
-
-/* Walk/extend chain and write data to disk. Updates *first_cluster_ptr if file was empty. */
-static int fat32_write_chain(Fat32Volume *vol, uint32_t *first_cluster_ptr,
-                              uint32_t offset, const void *buf, uint32_t size) {
-    uint32_t bpc = vol->bytes_per_cluster;
-    uint8_t *cluster_buf = kmalloc(bpc, 0);
-    if (!cluster_buf) return -ENOMEM;
-
-    uint32_t bytes_written = 0;
-    uint32_t cluster = *first_cluster_ptr;
-    uint32_t prev_cluster = 0;
-    uint32_t cluster_offset = 0;
-
-    /* If file has no clusters yet, allocate the first one */
-    if (cluster == 0) {
-        cluster = fat32_alloc_cluster(vol);
-        if (cluster == 0) { kfree(cluster_buf); return -ENOSPC; }
-        *first_cluster_ptr = cluster;
-        fat32_init_cluster(vol, cluster, cluster_buf);
-    }
-
-    /* Skip clusters until we reach the offset */
-    while (cluster != 0 && cluster_offset + bpc <= offset) {
-        prev_cluster = cluster;
-        cluster_offset += bpc;
-        cluster = fat32_next_cluster(vol, cluster);
-        /* Need to extend chain to reach offset */
-        if (cluster == 0 && cluster_offset + bpc <= offset) {
-            cluster = fat32_extend_chain(vol, prev_cluster);
-            if (cluster == 0) { kfree(cluster_buf); return -ENOSPC; }
-            fat32_init_cluster(vol, cluster, cluster_buf);
-        }
-    }
-
-    /* Extend if we still need a cluster at the offset position */
-    if (cluster == 0) {
-        cluster = fat32_extend_chain(vol, prev_cluster);
-        if (cluster == 0) { kfree(cluster_buf); return -ENOSPC; }
-        fat32_init_cluster(vol, cluster, cluster_buf);
-    }
-
-    /* Write data */
-    while (cluster != 0 && bytes_written < size) {
-        /* Read existing cluster data for partial writes */
-        if (fat32_read_cluster(vol, cluster, cluster_buf) != 0) {
-            kfree(cluster_buf);
-            return -EIO;
-        }
-
-        uint32_t in_cluster_off = 0;
-        if (cluster_offset < offset) {
-            in_cluster_off = offset - cluster_offset;
-        }
-
-        uint32_t avail = bpc - in_cluster_off;
-        uint32_t to_copy = size - bytes_written;
-        if (to_copy > avail) to_copy = avail;
-
-        memcpy(cluster_buf + in_cluster_off, (const uint8_t *)buf + bytes_written, to_copy);
-
-        if (fat32_write_cluster(vol, cluster, cluster_buf) != 0) {
-            kfree(cluster_buf);
-            return -EIO;
-        }
-
-        bytes_written += to_copy;
-        cluster_offset += bpc;
-        prev_cluster = cluster;
-        cluster = fat32_next_cluster(vol, cluster);
-
-        /* Extend chain if more data to write */
-        if (cluster == 0 && bytes_written < size) {
-            cluster = fat32_extend_chain(vol, prev_cluster);
-            if (cluster == 0) { kfree(cluster_buf); return -ENOSPC; }
-            fat32_init_cluster(vol, cluster, cluster_buf);
-        }
-    }
-
-    kfree(cluster_buf);
-    return (int)bytes_written;
-}
-
-/* --- Directory entry helpers --- */
-
-/* Read the idx-th 32-byte dir entry from a directory's cluster chain */
-static int fat32_read_dir_entry(Fat32Volume *vol, uint32_t dir_cluster,
-                                 uint32_t idx, Fat32DirEntry *out) {
-    uint32_t byte_offset = idx * sizeof(Fat32DirEntry);
-    return fat32_read_chain(vol, dir_cluster, byte_offset, out, sizeof(Fat32DirEntry));
-}
-
-/* Write a dir entry back at the given index */
-static int fat32_write_dir_entry(Fat32Volume *vol, uint32_t dir_cluster,
-                                  uint32_t idx, const Fat32DirEntry *entry) {
-    uint32_t byte_offset = idx * sizeof(Fat32DirEntry);
-    return fat32_write_chain(vol, &dir_cluster, byte_offset, entry, sizeof(Fat32DirEntry));
-}
-
-/* --- Directory entry walker --- */
-
-#define DIR_WALK_CONTINUE  0
-#define DIR_WALK_STOP      1
-
-typedef int (*DirEntryVisitor)(Fat32DirEntry *entry, uint32_t idx, void *ctx);
-
-/* Walk every 32-byte entry in a directory's cluster chain.
- * Returns DIR_WALK_STOP if visitor stopped, 0 if all entries visited,
- * or negative errno on infrastructure error. */
-static int fat32_walk_dir(Fat32Volume *vol, uint32_t dir_cluster,
-                           DirEntryVisitor visitor, void *ctx) {
-    uint32_t epc = vol->bytes_per_cluster / sizeof(Fat32DirEntry);
-    uint32_t cluster = dir_cluster;
-    uint32_t base_idx = 0;
-
-    while (cluster != 0) {
-        uint8_t *buf = kmalloc(vol->bytes_per_cluster, 0);
-        if (!buf) return -ENOMEM;
-        if (fat32_read_cluster(vol, cluster, buf) != 0) {
-            kfree(buf);
-            return -EIO;
-        }
-
-        Fat32DirEntry *entries = (Fat32DirEntry *)buf;
-        for (uint32_t i = 0; i < epc; i++) {
-            int rc = visitor(&entries[i], base_idx + i, ctx);
-            if (rc != DIR_WALK_CONTINUE) {
-                kfree(buf);
-                return rc;
-            }
-        }
-
-        kfree(buf);
-        base_idx += epc;
-        cluster = fat32_next_cluster(vol, cluster);
-    }
-
-    return 0;
-}
-
-/* Filter special directory entries.
- * Returns: -1 = end of directory, 1 = skip (free/LFN/volume), 0 = normal entry */
+/* Skip free, end, long-name and volume-label entries. -1 at the end of the
+ * directory, 1 to skip, 0 for a real entry. */
 static int fat32_entry_filter(const Fat32DirEntry *e) {
     if (e->name[0] == FAT32_DIR_END) return -1;
     if (e->name[0] == FAT32_DIR_FREE) return 1;
@@ -450,362 +249,201 @@ static int fat32_entry_filter(const Fat32DirEntry *e) {
     return 0;
 }
 
-typedef struct {
-    int slot;
-} FreeSlotCtx;
-
-static int free_slot_visitor(Fat32DirEntry *e, uint32_t idx, void *arg) {
-    if (e->name[0] == FAT32_DIR_END || e->name[0] == FAT32_DIR_FREE) {
-        FreeSlotCtx *ctx = (FreeSlotCtx *)arg;
-        ctx->slot = (int)idx;
-        return DIR_WALK_STOP;
-    }
-    return DIR_WALK_CONTINUE;
+static int is_dot_entry(const Fat32DirEntry *e) {
+    return e->name[0] == '.' && (e->name[1] == ' ' || (e->name[1] == '.' && e->name[2] == ' '));
 }
 
-/* Find a free slot (0x00 or 0xE5) in directory, or extend it. Returns index or -1. */
-static int fat32_find_free_dir_slot(Fat32Volume *vol, uint32_t dir_cluster) {
-    FreeSlotCtx ctx = { .slot = -1 };
-    int rc = fat32_walk_dir(vol, dir_cluster, free_slot_visitor, &ctx);
-    if (rc == DIR_WALK_STOP) return ctx.slot;
-    if (rc < 0) return -1;
+/* Called for each real entry from index start on, without io_lock. Returns
+ * 0 to go on, nonzero to stop (that value is walk_dir's result). */
+typedef int (*DirVisitor)(const Fat32DirEntry *e, uint32_t idx, void *ctx);
 
-    /* No free slot — extend the directory */
+/* Walk dir's entries from index start: the visitor's stop value, 0 at the end
+ * of the directory, or -errno. */
+static int walk_dir(Inode *dir, uint32_t start, DirVisitor visit, void *ctx) {
+    Fat32Volume *vol = vol_of(dir);
     uint32_t epc = vol->bytes_per_cluster / sizeof(Fat32DirEntry);
-    uint32_t cluster = dir_cluster;
-    uint32_t prev = 0;
-    uint32_t count = 0;
-    while (cluster != 0) {
-        prev = cluster;
-        cluster = fat32_next_cluster(vol, cluster);
-        count++;
+    Fat32DirEntry *buf = kmalloc(vol->bytes_per_cluster, 0);
+    if (buf == NULL) return -ENOMEM;
+    int rc = 0;
+    for (uint32_t ci = start / epc; rc == 0 && ci * epc < FAT32_DIR_MAX_ENTRIES; ci++) {
+        int got = read_chain_cluster(dir, ci, buf);
+        if (got <= 0) {
+            rc = got;
+            break;
+        }
+        for (uint32_t i = ci == start / epc ? start % epc : 0; rc == 0 && i < epc; i++) {
+            int f = fat32_entry_filter(&buf[i]);
+            if (f < 0) goto done;
+            if (f == 0 && !is_dot_entry(&buf[i])) rc = visit(&buf[i], ci * epc + i, ctx);
+        }
     }
-    cluster = fat32_extend_chain(vol, prev);
-    if (cluster == 0) return -1;
-    uint8_t *zero_buf = kmalloc(vol->bytes_per_cluster, GFP_ZERO);
-    if (!zero_buf) return -1;
-    fat32_write_cluster(vol, cluster, zero_buf);
-    kfree(zero_buf);
-    return (int)(count * epc);
+done:
+    kfree(buf);
+    return rc;
 }
 
-/* --- VfsOps implementations --- */
+/* --- Lookup --- */
 
-static int fat32_read(VfsNode *node, void *buf, uint32_t offset, uint32_t size) {
-    Fat32NodeInfo *info = to_fat32(node);
-    if (node->type == VFS_FILE) {
-        if (offset >= node->size) return 0;
-        uint32_t avail = (uint32_t)(node->size - offset);
-        if (size > avail) size = avail;
-    }
-    return fat32_read_chain(info->vol, info->first_cluster, offset, buf, size);
-}
-
-static int fat32_write(VfsNode *node, const void *buf, uint32_t offset, uint32_t size) {
-    Fat32NodeInfo *info = to_fat32(node);
-    if (node->type != VFS_FILE) return -EISDIR;
-
-    int written = fat32_write_chain(info->vol, &info->first_cluster, offset, buf, size);
-    if (written <= 0) return written;
-
-    /* Update file size */
-    uint32_t end = offset + (uint32_t)written;
-    if (end > node->size) {
-        node->size = end;
-    }
-
-    /* Update directory entry on disk */
-    Fat32DirEntry dentry;
-    if (fat32_read_dir_entry(info->vol, info->dir_cluster, info->dir_entry_idx, &dentry) > 0) {
-        dentry.file_size = (uint32_t)node->size;
-        fat32_set_entry_cluster(&dentry, info->first_cluster);
-        fat32_write_dir_entry(info->vol, info->dir_cluster, info->dir_entry_idx, &dentry);
-    }
-
-    fat32_sync();
-    return written;
-}
-
-typedef struct {
+typedef struct LookupCtx {
     const char *name;
-    Fat32Volume *vol;
-    uint32_t dir_cluster;
-    VfsNode *result;
+    Fat32DirEntry found;
+    uint32_t idx;
 } LookupCtx;
 
-static int lookup_visitor(Fat32DirEntry *e, uint32_t idx, void *arg) {
-    int f = fat32_entry_filter(e);
-    if (f < 0) return DIR_WALK_STOP;
-    if (f > 0) return DIR_WALK_CONTINUE;
-    if (e->name[0] == '.' && e->name[1] == ' ') return DIR_WALK_CONTINUE;
-    if (e->name[0] == '.' && e->name[1] == '.' && e->name[2] == ' ') return DIR_WALK_CONTINUE;
-
-    LookupCtx *ctx = (LookupCtx *)arg;
-    if (fat32_name_match(e, ctx->name)) {
-        uint32_t fc = fat32_entry_cluster(e);
-        uint8_t type = (e->attr & FAT32_ATTR_DIRECTORY) ? VFS_DIRECTORY : VFS_FILE;
-        ctx->result = fat32_alloc_node(ctx->vol, type, fc, ctx->dir_cluster, idx);
-        if (ctx->result) ctx->result->size = e->file_size;
-        return DIR_WALK_STOP;
-    }
-    return DIR_WALK_CONTINUE;
+static int lookup_visitor(const Fat32DirEntry *e, uint32_t idx, void *arg) {
+    LookupCtx *ctx = arg;
+    if (!fat32_name_match(e, ctx->name)) return 0;
+    ctx->found = *e;
+    ctx->idx = idx;
+    return 1;
 }
 
-static VfsNode *fat32_lookup(VfsNode *dir, const char *name) {
-    Fat32NodeInfo *dir_info = to_fat32(dir);
-    LookupCtx ctx = { .name = name, .vol = dir_info->vol,
-                       .dir_cluster = dir_info->first_cluster, .result = NULL };
-    fat32_walk_dir(dir_info->vol, dir_info->first_cluster, lookup_visitor, &ctx);
-    return ctx.result;
-}
-
-static VfsNode *fat32_create(VfsNode *dir, const char *name, uint8_t type) {
-    Fat32NodeInfo *dir_info = to_fat32(dir);
-    Fat32Volume *vol = dir_info->vol;
-
-    /* Check duplicate */
-    if (fat32_lookup(dir, name) != NULL) return NULL;
-
-    /* Build 8.3 name */
-    uint8_t fat_name[11];
-    if (fat32_str_to_name(name, fat_name) != 0) return NULL;
-
-    /* Allocate cluster for directories */
-    uint32_t new_cluster = 0;
-    if (type == VFS_DIRECTORY) {
-        new_cluster = fat32_alloc_cluster(vol);
-        if (new_cluster == 0) return NULL;
-        /* Zero and init . and .. entries */
-        uint8_t *cbuf = kmalloc(vol->bytes_per_cluster, GFP_ZERO);
-        if (!cbuf) return NULL;
-        Fat32DirEntry *dot_entries = (Fat32DirEntry *)cbuf;
-        /* . entry */
-        memcpy(dot_entries[0].name, ".          ", 11);
-        dot_entries[0].attr = FAT32_ATTR_DIRECTORY;
-        fat32_set_entry_cluster(&dot_entries[0], new_cluster);
-        /* .. entry */
-        memcpy(dot_entries[1].name, "..         ", 11);
-        dot_entries[1].attr = FAT32_ATTR_DIRECTORY;
-        fat32_set_entry_cluster(&dot_entries[1], dir_info->first_cluster);
-        fat32_write_cluster(vol, new_cluster, cbuf);
-        kfree(cbuf);
-    }
-
-    /* Find free dir entry slot */
-    int slot = fat32_find_free_dir_slot(vol, dir_info->first_cluster);
-    if (slot < 0) return NULL;
-
-    /* Build directory entry */
-    Fat32DirEntry dentry;
-    memset(&dentry, 0, sizeof(dentry));
-    memcpy(dentry.name, fat_name, 11);
-    dentry.attr = (type == VFS_DIRECTORY) ? FAT32_ATTR_DIRECTORY : FAT32_ATTR_ARCHIVE;
-    fat32_set_entry_cluster(&dentry, new_cluster);
-    dentry.file_size = 0;
-
-    fat32_write_dir_entry(vol, dir_info->first_cluster, (uint32_t)slot, &dentry);
-    fat32_sync();
-
-    VfsNode *node = fat32_alloc_node(vol, type, new_cluster,
-                                      dir_info->first_cluster, (uint32_t)slot);
-    return node;
-}
-
-typedef struct {
-    const char *name;
-    Fat32Volume *vol;
-    uint32_t dir_cluster;
-    int result;
-} UnlinkCtx;
-
-static int unlink_visitor(Fat32DirEntry *e, uint32_t idx, void *arg) {
-    int f = fat32_entry_filter(e);
-    if (f < 0) return DIR_WALK_STOP;
-    if (f > 0) return DIR_WALK_CONTINUE;
-
-    UnlinkCtx *ctx = (UnlinkCtx *)arg;
-    if (fat32_name_match(e, ctx->name)) {
-        uint32_t fc = fat32_entry_cluster(e);
-        if (fc != 0) fat32_free_chain(ctx->vol, fc);
-        e->name[0] = FAT32_DIR_FREE;
-        fat32_write_dir_entry(ctx->vol, ctx->dir_cluster, idx, e);
-        fat32_sync();
-        ctx->result = VFS_OK;
-        return DIR_WALK_STOP;
-    }
-    return DIR_WALK_CONTINUE;
-}
-
-static int fat32_unlink(VfsNode *dir, const char *name) {
-    Fat32NodeInfo *dir_info = to_fat32(dir);
-    UnlinkCtx ctx = { .name = name, .vol = dir_info->vol,
-                       .dir_cluster = dir_info->first_cluster, .result = -ENOENT };
-    int rc = fat32_walk_dir(dir_info->vol, dir_info->first_cluster, unlink_visitor, &ctx);
+static int fat32_lookup(Inode *dir, const char *name, Inode **out) {
+    LookupCtx ctx = {.name = name};
+    int rc = walk_dir(dir, 0, lookup_visitor, &ctx);
     if (rc < 0) return rc;
-    return ctx.result;
+    if (rc == 0) return -ENOENT;
+    Fat32Volume *vol = vol_of(dir);
+    uint32_t mode = entry_mode(&ctx.found);
+    *out = fat32_iget(vol, entry_ino(fi_of(dir)->first_cluster, ctx.idx), mode, fat32_entry_cluster(&ctx.found),
+                      ctx.found.file_size, dir->ino);
+    return *out != NULL ? 0 : -ENOMEM;
 }
 
-typedef struct {
-    VfsDirEntry *out;
-    uint32_t max;
-    uint32_t count;
-} ReaddirCtx;
+/* --- getdents: cookie = 2 + entry index --- */
 
-static int readdir_visitor(Fat32DirEntry *e, uint32_t idx, void *arg) {
-    (void)idx;
-    int f = fat32_entry_filter(e);
-    if (f < 0) return DIR_WALK_STOP;
-    if (f > 0) return DIR_WALK_CONTINUE;
-    if (e->name[0] == '.') return DIR_WALK_CONTINUE;
+typedef struct IterCtx {
+    DirContext *dctx;
+    uint32_t dir_cluster;
+} IterCtx;
 
-    ReaddirCtx *ctx = (ReaddirCtx *)arg;
-    fat32_name_to_str(e, ctx->out[ctx->count].name);
-    ctx->out[ctx->count].inode_num = fat32_entry_cluster(e);
-    ctx->out[ctx->count].type = (e->attr & FAT32_ATTR_DIRECTORY) ? VFS_DIRECTORY : VFS_FILE;
-    ctx->count++;
-    if (ctx->count >= ctx->max) return DIR_WALK_STOP;
-    return DIR_WALK_CONTINUE;
+static int iter_visitor(const Fat32DirEntry *e, uint32_t idx, void *arg) {
+    IterCtx *ctx = arg;
+    char name[13];
+    fat32_name_to_str(e, name);
+    uint8_t dtype = vfs_dtype(entry_mode(e));
+    ctx->dctx->pos = (loff_t)idx + 2;
+    return dir_emit(ctx->dctx, name, strlen(name), entry_ino(ctx->dir_cluster, idx), dtype, (loff_t)idx + 3) ? 0 : 1;
 }
 
-static int fat32_readdir(VfsNode *dir, VfsDirEntry *out, uint32_t max) {
-    Fat32NodeInfo *dir_info = to_fat32(dir);
-    ReaddirCtx ctx = { .out = out, .max = max, .count = 0 };
-    fat32_walk_dir(dir_info->vol, dir_info->first_cluster, readdir_visitor, &ctx);
-    return (int)ctx.count;
+static int fat32_iterate(File *file, DirContext *ctx) {
+    Inode *dir = file->inode;
+    if (!dir_emit_dots(ctx, dir->ino, fi_of(dir)->parent_ino)) return 0;
+    if (ctx->pos - 2 >= FAT32_DIR_MAX_ENTRIES) return 0;
+    IterCtx ictx = {.dctx = ctx, .dir_cluster = fi_of(dir)->first_cluster};
+    int rc = walk_dir(dir, (uint32_t)(ctx->pos - 2), iter_visitor, &ictx);
+    return rc < 0 ? rc : 0;
 }
 
-static void fat32_truncate(VfsNode *node, uint64_t size) {
-    Fat32NodeInfo *info = to_fat32(node);
-    if (node->type != VFS_FILE) return;
+/* --- File read --- */
 
-    if (size == 0) {
-        if (info->first_cluster != 0) {
-            fat32_free_chain(info->vol, info->first_cluster);
-            info->first_cluster = 0;
+static int64_t fat32_read(File *file, const IoBuf *buf, loff_t *pos) {
+    Inode *inode = file->inode;
+    Fat32Volume *vol = vol_of(inode);
+    loff_t size = inode->size;
+    if (*pos >= size || buf->len == 0) return 0;
+    uint64_t want = buf->len;
+    if (want > (uint64_t)(size - *pos)) want = (uint64_t)(size - *pos);
+    uint32_t bpc = vol->bytes_per_cluster;
+    uint8_t *cbuf = kmalloc(bpc, 0);
+    if (cbuf == NULL) return -ENOMEM;
+    uint64_t done = 0;
+    int64_t err = 0;
+    while (done < want) {
+        loff_t at = *pos + (loff_t)done;
+        uint32_t off = (uint32_t)(at % bpc);
+        int got = read_chain_cluster(inode, (uint32_t)(at / bpc), cbuf);
+        if (got <= 0) {
+            err = got < 0 ? got : 0;   /* a chain shorter than the size: stop there */
+            break;
         }
-        node->size = 0;
-    } else if (size < node->size) {
-        /* Walk chain to the cluster containing 'size', free the rest */
-        uint32_t bpc = info->vol->bytes_per_cluster;
-        uint32_t keep_clusters = ((uint32_t)size + bpc - 1) / bpc;
-        uint32_t cluster = info->first_cluster;
-        for (uint32_t i = 1; i < keep_clusters && cluster != 0; i++) {
-            cluster = fat32_next_cluster(info->vol, cluster);
+        uint64_t n = bpc - off;
+        if (n > want - done) n = want - done;
+        if (iob_copy_out(buf, (size_t)done, cbuf + off, (size_t)n) != 0) {
+            err = -EFAULT;
+            break;
         }
-        if (cluster != 0) {
-            uint32_t next = fat32_next_cluster(info->vol, cluster);
-            /* Mark current as EOC */
-            info->vol->fat[cluster] = (info->vol->fat[cluster] & ~FAT32_ENTRY_MASK) |
-                                       (FAT32_EOC & FAT32_ENTRY_MASK);
-            info->vol->fat_dirty = 1;
-            /* Free the rest */
-            if (next != 0) fat32_free_chain(info->vol, next);
-        }
-        node->size = size;
+        done += n;
     }
-
-    /* Update dir entry */
-    Fat32DirEntry dentry;
-    if (fat32_read_dir_entry(info->vol, info->dir_cluster, info->dir_entry_idx, &dentry) > 0) {
-        dentry.file_size = (uint32_t)node->size;
-        fat32_set_entry_cluster(&dentry, info->first_cluster);
-        fat32_write_dir_entry(info->vol, info->dir_cluster, info->dir_entry_idx, &dentry);
-    }
-    fat32_sync();
+    kfree(cbuf);
+    if (done == 0 && err != 0) return err;
+    *pos += (loff_t)done;
+    return (int64_t)done;
 }
 
-/* --- Sync --- */
+static const InodeOps fat32_dir_iops = {
+    .lookup = fat32_lookup,
+};
 
-int fat32_sync(void) {
-    /* Find the volume from the root node cache — simple approach */
-    if (node_cache_count == 0) return -1;
-    Fat32NodeInfo *info = (Fat32NodeInfo *)node_cache[0].node->private_data;
-    Fat32Volume *vol = info->vol;
+static const FileOps fat32_dir_fops = {
+    .iterate = fat32_iterate,
+};
 
-    if (!vol->fat_dirty) return 0;
-
-    /* Write FAT sectors back to disk */
-    uint8_t sector_buf[SECTOR_SIZE];
-    for (uint32_t s = 0; s < vol->fat_sectors; s++) {
-        memcpy(sector_buf, (uint8_t *)vol->fat + s * SECTOR_SIZE, SECTOR_SIZE);
-        if (vol->dev->write(vol->dev, vol->fat_start + s, 1, sector_buf) != 0) {
-            kprintf("[FAT32] Failed to sync FAT sector %u\n", s);
-            return -EIO;
-        }
-    }
-
-    vol->fat_dirty = 0;
-    return 0;
-}
+static const FileOps fat32_file_fops = {
+    .read = fat32_read,
+};
 
 /* --- Mount --- */
 
-VfsNode *fat32_mount(BlockDevice *dev) {
-    if (dev == NULL) return NULL;
-
-    /* Read boot sector */
-    uint8_t sector_buf[SECTOR_SIZE];
-    if (dev->read(dev, 0, 1, sector_buf) != 0) {
-        kprintf("[FAT32] Failed to read boot sector\n");
-        return NULL;
-    }
-
-    Fat32Bpb *bpb = (Fat32Bpb *)sector_buf;
-
-    /* Validate FAT32 */
-    if (bpb->bytes_per_sector != 512) {
+/* Check the boot sector and fill vol's geometry. 0 or -EINVAL. */
+static int fat32_parse_bpb(Fat32Volume *vol, const Fat32Bpb *bpb) {
+    if (bpb->bytes_per_sector != SECTOR_SIZE) {
         kprintf("[FAT32] Unsupported sector size: %u\n", bpb->bytes_per_sector);
-        return NULL;
+        return -EINVAL;
     }
-    if (bpb->root_entry_count != 0) {
-        kprintf("[FAT32] Not FAT32 (root_entry_count=%u)\n", bpb->root_entry_count);
-        return NULL;
+    if (bpb->root_entry_count != 0 || bpb->fat_size_32 == 0 || bpb->sectors_per_cluster == 0 || bpb->num_fats == 0) {
+        kprintf("[FAT32] Not a FAT32 boot sector\n");
+        return -EINVAL;
     }
-    if (bpb->fat_size_32 == 0) {
-        kprintf("[FAT32] fat_size_32 is zero\n");
-        return NULL;
-    }
-    if (bpb->sectors_per_cluster == 0) {
-        kprintf("[FAT32] sectors_per_cluster is zero\n");
-        return NULL;
-    }
-
-    /* Allocate volume context */
-    Fat32Volume *vol = kmalloc(sizeof(Fat32Volume), GFP_ZERO);
-    if (!vol) return NULL;
-
-    vol->dev = dev;
     vol->sectors_per_cluster = bpb->sectors_per_cluster;
     vol->bytes_per_cluster = (uint32_t)bpb->sectors_per_cluster * SECTOR_SIZE;
     vol->fat_start = bpb->reserved_sectors;
     vol->fat_sectors = bpb->fat_size_32;
     vol->root_cluster = bpb->root_cluster;
+    uint64_t data_start = bpb->reserved_sectors + (uint64_t)bpb->num_fats * bpb->fat_size_32;
+    if (data_start >= bpb->total_sectors_32) {
+        kprintf("[FAT32] Data region past the end of the volume\n");
+        return -EINVAL;
+    }
+    vol->data_start = (uint32_t)data_start;
+    vol->total_clusters = (bpb->total_sectors_32 - vol->data_start) / bpb->sectors_per_cluster;
+    /* Clusters the FAT can describe: entries 0 and 1 are reserved */
+    uint64_t fat_entries = (uint64_t)vol->fat_sectors * SECTOR_SIZE / 4;
+    if (fat_entries < 3) return -EINVAL;
+    if (vol->total_clusters > fat_entries - 2) vol->total_clusters = (uint32_t)(fat_entries - 2);
+    if (!cluster_valid(vol, vol->root_cluster)) {
+        kprintf("[FAT32] Bad root cluster %u\n", vol->root_cluster);
+        return -EINVAL;
+    }
+    return 0;
+}
 
-    /* Data region starts after reserved + all FATs */
-    vol->data_start = bpb->reserved_sectors + bpb->num_fats * bpb->fat_size_32;
-
-    /* Total clusters */
-    uint32_t total_sectors = bpb->total_sectors_32;
-    uint32_t data_sectors = total_sectors - vol->data_start;
-    vol->total_clusters = data_sectors / bpb->sectors_per_cluster;
-
-    kprintf("[FAT32] BPB: spc=%u fat_start=%u data_start=%u root_cluster=%u total_clusters=%u\n",
-            vol->sectors_per_cluster, vol->fat_start, vol->data_start,
-            vol->root_cluster, vol->total_clusters);
-
-    /* Load entire FAT into memory */
-    uint32_t fat_bytes = vol->fat_sectors * SECTOR_SIZE;
-    vol->fat = kmalloc(fat_bytes, 0);
-    if (!vol->fat) {
-        kprintf("[FAT32] Failed to allocate FAT cache (%u bytes)\n", fat_bytes);
+SuperBlock *fat32_mount(BlockDevice *dev) {
+    if (dev == NULL) return NULL;
+    uint8_t sector_buf[SECTOR_SIZE];
+    if (dev->read(dev, 0, 1, sector_buf) != 0) {
+        kprintf("[FAT32] Failed to read boot sector\n");
+        return NULL;
+    }
+    Fat32Volume *vol = kmalloc(sizeof(Fat32Volume), GFP_ZERO);
+    if (vol == NULL) return NULL;
+    vol->dev = dev;
+    if (fat32_parse_bpb(vol, (const Fat32Bpb *)sector_buf) != 0) {
         kfree(vol);
         return NULL;
     }
+    kprintf("[FAT32] BPB: spc=%u fat_start=%u data_start=%u root_cluster=%u total_clusters=%u\n",
+            vol->sectors_per_cluster, vol->fat_start, vol->data_start, vol->root_cluster, vol->total_clusters);
 
-    /* Read FAT sectors one at a time */
+    uint64_t fat_bytes = (uint64_t)vol->fat_sectors * SECTOR_SIZE;
+    vol->fat = kmalloc((size_t)fat_bytes, 0);
+    if (vol->fat == NULL) {
+        kprintf("[FAT32] Failed to allocate FAT cache (%lu bytes)\n", fat_bytes);
+        kfree(vol);
+        return NULL;
+    }
     for (uint32_t s = 0; s < vol->fat_sectors; s++) {
-        if (dev->read(dev, vol->fat_start + s, 1,
-                      (uint8_t *)vol->fat + s * SECTOR_SIZE) != 0) {
+        if (dev->read(dev, vol->fat_start + s, 1, (uint8_t *)vol->fat + (uint64_t)s * SECTOR_SIZE) != 0) {
             kprintf("[FAT32] Failed to read FAT sector %u\n", s);
             kfree(vol->fat);
             kfree(vol);
@@ -813,20 +451,17 @@ VfsNode *fat32_mount(BlockDevice *dev) {
         }
     }
 
-    vol->fat_dirty = 0;
-
-    /* Reset node cache */
-    node_cache_count = 0;
-
-    /* Create root VfsNode */
-    VfsNode *root = fat32_alloc_node(vol, VFS_DIRECTORY, vol->root_cluster, 0, 0);
-    if (!root) {
+    vfs_sb_init(&vol->sb, "vfat", &fat32_sops);
+    vol->sb.flags = SB_RDONLY;
+    vol->sb.bdev = dev;
+    mutex_init(&vol->io_lock, LOCK_LEVEL_FS_IO);
+    Inode *root = fat32_iget(vol, FAT32_ROOT_INO, S_IFDIR | 0755, vol->root_cluster, 0, FAT32_ROOT_INO);
+    if (root == NULL) {
         kfree(vol->fat);
         kfree(vol);
         return NULL;
     }
-    vol->root_node = root;
-
-    kprintf("[FAT32] Volume mounted, FAT cached (%u bytes)\n", fat_bytes);
-    return root;
+    vol->sb.root = root;   /* the superblock's reference: volumes are never unmounted */
+    kprintf("[FAT32] Volume mounted read-only, FAT cached (%lu bytes)\n", fat_bytes);
+    return &vol->sb;
 }

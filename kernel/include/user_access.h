@@ -31,6 +31,11 @@ static inline int user_ptr_valid(const void *ptr, size_t len) {
  * bytes not copied are zeroed in dst). */
 int copy_from_user(void *dst, const void *src, size_t len);
 
+/* Copy up to len bytes from user src to kernel dst, stopping at the first
+ * byte that faults. Returns the bytes copied; dst past them is untouched (a
+ * write into file data must not change bytes it didn't take). */
+size_t copy_from_user_partial(void *dst, const void *src, size_t len);
+
 /* Copy len bytes from kernel src to user dst. Returns 0 or -EFAULT (some
  * bytes may have been written). */
 int copy_to_user(void *dst, const void *src, size_t len);

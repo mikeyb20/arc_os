@@ -40,4 +40,7 @@ int   fclose(FILE *stream);
 size_t fread(void *ptr, size_t size, size_t count, FILE *stream);
 size_t fwrite(const void *ptr, size_t size, size_t count, FILE *stream);
 
+/* rename(2): move oldpath to newpath (same filesystem) */
+int rename(const char *oldpath, const char *newpath);
+
 #endif /* ARCHOS_LIBC_STDIO_H */

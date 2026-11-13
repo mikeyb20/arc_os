@@ -18,12 +18,21 @@
 
 /* Levels: work-blocks.md §7, numbered with gaps. Lower = taken first. */
 #define LOCK_LEVEL_KERNEL        0   /* big kernel lock (interim, proc/kernel_lock.h) */
+#define LOCK_LEVEL_FILE_POS      7   /* sleeping: an open file's position (M1-11) */
+#define LOCK_LEVEL_RENAME        8   /* sleeping: one rename per filesystem (M1-11) */
 #define LOCK_LEVEL_INODE         10   /* sleeping: write, truncate, rename, directories (M1-11) */
+#define LOCK_LEVEL_INODE_2       11   /* sleeping: rename's second directory (M1-11) */
+#define LOCK_LEVEL_INODE_CHILD   12   /* sleeping: a directory being removed or replaced (M1-11) */
 #define LOCK_LEVEL_MM            20   /* sleeping read-write: mmap, munmap, faults (M1-07) */
 #define LOCK_LEVEL_PAGE          30   /* sleeping, per page (M1-12) */
 #define LOCK_LEVEL_MAPPING       40   /* sleeping: VMAs mapping a file (M1-12) */
+#define LOCK_LEVEL_FS_IO         45   /* sleeping: a filesystem's device reads (FAT32 volume; M1-11) */
 #define LOCK_LEVEL_PAGE_TABLE    50   /* spinlock, per mm; today the kernel page tables */
 #define LOCK_LEVEL_PAGE_CACHE    60   /* spinlock, per address space (M1-12) */
+#define LOCK_LEVEL_MOUNT         62   /* spinlock: adding to the mount table (M1-11) */
+#define LOCK_LEVEL_DCACHE        63   /* spinlock: the dentry cache (M1-11) */
+#define LOCK_LEVEL_ICACHE        64   /* spinlock: the inode cache (M1-11) */
+#define LOCK_LEVEL_FD_TABLE      65   /* spinlock: one fd table (M1-11) */
 #define LOCK_LEVEL_SIGNAL        70   /* thread-group and signal (M1-16) */
 /* LOCK_LEVEL_OBJECT: one object's state, the lock passed to wq_sleep (pipe,
  * socket, tty, wait4, mutex/semaphore guards) */

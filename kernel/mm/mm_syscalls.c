@@ -44,8 +44,9 @@ static int64_t sys_mmap(uint64_t addr, uint64_t len, uint64_t prot, uint64_t fla
     uint64_t type = flags & MAP_TYPE;
     if (type != MAP_PRIVATE && type != MAP_SHARED && type != MAP_SHARED_VALIDATE) return -EINVAL;
     if (!(flags & MAP_ANONYMOUS)) {
-        Process *p = proc_current();
-        if ((int64_t)fd < 0 || fd_get(p->fd_table, (int)fd) == NULL) return -EBADF;
+        File *f = (int64_t)fd < 0 ? NULL : fd_get(proc_current()->fd_table, (int)fd);
+        if (f == NULL) return -EBADF;
+        fput(f);
         return -ENODEV;   /* file mappings: M1-12 */
     }
     if (type != MAP_PRIVATE) return -EINVAL;   /* shared anonymous memory needs refcounted pages (M1-08) */
