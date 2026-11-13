@@ -200,9 +200,6 @@ static void proc_release_fds(Process *p) {
 static void hal_set_kernel_stack(uint64_t rsp0) {
     (void)rsp0;
 }
-static void hal_switch_address_space(uint64_t cr3) {
-    (void)cr3;
-}
 __attribute__((noreturn))
 static void fork_return_to_user(const ForkContext *ctx) {
     (void)ctx;
@@ -239,15 +236,11 @@ static void kfree(void *ptr) {
     free(ptr);
 }
 
-/* thread_current / thread_set_current stubs (static to avoid linker clash) */
+/* thread_current stub (static to avoid linker clash) */
 static Thread *test_current_thread = NULL;
 
 static Thread *thread_current(void) {
     return test_current_thread;
-}
-
-static void thread_set_current(Thread *t) {
-    test_current_thread = t;
 }
 
 /* Tracking thread_create stub (static to avoid linker clash) */
