@@ -101,7 +101,8 @@ static void fb_setup(const BootInfo *info) {
     if (!info->fb_present || fb_console_init(&info->framebuffer) != 0) return;
     fb_console_attach_cells(kmalloc(fb_console_cells_bytes(), GFP_KERNEL));
     kprintf_set_putchar_hook(fb_console_putchar);
-    panic_set_screen(fb_console_panic_view);
+    diag_qr_panic_setup();
+    panic_set_screen(diag_qr_panic_screen);   /* panic view plus a QR code of the report (M1-04c) */
     kprintf("[FB] Framebuffer console active (%lux%lu, %ux%u text)\n", info->framebuffer.width,
             info->framebuffer.height, fb_console_cols(), fb_console_rows());
 }

@@ -17,9 +17,9 @@
 #define PANIC_NOBODY 0xFFFFFFFFu
 
 static uint32_t panic_cpu = PANIC_NOBODY;
-static void (*panic_screen)(void);
+static void (*panic_screen)(const PanicInfo *info);
 
-void panic_set_screen(void (*show)(void)) {
+void panic_set_screen(void (*show)(const PanicInfo *info)) {
     panic_screen = show;
 }
 
@@ -62,12 +62,11 @@ void panic_report(const PanicInfo *info) {
     }
     kprintf_level(KLOG_EMERG, "======================================================\n");
 
-    if (panic_screen != NULL) panic_screen();
-
-    if (testmode_active()) {
-        kprintf("ARC_TEST PANIC suite=%s\n", testmode_suite());
-        testmode_exit(TESTMODE_PANIC_CODE);
-    }
+    /* Test mode says so before the screen: the qr suite reads the screen's
+     * code while the run holds there (arc.qrhold), then ends QEMU itself */
+    if (testmode_active()) kprintf("ARC_TEST PANIC suite=%s\n", testmode_suite());
+    if (panic_screen != NULL) panic_screen(info);
+    if (testmode_active()) testmode_exit(TESTMODE_PANIC_CODE);
     panic_halt();
 }
 

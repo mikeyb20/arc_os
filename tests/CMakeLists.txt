@@ -52,6 +52,7 @@ add_executable(test_runner
     test_ansi.c
     test_cmdline.c
     test_qr.c
+    test_qr_screen.c
 )
 
 # Include kernel source root for "lib/mem.h" etc, but NOT kernel/include
@@ -130,6 +131,7 @@ add_test(NAME test_cmdline     COMMAND test_runner --suite cmdline)
 add_test(NAME test_panic       COMMAND test_runner --suite panic)
 add_test(NAME test_smbios      COMMAND test_runner --suite smbios)
 add_test(NAME test_qr          COMMAND test_runner --suite qr)
+add_test(NAME test_qr_screen   COMMAND test_runner --suite qr_screen)
 set_tests_properties(arc_os_tests PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 
 # M1-11: the VFS suites run the real kernel/fs sources (and proc/fd.c), each

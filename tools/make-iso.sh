@@ -6,7 +6,8 @@
 #   -c  kernel command line, e.g. "arc.test=smoke" for kernel test mode
 #   -B  bring-up stick (M1-04, default build/arc_os-bringup.iso): a 10 s boot
 #       menu whose default entry is the boot report with self-test and benchmark,
-#       then the boot report alone, then normal boot (docs/hardware/bringup.md)
+#       then the boot report alone, the same report as QR codes, the kernel log
+#       as QR codes (M1-04c), then normal boot (docs/hardware/bringup.md)
 #   EXTRA_MODULE  files added under /boot/ and loaded as Limine modules after
 #                 the standard programs (test programs, suite lists)
 # With no arguments it builds the normal build/arc_os.iso.
@@ -74,7 +75,7 @@ for mod in "${EXTRA_MODULES[@]}"; do
     echo "    module_path: boot():/boot/$name" >> "$CONF"
 done
 
-# Bring-up stick: two more entries that repeat the arc_os entry's lines with a
+# Bring-up stick: four more entries that repeat the arc_os entry's lines with a
 # diagnostic command line, listed before it so the first one is the default
 if [ "$BRINGUP" = 1 ]; then
     ENTRY="$(sed -n '/^\/arc_os$/,$p' "$PROJECT_DIR/limine.conf" | tail -n +2)"
@@ -84,6 +85,8 @@ if [ "$BRINGUP" = 1 ]; then
         echo
         printf '/arc_os boot report, self-test and benchmark\n%s\n    cmdline: arc.selftest=1 arc.bench=1\n\n' "$ENTRY"
         printf '/arc_os boot report\n%s\n    cmdline: arc.report=1\n\n' "$ENTRY"
+        printf '/arc_os boot report as QR codes (with self-test and benchmark)\n%s\n    cmdline: arc.qr=1 arc.selftest=1 arc.bench=1\n\n' "$ENTRY"
+        printf '/arc_os kernel log as QR codes\n%s\n    cmdline: arc.qr=log\n\n' "$ENTRY"
         echo "/arc_os normal boot"
         echo "$ENTRY"
     } > "$CONF"

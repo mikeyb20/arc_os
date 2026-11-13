@@ -175,9 +175,35 @@ add_test(NAME qemu.diag COMMAND ${_qemu_test} --suite diag
     --expect "\\[REPORT\\] BENCH context switch"
     --expect "ARC_TEST DONE pass=7 fail=0")
 
+# QR screens (M1-04c): arc.qr=1 draws the report as ARC1 QR pages. The harness
+# takes a QEMU screendump on each "ARC_QR shown" line and presses a key for the
+# next page; tools/qr-check.py decodes every shot with zbarimg and compares it
+# with the [REPORT] lines on serial, CRCs included. arc.qr=log does the same
+# for the log tail. The panic code: arc.qrhold keeps the panic screen up
+# (test mode only) until the harness has its screendump, then it ends QEMU.
+set(_qr_check "${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/qr-check.py")
+add_test(NAME qemu.qr.report COMMAND ${_qemu_test} --suite diag --name qr-report
+    --cmdline arc.qr=1 --cmdline arc.selftest=1
+    --screendump "^ARC_QR shown report "
+    --check "${_qr_check} --kind report"
+    --expect "\\[REPORT\\] arc_os boot report, build ([0-9a-f]{12}(-dirty)?|unknown)"
+    --expect "\\[REPORT\\] SELFTEST PASS"
+    --expect "ARC_TEST DONE pass=[0-9]+ fail=0")
+add_test(NAME qemu.qr.log COMMAND ${_qemu_test} --suite diag --name qr-log
+    --cmdline arc.qr=log
+    --screendump "^ARC_QR shown log "
+    --check "${_qr_check} --kind log"
+    --expect "ARC_TEST DONE pass=[0-9]+ fail=0")
+add_test(NAME qemu.qr.panic COMMAND ${_qemu_test} --suite kpanic --name qr-panic
+    --cmdline arc.panic=fault --cmdline arc.qrhold=1
+    --expect-panic --timeout 90
+    --screendump "^ARC_QR shown panic " --after-shot quit
+    --check "${_qr_check} --kind panic"
+    --expect "PANIC: Page Fault on CPU 0")
+
 set_tests_properties(qemu.smoke qemu.mem.buddy qemu.mem.cap qemu.userland qemu.abi qemu.musl qemu.fpu qemu.cpufloor
     qemu.smp.xapic qemu.smp.x2apic qemu.sched qemu.lockorder qemu.selftest.fail qemu.selftest.panic
-    qemu.panic.fault qemu.diag qemu.mm qemu.mm.oom qemu.vfs
+    qemu.panic.fault qemu.diag qemu.mm qemu.mm.oom qemu.vfs qemu.qr.report qemu.qr.log qemu.qr.panic
     PROPERTIES LABELS qemu TIMEOUT 180 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     FIXTURES_SETUP qemu_logs)
 set_tests_properties(qemu.mm.oom PROPERTIES TIMEOUT 320)

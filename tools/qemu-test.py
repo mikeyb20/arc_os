@@ -24,6 +24,12 @@ when KVM is missing: QEMU before 9.0 has no x2APIC under TCG.
 --expect-exit N makes the run pass only if QEMU's debug-exit value is N (the
 kernel ends the run itself, e.g. 0x7e when the CPU is below the x86-64-v3
 floor); the --expect patterns must still match.
+--screendump REGEX (M1-04c) opens a QEMU monitor socket and, each time a new
+serial line matches REGEX, saves the screen as <name>.shot-<k>.ppm, then
+presses a key (--after-shot key, the default) or ends QEMU (--after-shot
+quit). --check CMD then runs CMD with the serial log and the screendumps as
+arguments; the suite fails if it exits non-zero (tools/qr-check.py decodes
+the QR codes on them).
 
 Exit status of this script: 0 = suite passed, 1 = failed, 2 = harness error.
 Python 3 standard library only.
@@ -32,8 +38,12 @@ Python 3 standard library only.
 import argparse
 import os
 import re
+import shlex
+import shutil
+import socket
 import subprocess
 import sys
+import tempfile
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -102,6 +112,98 @@ def qemu_command(args, iso, serial_log):
     return cmd
 
 
+class Monitor:
+    """QEMU's human monitor (HMP) on a Unix socket: one command, one prompt."""
+
+    def __init__(self, path, deadline):
+        self.sock = None
+        while self.sock is None:
+            try:
+                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                s.connect(path)
+                self.sock = s
+            except OSError:
+                s.close()
+                if time.monotonic() > deadline:
+                    raise
+                time.sleep(0.1)
+        self.sock.settimeout(30)
+        self._until_prompt()
+
+    def _until_prompt(self):
+        buf = b""
+        while not buf.endswith(b"(qemu) "):
+            chunk = self.sock.recv(4096)
+            if not chunk:
+                raise OSError("monitor closed")
+            buf += chunk
+        return buf.decode(errors="replace")
+
+    def send(self, line):
+        self.sock.sendall(line.encode() + b"\n")
+
+    def command(self, line):
+        self.send(line)
+        return self._until_prompt()
+
+    def close(self):
+        self.sock.close()
+
+
+def run_with_screendumps(args, cmd, serial_log, out_dir, name):
+    """Run QEMU, taking a screendump on each serial line matching
+    args.screendump. Returns (rc, timed_out, stderr, shots)."""
+    tmp = tempfile.mkdtemp(prefix="arcmon")   # short path: Unix sockets allow ~100 bytes
+    sock = os.path.join(tmp, "mon")
+    cmd = cmd + ["-monitor", f"unix:{sock},server=on,wait=off"]
+    proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    start = time.monotonic()
+    deadline = start + args.timeout
+    shots, seen, mon, timed_out = [], 0, None, False
+    rx = re.compile(args.screendump)
+    try:
+        mon = Monitor(sock, min(deadline, start + 30))
+        while proc.poll() is None:
+            if time.monotonic() > deadline:
+                timed_out = True
+                break
+            lines = read_lines(serial_log)
+            # Only whole lines: the last one may still be arriving
+            done = len(lines) if lines and open(serial_log, "rb").read().endswith(b"\n") else max(len(lines) - 1, 0)
+            for line in lines[seen:done]:
+                if rx.search(line):
+                    shot = os.path.join(out_dir, f"{name}.shot-{len(shots) + 1}.ppm")
+                    if os.path.exists(shot):
+                        os.remove(shot)
+                    mon.command(f"screendump {shot}")
+                    shots.append(shot)
+                    log(f"screendump {len(shots)} after: {line.strip()}")
+                    if args.after_shot == "quit":
+                        mon.send("quit")   # no prompt comes back
+                    else:
+                        mon.command("sendkey spc")
+            seen = max(seen, done)
+            time.sleep(0.2)
+    except OSError as e:
+        if proc.poll() is None:
+            log(f"monitor: {e}")
+    finally:
+        if mon is not None:
+            try:
+                mon.close()
+            except OSError:
+                pass
+        if proc.poll() is None:
+            proc.kill()
+        try:
+            _, err = proc.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            err = b""
+        shutil.rmtree(tmp, ignore_errors=True)
+    rc = None if timed_out else proc.returncode
+    return rc, timed_out, (err or b"").decode(errors="replace").strip(), shots
+
+
 def read_lines(path):
     try:
         with open(path, "r", errors="replace") as f:
@@ -141,6 +243,12 @@ def main():
                     help="QEMU CPU model, run under TCG (default: host with KVM, else max)")
     ap.add_argument("--expect-exit", type=lambda v: int(v, 0), default=None,
                     help="pass only if the kernel ends the run with this debug-exit value")
+    ap.add_argument("--screendump", default=None, metavar="REGEX",
+                    help="save the screen each time a new serial line matches REGEX (QEMU monitor)")
+    ap.add_argument("--after-shot", choices=("key", "quit"), default="key",
+                    help="after each screendump press a key (default) or end QEMU")
+    ap.add_argument("--check", default=None, metavar="CMD",
+                    help="run CMD SERIAL_LOG SHOT... after the run; non-zero fails the suite")
     args = ap.parse_args()
     args.build_dir = os.path.abspath(args.build_dir)
     if args.disk:
@@ -171,15 +279,19 @@ def main():
 
     start = time.monotonic()
     timed_out = False
-    try:
-        proc = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True,
-                              text=True, timeout=args.timeout)
-        rc = proc.returncode
-        qemu_err = proc.stderr.strip()
-    except subprocess.TimeoutExpired as e:
-        timed_out = True
-        rc = None
-        qemu_err = (e.stderr or b"").decode(errors="replace").strip() if isinstance(e.stderr, bytes) else (e.stderr or "")
+    shots = []
+    if args.screendump:
+        rc, timed_out, qemu_err, shots = run_with_screendumps(args, cmd, serial_log, out_dir, name)
+    else:
+        try:
+            proc = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True,
+                                  text=True, timeout=args.timeout)
+            rc = proc.returncode
+            qemu_err = proc.stderr.strip()
+        except subprocess.TimeoutExpired as e:
+            timed_out = True
+            rc = None
+            qemu_err = (e.stderr or b"").decode(errors="replace").strip() if isinstance(e.stderr, bytes) else (e.stderr or "")
     elapsed = time.monotonic() - start
 
     lines = read_lines(serial_log)
@@ -195,6 +307,16 @@ def main():
 
     head = f"suite {args.suite} ({accel}, {elapsed:.1f}s)"
     problems = []
+    # --check: the screendumps against the serial log, whatever ended the run
+    if args.check:
+        if not shots:
+            problems.append(f"no screendump taken (no serial line matched /{args.screendump}/)")
+        else:
+            res = subprocess.run(shlex.split(args.check) + [serial_log] + shots, cwd=ROOT,
+                                 capture_output=True, text=True)
+            print((res.stdout + res.stderr).rstrip(), flush=True)
+            if res.returncode != 0:
+                problems.append(f"check failed: {args.check}")
     if args.expect_exit is not None:
         if timed_out:
             problems.append(f"timeout after {args.timeout:.0f}s")

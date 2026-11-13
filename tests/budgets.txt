@@ -23,8 +23,11 @@
 # 362163 -> 419844 after M1-11: ~50 KB of code and .ksyms names for the new VFS
 # (inode and dentry caches, mount table with bind mounts, open-file objects,
 # sparse ramfs, pipes, read-only FAT32, the *at/dup3/fcntl/rename syscalls).
-# Limit = measured + 5%)
-kernel_image_bytes     440000      max  bytes  M0-08  build
+# M1-04c (merged first, 328564 -> 348042 on its own): the panic code's static
+# buffers (11.6 KB of .bss: a QrCode plus its text and payload, so the panic path
+# never allocates) and ~7.9 KB of code (QR screens, report and log pages, bitmap
+# drawing); 443360 with M1-07 + M1-11 + M1-04c combined. Limit = measured + 5%)
+kernel_image_bytes     465000      max  bytes  M0-08  build
 
 # Free memory when init starts, booted with -m 4G (qemu.smoke; measured 4251873280)
 boot_free_bytes        3830000000  min  bytes  M0-08  smoke
