@@ -9,7 +9,7 @@
  * Locks: log_lock (IRQ-safe leaf spinlock, work-blocks §7 level 10) guards the
  * ring bytes, head, line_start and the buffer switch; it is held only for a
  * copy of at most a line, never while printing. console_owner is a try-only
- * flag: a writer that finds it taken leaves its bytes for the owner, which
+ * flag naming the owning CPU: a writer that finds it taken leaves its bytes for the owner, which
  * re-checks for new bytes after letting go. In panic mode both are skipped.
  * Cost: a write is O(message length) under the lock; printing is paid by the
  * console owner, outside the log lock. */
@@ -28,9 +28,9 @@ static char *ring = early_ring;
 static uint64_t ring_mask = KLOG_EARLY_SIZE - 1;
 static uint64_t head;           /* bytes written since boot (atomic loads outside the lock) */
 static int line_start = 1;      /* next byte begins a line: write a marker first */
-static Spinlock log_lock = SPINLOCK_INIT;
+static Spinlock log_lock = SPINLOCK_INIT(LOCK_LEVEL_LOG, "log ring");
 
-static int console_owner;       /* 1 while some context prints to the consoles */
+static uint32_t console_owner;  /* 0 free, else the owning CPU's index + 1 */
 static uint64_t cons_pos;       /* next log byte the consoles have not seen */
 static int console_level = KLOG_INFO;
 static int panicking;
@@ -61,13 +61,13 @@ void klog_panic_mode(void) {
 
 /* How log_lock_take got the lock: pass the result to log_unlock */
 #define LOCK_NONE 0   /* panic mode, lock busted: no lock held */
-#define LOCK_IRQ  1   /* spinlock_acquire: interrupts off, flags saved */
+#define LOCK_IRQ  1   /* spin_lock_irqsave: interrupts off, flags in *flags */
 #define LOCK_RAW  2   /* panic mode: bare test-and-set */
 
 /* Take log_lock; in panic mode give up after a bounded number of tries, once. */
-static int log_lock_take(void) {
+static int log_lock_take(uint64_t *flags) {
     if (!__atomic_load_n(&panicking, __ATOMIC_RELAXED)) {
-        spinlock_acquire(&log_lock);
+        spin_lock_irqsave(&log_lock, flags);
         return LOCK_IRQ;
     }
     if (lock_busted) return LOCK_NONE;
@@ -79,9 +79,9 @@ static int log_lock_take(void) {
     return LOCK_NONE;
 }
 
-static void log_unlock(int how) {
+static void log_unlock(int how, uint64_t flags) {
     if (how == LOCK_IRQ)
-        spinlock_release(&log_lock);
+        spin_unlock_irqrestore(&log_lock, flags);
     else if (how == LOCK_RAW)
         __sync_lock_release(&log_lock.locked);
 }
@@ -95,7 +95,8 @@ void klog_write(int level, const char *s, size_t n) {
     if (level < 0) level = 0;
     if (level > KLOG_DEBUG) level = KLOG_DEBUG;
 
-    int held = log_lock_take();
+    uint64_t flags = 0;
+    int held = log_lock_take(&flags);
     for (size_t i = 0; i < n; i++) {
         if (line_start) {
             ring_put('<');
@@ -105,13 +106,14 @@ void klog_write(int level, const char *s, size_t n) {
         ring_put(s[i]);
         line_start = (s[i] == '\n');
     }
-    log_unlock(held);
+    log_unlock(held, flags);
     klog_flush();
 }
 
 void klog_set_buffer(char *buf, size_t size) {
     if (buf == NULL || size < KLOG_EARLY_SIZE || (size & (size - 1)) != 0) return;
-    int held = log_lock_take();
+    uint64_t flags = 0;
+    int held = log_lock_take(&flags);
     uint64_t old_size = ring_mask + 1;
     uint64_t from = head > old_size ? head - old_size : 0;
     for (uint64_t p = from; p < head; p++) {
@@ -119,7 +121,7 @@ void klog_set_buffer(char *buf, size_t size) {
     }
     ring = buf;
     ring_mask = size - 1;
-    log_unlock(held);
+    log_unlock(held, flags);
 }
 
 uint64_t klog_head(void) {
@@ -133,7 +135,8 @@ uint64_t klog_tail(void) {
 }
 
 size_t klog_read(uint64_t *pos, char *out, size_t n) {
-    int held = log_lock_take();
+    uint64_t flags = 0;
+    int held = log_lock_take(&flags);
     uint64_t size = ring_mask + 1;
     uint64_t tail = head > size ? head - size : 0;
     if (*pos < tail) *pos = tail;
@@ -143,7 +146,7 @@ size_t klog_read(uint64_t *pos, char *out, size_t n) {
         out[count++] = ring[*pos & ring_mask];
         (*pos)++;
     }
-    log_unlock(held);
+    log_unlock(held, flags);
     return count;
 }
 
@@ -186,9 +189,35 @@ static void console_drain(void) {
     }
 }
 
+/* Take the console flag for this CPU if it is free. */
+static int console_take(void) {
+    uint32_t free = 0;
+    return __atomic_compare_exchange_n(&console_owner, &free, hal_cpu_index() + 1, 0, __ATOMIC_ACQUIRE,
+                                       __ATOMIC_RELAXED);
+}
+
 int klog_console_try_acquire(void) {
     if (__atomic_load_n(&panicking, __ATOMIC_RELAXED)) return 1;
-    return __atomic_exchange_n(&console_owner, 1, __ATOMIC_ACQUIRE) == 0;
+    return console_take();
+}
+
+/* klog_console_acquire waits at most this long (TSC time), longer than a drain
+ * of a few lines to the serial port; the pause count caps it before the TSC
+ * rate is known */
+#define KLOG_CONSOLE_WAIT_NS 5000000u
+#define KLOG_CONSOLE_SPINS   (1u << 16)
+
+int klog_console_acquire(void) {
+    uint64_t start = hal_tsc_read();
+    for (uint32_t i = 0;; i++) {
+        if (klog_console_try_acquire()) return 1;
+        /* This CPU owns them: the code this interrupted is mid-drain and can't
+         * finish until we return, so waiting would only run out the bound */
+        if (__atomic_load_n(&console_owner, __ATOMIC_RELAXED) == hal_cpu_index() + 1) return 0;
+        uint64_t ns = hal_tsc_to_ns(hal_tsc_read() - start);
+        if (ns >= KLOG_CONSOLE_WAIT_NS || (ns == 0 && i >= KLOG_CONSOLE_SPINS)) return 0;
+        hal_cpu_relax();
+    }
 }
 
 void klog_console_release(void) {
@@ -205,7 +234,7 @@ void klog_flush(void) {
     /* A writer that failed to take the console while we drained left its bytes
      * for us; checking again after letting go means none are stranded. */
     while (__atomic_load_n(&cons_pos, __ATOMIC_ACQUIRE) != klog_head()) {
-        if (__atomic_exchange_n(&console_owner, 1, __ATOMIC_ACQUIRE) != 0) return;
+        if (!console_take()) return;
         console_drain();
         __atomic_store_n(&console_owner, 0, __ATOMIC_RELEASE);
     }

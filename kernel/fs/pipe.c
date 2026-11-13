@@ -25,6 +25,7 @@ static PipeNode *to_pipe(VfsNode *node) {
 /* --- VfsOps callbacks --- */
 
 static int pipe_read(VfsNode *node, void *buf, uint32_t offset, uint32_t size) {
+    uint64_t irqf;
     (void)offset;
     PipeNode *pipe = to_pipe(node);
     uint32_t total = 0;
@@ -41,11 +42,11 @@ static int pipe_read(VfsNode *node, void *buf, uint32_t offset, uint32_t size) {
         } else {
             /* Buffer empty, writers exist — sleep until woken */
             if (total > 0) break;  /* Return what we have */
-            spinlock_acquire(&pipe->lock);
+            spin_lock_irqsave(&pipe->lock, &irqf);
             if (pipe->head == pipe->tail && pipe->writer_count > 0) {
-                wq_sleep(&pipe->readers_wq, &pipe->lock);
+                wq_sleep(&pipe->readers_wq, &pipe->lock, irqf);
             } else {
-                spinlock_release(&pipe->lock);
+                spin_unlock_irqrestore(&pipe->lock, irqf);
             }
         }
     }
@@ -54,6 +55,7 @@ static int pipe_read(VfsNode *node, void *buf, uint32_t offset, uint32_t size) {
 }
 
 static int pipe_write(VfsNode *node, const void *buf, uint32_t offset, uint32_t size) {
+    uint64_t irqf;
     (void)offset;
     PipeNode *pipe = to_pipe(node);
     const uint8_t *src = (const uint8_t *)buf;
@@ -68,11 +70,11 @@ static int pipe_write(VfsNode *node, const void *buf, uint32_t offset, uint32_t 
             pipe->head++;
         } else {
             /* Buffer full — sleep until woken */
-            spinlock_acquire(&pipe->lock);
+            spin_lock_irqsave(&pipe->lock, &irqf);
             if (pipe->head - pipe->tail >= PIPE_BUF_SIZE && pipe->reader_count > 0) {
-                wq_sleep(&pipe->writers_wq, &pipe->lock);
+                wq_sleep(&pipe->writers_wq, &pipe->lock, irqf);
             } else {
-                spinlock_release(&pipe->lock);
+                spin_unlock_irqrestore(&pipe->lock, irqf);
             }
         }
     }
@@ -104,6 +106,7 @@ int pipe_create(VfsNode **read_node, VfsNode **write_node) {
 
     pipe->reader_count = 1;
     pipe->writer_count = 1;
+    spin_lock_init(&pipe->lock, LOCK_LEVEL_OBJECT, "pipe");
     wq_init(&pipe->readers_wq);
     wq_init(&pipe->writers_wq);
 

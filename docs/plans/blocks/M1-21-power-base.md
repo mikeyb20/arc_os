@@ -36,4 +36,6 @@ preference set by the power profile, and package energy can be read (ADR-0017).
 - On hybrid parts HWP requests are per logical CPU.
 
 **Notes.**
--
+- From M1-05: the idle loop is `sched_idle_loop` (proc/sched.c): it halts through `hal_idle_wait` (`sti; hlt`)
+  with interrupts off before the check, so a wakeup IPI is never missed. MWAIT and C-state choice go behind that
+  call. The idle thread's time is counted per CPU (`/proc/sched_debug` `idle_ns`).

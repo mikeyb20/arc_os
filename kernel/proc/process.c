@@ -190,6 +190,7 @@ Process *proc_fork(Process *parent, const ForkContext *user_ctx) {
      * the kernel never touches them) and TLS pointer */
     fpu_save_current(t->fpu_state);
     t->fs_base = thread_current()->fs_base;
+    t->affinity = thread_current()->affinity;   /* Linux: fork keeps the CPU mask */
 
     proc_set_main_thread(child, t);
     sched_add_thread(t);
@@ -226,11 +227,13 @@ int proc_reap(Process *child, int32_t *status_out) {
     int pid = (int)child->pid;
 
     /* The caller runs in its own address space, so the child's CR3 is not
-     * loaded here. The child's thread is DEAD and switched away for the last
-     * time in proc_exit (one CPU, interrupts off from exit to the switch).
-     * M1-05 (SMP) must also wait until it is off every CPU. Nothing else
-     * holds the Process: wait queues hold only running threads' sleepers,
-     * signals and the tty go by pid/pgid, and PIDs are not reused. */
+     * loaded here (no CPU keeps a dead thread's CR3: switching away from it
+     * loads the next thread's). The child's thread is DEAD; it may still be
+     * finishing its last switch on another CPU, so wait until it is off that
+     * CPU before freeing its stack. Nothing else holds the Process: wait
+     * queues hold only running threads' sleepers, signals and the tty go by
+     * pid/pgid, and PIDs are not reused. */
+    sched_wait_off_cpu(child->main_thread);
     proc_unlink(child);
     if (child->page_table != 0) {
         vmm_free_user_pages(child->page_table);

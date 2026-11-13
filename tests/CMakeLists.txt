@@ -67,7 +67,7 @@ target_include_directories(test_runner PRIVATE
 
 # kernel/include/uapi (Linux ABI numbers and structs) is reached as "uapi/..." through
 # -idirafter, so system headers still win for stdint.h and friends.
-target_compile_options(test_runner PRIVATE -Wall -Wextra -std=c11
+target_compile_options(test_runner PRIVATE -Wall -Wextra -std=c11 -DARC_HOST_TEST
     -idirafter ${CMAKE_SOURCE_DIR}/kernel/include)
 
 # test_bootinfo.c includes limine.c which does #include <limine.h>.

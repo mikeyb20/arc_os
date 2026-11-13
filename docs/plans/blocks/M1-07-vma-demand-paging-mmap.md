@@ -61,3 +61,8 @@ kernel; TLB shootdown works across CPUs (ADR-0004).
   `syscall_iret_user` (syscall_entry.asm) is the IRET back to a non-canonical user RIP (set by rt_sigreturn): treat it
   as the user's fault (SIGSEGV), not the kernel's. The syscall frame is found from `thread_current()->kernel_stack_top`
   (syscall.c `syscall_frame`); the old `syscall_saved_user_*` globals are gone.
+- From M1-05: mm work runs under the interim big kernel lock (`kernel/proc/kernel_lock.h`), held for the whole
+  syscall; this block gives the mm its own locks at the levels in `docs/kernel/locking.md` (mm lock 20, page-table
+  lock 50; the kernel page-table lock in `vmm.c` is already level 50) and moves mm off the kernel-lock list there.
+  User page faults still panic; the fault path this block writes must take the mm lock, not the kernel lock. CR3 is compared with what each CPU has loaded (`rq->cr3` in
+  sched.c), so a migrated single-threaded process reloads it; shootdown is needed once threads share an mm (M1-16).

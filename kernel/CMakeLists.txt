@@ -54,6 +54,8 @@ set(KERNEL_C_SOURCES
     arch/x86_64/ipi.c
     proc/thread.c
     proc/sched.c
+    proc/kernel_lock.c
+    proc/lockdep.c
     proc/process.c
     proc/proc_syscalls.c
     proc/elf.c

@@ -50,3 +50,9 @@
   CPUID gives one, so the boot report and `arc.selftest` compare them; it records invariant TSC and
   TSC-deadline support. The spec's order puts 0x16 before the PIT: decide here (0x16 is the base clock, which
   is not always the TSC rate). `diag_delay_ms` (diag only) busy-waits on the TSC; replace it with the clocksource.
+- From M1-05: the slice timer is the LAPIC timer in periodic mode, 100 ms (`SCHED_SLICE_NS`), per CPU:
+  `lapic_timer_setup(sched_preempt)` measures its rate once against the TSC (`hal_slice_timer_init`), and the
+  scheduler arms it on every switch to a non-idle thread and stops it on a switch to the idle thread
+  (`hal_slice_timer_start/stop`, three APIC writes per switch). So idle CPUs already get no slice interrupts; the
+  BSP's PIT still ticks at 100 Hz for `pit_get_uptime_ms` only (it no longer schedules). Replace both with the
+  per-CPU timer queue; `sched_preempt` (skips a CPU holding a spinlock) stays the slice handler.

@@ -31,6 +31,7 @@
 #define PERCPU_KERNEL_RSP 8
 #define PERCPU_USER_RSP   16
 #define PERCPU_CURRENT    24
+#define PERCPU_LOCK_DEPTH 32   /* hal_lock.h */
 
 struct Thread;
 
@@ -41,11 +42,13 @@ typedef struct __attribute__((aligned(64))) PerCpu {
     uint64_t kernel_rsp;              /* SYSCALL stack = current thread's kernel stack top */
     uint64_t user_rsp;                /* SYSCALL scratch: user RSP until it is pushed */
     struct Thread *current_thread;    /* thread running on this CPU */
+    uint32_t lock_depth;              /* spinlocks held on this CPU (hal_lock.h) */
     uint32_t cpu_index;               /* 0 = BSP, then MADT order */
     uint32_t apic_id;                 /* 32-bit (x2APIC) local APIC ID */
-    TSS *tss;                         /* this CPU's TSS (tss_storage) */
     uint8_t core_type;                /* CPU_CORE_* from CPUID 0x1A (hybrid parts) */
     volatile uint8_t online;          /* set by the CPU itself once it is up */
+    TSS *tss;                         /* this CPU's TSS (tss_storage) */
+    void *sched;                      /* this CPU's run queue (proc/sched.c) */
 
     GDTEntry gdt[GDT_ENTRY_COUNT];    /* this CPU's GDT (LTR marks its TSS busy) */
     TSS tss_storage;                  /* RSP0 + IST pointers */
@@ -69,6 +72,10 @@ static inline struct Thread *this_cpu_thread(void) {
     __asm__ volatile("mov %%gs:%c1, %0" : "=r"(t) : "i"(PERCPU_CURRENT));
     return t;
 }
+
+/* Point GS at the BSP's (still empty) block, first thing at boot: spinlocks
+ * count their depth through GS before percpu_init_bsp runs. */
+void percpu_early_init(void);
 
 /* Set up the BSP's block (index 0, static area): its GDT and TSS with IST
  * stacks, GS base, KERNEL_GS_BASE = 0. First thing after the boot info is

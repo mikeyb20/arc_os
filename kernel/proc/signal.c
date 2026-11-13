@@ -141,8 +141,7 @@ static int sig_blocked(const SigState *ss, int signo) {
 static void sig_stop(Process *p, int signo) {
     p->state = PROC_STOPPED;
     p->exit_status = signo;  /* Remember stop signal (non-zero = unreported) */
-    p->main_thread->state = THREAD_STOPPED;
-    sched_remove_thread(p->main_thread);
+    p->main_thread->state = THREAD_STOPPED;   /* p is the current process: on no queue */
     /* Notify parent */
     if (p->parent != NULL) {
         wq_wake(&p->parent->child_exit_wq);
@@ -155,8 +154,7 @@ static void sig_stop(Process *p, int signo) {
 static void sig_continue(Process *p) {
     if (p->state != PROC_STOPPED) return;
     p->state = PROC_ALIVE;
-    p->main_thread->state = THREAD_READY;
-    sched_add_thread(p->main_thread);
+    sched_continue(p->main_thread);   /* safe if it is still switching away */
 }
 
 /* Terminate the current process p due to a signal: the exit path (proc_exit). */

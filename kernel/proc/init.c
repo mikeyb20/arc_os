@@ -2,6 +2,7 @@
 #include "proc/process.h"
 #include "proc/thread.h"
 #include "proc/sched.h"
+#include "proc/kernel_lock.h"
 #include "proc/elf.h"
 #include "proc/fd.h"
 #include "fs/vfs.h"
@@ -29,6 +30,11 @@ static InitArgs g_init_args;
 static void init_thread_entry(void *arg) {
     InitArgs *args = (InitArgs *)arg;
     Process *p = args->proc;
+
+    /* Like a syscall: interrupts off and the kernel lock until user mode
+     * (proc_enter_user releases it) */
+    (void)irq_save();
+    kernel_lock();
 
     kprintf("[INIT] Loading init ELF (%lu bytes)\n", args->elf_size);
 

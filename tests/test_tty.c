@@ -5,7 +5,6 @@
 
 /* Guard headers that conflict or need stubbing */
 #define ARCHOS_ARCH_X86_64_SERIAL_H
-#define ARCHOS_PROC_SPINLOCK_H
 #define ARCHOS_PROC_WAITQUEUE_H
 #define ARCHOS_LIB_KPRINTF_H
 
@@ -28,19 +27,25 @@ static void echo_reset(void) {
     echo_pos = 0;
 }
 
-/* Spinlock/WaitQueue stubs for host tests */
-typedef struct { volatile uint32_t locked; uint64_t saved_flags; } Spinlock;
-#define SPINLOCK_INIT { .locked = 0, .saved_flags = 0 }
-static inline void spinlock_acquire(Spinlock *lock) { lock->locked = 1; }
-static inline void spinlock_release(Spinlock *lock) { lock->locked = 0; }
+/* The real spinlock.h (host builds simulate the interrupt flag); WaitQueue stub */
+#include "proc/spinlock.h"
 
 struct Thread;
 typedef struct WaitQueue { Spinlock lock; struct Thread *head; struct Thread *tail; } WaitQueue;
-#define WAITQUEUE_INIT { .lock = SPINLOCK_INIT, .head = NULL, .tail = NULL }
-static void wq_init(WaitQueue *wq) { (void)wq; }
-static void wq_sleep(WaitQueue *wq, Spinlock *lock) { (void)wq; lock->locked = 0; }
+#define WAITQUEUE_INIT \
+    { .lock = SPINLOCK_INIT(LOCK_LEVEL_WAITQUEUE, "wait queue"), .head = NULL, .tail = NULL }
+__attribute__((unused)) static void wq_init(WaitQueue *wq) {
+    (void)wq;
+}
+static void wq_sleep(WaitQueue *wq, Spinlock *lock, uint64_t flags) {
+    (void)wq;
+    spin_unlock_irqrestore(lock, flags);
+}
 static int wq_wake(WaitQueue *wq) { (void)wq; return 0; }
-static int wq_wake_all(WaitQueue *wq) { (void)wq; return 0; }
+__attribute__((unused)) static int wq_wake_all(WaitQueue *wq) {
+    (void)wq;
+    return 0;
+}
 
 /* Stubs for signal functions called by tty.c */
 static int sig_send_group_called = 0;

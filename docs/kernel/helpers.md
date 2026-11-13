@@ -12,7 +12,7 @@ Kernel and user space are separate worlds: the same function in `kernel/lib` and
 | Memory copy, fill, compare | `memcpy`, `memset`, `memmove`, `memcmp` | `kernel/lib/mem.h` |
 | Strings | `strlen`, `strcmp`, `strncmp`, `strncpy`, `strchr` | `kernel/lib/string.h` |
 | Formatted output, log levels, format into a buffer | `kprintf`, `kprintf_level`, `kdebug` (hot paths), `ksnprintf`, `kvsnprintf` | `kernel/lib/kprintf.h` |
-| Kernel log ring (`/proc/kmsg` text), console owner | `klog_read`, `klog_tail`, `klog_head`, `klog_console_try_acquire` / `_release`, `klog_set_console_level` | `kernel/lib/klog.h` |
+| Kernel log ring (`/proc/kmsg` text), console owner | `klog_read`, `klog_tail`, `klog_head`, `klog_console_try_acquire` / `_release`, `klog_console_acquire` (bounded wait, for screen drawing outside the log), `klog_set_console_level` | `kernel/lib/klog.h` |
 | Kernel command line | `cmdline_get`, `cmdline_raw` | `kernel/lib/cmdline.h` |
 | CRC-32 (IEEE 802.3, zlib-compatible chaining) | `crc32` | `kernel/lib/crc32.h` |
 | Test mode | `testmode_*` | `kernel/lib/testmode.h` |
@@ -30,8 +30,12 @@ Kernel and user space are separate worlds: the same function in `kernel/lib` and
 | Object caches for hot structures | `kmem_cache_create`, `kmem_cache_alloc`, `kmem_cache_free`, `kmem_cache_shrink`; `slab_owner` | `kernel/mm/slab.h` |
 | PFN-linked page lists (O(1) push/remove through `lru`) | `page_list_push`, `page_list_remove`, `page_list_first` | `kernel/mm/page.h` |
 | User memory | `copy_from_user`, `copy_to_user`, `strncpy_from_user` | `kernel/include/user_access.h` |
-| Spinlock (IRQ-safe) | `spinlock_acquire`, `spinlock_release` | `kernel/proc/spinlock.h` |
-| Interrupts off/on around a section | `irq_save`, `irq_restore` | `kernel/proc/spinlock.h` |
+| Spinlock (caller keeps the interrupt flags; every lock has a level) | `spin_lock_irqsave` / `spin_unlock_irqrestore`, `spin_lock` / `spin_unlock`, `spin_trylock`, `SPINLOCK_INIT(level, name)`, `spin_lock_init` | `kernel/proc/spinlock.h` |
+| Lock levels and the debug lock-order checker | `LOCK_LEVEL_*`, `lockdep_check_order` | `kernel/proc/lockdep.h` (`docs/kernel/locking.md`) |
+| Big kernel lock (interim, until subsystems have their own locks) | `kernel_lock`, `kernel_lock_irq`, `kernel_unlock`, `kernel_lock_held` | `kernel/proc/kernel_lock.h` |
+| Interrupts off/on around a section; this CPU's spinlock depth | `irq_save`, `irq_restore`, `hal_lock_depth` | `kernel/arch/hal_lock.h` (via `proc/spinlock.h` or `arch/hal.h`) |
+| CPU sets (affinity) | `CpuMask`, `cpumask_set`, `cpumask_test`, `cpumask_fill`, ... | `kernel/proc/cpumask.h` |
+| Run, wake, pin threads; per-CPU scheduler statistics | `sched_add_thread`, `sched_wake`, `sched_continue`, `sched_set_affinity`, `sched_core_mask`, `sched_cpu_stats`, `sched_wait_off_cpu` | `kernel/proc/sched.h` |
 | Sleeping locks and waits | mutex, semaphore, condvar, `wq_sleep` / `wq_wake` | `kernel/proc/{mutex,semaphore,condvar,waitqueue}.h` |
 | Close an fd, copy an fd (pipe/socket refs) | `fd_close`, `fd_file_addref` | `kernel/proc/fd.h` |
 | End the current process (exit, fatal signal) | `proc_exit` | `kernel/proc/proc_syscalls.h` |
@@ -41,7 +45,7 @@ Kernel and user space are separate worlds: the same function in `kernel/lib` and
 | Start another CPU (bootloader-neutral) | `boot_start_cpu` | `kernel/boot/bootinfo.h` |
 | Time-stamp counter (raw cycles) | `cpu_rdtsc`; portable code: `hal_tsc_read` | `kernel/arch/x86_64/cpuid.h`, `kernel/arch/hal.h` |
 | TSC frequency and cycles to ns (boot calibration) | `hal_tsc_info`, `hal_tsc_to_ns` (`tsc_info`, `tsc_cycles_to_ns`) | `kernel/arch/hal.h` (`arch/x86_64/tsc.h`) |
-| Busy-wait hint in a time-bounded loop | `hal_cpu_relax` | `kernel/arch/hal.h` |
+| Busy-wait hint in a time-bounded loop | `hal_cpu_relax` | `kernel/arch/hal_lock.h` (via `arch/hal.h`) |
 | Run a function on every other CPU (bounded wait) | `hal_run_on_other_cpus` (`ipi_call_others`) | `kernel/arch/hal.h` (`arch/x86_64/ipi.h`) |
 | CPU brand, signature, feature names | `hal_cpu_brand`, `hal_cpu_signature`, `hal_cpu_feature_names` (`cpu_brand`, `cpu_feature_names`) | `kernel/arch/hal.h` |
 | Machine maker and model (SMBIOS) | `smbios_read` | `kernel/drivers/smbios.h` |
@@ -76,4 +80,3 @@ Removed in a `tidy:` commit by the first block that edits the file anyway; that 
 | `phys_to_virt` (static) and a private `hhdm_offset` | `kernel/mm/vmm.c`, `kernel/drivers/acpi.c` (`pmm.c`'s copy went in M1-02; `mm/page.h` now holds `pmm_hhdm_offset`) | first block that edits `vmm.c` (likely M1-07): one `phys_to_virt` inline in `mm/page.h` on `pmm_hhdm_offset`, and `vmm.c`'s private offset goes |
 | `mode_to_rwx` | `userland/coreutils/ls.c`, `userland/shell/shell.c` | next block that edits `ls` or the shell |
 | Repeated code regions (12) | `python3 tools/hygiene.py` lists them | the block that rewrites each file |
-| `irq_save` vs `hal_save_irq_state` (the HAL one doesn't disable interrupts) | `kernel/proc/spinlock.h`, `kernel/arch/hal.h` | M1-05 (lock rework) |

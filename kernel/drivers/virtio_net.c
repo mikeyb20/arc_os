@@ -10,6 +10,7 @@
 #include "lib/kprintf.h"
 #include "net/netif.h"
 #include "net/ethernet.h"
+#include "proc/kernel_lock.h"
 
 #define RX_BUF_COUNT  16
 #define POLL_TIMEOUT  10000000
@@ -78,7 +79,11 @@ static void virtio_net_irq_handler(InterruptFrame *frame) {
     (void)frame;
     /* Reading ISR status clears the interrupt */
     inb(net_vdev.io_base + VIRTIO_REG_ISR_STATUS);
+    /* The network stack has no locks of its own beyond the sockets': it runs
+     * under the kernel lock, like the syscalls that use it (M1-05) */
+    kernel_lock_irq();
     virtio_net_poll_rx();
+    kernel_unlock();
 }
 
 /* --- Public API --- */

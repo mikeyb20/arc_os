@@ -44,7 +44,7 @@ uint64_t pmm_hhdm_offset;
 
 /* Leaf lock (work-blocks.md §7 level 10), IRQ-safe: nothing else is taken
  * while it is held, and allocation may happen with interrupts off. */
-static Spinlock pmm_lock = SPINLOCK_INIT;
+static Spinlock pmm_lock = SPINLOCK_INIT(LOCK_LEVEL_BUDDY, "buddy");
 
 static FreeArea zones[NR_ZONES];
 static uint64_t total_pages;
@@ -151,11 +151,12 @@ static uint64_t alloc_block(unsigned order, uint32_t gfp) {
 /* --- Public allocator --- */
 
 struct page *alloc_pages(unsigned order, uint32_t flags) {
+    uint64_t irqf;
     if (order > PAGE_MAX_ORDER) return NULL;
 
-    spinlock_acquire(&pmm_lock);
+    spin_lock_irqsave(&pmm_lock, &irqf);
     uint64_t pfn = alloc_block(order, flags);
-    spinlock_release(&pmm_lock);
+    spin_unlock_irqrestore(&pmm_lock, irqf);
 
     if (pfn == PFN_NONE) return NULL;
     struct page *pg = pfn_to_page(pfn);
@@ -166,12 +167,13 @@ struct page *alloc_pages(unsigned order, uint32_t flags) {
 }
 
 void free_pages(struct page *page, unsigned order) {
+    uint64_t irqf;
     if (page == NULL) return;
 
     uint64_t pfn = page_to_pfn(page);
     const char *bad = NULL;
 
-    spinlock_acquire(&pmm_lock);
+    spin_lock_irqsave(&pmm_lock, &irqf);
     if (pfn >= pmm_max_pfn || order > PAGE_MAX_ORDER) {
         bad = "outside the page array";
     } else if (page->flags & PG_RESERVED) {
@@ -185,7 +187,7 @@ void free_pages(struct page *page, unsigned order) {
         free_page_count += 1ull << order;
         free_block(pfn, order);
     }
-    spinlock_release(&pmm_lock);
+    spin_unlock_irqrestore(&pmm_lock, irqf);
 
     if (bad) {
         kprintf("[PMM] WARNING: bad free of PFN 0x%lx order %u: %s\n", pfn, order, bad);
@@ -219,15 +221,16 @@ static unsigned max_block_order(uint64_t pfn, uint64_t end) {
 }
 
 uint64_t pmm_alloc_contiguous(size_t count) {
+    uint64_t irqf;
     if (count == 0) return 0;
     unsigned order = 0;
     while ((1ull << order) < count) order++;
     if (order > PAGE_MAX_ORDER) return 0;
 
-    spinlock_acquire(&pmm_lock);
+    spin_lock_irqsave(&pmm_lock, &irqf);
     uint64_t pfn = alloc_block(order, GFP_KERNEL);
     if (pfn == PFN_NONE) {
-        spinlock_release(&pmm_lock);
+        spin_unlock_irqrestore(&pmm_lock, irqf);
         return 0;
     }
     pfn_to_page(pfn)->flags = 0;   /* the head is an order-0 page too */
@@ -250,7 +253,7 @@ uint64_t pmm_alloc_contiguous(size_t count) {
         free_page_count += 1ull << o;
         p += 1ull << o;
     }
-    spinlock_release(&pmm_lock);
+    spin_unlock_irqrestore(&pmm_lock, irqf);
     return pfn << PAGE_SHIFT;
 }
 
@@ -269,11 +272,12 @@ uint64_t pmm_get_descriptor_bytes(void) {
 }
 
 void pmm_get_free_blocks(uint64_t *out) {
-    spinlock_acquire(&pmm_lock);
+    uint64_t irqf;
+    spin_lock_irqsave(&pmm_lock, &irqf);
     for (unsigned o = 0; o <= PAGE_MAX_ORDER; o++) {
         out[o] = zones[ZONE_DMA32].count[o] + zones[ZONE_NORMAL].count[o];
     }
-    spinlock_release(&pmm_lock);
+    spin_unlock_irqrestore(&pmm_lock, irqf);
 }
 
 uint32_t pmm_last_steps(void) {
