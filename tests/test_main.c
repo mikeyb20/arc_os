@@ -12,6 +12,8 @@ extern TestCase cmdline_tests[];
 extern int cmdline_test_count;
 extern TestCase qr_tests[];
 extern int qr_test_count;
+extern TestCase qr_screen_tests[];
+extern int qr_screen_test_count;
 extern TestCase mem_tests[];
 extern int mem_test_count;
 extern TestCase pmm_tests[];
@@ -192,6 +194,7 @@ int main(int argc, char **argv) {
         { "ansi",         ansi_tests,         &ansi_test_count },
         { "cmdline",      cmdline_tests,      &cmdline_test_count },
         { "qr",           qr_tests,           &qr_test_count },
+        { "qr_screen",    qr_screen_tests,    &qr_screen_test_count },
         { "panic",        panic_tests,        &panic_test_count },
         { "smbios",       smbios_tests,       &smbios_test_count },
     };

@@ -107,9 +107,20 @@ set(KERNEL_C_SOURCES
     diag/bench.c
     diag/qr.c
     diag/qr_text.c
+    diag/qr_screen.c
+    diag/qr_mode.c
 )
 
-set(KERNEL_SOURCES ${KERNEL_ASM_SOURCES} ${KERNEL_C_SOURCES})
+# The build commit (M1-04c): rewritten on every build, but only when the
+# commit changes (cmake/build-commit.cmake), so a clean tree recompiles nothing
+set(_build_commit_c ${CMAKE_CURRENT_BINARY_DIR}/build_commit.c)
+add_custom_target(kernel_build_commit
+    COMMAND ${CMAKE_COMMAND} -DSOURCE_DIR=${CMAKE_SOURCE_DIR} -DOUT=${_build_commit_c}
+            -P ${CMAKE_SOURCE_DIR}/cmake/build-commit.cmake
+    BYPRODUCTS ${_build_commit_c}
+    COMMENT "Recording the build commit")
+
+set(KERNEL_SOURCES ${KERNEL_ASM_SOURCES} ${KERNEL_C_SOURCES} ${_build_commit_c})
 
 # Only build kernel.elf when there are source files
 if(KERNEL_SOURCES)
@@ -118,6 +129,7 @@ if(KERNEL_SOURCES)
     # the second adds that table in its own section after .rodata, so no
     # function moves (tools/gen-ksyms.py --check proves it on every build).
     add_library(kernel_objs OBJECT ${KERNEL_SOURCES})
+    add_dependencies(kernel_objs kernel_build_commit)
 
     # NASM flags
     target_compile_options(kernel_objs PRIVATE

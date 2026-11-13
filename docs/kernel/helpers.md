@@ -12,7 +12,8 @@ Kernel and user space are separate worlds: the same function in `kernel/lib` and
 | Memory copy, fill, compare | `memcpy`, `memset`, `memmove`, `memcmp` | `kernel/lib/mem.h` |
 | Strings | `strlen`, `strcmp`, `strncmp`, `strncpy`, `strchr` | `kernel/lib/string.h` |
 | Formatted output, log levels, format into a buffer | `kprintf`, `kprintf_level`, `kdebug` (hot paths), `ksnprintf`, `kvsnprintf` | `kernel/lib/kprintf.h` |
-| Kernel log ring (`/proc/kmsg` text), console owner | `klog_read`, `klog_tail`, `klog_head`, `klog_console_try_acquire` / `_release`, `klog_console_acquire` (bounded wait, for screen drawing outside the log), `klog_set_console_level` | `kernel/lib/klog.h` |
+| Kernel log ring (`/proc/kmsg` text), console owner | `klog_read`, `klog_tail`, `klog_head`, `klog_for_each_line` (whole lines, markers stripped, by level), `klog_console_try_acquire` / `_release`, `klog_console_acquire` (bounded wait, for screen drawing outside the log), `klog_set_console_level` | `kernel/lib/klog.h` |
+| Build commit (12-digit hash, `-dirty`, or `unknown`) | `arc_build_commit` | `kernel/lib/build_commit.h` |
 | Kernel command line | `cmdline_get`, `cmdline_raw` | `kernel/lib/cmdline.h` |
 | CRC-32 (IEEE 802.3, zlib-compatible chaining) | `crc32` | `kernel/lib/crc32.h` |
 | Test mode | `testmode_*` | `kernel/lib/testmode.h` |
@@ -50,10 +51,12 @@ Kernel and user space are separate worlds: the same function in `kernel/lib` and
 | CPU brand, signature, feature names | `hal_cpu_brand`, `hal_cpu_signature`, `hal_cpu_feature_names` (`cpu_brand`, `cpu_feature_names`) | `kernel/arch/hal.h` |
 | Machine maker and model (SMBIOS) | `smbios_read` | `kernel/drivers/smbios.h` |
 | PCI driver binding, class names | `pci_set_driver`, `pci_class_name` | `kernel/drivers/pci.h` |
-| One screen row of text (pagers, banners) | `fb_console_write_row` | `kernel/drivers/fb_console.h` |
-| Boot report line, TSC-timed delay (diagnostic mode) | `diag_line`, `diag_delay_ms` | `kernel/diag/diag.h` |
+| One screen row of text (pagers, banners) | `fb_console_write_row`; pixels only, while paused: `fb_console_paint_row` | `kernel/drivers/fb_console.h` |
+| Own the screen, draw a 1-bit bitmap scaled (QR codes) | `fb_console_pause` / `_resume`, `fb_console_fill`, `fb_console_draw_bitmap`, `fb_console_width` / `_height` / `_row_height` | `kernel/drivers/fb_console.h` |
+| Boot report line, TSC-timed delay, key wait, command-line flag (diagnostic mode) | `diag_line`, `diag_delay_ms`, `diag_wait_key`, `diag_flag_on` | `kernel/diag/diag.h` |
 | QR code from bytes (byte mode, level M, versions 1-30; no allocation) | `qr_encode`, `qr_capacity`, `qr_module` | `kernel/diag/qr.h` |
 | Text as numbered `ARC1` QR pages: sanitize (no links), split, header and CRCs | `qr_text_sanitize`, `qr_text_paginate`, `qr_text_page` | `kernel/diag/qr_text.h` |
+| QR page or panic code on screen; panic and log-tail texts | `qr_screen_show_page`, `qr_screen_draw_panic`, `qr_screen_scale`, `qr_screen_page_height`, `qr_panic_encode`, `qr_panic_text`, `qr_log_text` | `kernel/diag/qr_screen.h` |
 | CPU features, x86-64-v3 floor, core type | `cpu_features`, `cpu_floor_missing`, `cpu_core_type_detect`, `cpu_describe` | `kernel/arch/x86_64/cpu.h` (via `arch/hal.h`) |
 | Signal actions and masks (rt_sigaction, fork, execve) | `sig_set_action`, `sig_fork_copy`, `sig_exec_reset` | `kernel/proc/signal.h` |
 | Linux ABI values and structs | `__NR_*`, errno, flags, `struct stat`, ... | `kernel/include/uapi/` |

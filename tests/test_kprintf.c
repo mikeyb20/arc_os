@@ -362,7 +362,33 @@ static int test_console_acquire_same_cpu(void) {
 
 /* --- Test suite export --- */
 
+/* klog_for_each_line from a line start keeps that line; from mid-line skips it */
+static char seen_lines[256];
+
+static void collect_line(const char *line, size_t len, void *ctx) {
+    (void)ctx;
+    size_t pos = strlen(seen_lines);
+    if (pos + len + 2 > sizeof(seen_lines)) return;
+    memcpy(seen_lines + pos, line, len);
+    seen_lines[pos + len] = '|';
+    seen_lines[pos + len + 1] = '\0';
+}
+
+TEST(klog_lines_from_line_start) {
+    klog_write(6, "\n", 1);
+    uint64_t at = klog_head();
+    klog_write(6, "lsA\nlsB\n", 8);
+    seen_lines[0] = '\0';
+    klog_for_each_line(at, KLOG_INFO, collect_line, NULL);
+    ASSERT_STR_EQ(seen_lines, "lsA|lsB|");
+    seen_lines[0] = '\0';
+    klog_for_each_line(at + 1, KLOG_INFO, collect_line, NULL);
+    ASSERT_STR_EQ(seen_lines, "lsB|");
+    return 0;
+}
+
 TestCase kprintf_tests[] = {
+    TEST_ENTRY(klog_lines_from_line_start),
     {"plain_string", test_plain_string},
     {"format_s", test_format_s},
     {"format_s_null", test_format_s_null},
