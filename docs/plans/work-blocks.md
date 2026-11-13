@@ -239,7 +239,7 @@ when its parent is in `review` with green CI and a clean independent review (§3
   - Lane KA owns §7 lock levels 1–6 and lane KB levels 7–10; only the owning lane changes a level's rules.
   - Two blocks that edit the same file never run at once (`fat32.c`: M1-11 went first and rewrote it read-only on
     the new VFS, keeping its block reads as `dev->read` calls; M1-10 swaps those calls when it rebases on M1-11, or
-    M1-11 rebases if M1-10 merges first (2026-11-13, awaiting Michael's OK); `vmm.c`:
+    M1-11 rebases if M1-10 merges first (Michael approved 2026-11-13); `vmm.c`:
     M1-07, M1-08, M1-12, M1-19 never at once; `fd.c`: M1-16 starts after M1-11 merges). Add-only shared lists
     (`hal.h`, `helpers.md`, `budgets.md`, `locking.md`, this file) are exempt: the second PR rebases.
   - A block that uses the other lane's interface starts only after the producing block has **merged** (M1-10 →

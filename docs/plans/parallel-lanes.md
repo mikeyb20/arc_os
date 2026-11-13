@@ -84,7 +84,7 @@ rules for the same lock.
 | Order | Block | Units | Why here |
 |---|---|---|---|
 | 1 | M1-09 driver model, MSI-X | 1 | Needs only M1-05 |
-| 2 | M1-10 async block + GPT | 1 | Finishes before M1-11 starts, since both edit `fat32.c`; M1-12 needs it |
+| 2 | M1-10 async block + GPT | 1 | M1-12 needs it. Runs beside M1-11 (both edit `fat32.c`; see §3.3) |
 | 3 | M1-06 clocks, tickless | 1 | After M1-09 (both edit `lapic.c`); after the M1-05 smoke boot (§6.2) |
 | 4 | M1-21 power base | 1 | Needs M1-06 |
 | 5 | M1-16 threads I | 2 | Needs M1-07 from lane A |
@@ -110,7 +110,7 @@ order above.
 
 | Pair (lane) | Shared | Rule |
 |---|---|---|
-| M1-10 (B) / M1-11 (A) | `fat32.c` | M1-10 merges before M1-11 starts |
+| M1-10 (B) / M1-11 (A) | `fat32.c` | Changed 2026-11-13 (Michael): M1-11 went first and kept FAT32's three `dev->read` calls; whichever merges second swaps or rebases them |
 | M1-06 (B) / M1-09 (B) | `lapic.c`, `hal.h` | Same lane, in order |
 | M1-06, M1-16, M1-21 (B) / M1-05 | `sched.c` | Same lane, in order |
 | M1-07, M1-08, M1-12, M1-19 | `vmm.c` | Never two at once; M1-08 waits as above |
