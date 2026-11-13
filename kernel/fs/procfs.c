@@ -5,6 +5,7 @@
 #include "arch/hal.h"
 #include "proc/process.h"
 #include "proc/sched.h"
+#include "drivers/irq.h"
 #include "lib/mem.h"
 #include "lib/string.h"
 #include "lib/cmdline.h"
@@ -205,6 +206,14 @@ static int gen_pid_status(char *buf, int bufsz, void *ctx) {
     return pos;
 }
 
+/* /proc/interrupts (M1-09): one line per device interrupt with its count on
+ * each CPU, the source (PCI-MSIX, PCI-MSI, INTx), device, entry and target,
+ * then ERR (interrupts nobody claimed). Linux's columns, arc_os's numbering. */
+static int gen_interrupts(char *buf, int bufsz, void *ctx) {
+    (void)ctx;
+    return irq_format_proc(buf, bufsz);
+}
+
 /* --- Node types --- */
 
 typedef struct {
@@ -262,6 +271,7 @@ static ProcfsFileNode cpuinfo_node;
 static ProcfsFileNode slabinfo_node;
 static ProcfsFileNode kmsg_node;
 static ProcfsFileNode sched_debug_node;
+static ProcfsFileNode interrupts_node;
 
 #define PROCFS_PID_POOL 8
 static ProcfsDirNode pid_dirs[PROCFS_PID_POOL];
@@ -327,9 +337,9 @@ static const struct {
     const char *name;
     ProcfsFileNode *node;
 } root_files[] = {
-    {"meminfo", &meminfo_node},         {"uptime", &uptime_node},     {"cmdline", &cmdline_node},
-    {"cpuinfo", &cpuinfo_node},         {"slabinfo", &slabinfo_node}, {"kmsg", &kmsg_node},
-    {"sched_debug", &sched_debug_node},
+    {"meminfo", &meminfo_node},         {"uptime", &uptime_node},         {"cmdline", &cmdline_node},
+    {"cpuinfo", &cpuinfo_node},         {"slabinfo", &slabinfo_node},     {"kmsg", &kmsg_node},
+    {"sched_debug", &sched_debug_node}, {"interrupts", &interrupts_node},
 };
 #define ROOT_FILE_COUNT (sizeof(root_files) / sizeof(root_files[0]))
 
@@ -454,6 +464,7 @@ VfsNode *procfs_init(void) {
     kmsg_node.vnode.ops = &procfs_kmsg_ops;
     kmsg_node.vnode.mode = 0400;
     procfs_init_file(&sched_debug_node, 1995, gen_sched_debug, NULL);
+    procfs_init_file(&interrupts_node, 1994, gen_interrupts, NULL);
 
     pid_dirs_next = 0;
     pid_status_next = 0;

@@ -20,6 +20,8 @@ static inline void kprintf(const char *fmt, ...) { (void)fmt; }
 #define PTE_PRESENT    (1ULL << 0)
 #define PTE_WRITABLE   (1ULL << 1)
 #define PTE_USER       (1ULL << 2)
+#define PTE_PWT        (1ULL << 3)
+#define PTE_PCD        (1ULL << 4)
 #define PTE_HUGE       (1ULL << 7)
 #define PTE_NX         (1ULL << 63)
 #define PTE_ADDR_MASK  0x000FFFFFFFFFF000ULL
@@ -39,6 +41,7 @@ static inline void kprintf(const char *fmt, ...) { (void)fmt; }
 #define VMM_FLAG_WRITABLE  (1 << 0)
 #define VMM_FLAG_USER      (1 << 1)
 #define VMM_FLAG_NOEXEC    (1 << 2)
+#define VMM_FLAG_UNCACHED  (1 << 3)
 
 /* User-space constants (from vmm.h) */
 #define USER_STACK_TOP    0x00007FFFFFFFE000ULL
@@ -237,6 +240,24 @@ TEST(flags_writable) {
     ASSERT_TRUE(pte & PTE_WRITABLE);
     ASSERT_FALSE(pte & PTE_USER);
     ASSERT_FALSE(pte & PTE_NX);
+    return 0;
+}
+
+/* M1-09: device memory is mapped uncached (PCD|PWT, PAT entry 3) and the flag
+ * reads back */
+TEST(flags_uncached) {
+    reset_vmm_state();
+    vmm_map_page(0x1000000, 0xA000, VMM_FLAG_WRITABLE | VMM_FLAG_NOEXEC | VMM_FLAG_UNCACHED);
+    uint64_t *pml4 = (uint64_t *)phys_to_virt(kernel_pml4_phys);
+    uint64_t *pdpt = (uint64_t *)phys_to_virt(pml4[PML4_INDEX(0x1000000ULL)] & PTE_ADDR_MASK);
+    uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[PDPT_INDEX(0x1000000ULL)] & PTE_ADDR_MASK);
+    uint64_t *pt = (uint64_t *)phys_to_virt(pd[PD_INDEX(0x1000000ULL)] & PTE_ADDR_MASK);
+    uint64_t pte = pt[PT_INDEX(0x1000000ULL)];
+    ASSERT_TRUE(pte & PTE_PCD);
+    ASSERT_TRUE(pte & PTE_PWT);
+    ASSERT_TRUE(vmm_get_flags_in(kernel_pml4_phys, 0x1000000) & VMM_FLAG_UNCACHED);
+    vmm_map_page(0x2000000, 0xB000, VMM_FLAG_WRITABLE);
+    ASSERT_FALSE(vmm_get_flags_in(kernel_pml4_phys, 0x2000000) & VMM_FLAG_UNCACHED);
     return 0;
 }
 
@@ -450,6 +471,7 @@ TEST(ensure_table_creates_on_first_use) {
 
 TestCase vmm_tests[] = {
     TEST_ENTRY(map_then_get_phys),
+    TEST_ENTRY(flags_uncached),
     TEST_ENTRY(get_phys_unmapped_returns_zero),
     TEST_ENTRY(map_multiple_pages),
     TEST_ENTRY(map_overwrites_existing),

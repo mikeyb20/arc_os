@@ -1,0 +1,6 @@
+# qemu.devices / qemu.devices.intx (M1-09): the kernel's devtest (edu: MSI or
+# INTx, affinity, DMA; virtio-net: ARP round trip) and the FAT32 mount of the
+# virtio disk ran during boot; this shows the interrupt counts they left.
+# (No file is read from /disk here: each FAT32 lookup still leaks its node,
+# which the heap leak budget would catch; see the M1-09 Notes.)
+interrupts  /bin/cat /proc/interrupts

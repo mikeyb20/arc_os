@@ -23,6 +23,7 @@
 #include "drivers/fb_console.h"
 #include "security/hardening.h"
 #include "drivers/virtio_net.h"
+#include "drivers/irq.h"
 #include "net/net.h"
 #include "lib/kprintf.h"
 #include "lib/klog.h"
@@ -376,13 +377,11 @@ static void vfs_setup(const BootInfo *info) {
     }
 }
 
-/* Probe VirtIO-blk, try FAT32 mount. */
-static void virtio_blk_setup(void) {
-    if (virtio_blk_init() != 0) return;
-
+/* Try a FAT32 mount of the first block device. */
+static void disk_mount(void) {
     BlockDevice *disk = blkdev_get(0);
     if (!disk) {
-        kprintf("[VIRTIO-BLK] No block device registered\n");
+        kprintf("[BLK] No block device registered\n");
         return;
     }
 
@@ -391,8 +390,21 @@ static void virtio_blk_setup(void) {
         vfs_mount("/disk", fat_root);
         kprintf("[FAT32] Mounted at /disk\n");
     } else {
-        kprintf("[VIRTIO-BLK] No FAT32 filesystem found on disk\n");
+        kprintf("[BLK] No FAT32 filesystem found on disk\n");
     }
+}
+
+/* Driver model (M1-09): IRQ layer, the PCI bus, then the drivers, which bind
+ * as they register. After hal_smp_init: MSI needs the local APIC, and
+ * interrupts are spread over every online CPU. Then mount the virtio disk and
+ * bring up the network on what bound. */
+static void devices_setup(void) {
+    irq_init();
+    pci_bus_init();
+    virtio_blk_register();
+    if (virtio_net_register() > 0) net_init();
+    if (testmode_active() && strcmp(testmode_suite(), "devices") == 0) devtest_register();
+    disk_mount();
 }
 
 /* Stop on a CPU below x86-64-v3 (ADR-0003), saying why on serial and, when
@@ -470,14 +482,7 @@ void kmain(void) {
     serial_puts("[BOOT] stage: ACPI\n");
     acpi_init(info->acpi_rsdp);
     serial_puts("[BOOT] stage: PCI\n");
-    pci_init();
-    serial_puts("[BOOT] stage: VirtIO-blk\n");
-    virtio_blk_setup();
-
-    serial_puts("[BOOT] stage: VirtIO-net\n");
-    if (virtio_net_init() == 0) {
-        net_init();
-    }
+    pci_init();   /* enumerate and size BARs; drivers bind after the APIC switch */
 
     /* Initialize threading — converts boot context to thread 0 */
     thread_init();
@@ -500,6 +505,9 @@ void kmain(void) {
             hal_smp_init(info, acpi);
         }
     }
+
+    serial_puts("[BOOT] stage: devices\n");
+    devices_setup();
 
     /* Test mode self-check: suite "kpanic" proves a panic ends the run at once;
      * with arc.panic=fault it is a real page fault instead (M1-04) */

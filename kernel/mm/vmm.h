@@ -8,6 +8,7 @@
 #define VMM_FLAG_WRITABLE  (1 << 0)
 #define VMM_FLAG_USER      (1 << 1)
 #define VMM_FLAG_NOEXEC    (1 << 2)
+#define VMM_FLAG_UNCACHED  (1 << 3)   /* device memory: no caching (MMIO, M1-09) */
 
 /* Initialize VMM: create kernel page tables and switch CR3. */
 void vmm_init(const BootInfo *info);

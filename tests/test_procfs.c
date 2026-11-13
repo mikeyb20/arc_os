@@ -226,6 +226,13 @@ static int proc_foreach(void (*cb)(Process *p, void *ctx), void *ctx) {
 /* Declare procfs_init before including the .c */
 VfsNode *procfs_init(void);
 
+/* /proc/interrupts text comes from the IRQ layer (test_irq.c tests it) */
+#define irq_format_proc procfs_test_irq_format_proc
+int procfs_test_irq_format_proc(char *buf, int size) {
+    return snprintf(buf, (size_t)size,
+                    "            CPU0\n   0:          3  PCI-MSIX 0000:00:04.0 1 cpu0/0x30  q\n ERR: 0\n");
+}
+
 #include "../kernel/fs/procfs.c"
 
 /* --- Tests --- */
@@ -375,6 +382,18 @@ TEST(sched_debug_content) {
     return 0;
 }
 
+TEST(interrupts_content) {
+    VfsNode *root = procfs_init();
+    VfsNode *n = root->ops->lookup(root, "interrupts");
+    ASSERT_TRUE(n != NULL);
+    char buf[256] = {0};
+    int rd = n->ops->read(n, buf, 0, sizeof(buf) - 1);
+    ASSERT_TRUE(rd > 0);
+    ASSERT_TRUE(strstr(buf, "PCI-MSIX 0000:00:04.0") != NULL);
+    ASSERT_TRUE(strstr(buf, " ERR: 0\n") != NULL);
+    return 0;
+}
+
 TEST(pid_status_content) {
     setup_test_procs();
     VfsNode *root = procfs_init();
@@ -401,8 +420,8 @@ TEST(readdir_root) {
     VfsNode *root = procfs_init();
     VfsDirEntry entries[16];
     int count = root->ops->readdir(root, entries, 16);
-    /* meminfo + uptime + cmdline + cpuinfo + slabinfo + kmsg + sched_debug + 3 non-terminated PIDs (0, 1, 2) */
-    ASSERT_EQ(count, 10);
+    /* meminfo + uptime + cmdline + cpuinfo + slabinfo + kmsg + sched_debug + interrupts + 3 non-terminated PIDs (0, 1, 2) */
+    ASSERT_EQ(count, 11);
     ASSERT_STR_EQ(entries[0].name, "meminfo");
     ASSERT_STR_EQ(entries[1].name, "uptime");
     ASSERT_STR_EQ(entries[2].name, "cmdline");
@@ -410,7 +429,8 @@ TEST(readdir_root) {
     ASSERT_STR_EQ(entries[4].name, "slabinfo");
     ASSERT_STR_EQ(entries[5].name, "kmsg");
     ASSERT_STR_EQ(entries[6].name, "sched_debug");
-    ASSERT_STR_EQ(entries[7].name, "0");
+    ASSERT_STR_EQ(entries[7].name, "interrupts");
+    ASSERT_STR_EQ(entries[8].name, "0");
     return 0;
 }
 
@@ -462,6 +482,6 @@ TestCase procfs_tests[] = {
     TEST_ENTRY(uptime_content),        TEST_ENTRY(cmdline_content),    TEST_ENTRY(cpuinfo_content),
     TEST_ENTRY(slabinfo_content),      TEST_ENTRY(pid_status_content), TEST_ENTRY(readdir_root),
     TEST_ENTRY(readdir_pid_dir),       TEST_ENTRY(no_create_ops),      TEST_ENTRY(kmsg_reads_log),
-    TEST_ENTRY(sched_debug_content),
+    TEST_ENTRY(sched_debug_content),   TEST_ENTRY(interrupts_content),
 };
 int procfs_test_count = sizeof(procfs_tests) / sizeof(procfs_tests[0]);

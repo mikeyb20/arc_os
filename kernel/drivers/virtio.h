@@ -13,8 +13,20 @@
 #define VIRTIO_REG_QUEUE_NOTIFY     0x10  /* 16-bit, write */
 #define VIRTIO_REG_DEVICE_STATUS    0x12  /* 8-bit, read/write */
 #define VIRTIO_REG_ISR_STATUS       0x13  /* 8-bit, read */
-/* Device-specific config starts at offset 0x14 for legacy devices */
-#define VIRTIO_REG_CONFIG           0x14
+/* With MSI-X on, two vector registers follow and the device-specific config
+ * moves from 0x14 to 0x18 (VirtioDevice.config_off) */
+#define VIRTIO_REG_MSI_CONFIG_VEC   0x14  /* 16-bit: vector for config changes */
+#define VIRTIO_REG_MSI_QUEUE_VEC    0x16  /* 16-bit: vector of the selected queue */
+#define VIRTIO_MSI_NO_VECTOR        0xFFFF
+#define VIRTIO_REG_CONFIG           0x14  /* device-specific config without MSI-X */
+#define VIRTIO_REG_CONFIG_MSIX      0x18  /* ... and with MSI-X on */
+
+/* ISR status bits (read clears; INTx only) */
+#define VIRTIO_ISR_QUEUE  0x01
+#define VIRTIO_ISR_CONFIG 0x02
+
+/* Available-ring flag: the driver polls this queue, no interrupts please */
+#define VRING_AVAIL_F_NO_INTERRUPT 0x01
 
 /* VirtIO device status bits */
 #define VIRTIO_STATUS_ACK           0x01
@@ -74,21 +86,40 @@ typedef struct {
     uint16_t free_head;     /* Head of free descriptor list */
     uint16_t num_free;      /* Number of free descriptors */
     uint16_t last_used_idx; /* Last consumed used ring index */
-    uint64_t phys_addr;     /* Physical base of vring allocation */
+    uint64_t phys_addr;     /* Bus address of the vring (dma_alloc_coherent) */
     uint32_t num_pages;     /* Number of pages allocated */
 } Virtqueue;
 
 typedef struct {
-    const PciDevice *pci;
+    PciDevice *pci;
     uint16_t io_base;
-    uint8_t irq;
+    uint16_t config_off;    /* VIRTIO_REG_CONFIG, or VIRTIO_REG_CONFIG_MSIX with MSI-X on */
+    uint8_t msix;           /* 1 when the device signals through MSI-X vectors */
     Virtqueue queues[VIRTIO_MAX_QUEUES];
     int num_queues;
 } VirtioDevice;
 
 /* Initialize a VirtIO device: reset, set ACK+DRIVER status.
  * Returns 0 on success. */
-int virtio_init_device(VirtioDevice *vdev, const PciDevice *pci);
+int virtio_init_device(VirtioDevice *vdev, PciDevice *pci);
+
+/* Ask the PCI layer for up to want MSI-X vectors, else INTx (virtio-pci has
+ * no plain MSI). Sets msix and config_off. Call before reading the device
+ * config. Returns the number of interrupts, or -errno. */
+int virtio_setup_irqs(VirtioDevice *vdev, unsigned want);
+
+/* MSI-X: route config changes (virtio_set_config_vector) or the queue's used
+ * buffers (virtio_set_queue_vector) to MSI-X entry vec, or nowhere
+ * (VIRTIO_MSI_NO_VECTOR). Returns 0, or -1 if the device refused. */
+int virtio_set_config_vector(VirtioDevice *vdev, uint16_t vec);
+int virtio_set_queue_vector(VirtioDevice *vdev, int queue_index, uint16_t vec);
+
+/* INTx: read (and so clear) the ISR status; VIRTIO_ISR_* bits. */
+uint8_t virtio_isr_status(VirtioDevice *vdev);
+
+/* Device-specific config at offset off (from where config_off says it is). */
+uint8_t virtio_config_read8(VirtioDevice *vdev, uint16_t off);
+uint32_t virtio_config_read32(VirtioDevice *vdev, uint16_t off);
 
 /* Negotiate features: read device features, AND with supported, write back. */
 void virtio_negotiate_features(VirtioDevice *vdev, uint32_t supported);

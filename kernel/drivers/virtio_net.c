@@ -1,16 +1,34 @@
+/* arc_os — virtio-net driver (legacy virtio-PCI)
+ *
+ * Owns: one virtio network device (the first one found), its RX buffers, its
+ * RX worker thread and its NetIf.
+ * Invariants: the interrupt handler only acknowledges the device and wakes
+ * the RX worker; frames reach the network stack from the worker thread, so
+ * nothing allocates in hard-IRQ context (work-blocks §7). TX is polled and
+ * raises no interrupts (VRING_AVAIL_F_NO_INTERRUPT, no MSI-X vector).
+ * Locks: rx_lock (LOCK_LEVEL_OBJECT, IRQ-safe) guards rx_pending and is the
+ * worker's wq_sleep lock. The RX and TX queues and the network stack run under
+ * the big kernel lock (syscalls, and the worker takes it) until M1-18.
+ * Cost: one wakeup per interrupt; the worker drains every used buffer per
+ * wakeup. RX buffer lookup by descriptor is O(RX_BUF_COUNT) (16). */
+
 #include "drivers/virtio_net.h"
 #include "drivers/virtio.h"
 #include "drivers/pci.h"
-#include "arch/x86_64/io.h"
-#include "arch/x86_64/isr.h"
-#include "arch/x86_64/pic.h"
+#include "drivers/irq.h"
+#include "drivers/dma.h"
+#include "arch/hal.h"
 #include "mm/pmm.h"
-#include "mm/vmm.h"
 #include "lib/mem.h"
 #include "lib/kprintf.h"
 #include "net/netif.h"
 #include "net/ethernet.h"
 #include "proc/kernel_lock.h"
+#include "proc/spinlock.h"
+#include "proc/waitqueue.h"
+#include "proc/thread.h"
+#include "proc/sched.h"
+#include "uapi/errno.h"
 
 #define RX_BUF_COUNT  16
 #define POLL_TIMEOUT  10000000
@@ -32,6 +50,13 @@ static NetRxBuf rx_bufs[RX_BUF_COUNT];
 
 /* NetIf for the network stack */
 static NetIf net_nif;
+
+/* RX worker: woken by the interrupt handler */
+static Spinlock rx_lock = SPINLOCK_INIT(LOCK_LEVEL_OBJECT, "virtio-net rx");
+static WaitQueue rx_wq = WAITQUEUE_INIT;
+static int rx_pending;
+static uint64_t rx_wakeups;
+static uint64_t rx_kicks;     /* RX interrupts (hard IRQ, atomic) */
 
 /* Forward declaration for rx dispatch */
 static void net_rx_dispatch(const void *frame, uint32_t len);
@@ -61,55 +86,122 @@ static int rx_buf_submit(int idx) {
 }
 
 static int rx_bufs_init(void) {
-    uint64_t hhdm = vmm_get_hhdm_offset();
     for (int i = 0; i < RX_BUF_COUNT; i++) {
-        uint64_t phys = pmm_alloc_page();
-        if (phys == 0) return -1;
-        rx_bufs[i].phys = phys;
-        rx_bufs[i].virt = (void *)(phys + hhdm);
-        memset(rx_bufs[i].virt, 0, PAGE_SIZE);
+        rx_bufs[i].virt = dma_alloc_coherent(&net_vdev.pci->dev, PAGE_SIZE, &rx_bufs[i].phys, 0);
+        if (rx_bufs[i].virt == NULL) return -1;
         if (rx_buf_submit(i) != 0) return -1;
     }
     return 0;
 }
 
-/* --- IRQ handler --- */
+/* --- Interrupts and the RX worker --- */
 
-static void virtio_net_irq_handler(InterruptFrame *frame) {
-    (void)frame;
-    /* Reading ISR status clears the interrupt */
-    inb(net_vdev.io_base + VIRTIO_REG_ISR_STATUS);
-    /* The network stack has no locks of its own beyond the sockets': it runs
-     * under the kernel lock, like the syscalls that use it (M1-05) */
-    kernel_lock_irq();
-    virtio_net_poll_rx();
-    kernel_unlock();
+/* Hard IRQ: note the work and wake the worker; nothing else. */
+static void rx_kick(void) {
+    __atomic_add_fetch(&rx_kicks, 1, __ATOMIC_RELAXED);
+    uint64_t flags;
+    spin_lock_irqsave(&rx_lock, &flags);
+    rx_pending = 1;
+    wq_wake(&rx_wq);
+    spin_unlock_irqrestore(&rx_lock, flags);
 }
 
-/* --- Public API --- */
+/* MSI-X entry 1: the RX queue has used buffers. */
+static int net_rx_irq(void *arg) {
+    (void)arg;
+    rx_kick();
+    return IRQ_HANDLED;
+}
 
-int virtio_net_init(void) {
-    const PciDevice *pci = pci_find_device(VIRTIO_NET_VENDOR_ID, VIRTIO_NET_DEVICE_ID);
-    if (!pci) {
-        kprintf("[VIRTIO-NET] No VirtIO network device found\n");
-        return -1;
+/* MSI-X entry 0: config change (link status); nothing reads it yet. */
+static int net_config_irq(void *arg) {
+    (void)arg;
+    return IRQ_HANDLED;
+}
+
+/* INTx (shared line): reading the ISR status acknowledges the device. */
+static int net_intx_irq(void *arg) {
+    uint8_t isr = virtio_isr_status(arg);
+    if (isr & VIRTIO_ISR_QUEUE) rx_kick();
+    return isr != 0 ? IRQ_HANDLED : IRQ_NONE;
+}
+
+/* Kernel thread: hand received frames to the network stack. The stack has no
+ * locks of its own beyond the sockets': it runs under the kernel lock, like
+ * the syscalls that use it (M1-05), which is held only with interrupts off. */
+static void net_rx_worker(void *arg) {
+    (void)arg;
+    for (;;) {
+        uint64_t flags;
+        spin_lock_irqsave(&rx_lock, &flags);
+        while (!rx_pending) {
+            wq_sleep(&rx_wq, &rx_lock, flags);
+            spin_lock_irqsave(&rx_lock, &flags);
+        }
+        rx_pending = 0;
+        rx_wakeups++;
+        spin_unlock(&rx_lock);   /* interrupts stay off for the kernel lock */
+        kernel_lock();
+        virtio_net_poll_rx();
+        kernel_unlock();
+        irq_restore(flags);
     }
+}
 
-    kprintf("[VIRTIO-NET] Found device at %x:%x.%x (IRQ %d)\n",
-            pci->addr.bus, pci->addr.device, pci->addr.function, pci->irq_line);
+uint64_t virtio_net_rx_wakeups(void) {
+    return __atomic_load_n(&rx_wakeups, __ATOMIC_RELAXED);
+}
 
-    if (virtio_init_device(&net_vdev, pci) != 0) return -1;
+uint64_t virtio_net_rx_kicks(void) {
+    return __atomic_load_n(&rx_kicks, __ATOMIC_RELAXED);
+}
+
+/* MSI-X entry 0 = config, entry 1 = RX (one vector: RX takes entry 0); TX has
+ * none. INTx: one shared handler. TX never interrupts either way. */
+static int net_setup_irqs(VirtioDevice *v) {
+    Device *dev = &v->pci->dev;
+    int n = virtio_setup_irqs(v, 2);
+    if (n < 0) return n;
+    v->queues[TX_QUEUE].avail->flags |= VRING_AVAIL_F_NO_INTERRUPT;
+    if (!v->msix) return irq_request(dev, 0, net_intx_irq, v, IRQF_SHARED, "virtio-net");
+    uint16_t rxvec = n >= 2 ? 1 : 0;
+    int rc = irq_request(dev, rxvec, net_rx_irq, v, 0, "virtio-net-rx");
+    if (rc == 0 && n >= 2) rc = irq_request(dev, 0, net_config_irq, v, 0, "virtio-net-config");
+    if (rc != 0) return rc;
+    if (virtio_set_queue_vector(v, RX_QUEUE, rxvec) != 0 ||
+        virtio_set_queue_vector(v, TX_QUEUE, VIRTIO_MSI_NO_VECTOR) != 0 ||
+        virtio_set_config_vector(v, n >= 2 ? 0 : VIRTIO_MSI_NO_VECTOR) != 0) {
+        kprintf("[VIRTIO-NET] device refused the MSI-X vectors\n");
+        return -EIO;
+    }
+    return 0;
+}
+
+/* --- Driver --- */
+
+static int virtio_net_probe(PciDevice *pci, const PciDeviceId *id) {
+    (void)id;
+    if (net_initialized) return -EBUSY;   /* one virtio NIC for now */
+
+    if (virtio_init_device(&net_vdev, pci) != 0) return -ENODEV;
 
     /* Accept MAC feature only */
     virtio_negotiate_features(&net_vdev, VIRTIO_NET_F_MAC);
 
     /* Initialize receiveq (0) and transmitq (1) */
-    if (virtio_init_queue(&net_vdev, RX_QUEUE) != 0) return -1;
-    if (virtio_init_queue(&net_vdev, TX_QUEUE) != 0) return -1;
+    if (virtio_init_queue(&net_vdev, RX_QUEUE) != 0) return -ENOMEM;
+    if (virtio_init_queue(&net_vdev, TX_QUEUE) != 0) return -ENOMEM;
 
-    /* Read MAC from device-specific config */
-    for (int i = 0; i < 6; i++)
-        net_mac[i] = inb(net_vdev.io_base + VIRTIO_REG_CONFIG + i);
+    Thread *worker = thread_create(net_rx_worker, NULL);
+    if (worker == NULL) return -ENOMEM;
+    int rc = net_setup_irqs(&net_vdev);
+    if (rc != 0) {
+        thread_destroy(worker);
+        return rc;
+    }
+
+    /* Read MAC from device-specific config (moved by MSI-X) */
+    for (int i = 0; i < 6; i++) net_mac[i] = virtio_config_read8(&net_vdev, (uint16_t)i);
 
     kprintf("[VIRTIO-NET] MAC: %x:%x:%x:%x:%x:%x\n",
             net_mac[0], net_mac[1], net_mac[2],
@@ -117,16 +209,12 @@ int virtio_net_init(void) {
 
     virtio_device_ready(&net_vdev);
 
-    /* Pre-fill RX buffers */
+    /* Pre-fill RX buffers (the device is live: the worker may run at once) */
     if (rx_bufs_init() != 0) {
         kprintf("[VIRTIO-NET] Failed to allocate RX buffers\n");
-        return -1;
+        thread_destroy(worker);   /* never queued; the bus frees the vectors */
+        return -ENOMEM;
     }
-
-    /* Register IRQ handler */
-    uint8_t irq = pci->irq_line;
-    isr_register_handler(IRQ_BASE + irq, virtio_net_irq_handler);
-    pic_unmask(irq);
 
     /* Register with network interface layer */
     memcpy(net_nif.mac, net_mac, 6);
@@ -134,21 +222,51 @@ int virtio_net_init(void) {
     netif_register(&net_nif);
 
     net_initialized = 1;
-    kprintf("[VIRTIO-NET] Initialized (%d RX buffers)\n", RX_BUF_COUNT);
-    pci_set_driver(pci, "virtio-net");   /* boot report (M1-04) */
+    pci->dev.driver_data = &net_vdev;
+    sched_add_thread(worker);
+    kprintf("[VIRTIO-NET] Initialized (%d RX buffers, %s)\n", RX_BUF_COUNT, net_vdev.msix ? "MSI-X" : "INTx");
     return 0;
+}
+
+/* ADR-0017: the hooks exist; NIC power management comes later. */
+static int virtio_net_suspend(Device *dev, int how) {
+    (void)how;
+    kprintf("[VIRTIO-NET] %s: suspend not supported yet\n", dev->name);
+    return -EOPNOTSUPP;
+}
+
+static int virtio_net_resume(Device *dev, int how) {
+    (void)how;
+    kprintf("[VIRTIO-NET] %s: resume not supported yet\n", dev->name);
+    return -EOPNOTSUPP;
+}
+
+static const PciDeviceId virtio_net_ids[] = {
+    PCI_DEVICE(VIRTIO_NET_VENDOR_ID, VIRTIO_NET_DEVICE_ID),
+    {0},
+};
+
+static PciDriver virtio_net_driver = {
+    .driver = {.name = "virtio-net", .suspend = virtio_net_suspend, .resume = virtio_net_resume},
+    .ids = virtio_net_ids,
+    .probe = virtio_net_probe,
+};
+
+int virtio_net_register(void) {
+    return pci_register_driver(&virtio_net_driver);
 }
 
 int virtio_net_send(const void *data, uint32_t len) {
     if (!net_initialized) return -1;
 
     Virtqueue *vq = &net_vdev.queues[TX_QUEUE];
-    uint64_t hhdm = vmm_get_hhdm_offset();
+    Device *dev = &net_vdev.pci->dev;
+    if (len > PAGE_SIZE - VIRTIO_NET_HDR_SIZE) return -1;
 
-    /* Allocate a page for virtio-net header + frame */
-    uint64_t phys = pmm_alloc_page();
-    if (phys == 0) return -1;
-    void *buf = (void *)(phys + hhdm);
+    /* A DMA page for virtio-net header + frame */
+    uint64_t phys;
+    void *buf = dma_alloc_coherent(dev, PAGE_SIZE, &phys, 0);
+    if (buf == NULL) return -1;
 
     /* Zero the virtio-net header */
     memset(buf, 0, VIRTIO_NET_HDR_SIZE);
@@ -158,7 +276,7 @@ int virtio_net_send(const void *data, uint32_t len) {
     /* Build single descriptor (device-readable) */
     uint16_t d = virtq_alloc_desc(vq);
     if (d == VRING_DESC_NONE) {
-        pmm_free_page(phys);
+        dma_free_coherent(dev, PAGE_SIZE, buf, phys);
         return -1;
     }
     vq->desc[d].addr = phys;
@@ -178,7 +296,7 @@ int virtio_net_send(const void *data, uint32_t len) {
         virtq_pop_used(vq, &used_len);
 
     virtq_free_chain(vq, d);
-    pmm_free_page(phys);
+    dma_free_coherent(dev, PAGE_SIZE, buf, phys);
 
     return (timeout > 0) ? 0 : -1;
 }

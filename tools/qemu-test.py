@@ -95,7 +95,7 @@ def qemu_command(args, iso, serial_log):
         cmd += ["-accel", "kvm", "-cpu", "host" + flags]
     else:
         cmd += ["-accel", "tcg,thread=multi", "-cpu", (args.cpu or "max") + flags]
-    return cmd
+    return cmd + args.qemu_arg
 
 
 def read_lines(path):
@@ -134,6 +134,8 @@ def main():
                     help="skip (exit 77) when KVM is not usable")
     ap.add_argument("--cpu", default=None,
                     help="QEMU CPU model, run under TCG (default: host with KVM, else max)")
+    ap.add_argument("--qemu-arg", action="append", default=[],
+                    help="extra QEMU argument, passed verbatim (repeat for each word; e.g. devices)")
     ap.add_argument("--expect-exit", type=lambda v: int(v, 0), default=None,
                     help="pass only if the kernel ends the run with this debug-exit value")
     args = ap.parse_args()

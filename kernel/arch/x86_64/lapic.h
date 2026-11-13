@@ -57,6 +57,9 @@ void lapic_init_ap(void);
 /* 1 when the APIC layer runs in x2APIC mode. */
 int lapic_x2apic(void);
 
+/* 1 once lapic_init_bsp ran: interrupts (MSI included) go through the local APIC. */
+int lapic_active(void);
+
 /* Send End-of-Interrupt. Must be called after handling every LAPIC interrupt. */
 void lapic_eoi(void);
 

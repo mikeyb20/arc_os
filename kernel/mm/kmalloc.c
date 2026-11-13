@@ -26,17 +26,11 @@ static inline unsigned size_class(size_t size) {
     return (unsigned)(64 - __builtin_clzll((unsigned long long)size - 1)) - 4;
 }
 
-/* Smallest buddy order holding `size` bytes (size >= 1). */
-static inline unsigned large_order(size_t size) {
-    uint64_t pages_minus_1 = ((uint64_t)size - 1) >> PAGE_SHIFT;
-    return pages_minus_1 == 0 ? 0 : (unsigned)(64 - __builtin_clzll(pages_minus_1));
-}
-
 /* Bytes kmalloc(size) hands out, or 0 if it can't. */
 static inline size_t bucket_bytes(size_t size) {
     if (size == 0 || size > KMALLOC_LARGE_MAX) return 0;
     if (size <= KMALLOC_SLAB_MAX) return (size_t)KMALLOC_MIN_SIZE << size_class(size);
-    return (size_t)PAGE_SIZE << large_order(size);
+    return (size_t)PAGE_SIZE << page_order_for(size);
 }
 
 void kmalloc_init(void) {
@@ -50,7 +44,7 @@ void kmalloc_init(void) {
 
 /* A large block straight from the page allocator. */
 static void *kmalloc_large(size_t size, uint32_t flags) {
-    unsigned order = large_order(size);
+    unsigned order = page_order_for(size);
     if (kmem_charge(order) != 0) return NULL;
     struct page *pg = alloc_pages(order, flags & GFP_ZERO);
     if (pg == NULL) {

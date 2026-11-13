@@ -54,6 +54,7 @@ static uint64_t vmm_flags_to_pte(uint32_t flags) {
     if (flags & VMM_FLAG_WRITABLE) pte |= PTE_WRITABLE;
     if (flags & VMM_FLAG_USER)     pte |= PTE_USER;
     if (flags & VMM_FLAG_NOEXEC)   pte |= PTE_NX;
+    if (flags & VMM_FLAG_UNCACHED) pte |= PTE_PCD | PTE_PWT;   /* PAT entry 3: UC */
     return pte;
 }
 
@@ -63,6 +64,7 @@ static uint32_t pte_to_vmm_flags(uint64_t pte_flags) {
     if (pte_flags & PTE_WRITABLE) flags |= VMM_FLAG_WRITABLE;
     if (pte_flags & PTE_USER)     flags |= VMM_FLAG_USER;
     if (pte_flags & PTE_NX)       flags |= VMM_FLAG_NOEXEC;
+    if (pte_flags & PTE_PCD) flags |= VMM_FLAG_UNCACHED;
     return flags;
 }
 

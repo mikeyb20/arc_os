@@ -34,7 +34,15 @@ void diag_selftest(int *passes, int *fails);
 /* Run the benchmarks and add their table to the report. */
 void diag_bench(void);
 
+/* Test mode, suite "devices" (M1-09): register the driver for QEMU's edu
+ * device; it checks MSI or INTx, affinity and DMA and logs "[DEVTEST]" lines. */
+void devtest_register(void);
+
 /* Busy-wait ms milliseconds by the TSC (diagnostics only). */
 void diag_delay_ms(uint32_t ms);
+
+/* TSC cycles in ms milliseconds (3 GHz assumed when the TSC rate is unknown);
+ * for loops that wait for a condition at most that long. */
+uint64_t diag_ms_to_cycles(uint32_t ms);
 
 #endif /* ARCHOS_DIAG_DIAG_H */

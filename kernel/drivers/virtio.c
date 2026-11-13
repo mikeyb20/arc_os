@@ -1,7 +1,17 @@
+/* arc_os — Legacy virtio-PCI transport (virtqueues, status, MSI-X vectors)
+ *
+ * Owns: the legacy I/O-port register block of one virtio device, its vrings
+ * (coherent DMA memory) and the descriptor free lists.
+ * Invariants: vrings live in DMA memory from dma_alloc_coherent of the PCI
+ * device; config_off matches the device's MSI-X state.
+ * Locks: none; each driver serializes its own queues (virtio-blk, virtio-net).
+ * Cost: descriptor alloc/free O(1) per descriptor; submit O(1). */
+
 #include "drivers/virtio.h"
-#include "arch/x86_64/io.h"
+#include "drivers/dma.h"
+#include "drivers/irq.h"
+#include "arch/hal.h"
 #include "mm/pmm.h"
-#include "mm/vmm.h"
 #include "lib/mem.h"
 #include "lib/kprintf.h"
 
@@ -38,16 +48,18 @@ static inline void virtio_rmb(void) {
     __asm__ volatile ("lfence" ::: "memory");
 }
 
-int virtio_init_device(VirtioDevice *vdev, const PciDevice *pci) {
+int virtio_init_device(VirtioDevice *vdev, PciDevice *pci) {
     vdev->pci = pci;
     vdev->io_base = pci_bar_io_base(pci->bar[0]);
-    vdev->irq = pci->irq_line;
+    vdev->config_off = VIRTIO_REG_CONFIG;
+    vdev->msix = 0;
     vdev->num_queues = 0;
 
-    if (vdev->io_base == 0) {
+    if (vdev->io_base == 0 || !(pci->bar[0] & PCI_BAR_IO)) {
         kprintf("[VIRTIO] BAR0 is not I/O space\n");
         return -1;
     }
+    pci_enable_decode(pci, 0);
 
     /* Reset device */
     outb(vdev->io_base + VIRTIO_REG_DEVICE_STATUS, 0);
@@ -62,11 +74,39 @@ int virtio_init_device(VirtioDevice *vdev, const PciDevice *pci) {
     /* Enable PCI bus mastering for DMA */
     pci_enable_bus_master(pci);
 
-    kprintf("[VIRTIO] Device at %x:%x.%x  io_base=0x%x  irq=%d\n",
-            pci->addr.bus, pci->addr.device, pci->addr.function,
-            vdev->io_base, vdev->irq);
-
+    kprintf("[VIRTIO] Device %s  io_base=0x%x\n", pci->name, vdev->io_base);
     return 0;
+}
+
+int virtio_setup_irqs(VirtioDevice *vdev, unsigned want) {
+    int n = pci_alloc_irq_vectors(vdev->pci, 1, want, PCI_IRQ_MSIX | PCI_IRQ_INTX);
+    if (n < 0) return n;
+    vdev->msix = vdev->pci->irq_kind == IRQ_KIND_MSIX;
+    vdev->config_off = vdev->msix ? VIRTIO_REG_CONFIG_MSIX : VIRTIO_REG_CONFIG;
+    return n;
+}
+
+int virtio_set_config_vector(VirtioDevice *vdev, uint16_t vec) {
+    outw(vdev->io_base + VIRTIO_REG_MSI_CONFIG_VEC, vec);
+    return inw(vdev->io_base + VIRTIO_REG_MSI_CONFIG_VEC) == vec ? 0 : -1;
+}
+
+int virtio_set_queue_vector(VirtioDevice *vdev, int queue_index, uint16_t vec) {
+    outw(vdev->io_base + VIRTIO_REG_QUEUE_SELECT, (uint16_t)queue_index);
+    outw(vdev->io_base + VIRTIO_REG_MSI_QUEUE_VEC, vec);
+    return inw(vdev->io_base + VIRTIO_REG_MSI_QUEUE_VEC) == vec ? 0 : -1;
+}
+
+uint8_t virtio_isr_status(VirtioDevice *vdev) {
+    return inb(vdev->io_base + VIRTIO_REG_ISR_STATUS);
+}
+
+uint8_t virtio_config_read8(VirtioDevice *vdev, uint16_t off) {
+    return inb((uint16_t)(vdev->io_base + vdev->config_off + off));
+}
+
+uint32_t virtio_config_read32(VirtioDevice *vdev, uint16_t off) {
+    return inl((uint16_t)(vdev->io_base + vdev->config_off + off));
 }
 
 void virtio_negotiate_features(VirtioDevice *vdev, uint32_t supported) {
@@ -91,20 +131,18 @@ int virtio_init_queue(VirtioDevice *vdev, int queue_index) {
         return -1;
     }
 
-    /* Allocate physically contiguous memory for the vring */
+    /* Coherent DMA memory for the vring (zeroed, contiguous, page-aligned);
+     * the legacy queue register takes a 32-bit page number */
     uint64_t total = vring_total_size(qsz);
     uint32_t pages_needed = (uint32_t)((total + PAGE_SIZE - 1) / PAGE_SIZE);
-    uint64_t phys = pmm_alloc_contiguous(pages_needed);
-    if (phys == 0) {
+    uint64_t phys;
+    void *virt = dma_alloc_coherent(&vdev->pci->dev, total, &phys, 0);
+    if (virt == NULL || phys / PAGE_SIZE > 0xFFFFFFFFULL) {
         kprintf("[VIRTIO] Failed to allocate %u pages for queue %d\n",
                 pages_needed, queue_index);
+        if (virt != NULL) dma_free_coherent(&vdev->pci->dev, total, virt, phys);
         return -1;
     }
-
-    /* Zero the vring memory */
-    uint64_t hhdm = vmm_get_hhdm_offset();
-    void *virt = (void *)(phys + hhdm);
-    memset(virt, 0, pages_needed * PAGE_SIZE);
 
     /* Set up virtqueue pointers */
     Virtqueue *vq = &vdev->queues[queue_index];

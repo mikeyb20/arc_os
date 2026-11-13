@@ -51,6 +51,15 @@ static void stub_panic_halt(void) {
 #define panic_halt   stub_panic_halt
 
 /* Include the real ISR implementation */
+/* Device vectors go to the per-CPU vector table (M1-09); recorded here */
+#define irq_vector_dispatch isr_test_irq_vector_dispatch
+static int vector_dispatched;
+static uint8_t vector_seen;
+void isr_test_irq_vector_dispatch(uint8_t vector) {
+    vector_dispatched++;
+    vector_seen = vector;
+}
+
 #include "../kernel/arch/x86_64/isr.c"
 
 /* Test helper: create an InterruptFrame on the stack */
@@ -65,9 +74,12 @@ static InterruptFrame make_frame(uint64_t vector) {
 static int handler_called;
 static uint64_t handler_vector;
 
+static int eoi_before_handler;
+
 static void test_handler(InterruptFrame *frame) {
     handler_called++;
     handler_vector = frame->vector;
+    eoi_before_handler = test_eoi_called;
 }
 
 static void reset_test_state(void) {
@@ -76,6 +88,10 @@ static void reset_test_state(void) {
     test_pic_spurious_result = false;
     test_eoi_called = 0;
     test_eoi_irq = 0;
+    vector_dispatched = 0;
+    vector_seen = 0;
+    eoi_before_handler = -1;
+    late_eoi_lines = 0;
     /* Clear all handlers */
     for (int i = 0; i < ISR_COUNT; i++) {
         handlers[i] = NULL;
@@ -86,13 +102,48 @@ static void reset_test_state(void) {
 
 static int test_register_and_dispatch(void) {
     reset_test_state();
-    isr_register_handler(48, test_handler);  /* Vector 48, above IRQ range */
+    isr_register_handler(0xE0, test_handler);  /* above the device vectors */
 
-    InterruptFrame f = make_frame(48);
+    InterruptFrame f = make_frame(0xE0);
     isr_dispatch(&f);
 
     ASSERT_EQ(handler_called, 1);
-    ASSERT_EQ(handler_vector, 48);
+    ASSERT_EQ(handler_vector, 0xE0);
+    ASSERT_EQ(vector_dispatched, 0);
+    return 0;
+}
+
+/* M1-09: vectors 0x30-0xDF are device vectors: the vector table gets them
+ * (it sends its own LAPIC EOI), never a handler or the PIC */
+static int test_device_vector_dispatch(void) {
+    reset_test_state();
+    isr_register_handler(0x30, test_handler);
+    InterruptFrame f = make_frame(0x30);
+    isr_dispatch(&f);
+    f = make_frame(0xDF);
+    isr_dispatch(&f);
+    ASSERT_EQ(vector_dispatched, 2);
+    ASSERT_EQ(vector_seen, 0xDF);
+    ASSERT_EQ(handler_called, 0);
+    ASSERT_EQ(test_eoi_called, 0);
+    return 0;
+}
+
+/* Legacy lines: EOI before the handler (the timer may switch threads), after
+ * it for lines marked late (level-triggered PCI INTx) */
+static int test_irq_late_eoi(void) {
+    reset_test_state();
+    isr_register_handler(32 + 11, test_handler);
+    InterruptFrame f = make_frame(32 + 11);
+    isr_dispatch(&f);
+    ASSERT_EQ(eoi_before_handler, 1);
+    isr_set_late_eoi(11);
+    isr_set_late_eoi(200);   /* out of range: ignored */
+    isr_dispatch(&f);
+    ASSERT_EQ(eoi_before_handler, 1);   /* this time the EOI came after */
+    ASSERT_EQ(test_eoi_called, 2);
+    ASSERT_EQ(test_eoi_irq, 11);
+    ASSERT_EQ(late_eoi_lines, 1u << 11);
     return 0;
 }
 
@@ -172,22 +223,22 @@ static int test_register_bounds(void) {
 static int test_multiple_handlers(void) {
     reset_test_state();
 
-    /* Register test_handler on vector 48, verify it's called */
-    isr_register_handler(48, test_handler);
+    /* Register test_handler on vector 0xE0, verify it's called */
+    isr_register_handler(0xE0, test_handler);
 
-    InterruptFrame f1 = make_frame(48);
+    InterruptFrame f1 = make_frame(0xE0);
     isr_dispatch(&f1);
     ASSERT_EQ(handler_called, 1);
-    ASSERT_EQ(handler_vector, 48);
+    ASSERT_EQ(handler_vector, 0xE0);
 
-    /* Register same handler on vector 49, verify independent dispatch */
-    isr_register_handler(49, test_handler);
+    /* Register same handler on vector 0xE1, verify independent dispatch */
+    isr_register_handler(0xE1, test_handler);
 
     handler_called = 0;
-    InterruptFrame f2 = make_frame(49);
+    InterruptFrame f2 = make_frame(0xE1);
     isr_dispatch(&f2);
     ASSERT_EQ(handler_called, 1);
-    ASSERT_EQ(handler_vector, 49);
+    ASSERT_EQ(handler_vector, 0xE1);
 
     return 0;
 }
@@ -208,18 +259,18 @@ static int test_handler_replacement(void) {
     handler2_called = 0;
     handler2_vector = 0;
 
-    isr_register_handler(48, test_handler);
-    InterruptFrame f = make_frame(48);
+    isr_register_handler(0xE0, test_handler);
+    InterruptFrame f = make_frame(0xE0);
     isr_dispatch(&f);
     ASSERT_EQ(handler_called, 1);
 
     /* Replace with handler2 */
     handler_called = 0;
-    isr_register_handler(48, test_handler2);
+    isr_register_handler(0xE0, test_handler2);
     isr_dispatch(&f);
     ASSERT_EQ(handler_called, 0);   /* Original not called */
     ASSERT_EQ(handler2_called, 1);  /* Replacement called */
-    ASSERT_EQ(handler2_vector, 48);
+    ASSERT_EQ(handler2_vector, 0xE0);
     return 0;
 }
 
@@ -267,10 +318,10 @@ static int test_null_handler_irq_eoi(void) {
 
 static int test_replace_handler_with_null(void) {
     reset_test_state();
-    isr_register_handler(48, test_handler);
-    isr_register_handler(48, NULL);
+    isr_register_handler(0xE0, test_handler);
+    isr_register_handler(0xE0, NULL);
 
-    InterruptFrame f = make_frame(48);
+    InterruptFrame f = make_frame(0xE0);
     isr_dispatch(&f);
     ASSERT_EQ(handler_called, 0);
     return 0;
@@ -296,10 +347,10 @@ static int test_irq_range_boundaries(void) {
     ASSERT_EQ(test_eoi_called, 1);
     ASSERT_EQ(test_eoi_irq, 15);
 
-    /* Vector 48 = NOT an IRQ — should not send EOI */
+    /* Vector 0xE0 = not a legacy line (device vectors: test_device_vector_dispatch) — should not send EOI */
     reset_test_state();
-    isr_register_handler(48, test_handler);
-    f = make_frame(48);
+    isr_register_handler(0xE0, test_handler);
+    f = make_frame(0xE0);
     isr_dispatch(&f);
     ASSERT_EQ(handler_called, 1);
     ASSERT_EQ(test_eoi_called, 0);
@@ -309,21 +360,23 @@ static int test_irq_range_boundaries(void) {
 /* --- Test suite export --- */
 
 TestCase isr_tests[] = {
-    { "register_and_dispatch",          test_register_and_dispatch },
-    { "irq_dispatch_eoi",              test_irq_dispatch_eoi },
-    { "spurious_irq_no_handler_no_eoi", test_spurious_irq_no_handler_no_eoi },
-    { "irq_no_handler_still_eoi",      test_irq_no_handler_still_eoi },
-    { "exception_no_eoi",              test_exception_no_eoi },
-    { "high_vector_no_handler",        test_high_vector_no_handler_no_crash },
-    { "register_bounds",               test_register_bounds },
-    { "multiple_handlers",             test_multiple_handlers },
-    { "handler_replacement",           test_handler_replacement },
-    { "vector_255_boundary",           test_vector_255_boundary },
-    { "vector_0_boundary",             test_vector_0_boundary },
-    { "null_handler_default_path",     test_null_handler_default_path },
-    { "null_handler_irq_eoi",          test_null_handler_irq_eoi },
-    { "replace_handler_with_null",     test_replace_handler_with_null },
-    { "irq_range_boundaries",         test_irq_range_boundaries },
+    {"register_and_dispatch", test_register_and_dispatch},
+    {"device_vector_dispatch", test_device_vector_dispatch},
+    {"irq_late_eoi", test_irq_late_eoi},
+    {"irq_dispatch_eoi", test_irq_dispatch_eoi},
+    {"spurious_irq_no_handler_no_eoi", test_spurious_irq_no_handler_no_eoi},
+    {"irq_no_handler_still_eoi", test_irq_no_handler_still_eoi},
+    {"exception_no_eoi", test_exception_no_eoi},
+    {"high_vector_no_handler", test_high_vector_no_handler_no_crash},
+    {"register_bounds", test_register_bounds},
+    {"multiple_handlers", test_multiple_handlers},
+    {"handler_replacement", test_handler_replacement},
+    {"vector_255_boundary", test_vector_255_boundary},
+    {"vector_0_boundary", test_vector_0_boundary},
+    {"null_handler_default_path", test_null_handler_default_path},
+    {"null_handler_irq_eoi", test_null_handler_irq_eoi},
+    {"replace_handler_with_null", test_replace_handler_with_null},
+    {"irq_range_boundaries", test_irq_range_boundaries},
 };
 
 int isr_test_count = sizeof(isr_tests) / sizeof(isr_tests[0]);

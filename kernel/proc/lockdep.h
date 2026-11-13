@@ -18,6 +18,7 @@
 
 /* Levels: work-blocks.md §7, numbered with gaps. Lower = taken first. */
 #define LOCK_LEVEL_KERNEL        0   /* big kernel lock (interim, proc/kernel_lock.h) */
+#define LOCK_LEVEL_DEVICE        5   /* sleeping: device model (bus lists, probe/remove/suspend; M1-09) */
 #define LOCK_LEVEL_INODE         10   /* sleeping: write, truncate, rename, directories (M1-11) */
 #define LOCK_LEVEL_MM            20   /* sleeping read-write: mmap, munmap, faults (M1-07) */
 #define LOCK_LEVEL_PAGE          30   /* sleeping, per page (M1-12) */
@@ -31,6 +32,9 @@
 #define LOCK_LEVEL_OBJECT_TABLE  76   /* a table of objects looked up under an object lock (sockets) */
 #define LOCK_LEVEL_WAITQUEUE     80   /* wait-queue locks */
 #define LOCK_LEVEL_RUNQUEUE      90   /* run queues: interrupts off; two only in CPU-index order */
+#define LOCK_LEVEL_IRQ_DESC      95   /* IRQ descriptors: request, free, affinity, /proc/interrupts (M1-09) */
+#define LOCK_LEVEL_IRQ_VECTOR    96   /* per-CPU device vector tables (M1-09) */
+#define LOCK_LEVEL_PCI_CONFIG    97   /* PCI config space ports 0xCF8/0xCFC (M1-09) */
 #define LOCK_LEVEL_SLAB_REGISTRY 99   /* the list of slab caches */
 #define LOCK_LEVEL_SLAB          100   /* one slab cache */
 #define LOCK_LEVEL_BUDDY         101   /* buddy allocator (the only lock taken under a slab lock) */

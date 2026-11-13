@@ -23,6 +23,7 @@ Kernel and user space are separate worlds: the same function in `kernel/lib` and
 | Physical ↔ virtual (HHDM) | `vmm_get_hhdm_offset()` (+ phys) | `kernel/mm/vmm.h` |
 | Page mapping, address spaces | `vmm_map_page[_in]`, `vmm_get_phys[_in]`, `vmm_create_user_pml4`, ... | `kernel/mm/vmm.h` |
 | Physical pages (buddy, 4 KiB-4 MiB blocks, `GFP_DMA32`) | `alloc_pages`, `free_pages`; wrappers `pmm_alloc_page`, `pmm_free_page`, `pmm_alloc_contiguous` | `kernel/mm/pmm.h` |
+| Buddy order for a byte size | `page_order_for` | `kernel/mm/page.h` |
 | Page descriptors (`struct page`), PFN / phys / HHDM conversions | `pfn_to_page`, `page_to_pfn`, `page_to_phys`, `page_to_virt`, `virt_to_page`, `pfn_valid` | `kernel/mm/page.h` |
 | Allocation flags | `GFP_KERNEL`, `GFP_ZERO`, `GFP_DMA32` | `kernel/mm/gfp.h` |
 | Size strings (`4G`, `512M`) | `pmm_parse_size` | `kernel/mm/pmm.h` |
@@ -49,9 +50,16 @@ Kernel and user space are separate worlds: the same function in `kernel/lib` and
 | Run a function on every other CPU (bounded wait) | `hal_run_on_other_cpus` (`ipi_call_others`) | `kernel/arch/hal.h` (`arch/x86_64/ipi.h`) |
 | CPU brand, signature, feature names | `hal_cpu_brand`, `hal_cpu_signature`, `hal_cpu_feature_names` (`cpu_brand`, `cpu_feature_names`) | `kernel/arch/hal.h` |
 | Machine maker and model (SMBIOS) | `smbios_read` | `kernel/drivers/smbios.h` |
-| PCI driver binding, class names | `pci_set_driver`, `pci_class_name` | `kernel/drivers/pci.h` |
+| Driver model: buses, devices, drivers, binding, system/runtime suspend and resume; struct from a member | `bus_register`, `bus_add_device`, `driver_register`, `device_unbind`, `bus_suspend_all`, `bus_resume_all`, `device_driver_name`, `container_of` | `kernel/drivers/bus.h` |
+| PCI drivers: ID tables, config access, capabilities, BARs | `pci_register_driver`, `PCI_DEVICE`, `PCI_DEVICE_CLASS`, `pci_match_id`, `pci_read16`/`32`, `pci_write16`/`32`, `pci_find_capability`, `pci_bar_phys`, `pci_bar_map`, `pci_enable_bus_master`, `pci_enable_decode`, `pci_driver_name`, `pci_class_name` | `kernel/drivers/pci.h` |
+| PCI interrupts: MSI-X, else MSI, else INTx | `pci_alloc_irq_vectors`, `pci_free_irq_vectors`, `pci_msix_info` (read only, boot report) | `kernel/drivers/pci.h` |
+| Device interrupt handlers, affinity, counts | `irq_request`, `irq_free`, `irq_set_affinity`, `irq_get_cpu`, `irq_desc_total`; bus layers: `irq_desc_create`, `irq_desc_destroy` | `kernel/drivers/irq.h` |
+| Device vectors and MSI messages (HAL) | `hal_irq_vector_alloc`, `hal_irq_vector_free`, `hal_irq_msi_message`, `hal_irq_msi_target_ok` (`irq_vector_*`, `irq_msi_compose`) | `kernel/arch/hal.h` (`arch/x86_64/irq_vector.h`) |
+| Map device registers (uncached), read and write them | `mmio_map`, `mmio_read8`..`64`, `mmio_write8`..`64` | `kernel/drivers/mmio.h` |
+| DMA: coherent buffers, streaming maps, device masks | `dma_alloc_coherent`, `dma_free_coherent`, `dma_map_single`, `dma_map_page`, `dma_unmap`, `dma_set_mask`, `DMA_BIT_MASK`, `dma_fits` | `kernel/drivers/dma.h` |
+| Legacy virtio-PCI transport: vrings, features, MSI-X vectors | `virtio_init_device`, `virtio_setup_irqs`, `virtio_set_config_vector`, `virtio_set_queue_vector`, `virtio_isr_status`, `virtio_init_queue`, `virtq_*` | `kernel/drivers/virtio.h` |
 | One screen row of text (pagers, banners) | `fb_console_write_row` | `kernel/drivers/fb_console.h` |
-| Boot report line, TSC-timed delay (diagnostic mode) | `diag_line`, `diag_delay_ms` | `kernel/diag/diag.h` |
+| Boot report line, TSC-timed delay or wait bound (diagnostic and test mode) | `diag_line`, `diag_delay_ms`, `diag_ms_to_cycles` | `kernel/diag/diag.h` |
 | QR code from bytes (byte mode, level M, versions 1-30; no allocation) | `qr_encode`, `qr_capacity`, `qr_module` | `kernel/diag/qr.h` |
 | Text as numbered `ARC1` QR pages: sanitize (no links), split, header and CRCs | `qr_text_sanitize`, `qr_text_paginate`, `qr_text_page` | `kernel/diag/qr_text.h` |
 | CPU features, x86-64-v3 floor, core type | `cpu_features`, `cpu_floor_missing`, `cpu_core_type_detect`, `cpu_describe` | `kernel/arch/x86_64/cpu.h` (via `arch/hal.h`) |

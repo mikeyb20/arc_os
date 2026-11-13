@@ -24,9 +24,14 @@
 
 static volatile uint32_t *lapic_mmio;   /* xAPIC mode only */
 static int x2apic_mode;
+static int lapic_on;   /* set by lapic_init_bsp */
 
 int lapic_x2apic(void) {
     return x2apic_mode;
+}
+
+int lapic_active(void) {
+    return lapic_on;
 }
 
 uint32_t lapic_read(uint32_t reg) {
@@ -79,6 +84,7 @@ void lapic_init_bsp(uint64_t mmio_phys) {
         lapic_mmio = (volatile uint32_t *)(mmio_phys + vmm_get_hhdm_offset());
     }
     lapic_enable_this_cpu();
+    lapic_on = 1;
 
     kprintf("[APIC] %s mode, BSP APIC ID %u, version 0x%x\n", x2apic_mode ? "x2APIC" : "xAPIC", lapic_id(),
             lapic_read(LAPIC_VERSION) & 0xFF);

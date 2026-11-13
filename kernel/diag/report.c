@@ -14,6 +14,7 @@
 #include "arch/hal.h"
 #include "drivers/acpi.h"
 #include "drivers/pci.h"
+#include "drivers/irq.h"
 #include "drivers/smbios.h"
 #include "drivers/fb_console.h"
 #include "drivers/keyboard.h"
@@ -55,9 +56,13 @@ void diag_line(const char *fmt, ...) {
     if (lines != NULL && line_count < DIAG_MAX_LINES) memcpy(lines[line_count++], buf, DIAG_LINE_MAX);
 }
 
-void diag_delay_ms(uint32_t ms) {
+uint64_t diag_ms_to_cycles(uint32_t ms) {
     uint64_t khz = hal_tsc_info()->khz;
-    uint64_t cycles = khz != 0 ? khz * ms : (uint64_t)ms * 3000000;   /* unknown: assume 3 GHz */
+    return khz != 0 ? khz * ms : (uint64_t)ms * 3000000;   /* unknown: assume 3 GHz */
+}
+
+void diag_delay_ms(uint32_t ms) {
+    uint64_t cycles = diag_ms_to_cycles(ms);
     uint64_t start = hal_tsc_read();
     while (hal_tsc_read() - start < cycles) hal_cpu_relax();
 }
@@ -183,14 +188,56 @@ static void report_acpi(const AcpiInfo *acpi) {
     }
 }
 
+/* Interrupt kind a driver got ("msix 2/3", "msi", "intx"), or what the
+ * device offers when unbound. */
+static const char *pci_irq_text(const PciDevice *d, char *buf, size_t size) {
+    switch (d->irq_kind) {
+    case IRQ_KIND_MSIX:
+        ksnprintf(buf, size, "msix %u/%u", d->dev.nr_irqs, d->msix_entries);
+        break;
+    case IRQ_KIND_MSI:
+        ksnprintf(buf, size, "msi");
+        break;
+    case IRQ_KIND_INTX:
+        ksnprintf(buf, size, "intx %u", d->irq_line);
+        break;
+    default:
+        ksnprintf(buf, size, "%s%s%s", d->cap_msix ? "msix " : "", d->cap_msi ? "msi " : "", d->irq_pin ? "intx" : "");
+        break;
+    }
+    return buf;
+}
+
+/* PCI functions with their bound driver and interrupts; then each MSI-X
+ * table, read and not driven (the M1-09 smoke-boot line: proves BAR sizing,
+ * the MMIO window and the table layout on real hardware). */
 static void report_pci(void) {
     int n = pci_get_device_count();
     diag_line("PCI        %d devices%s", n, pci_get_dropped_count() > 0 ? " (table full: more not listed)" : "");
     for (int i = 0; i < n; i++) {
-        const PciDevice *d = pci_get_device(i);
+        PciDevice *d = pci_get_device(i);
+        const char *drv = pci_driver_name(d);
+        char irq[40], tail[64];
+        int len = ksnprintf(tail, sizeof(tail), "%-10s %s", drv ? drv : "no driver", pci_irq_text(d, irq, sizeof(irq)));
+        if (len > (int)sizeof(tail) - 1) len = (int)sizeof(tail) - 1;
+        while (len > 0 && tail[len - 1] == ' ') tail[--len] = '\0';   /* no trailing blanks */
         diag_line("  %02x:%02x.%x %04x:%04x class %02x%02x %-12s %s", d->addr.bus, d->addr.device, d->addr.function,
                   d->vendor_id, d->device_id, d->class_code, d->subclass, pci_class_name(d->class_code, d->subclass),
-                  d->driver ? d->driver : "no driver");
+                  tail);
+    }
+    for (int i = 0; i < n; i++) {
+        PciDevice *d = pci_get_device(i);
+        uint16_t entries, masked;
+        uint8_t bar;
+        uint32_t off;
+        if (d->cap_msix == 0) continue;
+        if (pci_msix_info(d, &entries, &bar, &off, &masked) == 0) {
+            diag_line("  MSI-X %02x:%02x.%x %u entries in BAR%u+0x%x (%lu KiB), %u masked", d->addr.bus, d->addr.device,
+                      d->addr.function, entries, bar, off, d->bar_size[bar] / 1024, masked);
+        } else {
+            diag_line("  MSI-X %02x:%02x.%x %u entries in BAR%u+0x%x, table not readable (decode off)", d->addr.bus,
+                      d->addr.device, d->addr.function, entries, bar, off);
+        }
     }
 }
 

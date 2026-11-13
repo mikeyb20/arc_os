@@ -147,4 +147,11 @@ static inline unsigned page_order(const struct page *pg) {
     return pg->flags & PG_ORDER_MASK;
 }
 
+/* Smallest buddy order whose block holds size bytes (size >= 1). Callers check
+ * the result against PAGE_MAX_ORDER. */
+static inline unsigned page_order_for(size_t size) {
+    uint64_t pages_minus_1 = ((uint64_t)size - 1) >> PAGE_SHIFT;
+    return pages_minus_1 == 0 ? 0 : (unsigned)(64 - __builtin_clzll(pages_minus_1));
+}
+
 #endif /* ARCHOS_MM_PAGE_H */
