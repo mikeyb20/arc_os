@@ -239,3 +239,34 @@ void klog_flush(void) {
         __atomic_store_n(&console_owner, 0, __ATOMIC_RELEASE);
     }
 }
+
+void klog_for_each_line(uint64_t from, int max_level, void (*fn)(const char *line, size_t len, void *ctx), void *ctx) {
+    char chunk[256];
+    char line[KLOG_LINE_MAX];
+    size_t len = 0;
+    int marker = 3, skip = 0;
+    uint64_t pos = from;
+    int partial = pos > 0;   /* may start mid-line (e.g. once the ring has wrapped) */
+    size_t n;
+    while ((n = klog_read(&pos, chunk, sizeof(chunk))) > 0) {
+        for (size_t i = 0; i < n; i++) {
+            char c = chunk[i];
+            if (partial) {
+                if (c == '\n') partial = 0;
+                continue;
+            }
+            if (marker > 0) {
+                if (marker == 2) skip = (c - '0') > max_level;
+                marker--;
+                continue;
+            }
+            if (c != '\n') {
+                if (!skip && len < KLOG_LINE_MAX) line[len++] = c;
+                continue;
+            }
+            if (!skip) fn(line, len, ctx);
+            len = 0;
+            marker = 3;
+        }
+    }
+}

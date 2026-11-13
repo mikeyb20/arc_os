@@ -96,8 +96,12 @@ static void hal_panic_capture(PanicInfo *pi, void *frame_address) {
 #include "../kernel/lib/panic.c"
 
 static int screen_calls;
-static void count_screen(void) {
+static const PanicInfo *screen_info;
+static size_t screen_out_len;   /* log length when the screen was drawn */
+static void count_screen(const PanicInfo *info) {
     screen_calls++;
+    screen_info = info;
+    screen_out_len = out_len;
 }
 
 static void reset(int testmode) {
@@ -156,12 +160,14 @@ static int test_report_in_test_mode(void) {
     ASSERT_EQ(panic_mode_calls, 1);
     ASSERT_EQ(others_stopped, 1);
     ASSERT_EQ(screen_calls, 1);
+    ASSERT_TRUE(screen_info == &pi);   /* the screen gets the report's registers */
     ASSERT_EQ(exit_code, TESTMODE_PANIC_CODE);
     ASSERT_TRUE(strstr(out, "PANIC: Page Fault on CPU 2\n") != NULL);
     ASSERT_TRUE(strstr(out, "RIP    ffffffff80001010   CR2    0000000000000010\n") != NULL);
     ASSERT_TRUE(strstr(out, "#0  ffffffff80001010 foo+0x10\n") != NULL);
     ASSERT_TRUE(strstr(out, "#1  0000000000401000 ?\n") != NULL);
     ASSERT_TRUE(strstr(out, "ARC_TEST PANIC suite=smoke\n") != NULL);
+    ASSERT_EQ(screen_out_len, strstr(out, "ARC_TEST PANIC") - out + strlen("ARC_TEST PANIC suite=smoke\n"));
     return 0;
 }
 

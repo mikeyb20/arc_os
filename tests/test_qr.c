@@ -18,6 +18,7 @@
 #include "../kernel/diag/qr.c"
 #include "../kernel/diag/qr_text.c"
 #include "qr_report_sample.h"
+#include "zbar_decode.h"
 
 static QrCode qr;   /* about 7 KiB: static, as in the kernel */
 
@@ -53,9 +54,7 @@ static int write_pgm(const QrCode *code, const char *path) {
 
 static int zbar_checked;
 
-/* Decode `code` with zbarimg into out; returns the byte count, or -1 if
- * nothing was decoded. */
-static long zbar_decode(const QrCode *code, uint8_t *out, size_t cap) {
+long zbar_decode_file(const char *path, uint8_t *out, size_t cap) {
     if (!zbar_checked) {
         if (system("command -v zbarimg >/dev/null 2>&1") != 0) {
             printf("  FAIL: zbarimg not found: run tools/dev-setup.sh apt (zbar-tools)\n");
@@ -63,24 +62,24 @@ static long zbar_decode(const QrCode *code, uint8_t *out, size_t cap) {
         }
         zbar_checked = 1;
     }
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd), "zbarimg --raw -q -Sbinary %s 2>/dev/null", path);
+    FILE *p = popen(cmd, "r");
+    if (p == NULL) return -1;
+    size_t n = fread(out, 1, cap, p);
+    return pclose(p) != 0 ? -1 : (long)n;
+}
+
+/* Decode `code` with zbarimg into out; returns the byte count, or -1 if
+ * nothing was decoded. */
+static long zbar_decode(const QrCode *code, uint8_t *out, size_t cap) {
     char path[] = "/tmp/arc_qr_XXXXXX";
     int fd = mkstemp(path);
     if (fd < 0) return -1;
     close(fd);
-    if (write_pgm(code, path) != 0) {
-        unlink(path);
-        return -1;
-    }
-    char cmd[128];
-    snprintf(cmd, sizeof(cmd), "zbarimg --raw -q -Sbinary %s 2>/dev/null", path);
-    FILE *p = popen(cmd, "r");
-    size_t n = 0;
-    if (p != NULL) {
-        n = fread(out, 1, cap, p);
-        if (pclose(p) != 0) n = (size_t)-1;
-    }
+    long n = write_pgm(code, path) == 0 ? zbar_decode_file(path, out, cap) : -1;
     unlink(path);
-    return p == NULL ? -1 : (long)n;
+    return n;
 }
 
 static uint8_t decoded[4096];

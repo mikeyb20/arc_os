@@ -66,4 +66,15 @@ uint64_t klog_head(void);
  * number of bytes copied (0 at the head). */
 size_t klog_read(uint64_t *pos, char *out, size_t n);
 
+/* Longest line klog_for_each_line hands over (the rest of a longer one is cut). */
+#define KLOG_LINE_MAX 256
+
+/* Call fn for each whole log line from position `from` on (skipping the line
+ * `from` falls inside, unless it is 0) whose level is at or below max_level,
+ * without its "<L>" marker or newline, cut at KLOG_LINE_MAX bytes. Lines
+ * written meanwhile are included; bytes overwritten meanwhile are skipped
+ * (klog_read). Takes no lock beyond klog_read's. Cost: O(bytes from `from` to
+ * the head); for diagnostics, scrollback and panic paths only. */
+void klog_for_each_line(uint64_t from, int max_level, void (*fn)(const char *line, size_t len, void *ctx), void *ctx);
+
 #endif /* ARCHOS_LIB_KLOG_H */

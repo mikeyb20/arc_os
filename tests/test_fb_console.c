@@ -269,7 +269,7 @@ TEST(fb_write_row_pads_and_replaces) {
 }
 
 /* Collects the log lines log_lines() returns */
-static char got_lines[64][FB_MAX_LINE + 1];
+static char got_lines[64][KLOG_LINE_MAX + 1];
 static uint32_t got_count;
 static void collect_line(uint32_t index, const char *text, uint32_t len, void *ctx) {
     (void)index;
@@ -385,6 +385,123 @@ TEST(fb_control_chars_ignored) {
     return 0;
 }
 
+
+/* --- Pause and bitmaps (QR screens, M1-04c) --- */
+
+/* Output while paused changes the cells but not one pixel; resume redraws */
+TEST(fb_pause_keeps_pixels_resume_redraws) {
+    Framebuffer fb = make_test_fb();
+    init_with_cells(&fb);
+    fb_console_set_colors(0xFFFFFF, 0x000000);
+    uint32_t white = pack_color(0xFFFFFF);
+    fb_console_pause();
+    fb_console_fill(0x00FF00);   /* the pauser's own drawing */
+    static uint32_t snapshot[TEST_FB_W * TEST_FB_H];
+    memcpy(snapshot, test_fb_pixels, sizeof(snapshot));
+    fb_console_puts("paused\n");
+    for (uint32_t r = 0; r < rows + 2; r++) fb_console_putchar('\n');   /* scrolls too */
+    fb_console_clear();
+    fb_console_puts("X");
+    fb_console_scrollback(1);   /* ignored while paused */
+    ASSERT_EQ(view_pages, 0);
+    ASSERT_MEM_EQ(test_fb_pixels, snapshot, sizeof(snapshot));
+    ASSERT_EQ(test_cells[0].ch, 'X');
+    fb_console_resume();
+    ASSERT_TRUE(cell_fg_pixels(0, 0, white) > 0);       /* the 'X' is drawn now */
+    ASSERT_EQ(test_fb_pixels[TEST_FB_W * (TEST_FB_H - 1)], pack_color(0x000000));   /* no green left */
+    fb_console_resume();   /* a second resume does nothing */
+    return 0;
+}
+
+/* Pixel (x, y) of a 32 bpp test screen is the dark (black) colour */
+static int dark_at(uint32_t x, uint32_t y) {
+    return test_fb_pixels[y * TEST_FB_W + x] == pack_color(0x000000);
+}
+
+/* A 3x2 bitmap at scale 2 with a 1-module border: each module is a 2x2
+ * block, the border white, nothing outside the box touched */
+TEST(fb_draw_bitmap_scale_and_quiet_zone) {
+    Framebuffer fb = make_test_fb();
+    fb_console_init(&fb);
+    for (size_t i = 0; i < TEST_FB_W * TEST_FB_H; i++) test_fb_pixels[i] = 0x12345678;
+    const uint8_t bits[2] = {0xA0, 0x40};   /* row 0: 1 0 1; row 1: 0 1 0 */
+    fb_console_draw_bitmap(bits, 3, 2, 1, 1, 2, 10, 20);
+    /* box: (3 + 2) x (2 + 2) modules = 10 x 8 pixels from (10, 20) */
+    for (uint32_t y = 20; y < 28; y++) {
+        for (uint32_t x = 10; x < 20; x++) {
+            int mx = (int)(x - 10) / 2 - 1, my = (int)(y - 20) / 2 - 1;
+            int want = mx >= 0 && my >= 0 && mx < 3 && my < 2 && ((bits[my] >> (7 - mx)) & 1);
+            ASSERT_EQ(dark_at(x, y), want);
+            if (!want) ASSERT_EQ(test_fb_pixels[y * TEST_FB_W + x], pack_color(0xFFFFFF));
+        }
+    }
+    ASSERT_EQ(test_fb_pixels[20 * TEST_FB_W + 9], 0x12345678u);
+    ASSERT_EQ(test_fb_pixels[20 * TEST_FB_W + 20], 0x12345678u);
+    ASSERT_EQ(test_fb_pixels[19 * TEST_FB_W + 10], 0x12345678u);
+    ASSERT_EQ(test_fb_pixels[28 * TEST_FB_W + 10], 0x12345678u);
+    return 0;
+}
+
+/* Clipped at the screen edge (no write past the last row or column) */
+TEST(fb_draw_bitmap_clips) {
+    Framebuffer fb = make_test_fb();
+    fb_console_init(&fb);
+    static uint32_t guard[TEST_FB_W * TEST_FB_H + 64];
+    memset(guard, 0, sizeof(guard));
+    fb.address = guard;
+    fb_console_init(&fb);
+    const uint8_t bits[1] = {0xFF};
+    fb_console_draw_bitmap(bits, 8, 1, 1, 4, 10, TEST_FB_W - 5, TEST_FB_H - 5);
+    for (size_t i = TEST_FB_W * TEST_FB_H; i < sizeof(guard) / sizeof(guard[0]); i++) ASSERT_EQ(guard[i], 0);
+    ASSERT_EQ(guard[(TEST_FB_H - 1) * TEST_FB_W + TEST_FB_W - 1], pack_color(0xFFFFFF));   /* quiet zone */
+    fb_console_draw_bitmap(bits, 8, 1, 1, 0, 0, 0, 0);   /* scale 0: nothing */
+    ASSERT_EQ(guard[0], 0);
+    return 0;
+}
+
+/* 24 bpp BGR with a padded pitch: black and white pack through the masks,
+ * and the padding bytes after each row stay untouched */
+TEST(fb_draw_bitmap_24bpp_padded_pitch) {
+    Framebuffer fb = make_test_fb();
+    fb.bpp = 24;
+    fb.width = 40;
+    fb.height = 20;
+    fb.pitch = 40 * 3 + 8;
+    fb.red_mask_shift = 0;
+    fb.blue_mask_shift = 16;
+    memset(test_fb_pixels, 0xEE, sizeof(test_fb_pixels));
+    ASSERT_EQ(fb_console_init(&fb), 0);
+    memset(test_fb_pixels, 0xEE, sizeof(test_fb_pixels));
+    const uint8_t bits[1] = {0x80};
+    fb_console_draw_bitmap(bits, 1, 1, 1, 1, 4, 0, 0);   /* 12 x 12 pixels */
+    uint8_t *p = (uint8_t *)test_fb_pixels;
+    ASSERT_EQ(p[0], 0xFF);                               /* (0, 0): quiet zone, white */
+    uint8_t *mid = p + 5 * fb.pitch + 5 * 3;              /* inside the dark module */
+    ASSERT_EQ(mid[0], 0);
+    ASSERT_EQ(mid[1], 0);
+    ASSERT_EQ(mid[2], 0);
+    for (uint32_t y = 0; y < 12; y++)
+        for (uint32_t b = 40 * 3; b < fb.pitch; b++) ASSERT_EQ(p[y * fb.pitch + b], 0xEE);
+    ASSERT_EQ(p[11 * fb.pitch + 12 * 3], 0xEE);           /* first pixel right of the box */
+    return 0;
+}
+
+/* paint_row draws pixels only: the cells keep what the console wrote */
+TEST(fb_paint_row_leaves_cells) {
+    Framebuffer fb = make_test_fb();
+    init_with_cells(&fb);
+    fb_console_puts("keep");
+    fb_console_pause();
+    fb_console_paint_row(0, "drawn", 0x000000, 0xFFFFFF);
+    ASSERT_EQ(test_cells[0].ch, 'k');
+    ASSERT_EQ(test_fb_pixels[0], pack_color(0xFFFFFF));   /* the painted row's background */
+    ASSERT_EQ(fb_console_width(), TEST_FB_W);
+    ASSERT_EQ(fb_console_height(), TEST_FB_H);
+    ASSERT_EQ(fb_console_row_height(), FONT_HEIGHT);
+    fb_console_resume();
+    return 0;
+}
+
 /* --- Suite --- */
 
 TestCase fb_console_tests[] = {
@@ -411,5 +528,10 @@ TestCase fb_console_tests[] = {
     TEST_ENTRY(fb_clear_resets),
     TEST_ENTRY(fb_puts_string),
     TEST_ENTRY(fb_control_chars_ignored),
+    TEST_ENTRY(fb_pause_keeps_pixels_resume_redraws),
+    TEST_ENTRY(fb_draw_bitmap_scale_and_quiet_zone),
+    TEST_ENTRY(fb_draw_bitmap_clips),
+    TEST_ENTRY(fb_draw_bitmap_24bpp_padded_pitch),
+    TEST_ENTRY(fb_paint_row_leaves_cells),
 };
 int fb_console_test_count = sizeof(fb_console_tests) / sizeof(fb_console_tests[0]);

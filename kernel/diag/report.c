@@ -1,11 +1,13 @@
 /* arc_os — Boot report and diagnostic-mode pager (M1-04)
  *
- * Owns: the boot report (machine, firmware, CPU, APIC, TSC, memory, display,
- * ACPI tables, PCI devices) logged as "[REPORT]" lines on every boot, and in
- * diagnostic mode (arc.report / arc.selftest / arc.bench) the on-screen pager
- * that shows it page by page, every 10 s or on any key, forever.
+ * Owns: the boot report (build commit, machine, firmware, CPU, APIC, TSC,
+ * memory, display, ACPI tables, PCI devices) logged as "[REPORT]" lines on
+ * every boot, and in diagnostic mode (arc.report / arc.selftest / arc.bench /
+ * arc.qr) the on-screen pager that shows it page by page, every 10 s or on any
+ * key, forever: as text, or as QR codes with arc.qr (diag/qr_mode.c).
  * Invariants: report lines are kept only in diagnostic mode (lines != NULL);
- * the pager owns the screen: the log's screen hook is removed first.
+ * the pager owns the screen: the text pager removes the log's screen hook
+ * first, the QR pager pauses the console instead (diag/qr_mode.c).
  * Locks: none. Runs on the BSP during boot; the pager is the only thing
  * running afterwards (init is not started in diagnostic mode).
  * Cost: boot only; O(memory map + PCI devices + ACPI tables) once. */
@@ -24,6 +26,7 @@
 #include "lib/testmode.h"
 #include "lib/string.h"
 #include "lib/mem.h"
+#include "lib/build_commit.h"
 #include <stdarg.h>
 
 #define DIAG_MAX_LINES 320
@@ -34,15 +37,23 @@
 static char (*lines)[DIAG_LINE_MAX];
 static uint32_t line_count;
 
-/* Command-line flag "key=1" (any value but 0 counts; a bare key too). */
-static int flag_on(const char *key) {
+int diag_flag_on(const char *key) {
     char val[8];
     if (!cmdline_get(cmdline_raw(), key, val, sizeof(val))) return 0;
     return !(val[0] == '0' && val[1] == '\0');
 }
 
 int diag_requested(void) {
-    return flag_on("arc.report") || flag_on("arc.selftest") || flag_on("arc.bench");
+    return diag_flag_on("arc.report") || diag_flag_on("arc.selftest") || diag_flag_on("arc.bench") ||
+           diag_flag_on("arc.qr");
+}
+
+uint32_t diag_line_count(void) {
+    return lines != NULL ? line_count : 0;
+}
+
+const char *diag_line_text(uint32_t i) {
+    return (lines != NULL && i < line_count) ? lines[i] : "";
 }
 
 void diag_line(const char *fmt, ...) {
@@ -88,6 +99,25 @@ static void report_machine(const BootInfo *info) {
               s.bios_version, s.bios_date, s.major, s.minor);
 }
 
+/* The Features line, wrapped onto a second line at a space when the names
+ * don't fit one report line. */
+static void report_features(void) {
+    char names[2 * DIAG_LINE_MAX];
+    const size_t room = DIAG_LINE_MAX - 12;   /* after the 11-column label */
+    hal_cpu_feature_names(names, sizeof(names));
+    size_t len = strlen(names), cut = len;
+    if (len > room) {
+        cut = room;
+        while (cut > 0 && names[cut] != ' ') cut--;
+        if (cut == 0) cut = room;
+    }
+    char first[DIAG_LINE_MAX];   /* kprintf has no "%.*s" */
+    memcpy(first, names, cut);
+    first[cut] = '\0';
+    diag_line("Features   %s", first);
+    if (cut < len) diag_line("           %s", names + cut + (names[cut] == ' '));
+}
+
 static void report_cpu(const BootInfo *info, const AcpiInfo *acpi) {
     char buf[DIAG_LINE_MAX];
     uint32_t family, model, stepping;
@@ -95,8 +125,7 @@ static void report_cpu(const BootInfo *info, const AcpiInfo *acpi) {
     hal_cpu_signature(&family, &model, &stepping);
     diag_line("CPU        %s", buf[0] ? buf : "(no brand string)");
     diag_line("CPU id     %s family 0x%x model 0x%x stepping %u", hal_cpu_vendor(), family, model, stepping);
-    hal_cpu_feature_names(buf, sizeof(buf));
-    diag_line("Features   %s", buf);
+    report_features();
 
     uint32_t p = 0, e = 0, other = 0;
     for (uint32_t i = 0; i < HAL_MAX_CPUS; i++) {
@@ -199,7 +228,7 @@ void diag_report(const BootInfo *info) {
         lines = kmalloc(sizeof(*lines) * DIAG_MAX_LINES, GFP_ZERO);
     }
     const AcpiInfo *acpi = acpi_get_info();
-    diag_line("arc_os boot report (M1-04 bring-up)");
+    diag_line("arc_os boot report, build %s", arc_build_commit);
     report_machine(info);
     report_cpu(info, acpi);
     report_memory(info);
@@ -228,9 +257,7 @@ static void pager_draw(uint32_t page, uint32_t pages, uint32_t per_page) {
     }
 }
 
-/* Wait up to `seconds` or until a key is pressed. Halts between interrupts when
- * the timer is known to tick; otherwise polls (no wake-up source to trust). */
-static void pager_wait(uint32_t seconds, int can_halt) {
+int diag_wait_key(uint32_t seconds, int can_halt) {
     uint32_t keys = keyboard_key_count();
     uint64_t khz = hal_tsc_info()->khz ? hal_tsc_info()->khz : 3000000;
     uint64_t cycles = khz * 1000 * seconds;
@@ -241,6 +268,7 @@ static void pager_wait(uint32_t seconds, int can_halt) {
         else
             hal_cpu_relax();
     }
+    return keyboard_key_count() != keys;
 }
 
 void diag_run(void) {
@@ -248,11 +276,13 @@ void diag_run(void) {
     uint64_t ticks = hal_timer_ticks();
 
     int passes = 0, fails = 0;
-    if (flag_on("arc.selftest")) diag_selftest(&passes, &fails);
-    if (flag_on("arc.bench")) diag_bench();
-    diag_line("End of report.%s", testmode_active() ? "" : " Pages repeat; photograph each one.");
+    if (diag_flag_on("arc.selftest")) diag_selftest(&passes, &fails);
+    if (diag_flag_on("arc.bench")) diag_bench();
+    int qr = diag_flag_on("arc.qr");
+    const char *hint = qr ? " Codes repeat; scan each one." : " Pages repeat; photograph each one.";
+    diag_line("End of report.%s", testmode_active() ? "" : hint);
 
-    if (testmode_active()) {
+    if (testmode_active() && !qr) {
         kprintf("ARC_TEST DONE pass=%d fail=%d\n", passes, fails);
         testmode_exit(fails == 0 ? 0 : 1);
     }
@@ -262,6 +292,7 @@ void diag_run(void) {
         diag_delay_ms(100);
         can_halt = hal_timer_ticks() != ticks;
     }
+    if (qr) diag_qr_run(can_halt, passes, fails);   /* returns only if it can't draw */
     if (fb_console_cols() == 0 || lines == NULL || fb_console_rows() < 2) {
         for (;;) hal_halt();   /* no screen: the report went to serial */
     }
@@ -270,6 +301,6 @@ void diag_run(void) {
     uint32_t pages = (line_count + per_page - 1) / per_page;
     for (uint32_t page = 0;; page = (page + 1) % pages) {
         pager_draw(page, pages, per_page);
-        pager_wait(PAGER_SECONDS, can_halt);
+        diag_wait_key(PAGER_SECONDS, can_halt);
     }
 }

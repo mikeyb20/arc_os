@@ -16,8 +16,11 @@
 # scrollback, TSC calibration, SMBIOS, and the boot report / self-test / benchmark);
 # 317173 after M1-05 (SMP scheduler, lock-order checker; within the +5% margin);
 # 317173 -> 328564 after M1-04b: the QR encoder (~8.3 KB), its text pages (~2.5 KB),
-# CRC-32 (~1.2 KB, 1 KiB of it the table) and their backtrace names. Limit = measured + 5%)
-kernel_image_bytes     345000      max  bytes  M0-08  build
+# CRC-32 (~1.2 KB, 1 KiB of it the table) and their backtrace names;
+# 328564 -> 348042 after M1-04c: the panic code's static buffers (11.6 KB of .bss:
+# a QrCode plus its text and payload, so the panic path never allocates) and
+# ~7.9 KB of code (QR screens, report and log pages, bitmap drawing). Limit = measured + 5%)
+kernel_image_bytes     365000      max  bytes  M0-08  build
 
 # Free memory when init starts, booted with -m 4G (qemu.smoke; measured 4251873280)
 boot_free_bytes        3830000000  min  bytes  M0-08  smoke
