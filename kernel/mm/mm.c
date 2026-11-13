@@ -152,15 +152,20 @@ void mm_put(Mm *mm) {
 }
 
 void mm_switch(Mm *next) {
+    /* Interrupts off throughout: a preemption here could move the thread to
+     * another CPU between reading cpu and the clear, leaving a stale bit */
+    uint64_t flags = irq_save();
     Mm *prev = hal_this_cpu_mm();
-    if (prev == next) return;
-    uint32_t cpu = hal_cpu_index();
-    /* In the set before CR3 loads it: a flush that misses this CPU happened
-     * before, so the page walks after the switch see the new entries */
-    if (next != NULL) cpumask_set_atomic(&next->cpus, cpu);
-    hal_switch_address_space(next != NULL ? next->pgd : vmm_get_kernel_pml4());
-    hal_set_this_cpu_mm(next);
-    if (prev != NULL) cpumask_clear_atomic(&prev->cpus, cpu);
+    if (prev != next) {
+        uint32_t cpu = hal_cpu_index();
+        /* In the set before CR3 loads it: a flush that misses this CPU happened
+         * before, so the page walks after the switch see the new entries */
+        if (next != NULL) cpumask_set_atomic(&next->cpus, cpu);
+        hal_switch_address_space(next != NULL ? next->pgd : vmm_get_kernel_pml4());
+        hal_set_this_cpu_mm(next);
+        if (prev != NULL) cpumask_clear_atomic(&prev->cpus, cpu);
+    }
+    irq_restore(flags);
 }
 
 Mm *mm_fork(Mm *src) {

@@ -222,8 +222,10 @@ static void *hal_this_cpu_mm(void) {
 static void hal_set_this_cpu_mm(void *mm) {
     cpu_mm = mm;
 }
+static int cr3_loads_irqs_on;   /* loads made with interrupts enabled */
 static void hal_switch_address_space(uint64_t v) {
     cr3_loads++;
+    if (hal_test_irq_enabled) cr3_loads_irqs_on++;
     cr3 = v;
 }
 static void hal_invalidate_page(uint64_t v) {
@@ -796,7 +798,10 @@ TEST(reap_frees_pages) {
 TEST(switch_tracks_cpus) {
     Mm *a = new_mm();
     Mm *b = mm_create();
+    hal_test_irq_enabled = 1; /* callers like exec run with interrupts on */
     mm_switch(a);
+    ASSERT_EQ(cr3_loads_irqs_on, 0);
+    ASSERT_EQ(hal_test_irq_enabled, 1); /* restored */
     ASSERT_EQ(cr3_loads, 1);
     ASSERT_EQ(cr3, a->pgd);
     ASSERT_TRUE(cpumask_test(&a->cpus, 0));

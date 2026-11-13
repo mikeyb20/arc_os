@@ -86,7 +86,7 @@ void mm_put(Mm *mm);
 Mm *mm_fork(Mm *src);
 
 /* Load mm on this CPU (NULL: the kernel's page tables) and keep the "loaded
- * on" sets right. Interrupts off. */
+ * on" sets right. Disables interrupts itself, so any context may call it. */
 void mm_switch(Mm *mm);
 
 /* exec/init only, on an mm no other thread can reach yet: add an anonymous
