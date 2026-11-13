@@ -115,6 +115,7 @@ add_test(NAME qemu.mm COMMAND ${_qemu_test} --suite mm --module mmtest
     --expect "mmtest: stack ok"
     --expect "mmtest: maps ok"
     --expect "mmtest: fork ok"
+    --expect "mmtest: handler fault ok"
     --expect "mmtest: 0 failures")
 # OOM (M1-07): on a 256 MiB machine an endless allocator gets SIGKILL; the
 # kernel says whom it killed and goes on

@@ -343,6 +343,39 @@ static void test_fork(void) {
     printf("mmtest: fork ok\n");
 }
 
+/* --- A fault inside a signal handler --- */
+
+static void on_usr_fault(int sig) {
+    (void)sig;
+    *(volatile int *)0 = 1;   /* SIGSEGV while sig is blocked (no SA_NODEFER) */
+}
+
+/* The child must die with SIGSEGV. SIGUSR2 (12) blocked must not hide the
+ * pending SIGSEGV (11): a kernel that compared the two bit layouts wrongly
+ * re-ran the faulting instruction forever here. */
+static int fault_in_handler(int sig) {
+    pid_t pid = fork();
+    if (pid == 0) {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = on_usr_fault;
+        if (sigaction(sig, &sa, NULL) != 0) _exit(2);
+        kill(getpid(), sig);
+        _exit(3);
+    }
+    int st = 0;
+    if (waitpid(pid, &st, 0) != pid) return -1;
+    return WIFSIGNALED(st) ? WTERMSIG(st) : 0;
+}
+
+static void test_fault_in_handler(void) {
+    int s1 = fault_in_handler(SIGUSR1);
+    int s2 = fault_in_handler(SIGUSR2);
+    CHECK(s1 == SIGSEGV);
+    CHECK(s2 == SIGSEGV);
+    printf("mmtest: handler fault ok (SIGUSR1 child: signal %d, SIGUSR2 child: signal %d)\n", s1, s2);
+}
+
 /* --- Out of memory --- */
 
 static void test_oom(void) {
@@ -380,6 +413,7 @@ int main(int argc, char **argv) {
         test_stack();
         test_maps();
         test_fork();
+        test_fault_in_handler();
     }
     printf("mmtest: %d failures\n", failures);
     return failures;

@@ -602,6 +602,9 @@ TEST(mremap_cases) {
     ASSERT_EQ(fill(mm, BASE, 4, 20), 0);
     ASSERT_EQ(mm_remap(mm, BASE, 4 * PAGE_SIZE, 2 * PAGE_SIZE, 0, 0, 0), (int64_t)BASE);   /* shrink */
     ASSERT_EQ(pages_in_use, 2);
+    /* same size from inside the VMA: a no-op, no split */
+    ASSERT_EQ(mm_remap(mm, BASE, PAGE_SIZE, PAGE_SIZE, 0, 0, 0), (int64_t)BASE);
+    ASSERT_EQ(mm->vmas.count, 1);
     ASSERT_EQ(mm_remap(mm, BASE, 2 * PAGE_SIZE, 8 * PAGE_SIZE, 0, 0, 0), (int64_t)BASE);   /* grow in place */
     ASSERT_EQ(mm->vmas.head->end, BASE + 8 * PAGE_SIZE);
     /* blocked above: without MAYMOVE -ENOMEM, with it the pages move */

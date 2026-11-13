@@ -37,4 +37,6 @@
   unmap path must drop a reference and list only pages whose count reaches 0. `MAP_SHARED | MAP_ANONYMOUS` returns
   `-EINVAL` until pages are refcounted. The fault path's "page already there" case rewrites the entry with the
   VMA's flags; with COW that must not make a shared page writable. The kernel reaches frames through the HHDM
-  (`page_to_virt`); the HHDM-wide flags question is left here.
+  (`page_to_virt`); the HHDM-wide flags question is left here. COW needs CR0.WP, which the kernel never sets
+  (Limine leaves it on): set it per CPU so a kernel write to a read-only user PTE faults. `walk_pt` skips a user
+  PDE with PS set, so range walks ignore 2 MiB pages until this block handles them.

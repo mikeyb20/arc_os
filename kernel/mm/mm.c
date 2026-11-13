@@ -549,7 +549,8 @@ int64_t mm_remap(Mm *mm, uint64_t old_addr, uint64_t old_len, uint64_t new_len, 
         goto out;
     }
     if (new_len <= old_len) {
-        r = unmap_locked(mm, old_addr + new_len, old_addr + old_len);
+        /* same size: nothing to unmap (an empty unmap would split the VMA) */
+        r = new_len < old_len ? unmap_locked(mm, old_addr + new_len, old_addr + old_len) : 0;
         if (r == 0) r = (int64_t)old_addr;
         goto out;
     }

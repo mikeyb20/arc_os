@@ -79,3 +79,8 @@ kernel; TLB shootdown works across CPUs (ADR-0004).
   resolution and fails the copy; copy user data before taking any lock.
 - Next blocks: M1-08 owns COW (zap lists use `lru`, see its Notes), M1-16 shares `Mm` between threads, M1-12
   adds file VMAs (`VmaOps.fault`). Open: `vma_find_gap` is O(VMAs passed) when the hint misses.
+- D3 review (PR #40): fixed `sig_work_pending` comparing pending (bit n) with blocked (bit n-1), which made a
+  fault inside a SIGUSR2 handler loop forever; one `sig_deliverable` helper now serves it and `sig_next`.
+  Left open: a kernel fault from an IRQ handler would try to resolve (no in-interrupt flag yet; M1-09 or
+  M1-16); CR0.WP comes from Limine, not set per CPU (M1-08 COW needs it); `MAP_32BIT` takes a hint above
+  2 GiB; an ELF segment with `p_flags` 0 gets readable PTEs; a pipe/tty read that faults loses data (M1-11).

@@ -137,6 +137,12 @@ static int sig_blocked(const SigState *ss, int signo) {
     return (ss->blocked & ~SIG_UNBLOCKABLE & SIGSET_BIT(signo)) != 0;
 }
 
+/* The signals in pending (bit n = signal n) that are not blocked. blocked is
+ * a Linux sigset (bit n-1 = signal n), so it moves up one bit to compare. */
+static uint32_t sig_deliverable(const SigState *ss, uint32_t pending) {
+    return pending & ~(uint32_t)((ss->blocked & ~SIG_UNBLOCKABLE) << 1);
+}
+
 /* Stop a process due to a signal */
 static void sig_stop(Process *p, int signo) {
     p->state = PROC_STOPPED;
@@ -280,12 +286,10 @@ static int sig_setup_frame(Process *p, SyscallFrame *frame, int signo, int64_t s
 /* The next signal to deliver: a fault's first, then the lowest pending one
  * that is not blocked; 0 if none */
 static int sig_next(const SigState *ss) {
+    uint32_t ready = sig_deliverable(ss, ss->pending) & ~1u;   /* bit 0 is no signal */
     int f = ss->fault_signo;
-    if (f != 0 && (ss->pending & (1u << f)) && !sig_blocked(ss, f)) return f;
-    for (int signo = 1; signo < NSIG; signo++) {
-        if ((ss->pending & (1u << signo)) && !sig_blocked(ss, signo)) return signo;
-    }
-    return 0;
+    if (f != 0 && (ready & (1u << f))) return f;
+    return ready != 0 ? __builtin_ctz(ready) : 0;
 }
 
 void sig_force_fault(int signo, int code, uint64_t addr) {
@@ -306,7 +310,7 @@ int sig_work_pending(void) {
     Process *p = proc_current();
     if (p == NULL) return 0;
     uint32_t pending = __atomic_load_n(&p->sig.pending, __ATOMIC_RELAXED);
-    return (pending & ~(uint32_t)p->sig.blocked) != 0 || (pending & (1u << SIGKILL)) != 0;
+    return (sig_deliverable(&p->sig, pending) & ~1u) != 0;
 }
 
 void sig_fatal(int signo) {

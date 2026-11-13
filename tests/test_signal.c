@@ -461,6 +461,36 @@ TEST(blocked_signal_stays_pending) {
     return 0;
 }
 
+/* Pending and blocked use different layouts (bit n vs bit n-1): blocking
+ * signal n+1 must not hide signal n, nor blocking n let n through */
+TEST(work_pending_matches_blocked_layout) {
+    test_reset();
+    test_procs[0].sig.blocked = SIGSET_BIT(SIGUSR2);   /* inside a SIGUSR2 handler */
+    test_procs[0].sig.pending = (1u << SIGSEGV);       /* SIGSEGV is 11, SIGUSR2 12 */
+    ASSERT_TRUE(sig_work_pending());
+    test_procs[0].sig.blocked = SIGSET_BIT(SIGSEGV);
+    ASSERT_FALSE(sig_work_pending());
+    test_procs[0].sig.pending = (1u << SIGSEGV) | (1u << SIGKILL);
+    test_procs[0].sig.blocked = ~0ULL;                 /* SIGKILL can't be blocked */
+    ASSERT_TRUE(sig_work_pending());
+    test_procs[0].sig.pending = 0;
+    test_procs[0].sig.blocked = 0;
+    ASSERT_FALSE(sig_work_pending());
+    return 0;
+}
+
+/* A fault signal with the next-higher signal blocked is still delivered */
+TEST(fault_signal_delivered_with_next_signal_blocked) {
+    test_reset();
+    test_procs[0].sig.blocked = SIGSET_BIT(SIGUSR2);
+    test_procs[0].sig.pending = (1u << SIGSEGV);
+    SyscallFrame frame = user_frame();
+    sig_maybe_deliver(&frame, 0);
+    ASSERT_EQ(test_procs[0].state, PROC_ZOMBIE);
+    ASSERT_EQ(test_procs[0].exit_status, 128 + SIGSEGV);
+    return 0;
+}
+
 TEST(lowest_signal_first) {
     test_reset();
     test_procs[0].sig.pending = (1u << SIGTERM) | (1u << SIGINT);
@@ -825,6 +855,8 @@ TestCase signal_tests[] = {
     TEST_ENTRY(sig_ign_skips_signal),
     TEST_ENTRY(blocked_signal_stays_pending),
     TEST_ENTRY(lowest_signal_first),
+    TEST_ENTRY(work_pending_matches_blocked_layout),
+    TEST_ENTRY(fault_signal_delivered_with_next_signal_blocked),
     TEST_ENTRY(no_pending_returns_immediately),
     TEST_ENTRY(handler_frame_layout),
     TEST_ENTRY(nodefer_and_resethand),
