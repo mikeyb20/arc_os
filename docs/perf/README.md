@@ -14,7 +14,7 @@ Later blocks add their hot path to the benchmark (page fault, read, mmap fault) 
 - Machine: <maker model> (from the boot report)
 - CPU: <brand>, <cores> (P/E), TSC <kHz> from <source>
 - RAM: <MB>, arc.mem=<cap or none>
-- Commit: <short hash>, image built with `cmake --build build --target iso-bringup`
+- Commit: <short hash>, from the `bringup-latest` release notes or `git rev-parse --short HEAD` if built with `cmake --build build --target iso-bringup`
 
 | Benchmark | Cycles | ns | Runs |
 |---|---|---|---|
