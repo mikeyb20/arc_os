@@ -1,5 +1,7 @@
 # Cross build (kernel, libc, userland, ISO) and host unit tests, then the
-# QEMU boot tests (`ctest -L qemu`, M0-02) in their own job.
+# QEMU boot tests (`ctest -L qemu`, M0-02) in their own job. After both pass on a
+# push to master, the bring-up image is published as the `bringup-latest`
+# pre-release (parallel-lanes.md §6.2 item 1, ADR-0021).
 name: ci
 
 on:
@@ -10,9 +12,12 @@ on:
 permissions:
   contents: read
 
+# A newer PR push cancels the older run. A master run is never cancelled once it
+# has started (a newer one waits), so the publish job can't be stopped between
+# deleting the old release and creating the new one.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build-and-test:
@@ -60,6 +65,15 @@ jobs:
       - name: ISO
         run: cmake --build build --target iso
 
+      # Built on every event, so a PR that breaks the bring-up image fails here
+      # rather than on master. Only master pushes publish it (publish-bringup).
+      - name: Bring-up ISO and checksum
+        run: |
+          cmake --build build --target iso-bringup
+          cd build
+          sha256sum arc_os-bringup.iso > arc_os-bringup.iso.sha256
+          cat arc_os-bringup.iso.sha256
+
       - name: Host tests
         run: |
           cmake -B build-tests -G Ninja
@@ -73,6 +87,16 @@ jobs:
           path: build/arc_os.iso
           if-no-files-found: error
           retention-days: 14
+
+      - name: Upload bring-up ISO
+        uses: actions/upload-artifact@v4
+        with:
+          name: arc_os-bringup
+          path: |
+            build/arc_os-bringup.iso
+            build/arc_os-bringup.iso.sha256
+          if-no-files-found: error
+          retention-days: 3
 
       # kernel.elf and the user programs, for the qemu job (top-level files only)
       - name: Pack cross build outputs
@@ -128,3 +152,64 @@ jobs:
           name: qemu-serial-logs
           path: build/qemu-test/*.serial.log
           retention-days: 7
+
+  # Replaces the `bringup-latest` pre-release with this commit's bring-up image and
+  # its SHA-256, so a laptop smoke boot needs only a browser download (no login,
+  # no unzip). The repo is public, so the image is public. Only this job gets a
+  # write token. It runs only for pushes to master (never for PRs, so never for
+  # fork code), only after the build, host and QEMU tests passed, and it checks
+  # out and runs no repo code: it downloads the artifact and calls the gh CLI
+  # that is already on the runner. The one action it uses is pinned by commit.
+  publish-bringup:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: [build-and-test, qemu]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: bringup-latest
+    steps:
+      - name: Download bring-up ISO
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: arc_os-bringup
+
+      - name: Verify checksum
+        run: sha256sum -c arc_os-bringup.iso.sha256
+
+      - name: Write release notes
+        run: |
+          short="${GITHUB_SHA:0:7}"
+          hash="$(cut -d' ' -f1 arc_os-bringup.iso.sha256)"
+          url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          cat > notes.md <<EOF
+          Bring-up image for real-hardware boots, built by CI from master commit [\`$short\`]($url/commit/$GITHUB_SHA) on $(date -u '+%Y-%m-%d %H:%M UTC') ([run]($url/actions/runs/$GITHUB_RUN_ID)).
+
+          SHA-256 of \`arc_os-bringup.iso\`: \`$hash\`
+
+          This pre-release is replaced after every push to master that passes CI. How to write the stick and boot it: [docs/hardware/bringup.md]($url/blob/$GITHUB_SHA/docs/hardware/bringup.md).
+          EOF
+          cat notes.md
+
+      # Delete and recreate, rather than edit, so the tag always points at the
+      # commit the image was built from. gh creates the release as a draft,
+      # uploads both files, then publishes it, so the new release never shows
+      # without its image.
+      - name: Publish bringup-latest
+        run: |
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release delete "$TAG" -R "$GITHUB_REPOSITORY" --cleanup-tag --yes
+          fi
+          # A tag left without its release (a run stopped half-way) would pin the
+          # new release to the old commit, so remove it too.
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG"
+          fi
+          gh release create "$TAG" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --prerelease --latest=false \
+            --title "Bring-up image (latest master, ${GITHUB_SHA:0:7})" \
+            --notes-file notes.md \
+            arc_os-bringup.iso arc_os-bringup.iso.sha256
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets -q '.assets[].name'
