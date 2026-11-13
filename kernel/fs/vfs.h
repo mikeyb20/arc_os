@@ -19,7 +19,8 @@
  *
  * Locks, outermost first (docs/kernel/locking.md):
  *   File.pos_lock     sleeping, LOCK_LEVEL_FILE_POS: position of a seekable file
- *   SuperBlock.rename_lock  sleeping, LOCK_LEVEL_RENAME: one rename per filesystem
+ *   rename_mutex      sleeping, LOCK_LEVEL_RENAME: one rename at a time, held
+ *                     from before path resolution (vfs.c)
  *   Inode.lock        sleeping read-write, LOCK_LEVEL_INODE: a directory's
  *                     entries (lookup shared, changes exclusive) or a regular
  *                     file's data and size (read shared, write/truncate
@@ -80,6 +81,11 @@ typedef struct IoBuf {
 int iob_copy_out(const IoBuf *b, size_t off, const void *src, size_t n);
 /* Copy n bytes from offset off of b to dst. 0, or -EFAULT. */
 int iob_copy_in(void *dst, const IoBuf *b, size_t off, size_t n);
+/* As iob_copy_in, but stops at the first faulting byte and returns the bytes
+ * copied, leaving dst past them unchanged: for copies straight into file
+ * data, where a write that faults half-way keeps what it copied (as Linux)
+ * and must not zero the rest. */
+size_t iob_copy_in_partial(void *dst, const IoBuf *b, size_t off, size_t n);
 /* Zero n bytes at offset off of b (holes in sparse files). 0, or -EFAULT. */
 int iob_zero(const IoBuf *b, size_t off, size_t n);
 
@@ -243,7 +249,6 @@ struct SuperBlock {
     const SuperOps *sop;
     void *bdev;           /* backing block device, or NULL */
     void *priv;           /* filesystem's own data */
-    Mutex rename_lock;    /* LOCK_LEVEL_RENAME */
 };
 
 struct File {
@@ -264,11 +269,15 @@ struct File {
 /* Create the slab caches and the anonymous filesystem. Call once at boot. */
 void vfs_init(void);
 
-/* Initialise sb's lock and give it a device number. */
+/* Initialise sb and give it a device number. */
 void vfs_sb_init(SuperBlock *sb, const char *type, const SuperOps *sop);
 
 /* Superblock of pipes and sockets (no mount) */
 SuperBlock *vfs_anon_sb(void);
+
+/* A new inode number on the anonymous superblock (one counter for pipes and
+ * sockets, so no two share st_dev/st_ino). */
+uint64_t vfs_anon_ino(void);
 
 /* New inode from the slab: refcount 1, not hashed, nlink 1, times now. NULL
  * when out of memory. */
@@ -361,6 +370,10 @@ int vfs_setattr(Inode *inode, const InodeAttr *attr);
  * reference. */
 int vfs_open(const char *path, uint32_t flags, uint32_t mode, File **out);
 
+/* Open path for execve: a regular file with execute permission (-EACCES
+ * otherwise); read permission is not needed, as on Linux. Read-only File. */
+int vfs_open_exec(const char *path, File **out);
+
 /* A File on an inode the caller holds a reference for (taken over by the
  * File). For pipes and sockets. NULL when out of memory. */
 File *file_new(Inode *inode, const FileOps *fop, uint32_t flags);
@@ -394,7 +407,9 @@ int vfs_fsync(File *file);
 /* Empty the dentry cache, freeing the disk inodes only it held
  * (/proc/sys/vm/drop_caches; the QEMU suites' leak checks drop caches before
  * they measure, so cached entries don't count as leaks). O(entries); entries
- * added meanwhile may stay. Call with no VFS lock held. */
+ * added meanwhile may stay. Call with no spinlock held. It may run under the
+ * caller's own inode lock (a write to drop_caches holds that file's), so an
+ * evict_inode must never take an inode lock. */
 void vfs_drop_caches(void);
 
 /* Whole-file helper for the kernel: create (or truncate) path with mode and

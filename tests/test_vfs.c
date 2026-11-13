@@ -702,6 +702,81 @@ TEST(dcache_is_bounded) {
     return 0;
 }
 
+/* A write whose user buffer faults half-way keeps the bytes it copied and
+ * leaves the rest of the file alone (D3 review of #41: it used to zero them) */
+TEST(write_faulting_half_way_keeps_the_rest) {
+    vfs_env_setup();
+    char old[4096];
+    memset(old, 'A', sizeof(old));
+    ASSERT_EQ(vfs_write_file("/tmp/half", old, sizeof(old), 0644), 0);
+    File *f;
+    ASSERT_EQ(vfs_open("/tmp/half", O_RDWR, 0, &f), 0);
+    static char src[4096];
+    memset(src, 'B', sizeof(src));
+    vfs_env_fault_at = (uintptr_t)src + 2048;
+    IoBuf ub = iob_user((uint64_t)(uintptr_t)src, sizeof(src));
+    ASSERT_EQ(vfs_pwrite(f, &ub, 0), 2048);   /* the bytes before the fault */
+    IoBuf none = iob_user((uint64_t)(uintptr_t)src + 2048, 16);
+    ASSERT_EQ(vfs_pwrite(f, &none, 0), -EFAULT);   /* nothing copied: EFAULT, file unchanged */
+    vfs_env_fault_at = 0;
+    char back[4096];
+    IoBuf rb = iob_kernel(back, sizeof(back));
+    ASSERT_EQ(vfs_pread(f, &rb, 0), 4096);
+    ASSERT_EQ(back[0], 'B');
+    ASSERT_EQ(back[2047], 'B');
+    ASSERT_EQ(back[2048], 'A');
+    ASSERT_EQ(back[4095], 'A');
+    /* Past the end: only what was copied counts toward the size */
+    vfs_env_fault_at = (uintptr_t)src + 100;
+    ASSERT_EQ(vfs_pwrite(f, &ub, 4096), 100);
+    vfs_env_fault_at = 0;
+    ASSERT_EQ(size_of("/tmp/half"), 4196);
+    fput(f);
+    ASSERT_EQ(vfs_unlink("/tmp/half"), 0);
+    return 0;
+}
+
+/* mkdir in a directory removed between resolving and locking it fails
+ * (simulated by marking the directory removed) */
+TEST(no_mkdir_in_removed_directory) {
+    vfs_env_setup();
+    ASSERT_EQ(vfs_mkdir("/tmp/gone", 0755), 0);
+    PathLoc loc;
+    ASSERT_EQ(vfs_resolve("/tmp/gone", &loc), 0);
+    __atomic_or_fetch(&loc.inode->flags, I_DEAD, __ATOMIC_RELAXED);
+    ASSERT_EQ(vfs_mkdir("/tmp/gone/sub", 0755), -ENOENT);
+    File *f;
+    ASSERT_EQ(vfs_open("/tmp/gone/f", O_CREAT | O_RDWR, 0644, &f), -ENOENT);
+    ASSERT_EQ(mkfile("/tmp/rn_src", "x"), 0);
+    ASSERT_EQ(vfs_rename("/tmp/rn_src", "/tmp/gone/f"), -ENOENT);
+    __atomic_and_fetch(&loc.inode->flags, ~(uint32_t)I_DEAD, __ATOMIC_RELAXED);
+    loc_put(&loc);
+    ASSERT_EQ(vfs_unlink("/tmp/rn_src"), 0);
+    ASSERT_EQ(vfs_rmdir("/tmp/gone"), 0);
+    return 0;
+}
+
+/* exec needs execute permission, not read (0711 runs for others) */
+TEST(exec_open_needs_x_not_r) {
+    vfs_env_setup();
+    ASSERT_EQ(vfs_write_file("/tmp/prog", "\177ELF", 4, 0711), 0);
+    ASSERT_EQ(vfs_write_file("/tmp/noexec", "x", 1, 0644), 0);
+    vfs_env_as(1000, 1000);
+    File *f;
+    ASSERT_EQ(vfs_open("/tmp/prog", O_RDONLY, 0, &f), -EACCES);   /* no read permission */
+    ASSERT_EQ(vfs_open_exec("/tmp/prog", &f), 0);
+    char buf[4];
+    IoBuf b = iob_kernel(buf, 4);
+    ASSERT_EQ(vfs_pread(f, &b, 0), 4);
+    fput(f);
+    ASSERT_EQ(vfs_open_exec("/tmp/noexec", &f), -EACCES);
+    ASSERT_EQ(vfs_open_exec("/tmp", &f), -EACCES);   /* not a regular file */
+    vfs_env_as(0, 0);
+    ASSERT_EQ(vfs_unlink("/tmp/prog"), 0);
+    ASSERT_EQ(vfs_unlink("/tmp/noexec"), 0);
+    return 0;
+}
+
 /* --- Failures and leaks --- */
 
 TEST(out_of_memory_leaves_nothing) {
@@ -758,6 +833,9 @@ TEST(create_write_remove_is_leak_free) {
 TestCase vfs_tests[] = {
     TEST_ENTRY(root_is_directory),
     TEST_ENTRY(create_write_read),
+    TEST_ENTRY(write_faulting_half_way_keeps_the_rest),
+    TEST_ENTRY(no_mkdir_in_removed_directory),
+    TEST_ENTRY(exec_open_needs_x_not_r),
     TEST_ENTRY(open_flags),
     TEST_ENTRY(access_mode_enforced),
     TEST_ENTRY(append_writes_at_end),

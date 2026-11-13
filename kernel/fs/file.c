@@ -49,6 +49,13 @@ int iob_copy_in(void *dst, const IoBuf *b, size_t off, size_t n) {
     return 0;
 }
 
+size_t iob_copy_in_partial(void *dst, const IoBuf *b, size_t off, size_t n) {
+    if (n == 0) return 0;
+    if (b->user) return copy_from_user_partial(dst, b->base + off, n);
+    memcpy(dst, b->base + off, n);
+    return n;
+}
+
 int iob_zero(const IoBuf *b, size_t off, size_t n) {
     static const uint8_t zeros[256];
     if (!b->user) {
@@ -105,8 +112,10 @@ static int open_want(uint32_t flags) {
     return want;
 }
 
-/* Type and permission checks of open() on an existing or new inode. */
-static int open_check(Inode *inode, uint32_t flags, int created) {
+/* Type and permission checks of open() on an existing or new inode. An open
+ * for exec needs a regular file with execute permission, not read. */
+static int open_check(Inode *inode, uint32_t flags, int created, int exec) {
+    if (exec) return S_ISREG(inode->mode) ? inode_permission(inode, X_OK) : -EACCES;
     uint32_t acc = flags & O_ACCMODE;
     if (acc == O_ACCMODE) return -EINVAL;
     if (S_ISDIR(inode->mode)) {
@@ -119,13 +128,13 @@ static int open_check(Inode *inode, uint32_t flags, int created) {
     return inode_permission(inode, open_want(flags));
 }
 
-int vfs_open(const char *path, uint32_t flags, uint32_t mode, File **out) {
+static int open_file(const char *path, uint32_t flags, uint32_t mode, int exec, File **out) {
     PathLoc loc;
     int created;
     int err = vfs_open_locate(path, flags, mode, &loc, &created);
     if (err != 0) return err;
     Inode *inode = loc.inode;
-    err = open_check(inode, flags, created);
+    err = open_check(inode, flags, created, exec);
     if (err == 0 && (flags & O_TRUNC) && S_ISREG(inode->mode) && !created) {
         InodeAttr attr = {.valid = ATTR_SIZE, .size = 0};
         err = vfs_setattr(inode, &attr);
@@ -155,6 +164,14 @@ int vfs_open(const char *path, uint32_t flags, uint32_t mode, File **out) {
     }
     *out = f;
     return 0;
+}
+
+int vfs_open(const char *path, uint32_t flags, uint32_t mode, File **out) {
+    return open_file(path, flags, mode, 0, out);
+}
+
+int vfs_open_exec(const char *path, File **out) {
+    return open_file(path, O_RDONLY, 0, 1, out);
 }
 
 /* --- Reading and writing --- */

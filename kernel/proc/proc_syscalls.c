@@ -171,10 +171,9 @@ typedef struct ExecImage {
  * permission, -ENOEXEC when empty or over MAX_ELF_SIZE. */
 static int exec_read_elf(const char *path, ExecImage *img) {
     File *file;
-    int err = vfs_open(path, O_RDONLY, 0, &file);
+    int err = vfs_open_exec(path, &file);   /* regular, executable (read permission not needed) */
     if (err != 0) return err;
     Inode *inode = file->inode;
-    if (!S_ISREG(inode->mode) || inode_permission(inode, X_OK) != 0) err = -EACCES;
     loff_t size = inode->size;
     if (err == 0 && (size <= 0 || size > MAX_ELF_SIZE)) err = -ENOEXEC;
     uint8_t *buf = err == 0 ? kmalloc((size_t)size, 0) : NULL;

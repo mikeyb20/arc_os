@@ -137,6 +137,7 @@ add_test(NAME qemu.vfs COMMAND ${_qemu_test} --suite vfs --module fstest --disk 
     --expect "fstest: dirs ok"
     --expect "fstest: perm ok"
     --expect "fstest: cloexec ok"
+    --expect "fstest: review ok"
     --expect "fstest: mounts ok"
     --expect "fstest: fat ok"
     --expect "fstest: 0 failures")

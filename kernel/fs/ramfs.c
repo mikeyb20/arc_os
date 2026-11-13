@@ -160,13 +160,19 @@ static int64_t ramfs_write(File *file, const IoBuf *buf, loff_t *pos) {
         size_t n = RAMFS_PAGE - in_page;
         if (n > buf->len - done) n = buf->len - done;
         RamfsPage *p = page_get(ri, at / RAMFS_PAGE, inode);
-        int err = p == NULL ? -ENOMEM : iob_copy_in((uint8_t *)page_to_virt(p->page) + in_page, buf, done, n);
-        if (err != 0) {
-            if (done == 0) return err;
+        if (p == NULL) {
+            if (done == 0) return -ENOMEM;
             break;
         }
-        done += n;
+        /* A faulting user buffer: keep the bytes copied, leave the rest of
+         * the file as it was */
+        size_t got = iob_copy_in_partial((uint8_t *)page_to_virt(p->page) + in_page, buf, done, n);
+        done += got;
         if ((loff_t)(start + done) > inode->size) inode->size = (loff_t)(start + done);
+        if (got < n) {
+            if (done == 0) return -EFAULT;
+            break;
+        }
     }
     *pos += (loff_t)done;
     return (int64_t)done;

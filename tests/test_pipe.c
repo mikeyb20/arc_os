@@ -127,6 +127,38 @@ TEST(blocking_read_and_write_wait) {
     return 0;
 }
 
+/* A reader blocked on an empty pipe doesn't hold the read side: an
+ * O_NONBLOCK read meanwhile gets -EAGAIN at once (D3 review of #41). The
+ * mutex stubs abort if the blocked reader still held rd_mutex. */
+static File *hook_nb;
+static int hook_nb_result;
+static void nonblocking_read_while_asleep(void) {
+    char c;
+    hook_nb->flags |= O_NONBLOCK;
+    hook_nb_result = (int)pr(hook_nb, &c, 1);
+    hook_nb->flags &= ~(uint32_t)O_NONBLOCK;
+    vfs_env_sleep_hook = NULL;
+    pw(hook_w, "z", 1);
+}
+
+TEST(blocked_reader_holds_nothing) {
+    vfs_env_setup();
+    File *r, *w;
+    ASSERT_EQ(pipe_create(&r, &w, 0), 0);
+    hook_nb = r;
+    hook_w = w;
+    hook_nb_result = 0;
+    vfs_env_sleep_hook = nonblocking_read_while_asleep;
+    char c;
+    ASSERT_EQ(pr(r, &c, 1), 1);
+    ASSERT_EQ(c, 'z');
+    ASSERT_EQ(hook_nb_result, -EAGAIN);
+    vfs_env_sleep_hook = NULL;
+    fput(r);
+    fput(w);
+    return 0;
+}
+
 TEST(wraparound_keeps_order) {
     vfs_env_setup();
     File *r, *w;
@@ -205,6 +237,7 @@ TestCase pipe_tests[] = {
     TEST_ENTRY(eof_and_epipe),
     TEST_ENTRY(nonblocking_and_atomic_writes),
     TEST_ENTRY(blocking_read_and_write_wait),
+    TEST_ENTRY(blocked_reader_holds_nothing),
     TEST_ENTRY(wraparound_keeps_order),
     TEST_ENTRY(efault_loses_no_data),
     TEST_ENTRY(shared_ends_and_freeing),

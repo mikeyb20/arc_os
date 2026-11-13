@@ -49,11 +49,15 @@ void vfs_sb_init(SuperBlock *sb, const char *type, const SuperOps *sop) {
     sb->type = type;
     sb->sop = sop;
     sb->dev = __atomic_fetch_add(&next_dev, 1, __ATOMIC_RELAXED);
-    mutex_init(&sb->rename_lock, LOCK_LEVEL_RENAME);
 }
 
 SuperBlock *vfs_anon_sb(void) {
     return &anon_sb;
+}
+
+uint64_t vfs_anon_ino(void) {
+    static uint64_t next = 1;
+    return __atomic_fetch_add(&next, 1, __ATOMIC_RELAXED);
 }
 
 void vfs_now(struct timespec *ts) {

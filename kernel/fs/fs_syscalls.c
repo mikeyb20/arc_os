@@ -61,6 +61,18 @@ static File *get_stdio_file(int64_t fd) {
     return f;
 }
 
+/* The *at calls find dirfd's directory by the path it was opened by (the
+ * walk starts from a path, not an inode; M1-13 changes that). If that path no
+ * longer leads to the same directory (renamed or removed since), refuse with
+ * -ENOENT rather than act in whatever now has that name. */
+static int dir_path_current(File *dir) {
+    PathLoc loc;
+    if (vfs_resolve(dir->path, &loc) != 0) return 0;
+    int same = loc.inode == dir->inode;
+    loc_put(&loc);
+    return same;
+}
+
 /* Copy a user path and make it absolute against dirfd (AT_FDCWD: the cwd).
  * An empty path gives -ENOENT, or 1 with AT_EMPTY_PATH allowed (the caller
  * then works on dirfd itself). */
@@ -76,6 +88,7 @@ static int at_path(int64_t dirfd, uint64_t path_addr, char *abs, size_t size, in
     File *dir = get_file(dirfd);
     if (dir == NULL) return -EBADF;
     int err = (!S_ISDIR(dir->inode->mode) || dir->path == NULL) ? -ENOTDIR : path_normalize(dir->path, path, abs, size);
+    if (err == 0 && !dir_path_current(dir)) err = -ENOENT;
     fput(dir);
     return err;
 }
@@ -163,7 +176,7 @@ static int64_t prw(uint64_t fd, uint64_t buf_addr, uint64_t count, uint64_t pos,
     if (f == NULL) return -EBADF;
     if (count > MAX_RW_COUNT) count = MAX_RW_COUNT;
     int64_t r;
-    if (!user_ptr_valid((const void *)buf_addr, count)) {
+    if (count != 0 && !user_ptr_valid((const void *)buf_addr, count)) {
         r = -EFAULT;
     } else {
         IoBuf b = iob_user(buf_addr, count);
@@ -591,7 +604,8 @@ static int64_t sys_getdents64(uint64_t fd, uint64_t dirp, uint64_t count, uint64
     if (f == NULL) return -EBADF;
     if (count > MAX_RW_COUNT) count = MAX_RW_COUNT;
     GetdentsCtx g = {.ctx = {.actor = getdents_actor}, .dirp = dirp, .count = count};
-    int err = user_ptr_valid((void *)dirp, count) ? vfs_iterate(f, &g.ctx) : -EFAULT;
+    /* count 0: no record fits, -EINVAL (as Linux), not -EFAULT */
+    int err = count == 0 || user_ptr_valid((void *)dirp, count) ? vfs_iterate(f, &g.ctx) : -EFAULT;
     fput(f);
     if (g.used > 0) return (int64_t)g.used;
     return err != 0 ? err : g.err;

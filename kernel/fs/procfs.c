@@ -445,7 +445,7 @@ static int64_t procfs_drop_caches_write(File *file, const IoBuf *buf, loff_t *po
     while (n > 0 && (text[n - 1] == '\n' || text[n - 1] == ' ')) n--;
     text[n] = '\0';
     uint32_t v;
-    if (procfs_parse_uint(text, &v) != 0 || v < 1 || v > 3) return -EINVAL;
+    if (procfs_parse_uint(text, &v) != 0 || v < 1 || v > 4) return -EINVAL;   /* 4: Linux's "stay quiet" bit */
     if (v & 2) vfs_drop_caches();
     *pos += (loff_t)buf->len;
     return (int64_t)buf->len;

@@ -209,15 +209,34 @@ int vfs_env_no_leak(const VfsEnvUsage *a, const VfsEnvUsage *b) {
     return 0;
 }
 
-/* --- User copies: low addresses fault --- */
+/* --- User copies: low addresses fault, and so does vfs_env_fault_at on --- */
+uintptr_t vfs_env_fault_at;
+
+/* Bytes of [p, p + len) before the first faulting one */
+static size_t uaddr_ok_len(const void *p, size_t len) {
+    uintptr_t a = (uintptr_t)p;
+    if (a < 4096) return 0;
+    if (vfs_env_fault_at != 0 && a + len > vfs_env_fault_at) return a >= vfs_env_fault_at ? 0 : vfs_env_fault_at - a;
+    return len;
+}
+
 static int uaddr_bad(const void *p, size_t len) {
-    return len != 0 && (uintptr_t)p < 4096;
+    return len != 0 && uaddr_ok_len(p, len) < len;
 }
 
 int copy_from_user(void *dst, const void *src, size_t len) {
-    if (uaddr_bad(src, len)) return -EFAULT;
+    if (uaddr_bad(src, len)) {
+        memset(dst, 0, len);   /* as the kernel's: the uncopied tail is zeroed */
+        return -EFAULT;
+    }
     memcpy(dst, src, len);
     return 0;
+}
+
+size_t copy_from_user_partial(void *dst, const void *src, size_t len) {
+    size_t ok = uaddr_ok_len(src, len);
+    memcpy(dst, src, ok);
+    return ok;
 }
 
 int copy_to_user(void *dst, const void *src, size_t len) {

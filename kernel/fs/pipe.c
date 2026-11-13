@@ -12,7 +12,8 @@
  * may fault) while the other side works on its own part.
  *
  * Locks: rd_mutex serialises readers and wr_mutex writers (sleeping,
- * LOCK_LEVEL_INODE: the pipe's own inode lock, taken before any user copy);
+ * LOCK_LEVEL_INODE: the pipe's own inode lock, taken before any user copy;
+ * dropped while waiting, so a blocked side never holds up the others);
  * `lock` (LOCK_LEVEL_OBJECT) guards head, tail and the counts and is the
  * condition lock of both wait queues. A reader that copies to a bad user
  * buffer has not moved tail yet, so the bytes stay in the pipe (nothing is
@@ -44,8 +45,6 @@ typedef struct Pipe {
     WaitQueue readers_wq;    /* writers wake readers */
     WaitQueue writers_wq;    /* readers wake writers */
 } Pipe;
-
-static uint64_t pipe_ino = 1;
 
 static Pipe *to_pipe(const File *file) {
     return (Pipe *)file->inode->priv;
@@ -82,7 +81,16 @@ static int64_t pipe_read(File *file, const IoBuf *buf, loff_t *pos) {
             mutex_unlock(&p->rd_mutex);
             return r;
         }
-        wq_sleep(&p->readers_wq, &p->lock, flags);
+        /* Wait without rd_mutex, so other readers (an O_NONBLOCK one, say)
+         * aren't stuck behind us; re-check under the lock before sleeping */
+        spin_unlock_irqrestore(&p->lock, flags);
+        mutex_unlock(&p->rd_mutex);
+        spin_lock_irqsave(&p->lock, &flags);
+        if (p->head == p->tail && p->writers != 0)
+            wq_sleep(&p->readers_wq, &p->lock, flags);
+        else
+            spin_unlock_irqrestore(&p->lock, flags);
+        mutex_lock(&p->rd_mutex);
         spin_lock_irqsave(&p->lock, &flags);
     }
     uint32_t tail = p->tail;
@@ -125,7 +133,15 @@ static int64_t pipe_write(File *file, const IoBuf *buf, loff_t *pos) {
                 err = -EAGAIN;
                 break;
             }
-            wq_sleep(&p->writers_wq, &p->lock, flags);
+            /* Wait without wr_mutex (as the reader above), re-checking first */
+            spin_unlock_irqrestore(&p->lock, flags);
+            mutex_unlock(&p->wr_mutex);
+            spin_lock_irqsave(&p->lock, &flags);
+            if (p->readers != 0 && PIPE_BUF_SIZE - (p->head - p->tail) < need)
+                wq_sleep(&p->writers_wq, &p->lock, flags);
+            else
+                spin_unlock_irqrestore(&p->lock, flags);
+            mutex_lock(&p->wr_mutex);
             continue;
         }
         spin_unlock_irqrestore(&p->lock, flags);
@@ -153,12 +169,12 @@ static void pipe_release(Inode *inode, File *file) {
     else
         p->writers--;
     int last = p->readers == 0 && p->writers == 0;
+    /* The other side sees EOF (no writers) or EPIPE (no readers). Wake it
+     * before dropping the lock: once it's dropped, the other end's last
+     * release may free the pipe. */
+    if (!last) wq_wake_all(reader ? &p->writers_wq : &p->readers_wq);
     spin_unlock_irqrestore(&p->lock, flags);
-    if (!last) {
-        /* The other side sees EOF (no writers) or EPIPE (no readers) */
-        wq_wake_all(reader ? &p->writers_wq : &p->readers_wq);
-        return;
-    }
+    if (!last) return;
     free_pages(p->page, 0);
     kfree(p);
     inode->priv = NULL;
@@ -180,9 +196,7 @@ int pipe_create(File **rd, File **wr, uint32_t extra_flags) {
     Pipe *p = kmalloc(sizeof(Pipe), GFP_ZERO);
     if (p == NULL) return -ENOMEM;
     p->page = alloc_pages(0, GFP_KERNEL);
-    Inode *inode = p->page != NULL
-                       ? inode_new(vfs_anon_sb(), __atomic_fetch_add(&pipe_ino, 1, __ATOMIC_RELAXED), S_IFIFO | 0600)
-                       : NULL;
+    Inode *inode = p->page != NULL ? inode_new(vfs_anon_sb(), vfs_anon_ino(), S_IFIFO | 0600) : NULL;
     if (inode == NULL) {
         if (p->page != NULL) free_pages(p->page, 0);
         kfree(p);

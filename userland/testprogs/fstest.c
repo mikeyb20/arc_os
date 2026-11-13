@@ -10,6 +10,8 @@
  *             unlinkat (AT_REMOVEDIR), getdents64 over 300 entries, stat/lstat;
  *   perm      a non-root child is refused a 0600 file and a non-executable exec;
  *   cloexec   (argument "cloexec FD") exec'd with an O_CLOEXEC fd: it is gone;
+ *   review    the D3 review's fixes: a half-faulting pwrite, zero-length calls,
+ *             a renamed dirfd, a 0711 program run by another user;
  *   mounts    /proc/mounts lists /, /dev, /proc (and /disk when a disk is there);
  *   fat       (argument "fat") the FAT32 test disk at /disk: reads, EROFS on writes.
  * Prints one FAIL line per failed check; exit status = number of failures. */
@@ -22,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
@@ -339,6 +342,62 @@ static void test_perm(void) {
     printf("fstest: perm ok\n");
 }
 
+/* Fixes from the D3 review of #41: a write whose buffer faults half-way
+ * keeps the rest of the file; zero-length pread/pwrite give 0 and getdents64
+ * EINVAL; an *at call on a dirfd whose directory was renamed gives ENOENT
+ * instead of using the new directory at the old name; a 0711 program runs
+ * for another user. */
+static void test_review(const char *self) {
+    const char *p = "/tmp/fst_half";
+    char page[4096];
+    memset(page, 'A', sizeof(page));
+    int fd = open(p, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    CHECK(fd >= 0 && write(fd, page, sizeof(page)) == 4096);
+    char *m = mmap(NULL, 8192, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(m != MAP_FAILED && munmap(m + 4096, 4096) == 0);
+    memset(m, 'B', 4096);
+    CHECK(pwrite(fd, m + 2048, 4096, 0) == 2048);   /* stops at the unmapped page */
+    char back[4096];
+    CHECK(pread(fd, back, sizeof(back), 0) == 4096 && back[2047] == 'B' && back[2048] == 'A' && back[4095] == 'A');
+    munmap(m, 4096);
+    CHECK(pread(fd, NULL, 0, 0) == 0 && pwrite(fd, NULL, 0, 0) == 0);
+    close(fd);
+    CHECK(unlink(p) == 0);
+    int d = open("/tmp", O_RDONLY | O_DIRECTORY);
+    errno = 0;
+    CHECK(syscall(SYS_getdents64, d, NULL, 0) == -1 && errno == EINVAL);
+    close(d);
+
+    CHECK(mkdir("/tmp/fst_r1", 0755) == 0);
+    d = open("/tmp/fst_r1", O_RDONLY | O_DIRECTORY);
+    CHECK(d >= 0 && rename("/tmp/fst_r1", "/tmp/fst_r2") == 0 && mkdir("/tmp/fst_r1", 0755) == 0);
+    errno = 0;
+    CHECK(openat(d, "x", O_WRONLY | O_CREAT, 0644) == -1 && errno == ENOENT);
+    struct stat st;
+    CHECK(stat("/tmp/fst_r1/x", &st) == -1 && stat("/tmp/fst_r2/x", &st) == -1);
+    close(d);
+    CHECK(rmdir("/tmp/fst_r1") == 0 && rmdir("/tmp/fst_r2") == 0);
+
+    /* Copy ourselves to a 0711 file; a non-root child runs it */
+    int in = open(self, O_RDONLY), out = open("/tmp/fst_x711", O_WRONLY | O_CREAT | O_TRUNC, 0711);
+    CHECK(in >= 0 && out >= 0);
+    ssize_t n;
+    while ((n = read(in, page, sizeof(page))) > 0) CHECK(write(out, page, (size_t)n) == n);
+    close(in);
+    close(out);
+    pid_t pid = fork();
+    if (pid == 0) {
+        if (setuid(1000) != 0) _exit(100);
+        char *argv[] = {"fst_x711", "ran", NULL};
+        execve("/tmp/fst_x711", argv, NULL);
+        _exit(errno == EACCES ? 101 : 102);
+    }
+    int status = -1;
+    CHECK(pid > 0 && waitpid(pid, &status, 0) == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    CHECK(unlink("/tmp/fst_x711") == 0);
+    printf("fstest: review ok\n");
+}
+
 /* exec ourselves with a close-on-exec fd and a plain one: only the plain one is left */
 static void test_cloexec(const char *self) {
     int keep = open("/tmp", O_RDONLY | O_DIRECTORY);
@@ -425,6 +484,7 @@ static void test_fat(void) {
 
 int main(int argc, char **argv) {
     if (argc == 4 && strcmp(argv[1], "cloexec") == 0) return cloexec_child(atoi(argv[2]), atoi(argv[3]));
+    if (argc == 2 && strcmp(argv[1], "ran") == 0) return 0;   /* test_review's 0711 copy */
     int with_disk = argc > 1 && strcmp(argv[1], "fat") == 0;
     test_open();
     test_big();
@@ -433,6 +493,7 @@ int main(int argc, char **argv) {
     test_dirs();
     test_perm();
     test_cloexec(argv[0][0] == '/' ? argv[0] : "/boot/fstest");
+    test_review(argv[0][0] == '/' ? argv[0] : "/boot/fstest");
     test_mounts(with_disk);
     if (with_disk) test_fat();
     printf("fstest: %d failures\n", failures);

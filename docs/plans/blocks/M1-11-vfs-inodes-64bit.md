@@ -83,6 +83,24 @@ cache and ext2. Today's `VfsNode` read/write take 32-bit offsets, which caps fil
   both paths. M1-10 rebases `fat32.c` (its three `dev->read` calls). M1-16: pipe and tty sleeps can't be
   interrupted by signals yet; fd tables are refcounted for threads already. M1-18: socket fds use
   `socket_fops`; poll goes in `FileOps`.
+- D3 review (PR #41) fixed: rename took its lock after resolving the paths (now one rename mutex before
+  resolving); `pipe_release` woke a queue after the pipe could be freed; a write whose user buffer faults
+  half-way zeroed file bytes (now `iob_copy_in_partial`: keeps what it copied, as Linux); `mkdir` in a removed
+  directory; blocked pipe readers/writers held their mutex while waiting (O_NONBLOCK peers blocked);
+  zero-length pread/pwrite/getdents errnos; pipe and socket inode numbers shared a range; exec needed read
+  permission (`vfs_open_exec`).
+- Scope addition (flagged in the PR): `/proc/sys/vm/drop_caches`, needed by the leak checks.
+- Limitation: the `*at` calls find a dirfd's directory by the path it was opened with (`File.path`). If that
+  path no longer leads to the same directory (renamed or removed) they give -ENOENT; Linux follows the
+  directory. The cwd is a string too (older). M1-13's walk rework should start a walk from an inode, which also
+  needs inode-based ancestry for rename (today's check is on path text, exact only under `rename_mutex`).
+- Traps for later blocks (from the review): M1-16, `procfs_root_iterate` copies to the user inside
+  `proc_foreach` (fails once the process list has a spinlock: snapshot pids first); `pipe2`'s error path closes
+  fds by number (another thread may reuse them: reserve, copy, then install). M1-12: rename already holds 4
+  sleeping locks, and a write from an mmapped file buffer needs 5 (pos, inode, mm, page, FS_IO), above
+  `LOCKDEP_MAX_SLEEP_HELD` (4): raise it. `MAX_FDS` 64 is one bitmap word; going higher means a bitmap array in
+  `fd.c`. M1-13: `path_normalize` handles trailing slashes and `x/..` by text (`open("/tmp/file/")` opens the
+  file; `rmdir("/tmp/d/.")` removes `d`).
 - Open: the FAT is read whole into one kmalloc at mount, so a FAT over 4 MiB (more than ~1M clusters) refuses to
   mount (fine for an ESP). A tty read into a bad user buffer still loses the bytes (TTY row, lane KB). Inode
   times are uptime until M1-06 gives wall-clock time.

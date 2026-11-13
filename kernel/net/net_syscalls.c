@@ -35,7 +35,6 @@ static const FileOps socket_fops = {
     .release = sock_file_release,
 };
 
-static uint64_t sock_ino = 1;
 
 static int sock_index(const File *f) {
     return (int)(uintptr_t)f->priv;
@@ -109,7 +108,7 @@ static int sockaddr_in_to_user(uint64_t addr_ptr, uint64_t addrlen_ptr,
 
 /* Put socket index sk_idx in a new fd. Frees the socket on failure. */
 static int64_t socket_install_fd(Process *p, int sk_idx) {
-    Inode *inode = inode_new(vfs_anon_sb(), __atomic_fetch_add(&sock_ino, 1, __ATOMIC_RELAXED), S_IFSOCK | 0777);
+    Inode *inode = inode_new(vfs_anon_sb(), vfs_anon_ino(), S_IFSOCK | 0777);
     File *f = inode != NULL ? file_new(inode, &socket_fops, O_RDWR) : NULL;
     if (f == NULL) {
         if (inode != NULL) iput(inode);

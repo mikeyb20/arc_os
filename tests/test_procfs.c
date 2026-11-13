@@ -194,7 +194,8 @@ TEST(drop_caches_empties_the_dentry_cache) {
     ASSERT_EQ(vfs_stat("/tmp/proc_dc", &st), 0);   /* names still resolve, through the filesystem */
     ASSERT_TRUE(S_ISDIR(st.st_mode));
     ASSERT_EQ(write_str("/proc/sys/vm/drop_caches", "1"), 1);   /* page cache: nothing yet */
-    ASSERT_EQ(write_str("/proc/sys/vm/drop_caches", "4"), -EINVAL);
+    ASSERT_EQ(write_str("/proc/sys/vm/drop_caches", "4"), 1);   /* Linux's "quiet" bit: nothing to drop */
+    ASSERT_EQ(write_str("/proc/sys/vm/drop_caches", "5"), -EINVAL);
     ASSERT_EQ(write_str("/proc/sys/vm/drop_caches", "x"), -EINVAL);
     ASSERT_EQ(write_str("/proc/sys/vm/drop_caches", ""), 0);   /* an empty write does nothing */
     File *f;

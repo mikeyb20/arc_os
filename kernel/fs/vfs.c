@@ -19,12 +19,15 @@
  * Locks (docs/kernel/locking.md): a walk holds no lock across components
  * (each lookup takes its directory shared, or none on a dcache hit). Changes
  * take the parent exclusive (LOCK_LEVEL_INODE); rmdir then the victim
- * (LOCK_LEVEL_INODE_CHILD). Rename takes the filesystem's rename_lock, then
- * the two parents ancestor first (LOCK_LEVEL_INODE, LOCK_LEVEL_INODE_2), then
- * a replaced directory (LOCK_LEVEL_INODE_CHILD). Every path that holds two
- * inode locks takes an ancestor before its descendant, so they can't cycle;
- * only renames lock two unrelated directories, and those are serialised by
- * rename_lock.
+ * (LOCK_LEVEL_INODE_CHILD). Rename takes rename_mutex *before* it resolves
+ * either path, then the two parents ancestor first (LOCK_LEVEL_INODE,
+ * LOCK_LEVEL_INODE_2), then a replaced directory (LOCK_LEVEL_INODE_CHILD).
+ * Only rename moves a directory, so while rename_mutex is held the tree's
+ * shape can't change under the resolved paths: their text gives the exact
+ * ancestry (one mount, no hard links to directories), which orders the two
+ * parent locks and rejects moving a directory into itself. Every path that
+ * holds two inode locks takes an ancestor before its descendant, so they
+ * can't cycle.
  *
  * Cost: a walk is O(components): a dcache probe each, a filesystem lookup on
  * a miss, a scan of at most VFS_MAX_MOUNTS entries at a mount point. */
@@ -50,6 +53,8 @@ struct Mount {
 static Mount mounts[VFS_MAX_MOUNTS];
 static uint32_t nr_mounts;
 static Spinlock mount_lock = SPINLOCK_INIT(LOCK_LEVEL_MOUNT, "mount table");
+/* One rename at a time, held across resolving both paths (see above) */
+static Mutex rename_mutex = MUTEX_INIT(LOCK_LEVEL_RENAME);
 
 /* --- Credentials of the caller (the kernel itself is root) --- */
 
@@ -380,7 +385,9 @@ int vfs_mkdir(const char *path, uint32_t mode) {
         iput(existing);
         err = -EEXIST;
     } else if (err == -ENOENT) {
-        err = may_change_dir(d);
+        /* lookup_locked says -ENOENT for a removed directory too: never
+         * create in one (its entries would be lost with it) */
+        err = (d->flags & I_DEAD) ? -ENOENT : may_change_dir(d);
         if (err == 0 && (d->iop == NULL || d->iop->mkdir == NULL)) err = -EPERM;
         if (err == 0) {
             Cred c = current_cred();
@@ -519,10 +526,8 @@ static void rename_lock_dirs(Inode *odir, const char *opath, Inode *ndir, const 
 static int rename_in(PathLoc *od, const char *oname, PathLoc *nd, const char *nname, const char *oldpath,
                      const char *newpath) {
     Inode *odir = od->inode, *ndir = nd->inode;
-    SuperBlock *sb = odir->sb;
     Cred c = current_cred();
     Inode *src = NULL, *victim = NULL;
-    mutex_lock(&sb->rename_lock);
     rename_lock_dirs(odir, oldpath, ndir, newpath);
     int err = lookup_locked(odir, oname, &src);
     if (err == 0) {
@@ -557,7 +562,6 @@ static int rename_in(PathLoc *od, const char *oname, PathLoc *nd, const char *nn
     if (locked_victim) rwsem_up_write(&victim->lock);
     if (ndir != odir) rwsem_up_write(&ndir->lock);
     rwsem_up_write(&odir->lock);
-    mutex_unlock(&sb->rename_lock);
     if (src != NULL) iput(src);
     if (victim != NULL) iput(victim);
     return err;
@@ -566,21 +570,21 @@ static int rename_in(PathLoc *od, const char *oname, PathLoc *nd, const char *nn
 int vfs_rename(const char *oldpath, const char *newpath) {
     char oname[VFS_NAME_MAX + 1], nname[VFS_NAME_MAX + 1];
     PathLoc od, nd;
+    mutex_lock(&rename_mutex);   /* before resolving: no directory moves until we're done */
     int err = vfs_resolve_parent(oldpath, &od, oname);
-    if (err == -EINVAL) return -EBUSY; /* "/" */
-    if (err != 0) return err;
-    err = vfs_resolve_parent(newpath, &nd, nname);
-    if (err == -EINVAL) err = -EBUSY;
+    if (err == -EINVAL) err = -EBUSY; /* "/" */
     if (err != 0) {
-        loc_put(&od);
+        mutex_unlock(&rename_mutex);
         return err;
     }
-    if (od.mnt != nd.mnt)
-        err = -EXDEV;
-    else
-        err = rename_in(&od, oname, &nd, nname, oldpath, newpath);
-    loc_put(&nd);
+    err = vfs_resolve_parent(newpath, &nd, nname);
+    if (err == -EINVAL) err = -EBUSY;
+    if (err == 0) {
+        err = od.mnt != nd.mnt ? -EXDEV : rename_in(&od, oname, &nd, nname, oldpath, newpath);
+        loc_put(&nd);
+    }
     loc_put(&od);
+    mutex_unlock(&rename_mutex);
     return err;
 }
 

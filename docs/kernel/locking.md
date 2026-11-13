@@ -14,7 +14,7 @@ of that level (a lock without a subkey counts as 0). Give every lock of a nestab
 |---|---|---|---|---|
 | 0 | `LOCK_LEVEL_KERNEL` | big kernel lock | `kernel_lock` (see below) | M1-05, interim |
 | 7 | `LOCK_LEVEL_FILE_POS` | sleeping | `File.pos_lock`: the position of a seekable open file (read, write, lseek, getdents) | M1-11 |
-| 8 | `LOCK_LEVEL_RENAME` | sleeping | `SuperBlock.rename_lock`: one rename at a time per filesystem | M1-11 |
+| 8 | `LOCK_LEVEL_RENAME` | sleeping | `rename_mutex` (vfs.c): one rename at a time, held from before either path is resolved | M1-11 |
 | 10 | `LOCK_LEVEL_INODE` | sleeping, read-write | `Inode.lock` (`RwSem`): a directory's entries (lookup shared, changes exclusive), a regular file's data and size (read shared, write and truncate exclusive); a pipe's reader and writer mutexes | M1-11 |
 | 11 | `LOCK_LEVEL_INODE_2` | sleeping, read-write | rename's second directory | M1-11 |
 | 12 | `LOCK_LEVEL_INODE_CHILD` | sleeping, read-write | a directory being removed or replaced (rmdir, rename) | M1-11 |
@@ -101,7 +101,7 @@ the process list (the process row, M1-16); the tty line discipline (the TTY row)
 
 ## VFS locks (M1-11)
 
-- Order, outermost first: `File.pos_lock` (7) → `SuperBlock.rename_lock` (8) → directory or file `Inode.lock`
+- Order, outermost first: `File.pos_lock` (7) → `rename_mutex` (8) → directory or file `Inode.lock`
   (10, then 11 and 12 in rename and rmdir) → `Mm.lock` (20, a page fault in a user copy) → FAT32 `io_lock` (45)
   → the VFS spinlocks (62–65), which are leaves apart from the slab allocator.
 - User memory may be touched under the sleeping VFS locks (a fault takes only mm locks, which come after them),
@@ -110,11 +110,18 @@ the process list (the process row, M1-16); the tty line discipline (the TTY row)
 - Path lookup holds one directory lock at a time, shared; a component found in the dentry cache takes no
   directory lock at all. Directory changes take the parent exclusive and remove the affected dentry before the
   filesystem changes anything, so lookups never cache a name being removed.
-- Rename takes the filesystem's `rename_lock` first, so the two directories can't be locked in opposite orders
-  by two renames, then the source directory (10), the target directory (11) and a replaced directory (12).
+- Rename takes `rename_mutex` before it resolves either path. Only rename moves a directory, so the resolved
+  paths stay true while it is held, and their text gives the exact ancestry (one mount, no directory hard
+  links): the ancestor parent is locked first (10, then 11), then a replaced directory (12), and a directory
+  can't be moved into itself. Resolving first and locking after would let another rename change the tree in
+  between (a detached cycle, or an ABBA with rmdir that the level checks can't see).
 - `iput` that frees an inode runs its filesystem's `evict_inode` with no lock held; `fput` never runs under a
   spinlock. Pipes: `rd_mutex` and `wr_mutex` (level 10) serialise readers and writers and are held across user
-  copies; `pipe->lock` (75) guards head, tail and the counts and is the wait-queue condition lock.
+  copies but dropped while waiting; `pipe->lock` (75) guards head, tail and the counts and is the wait-queue
+  condition lock. A release wakes the other side before dropping `pipe->lock` (after it, the other end's last
+  release may free the pipe).
+- Directory changes re-check `I_DEAD` under the parent's lock (create, mkdir, rename's target), since the
+  directory may be removed between resolving and locking it.
 
 ## Address-space locks (M1-07)
 

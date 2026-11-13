@@ -71,4 +71,8 @@ int64_t vfs_env_read_file(const char *path, char *buf, size_t size);
 /* A user-space address that faults in copy_to_user/copy_from_user. */
 #define VFS_ENV_BAD_UADDR 0x10ull
 
+/* User copies also fault from this host address on (0: off), so a buffer can
+ * fault half-way. */
+extern uintptr_t vfs_env_fault_at;
+
 #endif /* ARCHOS_TESTS_VFS_ENV_H */
