@@ -21,7 +21,7 @@ add_test(NAME qemu.smoke COMMAND ${_qemu_test} --suite smoke --memory 4G
     --module tests/qemu/suites/smoke.sh
     --expect "arc_os shell"
     --expect "(?s)\\]\\$ .*Hello from exec'd binary"
-    --expect "-rw-rw-rw- +[0-9]+ shell"
+    --expect "-rwxr-xr-x +[0-9]+ shell"
     --expect "Type: directory"
     --expect "\\[/boot\\]\\$ /boot"
     --expect "exited with status 0"
@@ -124,6 +124,23 @@ add_test(NAME qemu.mm.oom COMMAND ${_qemu_test} --suite mmoom --module mmtest --
     --expect "mmtest: oom ok \\(child killed by signal 9\\)"
     --expect "mmtest: 0 failures")
 
+# VFS (M1-11): open flags, 64-bit offsets on a sparse file, shared offsets after
+# dup and fork, fcntl/dup3/pipe2, *at calls, rename across directories,
+# getdents64, permissions, close-on-exec, /proc/mounts; and the FAT32 test disk
+# as a read-only virtio-blk disk at /disk. Exit status = failed checks.
+add_test(NAME qemu.vfs COMMAND ${_qemu_test} --suite vfs --module fstest --disk tests/fat32_test.img
+    --expect "\\[VFS\\] Mounted vfat at /disk"
+    --expect "fstest: open ok"
+    --expect "fstest: big ok"
+    --expect "fstest: share ok"
+    --expect "fstest: fcntl ok"
+    --expect "fstest: dirs ok"
+    --expect "fstest: perm ok"
+    --expect "fstest: cloexec ok"
+    --expect "fstest: mounts ok"
+    --expect "fstest: fat ok"
+    --expect "fstest: 0 failures")
+
 # Harness self-checks: a failing program is reported by name and reason,
 # and a kernel panic ends the run within seconds instead of at the timeout.
 add_test(NAME qemu.selftest.fail COMMAND ${_qemu_test} --suite selftest --module testfail)
@@ -159,10 +176,11 @@ add_test(NAME qemu.diag COMMAND ${_qemu_test} --suite diag
 
 set_tests_properties(qemu.smoke qemu.mem.buddy qemu.mem.cap qemu.userland qemu.abi qemu.musl qemu.fpu qemu.cpufloor
     qemu.smp.xapic qemu.smp.x2apic qemu.sched qemu.lockorder qemu.selftest.fail qemu.selftest.panic
-    qemu.panic.fault qemu.diag qemu.mm qemu.mm.oom
+    qemu.panic.fault qemu.diag qemu.mm qemu.mm.oom qemu.vfs
     PROPERTIES LABELS qemu TIMEOUT 180 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     FIXTURES_SETUP qemu_logs)
 set_tests_properties(qemu.mm.oom PROPERTIES TIMEOUT 320)
+set_tests_properties(qemu.vfs PROPERTIES FIXTURES_REQUIRED fat32_image)
 
 # Budgets (ADR-0019, M0-08): sizes and counts from the build and from the
 # suites' `ARC_TEST budget` lines, against tests/budgets.txt. Runs after the

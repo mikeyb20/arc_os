@@ -1,6 +1,7 @@
 #ifndef ARCHOS_FS_PASSWD_H
 #define ARCHOS_FS_PASSWD_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 /* Maximum lengths for passwd fields */
@@ -26,8 +27,7 @@ typedef struct {
  *   name:password:uid:gid:gecos:home:shell
  * Populates entries[] up to max_entries.
  * Returns number of entries parsed, or -1 on error. */
-int passwd_parse(const char *buf, uint32_t buf_len,
-                 PasswdEntry *entries, int max_entries);
+int passwd_parse(const char *buf, size_t buf_len, PasswdEntry *entries, int max_entries);
 
 /* Look up a user by name in a parsed entry array.
  * Returns pointer to the matching entry, or NULL if not found. */

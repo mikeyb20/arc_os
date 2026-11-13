@@ -1,787 +1,793 @@
-/* arc_os — Host-side tests for VFS + ramfs */
+/* arc_os — VFS core and ramfs on the real code (M1-11): open flags, 64-bit
+ * offsets and sparse files, directories and getdents cookies, unlink while
+ * open, rmdir, rename, permissions and the sticky bit, setattr, mounts and
+ * bind mounts, the dentry cache, allocation failures and leaks. */
 
 #include "test_framework.h"
-#include <stdint.h>
+#include "vfs_env.h"
 
-/* Guard kernel headers that we stub */
-#define ARCHOS_LIB_KPRINTF_H
-#define ARCHOS_MM_KMALLOC_H
-#define ARCHOS_LIB_MEM_H        /* Use libc memcpy/memset */
-#define ARCHOS_LIB_STRING_H     /* Use libc string functions */
-#define ARCHOS_PROC_PROCESS_H   /* We define our own minimal Process */
+#include "fs/vfs_internal.h"
+#include "fs/ramfs.h"
+#include "uapi/errno.h"
+#include "uapi/fcntl.h"
+#include "uapi/dirent.h"
 
-/* Stub kprintf */
-static inline void kprintf(const char *fmt, ...) { (void)fmt; }
+#define GIB (1024ll * 1024 * 1024)
 
-/* Allocation flags */
-#define GFP_KERNEL  0x00
-#define GFP_ZERO    0x01
+/* --- Helpers --- */
 
-/* kmalloc/kfree stubs using libc malloc */
-static int kmalloc_fail_after;  /* If > 0, fail the Nth kmalloc call */
-static int kmalloc_call_seq;
-
-static void *kmalloc(size_t size, uint32_t flags) {
-    kmalloc_call_seq++;
-    if (kmalloc_fail_after > 0 && kmalloc_call_seq >= kmalloc_fail_after) {
-        return NULL;
-    }
-    void *p = malloc(size);
-    if (p && (flags & GFP_ZERO)) {
-        memset(p, 0, size);
-    }
-    return p;
+static int64_t wr(File *f, const char *s) {
+    IoBuf b = iob_kernel((void *)s, strlen(s));
+    return vfs_write(f, &b);
 }
 
-static void kfree(void *ptr) {
-    free(ptr);
+static int64_t rd(File *f, char *buf, size_t n) {
+    IoBuf b = iob_kernel(buf, n);
+    int64_t r = vfs_read(f, &b);
+    if (r >= 0 && (size_t)r < n) buf[r] = '\0';
+    return r;
 }
 
-static void *krealloc(void *ptr, size_t new_size) {
-    return realloc(ptr, new_size);
+static int mkfile(const char *path, const char *text) {
+    return vfs_write_file(path, text, strlen(text), 0644);
 }
 
-/* proc_current stub — controllable for permission tests */
-typedef uint32_t uid_t;
-typedef uint32_t gid_t;
-typedef struct Process {
-    uint32_t pid;
-    uint32_t pgid;
-    uid_t uid;
-    gid_t gid;
-    uid_t euid;
-    gid_t egid;
-    uint32_t umask;
-} Process;
-static Process *vfs_test_proc_ptr = NULL;
-static Process *proc_current(void) { return vfs_test_proc_ptr; }
-
-/* Include the implementations directly */
-#include "../kernel/fs/vfs.c"
-#include "../kernel/fs/ramfs.c"
-
-/* Helper: reset VFS + ramfs state for each test */
-static void reset_vfs(void) {
-    vfs_root = NULL;
-    mount_count = 0;
-    memset(mount_table, 0, sizeof(mount_table));
-    next_inode = 1;
-    kmalloc_fail_after = 0;
-    kmalloc_call_seq = 0;
-    vfs_test_proc_ptr = NULL;
+static loff_t size_of(const char *path) {
+    struct stat st;
+    return vfs_stat(path, &st) == 0 ? (loff_t)st.st_size : -1;
 }
 
-static void setup_vfs(void) {
-    reset_vfs();
-    vfs_init();
-    VfsNode *root = ramfs_init();
-    vfs_set_root(root);
-}
+/* getdents collector: names joined by spaces, inos, cookies; stops after max */
+typedef struct {
+    DirContext ctx;
+    char names[512];
+    uint64_t inos[64];
+    loff_t cookies[64];
+    int n;
+    int max;
+} Listing;
 
-/* --- Tests --- */
-
-static int test_vfs_init_has_root(void) {
-    setup_vfs();
-    VfsNode *root = vfs_get_root();
-    ASSERT_TRUE(root != NULL);
-    ASSERT_EQ(root->type, VFS_DIRECTORY);
-    ASSERT_EQ(root->mode, 0755);
+static int list_actor(DirContext *ctx, const char *name, size_t len, uint64_t ino, uint8_t dtype, loff_t next) {
+    (void)dtype;
+    Listing *l = (Listing *)ctx;
+    if (l->n >= l->max || l->n >= 64) return 1;
+    size_t at = strlen(l->names);
+    snprintf(l->names + at, sizeof(l->names) - at, "%s%.*s", at ? " " : "", (int)len, name);
+    l->inos[l->n] = ino;
+    l->cookies[l->n] = next;
+    l->n++;
     return 0;
 }
 
-static int test_mkdir_creates_directory(void) {
-    setup_vfs();
-    int ret = vfs_mkdir("/etc", 0755);
-    ASSERT_EQ(ret, 0);
+static void listing_init(Listing *l, int max) {
+    memset(l, 0, sizeof(*l));
+    l->ctx.actor = list_actor;
+    l->max = max;
+}
 
-    VfsStat st;
-    ret = vfs_stat("/etc", &st);
-    ASSERT_EQ(ret, 0);
-    ASSERT_EQ(st.type, VFS_DIRECTORY);
+/* Every entry of dir, in one pass */
+static int list_dir(const char *path, Listing *l) {
+    File *f;
+    int err = vfs_open(path, O_RDONLY | O_DIRECTORY, 0, &f);
+    if (err != 0) return err;
+    listing_init(l, 64);
+    err = vfs_iterate(f, &l->ctx);
+    fput(f);
+    return err;
+}
+
+/* --- Open, read, write --- */
+
+TEST(root_is_directory) {
+    vfs_env_setup();
+    struct stat st;
+    ASSERT_EQ(vfs_stat("/", &st), 0);
+    ASSERT_TRUE(S_ISDIR(st.st_mode));
+    ASSERT_EQ(vfs_stat("/tmp", &st), 0);
+    ASSERT_EQ(st.st_mode & 07777, 01777);
     return 0;
 }
 
-static int test_mkdir_nested(void) {
-    setup_vfs();
-    ASSERT_EQ(vfs_mkdir("/a", 0755), 0);
-    ASSERT_EQ(vfs_mkdir("/a/b", 0755), 0);
-
-    VfsStat st;
-    ASSERT_EQ(vfs_stat("/a/b", &st), 0);
-    ASSERT_EQ(st.type, VFS_DIRECTORY);
-    return 0;
-}
-
-static int test_mkdir_no_parent_fails(void) {
-    setup_vfs();
-    int ret = vfs_mkdir("/a/b", 0755);
-    ASSERT_EQ(ret, -ENOENT);
-    return 0;
-}
-
-static int test_open_create_file(void) {
-    setup_vfs();
-    VfsFile f;
-    int ret = vfs_open("/hello.txt", O_CREAT | O_RDWR, &f);
-    ASSERT_EQ(ret, 0);
-    ASSERT_TRUE(f.node != NULL);
-    ASSERT_EQ(f.node->type, VFS_FILE);
-    vfs_close(&f);
-    return 0;
-}
-
-static int test_open_existing_file(void) {
-    setup_vfs();
-    VfsFile f;
-    ASSERT_EQ(vfs_open("/hello.txt", O_CREAT | O_RDWR, &f), 0);
-    vfs_close(&f);
-
-    /* Open again without O_CREAT */
-    ASSERT_EQ(vfs_open("/hello.txt", O_RDWR, &f), 0);
-    ASSERT_TRUE(f.node != NULL);
-    vfs_close(&f);
-    return 0;
-}
-
-static int test_open_nonexistent_fails(void) {
-    setup_vfs();
-    VfsFile f;
-    int ret = vfs_open("/nope.txt", O_RDONLY, &f);
-    ASSERT_EQ(ret, -ENOENT);
-    return 0;
-}
-
-static int test_write_then_read(void) {
-    setup_vfs();
-    VfsFile f;
-    ASSERT_EQ(vfs_open("/data.txt", O_CREAT | O_RDWR, &f), 0);
-
-    const char *msg = "Hello, VFS!";
-    int n = vfs_write(&f, msg, 11);
-    ASSERT_EQ(n, 11);
-
-    ASSERT_EQ(vfs_seek(&f, 0, SEEK_SET), 0);
-
+TEST(create_write_read) {
+    vfs_env_setup();
+    File *f;
+    ASSERT_EQ(vfs_open("/tmp/cwr", O_CREAT | O_RDWR, 0644, &f), 0);
+    ASSERT_EQ(wr(f, "hello world"), 11);
+    ASSERT_EQ(vfs_llseek(f, 0, SEEK_SET), 0);
     char buf[32];
-    memset(buf, 0, sizeof(buf));
-    n = vfs_read(&f, buf, sizeof(buf));
-    ASSERT_EQ(n, 11);
-    ASSERT_MEM_EQ(buf, "Hello, VFS!", 11);
-    vfs_close(&f);
+    ASSERT_EQ(rd(f, buf, sizeof(buf)), 11);
+    ASSERT_STR_EQ(buf, "hello world");
+    ASSERT_EQ(rd(f, buf, sizeof(buf)), 0);   /* EOF */
+    fput(f);
+    struct stat st;
+    ASSERT_EQ(vfs_stat("/tmp/cwr", &st), 0);
+    ASSERT_EQ(st.st_size, 11);
+    ASSERT_EQ(st.st_mode, S_IFREG | 0644);
+    ASSERT_EQ(st.st_nlink, 1);
     return 0;
 }
 
-static int test_write_append(void) {
-    setup_vfs();
-    VfsFile f;
-    ASSERT_EQ(vfs_open("/log.txt", O_CREAT | O_RDWR, &f), 0);
-    vfs_write(&f, "aaa", 3);
-    vfs_close(&f);
+TEST(open_flags) {
+    vfs_env_setup();
+    File *f;
+    ASSERT_EQ(vfs_open("/tmp/of_missing", O_RDONLY, 0, &f), -ENOENT);
+    ASSERT_EQ(mkfile("/tmp/of", "abcdef"), 0);
+    ASSERT_EQ(vfs_open("/tmp/of", O_CREAT | O_EXCL | O_WRONLY, 0644, &f), -EEXIST);
+    ASSERT_EQ(vfs_open("/tmp/of", O_RDONLY | O_DIRECTORY, 0, &f), -ENOTDIR);
+    ASSERT_EQ(vfs_open("/tmp/of", O_ACCMODE, 0, &f), -EINVAL);
+    ASSERT_EQ(vfs_open("/tmp", O_WRONLY, 0, &f), -EISDIR);
+    ASSERT_EQ(vfs_open("/tmp/of/x", O_RDONLY, 0, &f), -ENOTDIR);
+    ASSERT_EQ(vfs_open("/tmp", O_CREAT | O_RDWR, 0644, &f), -EISDIR);
+    /* O_TRUNC empties; O_EXCL on a missing name creates */
+    ASSERT_EQ(vfs_open("/tmp/of", O_WRONLY | O_TRUNC, 0, &f), 0);
+    fput(f);
+    ASSERT_EQ(size_of("/tmp/of"), 0);
+    ASSERT_EQ(vfs_open("/tmp/of_new", O_CREAT | O_EXCL | O_WRONLY, 0600, &f), 0);
+    fput(f);
+    ASSERT_EQ(size_of("/tmp/of_new"), 0);
+    return 0;
+}
 
-    /* Re-open with O_APPEND */
-    ASSERT_EQ(vfs_open("/log.txt", O_RDWR | O_APPEND, &f), 0);
-    vfs_write(&f, "bbb", 3);
+TEST(access_mode_enforced) {
+    vfs_env_setup();
+    ASSERT_EQ(mkfile("/tmp/am", "data"), 0);
+    File *f;
+    char buf[8];
+    ASSERT_EQ(vfs_open("/tmp/am", O_RDONLY, 0, &f), 0);
+    ASSERT_EQ(wr(f, "x"), -EBADF);
+    ASSERT_EQ(vfs_ftruncate(f, 0), -EINVAL);
+    fput(f);
+    ASSERT_EQ(vfs_open("/tmp/am", O_WRONLY, 0, &f), 0);
+    ASSERT_EQ(rd(f, buf, sizeof(buf)), -EBADF);
+    fput(f);
+    ASSERT_EQ(vfs_open("/tmp", O_RDONLY, 0, &f), 0);
+    ASSERT_EQ(rd(f, buf, sizeof(buf)), -EISDIR);
+    fput(f);
+    return 0;
+}
 
-    vfs_seek(&f, 0, SEEK_SET);
+TEST(append_writes_at_end) {
+    vfs_env_setup();
+    ASSERT_EQ(mkfile("/tmp/ap", "abc"), 0);
+    File *f;
+    ASSERT_EQ(vfs_open("/tmp/ap", O_WRONLY | O_APPEND, 0, &f), 0);
+    ASSERT_EQ(vfs_llseek(f, 0, SEEK_SET), 0);
+    ASSERT_EQ(wr(f, "de"), 2);
+    ASSERT_EQ(f->pos, 5);
+    IoBuf b = iob_kernel("f", 1);
+    ASSERT_EQ(vfs_pwrite(f, &b, 0), 1);   /* Linux: O_APPEND wins over pwrite's offset */
+    fput(f);
     char buf[16];
-    memset(buf, 0, sizeof(buf));
-    int n = vfs_read(&f, buf, sizeof(buf));
-    ASSERT_EQ(n, 6);
-    ASSERT_MEM_EQ(buf, "aaabbb", 6);
-    vfs_close(&f);
+    ASSERT_EQ(vfs_env_read_file("/tmp/ap", buf, sizeof(buf)), 6);
+    ASSERT_STR_EQ(buf, "abcdef");
     return 0;
 }
 
-static int test_write_grows_file(void) {
-    setup_vfs();
-    VfsFile f;
-    ASSERT_EQ(vfs_open("/big.txt", O_CREAT | O_RDWR, &f), 0);
+TEST(sparse_file_beyond_4gib) {
+    vfs_env_setup();
+    VfsEnvUsage before, after;
+    vfs_env_usage(&before);
+    File *f;
+    ASSERT_EQ(vfs_open("/tmp/sparse", O_CREAT | O_RDWR, 0644, &f), 0);
+    loff_t at = 5 * GIB + 123;
+    IoBuf b = iob_kernel("xyz", 3);
+    ASSERT_EQ(vfs_pwrite(f, &b, at), 3);
+    ASSERT_EQ(f->inode->size, at + 3);
+    vfs_env_usage(&after);
+    ASSERT_EQ(after.pages - before.pages, 1);   /* only the page written holds memory */
 
-    /* Write a chunk bigger than RAMFS_INIT_CAP (512) */
-    char big[1024];
-    memset(big, 'A', sizeof(big));
-    int n = vfs_write(&f, big, sizeof(big));
-    ASSERT_EQ(n, 1024);
-    ASSERT_EQ(f.node->size, 1024);
+    char buf[8] = {0};
+    IoBuf r = iob_kernel(buf, 3);
+    ASSERT_EQ(vfs_pread(f, &r, at), 3);
+    ASSERT_MEM_EQ(buf, "xyz", 3);
+    memset(buf, 'q', sizeof(buf));
+    r = iob_kernel(buf, 8);
+    ASSERT_EQ(vfs_pread(f, &r, 4 * GIB + 7), 8);   /* a hole reads as zeros */
+    for (int i = 0; i < 8; i++) ASSERT_EQ(buf[i], 0);
 
-    vfs_seek(&f, 0, SEEK_SET);
-    char readback[1024];
-    n = vfs_read(&f, readback, sizeof(readback));
-    ASSERT_EQ(n, 1024);
-    ASSERT_MEM_EQ(readback, big, 1024);
-    vfs_close(&f);
+    /* lseek past 4 GiB, then read through the file position */
+    ASSERT_EQ(vfs_llseek(f, at, SEEK_SET), at);
+    ASSERT_EQ(rd(f, buf, 3), 3);
+    ASSERT_MEM_EQ(buf, "xyz", 3);
+    ASSERT_EQ(vfs_llseek(f, 0, SEEK_CUR), at + 3);
+    ASSERT_EQ(vfs_llseek(f, -3, SEEK_END), at);
+    struct stat st;
+    vfs_fill_stat(f->inode, &st);
+    ASSERT_EQ(st.st_size, at + 3);
+    ASSERT_EQ(st.st_blocks, 8);   /* one 4 KiB page */
+    fput(f);
+    ASSERT_EQ(vfs_unlink("/tmp/sparse"), 0);
+    vfs_env_usage(&after);
+    ASSERT_TRUE(vfs_env_no_leak(&before, &after));
     return 0;
 }
 
-static int test_seek_set_cur_end(void) {
-    setup_vfs();
-    VfsFile f;
-    ASSERT_EQ(vfs_open("/seek.txt", O_CREAT | O_RDWR, &f), 0);
-    vfs_write(&f, "0123456789", 10);
-
-    /* SEEK_SET */
-    ASSERT_EQ(vfs_seek(&f, 5, SEEK_SET), 0);
-    ASSERT_EQ(f.offset, 5);
-
-    /* SEEK_CUR */
-    ASSERT_EQ(vfs_seek(&f, 2, SEEK_CUR), 0);
-    ASSERT_EQ(f.offset, 7);
-
-    /* SEEK_END */
-    ASSERT_EQ(vfs_seek(&f, -3, SEEK_END), 0);
-    ASSERT_EQ(f.offset, 7);
-
-    /* Negative result should fail */
-    ASSERT_EQ(vfs_seek(&f, -100, SEEK_SET), -EINVAL);
-
-    vfs_close(&f);
+TEST(seek_and_offset_limits) {
+    vfs_env_setup();
+    ASSERT_EQ(mkfile("/tmp/sk", "0123456789"), 0);
+    File *f;
+    ASSERT_EQ(vfs_open("/tmp/sk", O_RDWR, 0, &f), 0);
+    ASSERT_EQ(vfs_llseek(f, -1, SEEK_SET), -EINVAL);
+    ASSERT_EQ(vfs_llseek(f, 4, 99), -EINVAL);
+    ASSERT_EQ(vfs_llseek(f, VFS_OFFSET_MAX, SEEK_END), -EOVERFLOW);
+    ASSERT_EQ(vfs_llseek(f, 20, SEEK_SET), 20);   /* past the end is fine */
+    char buf[4];
+    ASSERT_EQ(rd(f, buf, sizeof(buf)), 0);
+    IoBuf b = iob_kernel("z", 1);
+    ASSERT_EQ(vfs_pwrite(f, &b, -1), -EINVAL);
+    ASSERT_EQ(vfs_pwrite(f, &b, VFS_OFFSET_MAX), -EFBIG);
+    ASSERT_EQ(vfs_pread(f, &b, -5), -EINVAL);
+    fput(f);
+    ASSERT_EQ(vfs_open("/tmp", O_RDONLY, 0, &f), 0);
+    ASSERT_EQ(vfs_llseek(f, 0, SEEK_END), -EINVAL);
+    fput(f);
     return 0;
 }
 
-static int test_readdir_lists_children(void) {
-    setup_vfs();
-    vfs_mkdir("/bin", 0755);
-    vfs_mkdir("/etc", 0755);
-
-    VfsFile f;
-    vfs_open("/hello.txt", O_CREAT | O_RDWR, &f);
-    vfs_close(&f);
-
-    VfsDirEntry entries[16];
-    int count = vfs_readdir("/", entries, 16);
-    ASSERT_EQ(count, 3);
-
-    /* Entries should be bin, etc, hello.txt (in creation order) */
-    ASSERT_STR_EQ(entries[0].name, "bin");
-    ASSERT_EQ(entries[0].type, VFS_DIRECTORY);
-    ASSERT_STR_EQ(entries[1].name, "etc");
-    ASSERT_EQ(entries[1].type, VFS_DIRECTORY);
-    ASSERT_STR_EQ(entries[2].name, "hello.txt");
-    ASSERT_EQ(entries[2].type, VFS_FILE);
+TEST(shared_offset_between_references) {
+    vfs_env_setup();
+    ASSERT_EQ(mkfile("/tmp/sh", "abcdef"), 0);
+    File *a;
+    ASSERT_EQ(vfs_open("/tmp/sh", O_RDONLY, 0, &a), 0);
+    File *b = fget_ref(a);   /* what dup and fork hand the new fd */
+    char buf[4];
+    ASSERT_EQ(rd(a, buf, 2), 2);
+    ASSERT_EQ(rd(b, buf, 2), 2);
+    ASSERT_MEM_EQ(buf, "cd", 2);
+    fput(b);
+    ASSERT_EQ(rd(a, buf, 2), 2);
+    ASSERT_MEM_EQ(buf, "ef", 2);
+    fput(a);
+    /* A second open has its own offset */
+    File *c, *d;
+    ASSERT_EQ(vfs_open("/tmp/sh", O_RDONLY, 0, &c), 0);
+    ASSERT_EQ(vfs_open("/tmp/sh", O_RDONLY, 0, &d), 0);
+    ASSERT_EQ(rd(c, buf, 3), 3);
+    ASSERT_EQ(rd(d, buf, 1), 1);
+    ASSERT_EQ(buf[0], 'a');
+    fput(c);
+    fput(d);
     return 0;
 }
 
-static int test_unlink_removes_file(void) {
-    setup_vfs();
-    VfsFile f;
-    vfs_open("/tmp.txt", O_CREAT | O_RDWR, &f);
-    vfs_close(&f);
-
-    ASSERT_EQ(vfs_unlink("/tmp.txt"), 0);
-
-    VfsStat st;
-    ASSERT_EQ(vfs_stat("/tmp.txt", &st), -ENOENT);
-
-    VfsDirEntry entries[16];
-    int count = vfs_readdir("/", entries, 16);
-    ASSERT_EQ(count, 0);
+TEST(bad_user_buffer_faults) {
+    vfs_env_setup();
+    ASSERT_EQ(mkfile("/tmp/fault", "abc"), 0);
+    File *f;
+    ASSERT_EQ(vfs_open("/tmp/fault", O_RDWR, 0, &f), 0);
+    IoBuf bad = iob_user(VFS_ENV_BAD_UADDR, 3);
+    ASSERT_EQ(vfs_read(f, &bad), -EFAULT);
+    ASSERT_EQ(f->pos, 0);
+    ASSERT_EQ(vfs_write(f, &bad), -EFAULT);
+    ASSERT_EQ(f->inode->size, 3);
+    fput(f);
     return 0;
 }
 
-static int test_unlink_nonexistent_fails(void) {
-    setup_vfs();
-    ASSERT_EQ(vfs_unlink("/ghost.txt"), -ENOENT);
+TEST(write_updates_times) {
+    vfs_env_setup();
+    vfs_env_uptime_ms = 5000;
+    ASSERT_EQ(mkfile("/tmp/tm", "a"), 0);
+    struct stat st;
+    ASSERT_EQ(vfs_stat("/tmp/tm", &st), 0);
+    ASSERT_EQ(st.st_mtime, 5);
+    vfs_env_uptime_ms = 9000;
+    File *f;
+    ASSERT_EQ(vfs_open("/tmp/tm", O_WRONLY, 0, &f), 0);
+    ASSERT_EQ(wr(f, "b"), 1);
+    fput(f);
+    ASSERT_EQ(vfs_stat("/tmp/tm", &st), 0);
+    ASSERT_EQ(st.st_mtime, 9);
+    ASSERT_EQ(st.st_ctime, 9);
     return 0;
 }
 
-static int test_stat_returns_info(void) {
-    setup_vfs();
-    VfsFile f;
-    ASSERT_EQ(vfs_open("/info.txt", O_CREAT | O_RDWR, &f), 0);
-    vfs_write(&f, "data", 4);
-    vfs_close(&f);
+/* --- Truncate and setattr --- */
 
-    VfsStat st;
-    ASSERT_EQ(vfs_stat("/info.txt", &st), 0);
-    ASSERT_EQ(st.type, VFS_FILE);
-    ASSERT_EQ(st.size, 4);
-    ASSERT_TRUE(st.inode_num > 0);
-    return 0;
-}
-
-/* --- Additional edge case tests --- */
-
-static int test_open_trunc_clears_data(void) {
-    setup_vfs();
-    VfsFile f;
-    ASSERT_EQ(vfs_open("/trunc.txt", O_CREAT | O_RDWR, &f), 0);
-    vfs_write(&f, "hello", 5);
-    vfs_close(&f);
-
-    ASSERT_EQ(vfs_open("/trunc.txt", O_RDWR | O_TRUNC, &f), 0);
-    ASSERT_EQ(f.node->size, 0);
+TEST(truncate_shrinks_and_zero_fills) {
+    vfs_env_setup();
+    ASSERT_EQ(mkfile("/tmp/tr", "0123456789"), 0);
+    File *f;
+    ASSERT_EQ(vfs_open("/tmp/tr", O_RDWR, 0, &f), 0);
+    ASSERT_EQ(vfs_ftruncate(f, 4), 0);
+    ASSERT_EQ(f->inode->size, 4);
+    ASSERT_EQ(vfs_ftruncate(f, 8192), 0);   /* grows sparse */
     char buf[16];
-    int n = vfs_read(&f, buf, sizeof(buf));
-    ASSERT_EQ(n, 0);
-    vfs_close(&f);
+    IoBuf b = iob_kernel(buf, 10);
+    ASSERT_EQ(vfs_pread(f, &b, 0), 10);
+    ASSERT_MEM_EQ(buf, "0123\0\0\0\0\0\0", 10);   /* old bytes past the cut stay gone */
+    ASSERT_EQ(vfs_ftruncate(f, -1), -EINVAL);
+    fput(f);
     return 0;
 }
 
-static int test_open_trunc_then_write(void) {
-    setup_vfs();
-    VfsFile f;
-    ASSERT_EQ(vfs_open("/trunc2.txt", O_CREAT | O_RDWR, &f), 0);
-    vfs_write(&f, "old data", 8);
-    vfs_close(&f);
-
-    ASSERT_EQ(vfs_open("/trunc2.txt", O_RDWR | O_TRUNC, &f), 0);
-    vfs_write(&f, "new", 3);
-    vfs_seek(&f, 0, SEEK_SET);
-    char buf[16];
-    memset(buf, 0, sizeof(buf));
-    int n = vfs_read(&f, buf, sizeof(buf));
-    ASSERT_EQ(n, 3);
-    ASSERT_MEM_EQ(buf, "new", 3);
-    vfs_close(&f);
+TEST(setattr_rules) {
+    vfs_env_setup();
+    ASSERT_EQ(mkfile("/tmp/sa", "x"), 0);
+    PathLoc loc;
+    ASSERT_EQ(vfs_resolve("/tmp/sa", &loc), 0);
+    InodeAttr chmod = {.valid = ATTR_MODE, .mode = 0600};
+    InodeAttr chown = {.valid = ATTR_UID, .uid = 1000};
+    vfs_env_as(1000, 1000);
+    ASSERT_EQ(vfs_setattr(loc.inode, &chmod), -EPERM);   /* not the owner */
+    vfs_env_as(0, 0);
+    ASSERT_EQ(vfs_setattr(loc.inode, &chown), 0);
+    vfs_env_as(1000, 1000);
+    ASSERT_EQ(vfs_setattr(loc.inode, &chmod), 0);         /* the owner now */
+    ASSERT_EQ(loc.inode->mode, S_IFREG | 0600);
+    InodeAttr giveaway = {.valid = ATTR_UID, .uid = 0};
+    ASSERT_EQ(vfs_setattr(loc.inode, &giveaway), -EPERM);  /* only root chowns */
+    loc_put(&loc);
+    vfs_env_as(0, 0);
+    ASSERT_EQ(vfs_resolve("/tmp", &loc), 0);
+    InodeAttr sz = {.valid = ATTR_SIZE, .size = 0};
+    ASSERT_EQ(vfs_setattr(loc.inode, &sz), -EISDIR);
+    loc_put(&loc);
     return 0;
 }
 
-static int test_open_creat_trunc_new_file(void) {
-    setup_vfs();
-    VfsFile f;
-    ASSERT_EQ(vfs_open("/newtrunc.txt", O_CREAT | O_TRUNC | O_RDWR, &f), 0);
-    ASSERT_EQ(f.node->size, 0);
-    vfs_close(&f);
+/* --- Directories --- */
+
+TEST(mkdir_and_nlink) {
+    vfs_env_setup();
+    ASSERT_EQ(vfs_mkdir("/tmp/md", 0755), 0);
+    ASSERT_EQ(vfs_mkdir("/tmp/md", 0755), -EEXIST);
+    ASSERT_EQ(vfs_mkdir("/tmp/nope/sub", 0755), -ENOENT);
+    ASSERT_EQ(vfs_mkdir("/", 0755), -EEXIST);
+    struct stat st;
+    ASSERT_EQ(vfs_stat("/tmp/md", &st), 0);
+    ASSERT_EQ(st.st_nlink, 2);
+    ASSERT_EQ(vfs_mkdir("/tmp/md/a", 0755), 0);
+    ASSERT_EQ(vfs_mkdir("/tmp/md/b", 0755), 0);
+    ASSERT_EQ(vfs_stat("/tmp/md", &st), 0);
+    ASSERT_EQ(st.st_nlink, 4);   /* ".", its entry, two ".." */
+    ASSERT_EQ(vfs_rmdir("/tmp/md/a"), 0);
+    ASSERT_EQ(vfs_stat("/tmp/md", &st), 0);
+    ASSERT_EQ(st.st_nlink, 3);
     return 0;
 }
 
-static int test_ramfs_max_children_boundary(void) {
-    setup_vfs();
-    char name[32];
-    for (int i = 0; i < 128; i++) {
-        sprintf(name, "/file%d.txt", i);
-        VfsFile f;
-        ASSERT_EQ(vfs_open(name, O_CREAT | O_RDWR, &f), 0);
-        vfs_close(&f);
+TEST(getdents_lists_dots_then_entries) {
+    vfs_env_setup();
+    ASSERT_EQ(vfs_mkdir("/tmp/gd", 0755), 0);
+    ASSERT_EQ(mkfile("/tmp/gd/one", "1"), 0);
+    ASSERT_EQ(mkfile("/tmp/gd/two", "2"), 0);
+    ASSERT_EQ(vfs_mkdir("/tmp/gd/three", 0755), 0);
+    Listing l;
+    ASSERT_EQ(list_dir("/tmp/gd", &l), 0);
+    ASSERT_STR_EQ(l.names, ". .. one two three");
+    struct stat self, parent;
+    ASSERT_EQ(vfs_stat("/tmp/gd", &self), 0);
+    ASSERT_EQ(vfs_stat("/tmp", &parent), 0);
+    ASSERT_EQ(l.inos[0], self.st_ino);
+    ASSERT_EQ(l.inos[1], parent.st_ino);
+    for (int i = 1; i < l.n; i++) ASSERT_TRUE(l.cookies[i] > l.cookies[i - 1]);
+    return 0;
+}
+
+TEST(getdents_resumes_by_cookie) {
+    vfs_env_setup();
+    ASSERT_EQ(vfs_mkdir("/tmp/gr", 0755), 0);
+    const char *names[] = {"a", "b", "c", "d"};
+    for (int i = 0; i < 4; i++) {
+        char p[32];
+        snprintf(p, sizeof(p), "/tmp/gr/%s", names[i]);
+        ASSERT_EQ(mkfile(p, "x"), 0);
     }
-    /* 129th should fail */
-    VfsFile f;
-    int ret = vfs_open("/overflow.txt", O_CREAT | O_RDWR, &f);
-    ASSERT_EQ(ret, -ENOMEM);
+    File *f;
+    ASSERT_EQ(vfs_open("/tmp/gr", O_RDONLY, 0, &f), 0);
+    Listing l;
+    listing_init(&l, 3);   /* ". .. a", then the buffer is full */
+    ASSERT_EQ(vfs_iterate(f, &l.ctx), 0);
+    ASSERT_STR_EQ(l.names, ". .. a");
+    ASSERT_EQ(vfs_unlink("/tmp/gr/b"), 0);   /* removed between calls: never listed */
+    listing_init(&l, 64);
+    ASSERT_EQ(vfs_iterate(f, &l.ctx), 0);
+    ASSERT_STR_EQ(l.names, "c d");
+    listing_init(&l, 64);
+    ASSERT_EQ(vfs_iterate(f, &l.ctx), 0);   /* at the end */
+    ASSERT_EQ(l.n, 0);
+    ASSERT_EQ(vfs_llseek(f, 0, SEEK_SET), 0);   /* rewinddir */
+    ASSERT_EQ(vfs_iterate(f, &l.ctx), 0);
+    ASSERT_STR_EQ(l.names, ". .. a c d");
+    fput(f);
     return 0;
 }
 
-static int test_ramfs_max_children_mkdir(void) {
-    setup_vfs();
-    char name[32];
-    for (int i = 0; i < 128; i++) {
-        sprintf(name, "/dir%d", i);
-        ASSERT_EQ(vfs_mkdir(name, 0755), 0);
-    }
-    ASSERT_EQ(vfs_mkdir("/overflow_dir", 0755), -ENOMEM);
+TEST(unlink_rules) {
+    vfs_env_setup();
+    ASSERT_EQ(vfs_mkdir("/tmp/ul", 0755), 0);
+    ASSERT_EQ(vfs_unlink("/tmp/ul"), -EISDIR);
+    ASSERT_EQ(vfs_unlink("/tmp/ul/none"), -ENOENT);
+    ASSERT_EQ(mkfile("/tmp/ul/f", "x"), 0);
+    ASSERT_EQ(vfs_unlink("/tmp/ul/f"), 0);
+    ASSERT_EQ(vfs_unlink("/tmp/ul/f"), -ENOENT);
+    ASSERT_EQ(size_of("/tmp/ul/f"), -1);
     return 0;
 }
 
-static int test_long_filename_max_length(void) {
-    setup_vfs();
-    /* 255-char filename */
-    char path[258];
-    path[0] = '/';
-    memset(path + 1, 'a', 255);
-    path[256] = '\0';
+TEST(unlinked_file_stays_readable_while_open) {
+    vfs_env_setup();
+    VfsEnvUsage before, after;
+    vfs_env_usage(&before);
+    ASSERT_EQ(mkfile("/tmp/uo", "still here"), 0);
+    File *f;
+    ASSERT_EQ(vfs_open("/tmp/uo", O_RDWR, 0, &f), 0);
+    ASSERT_EQ(vfs_unlink("/tmp/uo"), 0);
+    ASSERT_EQ(f->inode->nlink, 0);
+    char buf[32];
+    ASSERT_EQ(rd(f, buf, sizeof(buf)), 10);
+    ASSERT_STR_EQ(buf, "still here");
+    ASSERT_EQ(wr(f, "!"), 1);
+    ASSERT_EQ(mkfile("/tmp/uo", "new"), 0);   /* the name is free again */
+    ASSERT_EQ(size_of("/tmp/uo"), 3);
+    ASSERT_EQ(vfs_unlink("/tmp/uo"), 0);
+    fput(f);   /* the last reference frees the old inode and its pages */
+    vfs_env_usage(&after);
+    ASSERT_TRUE(vfs_env_no_leak(&before, &after));
+    return 0;
+}
 
-    VfsFile f;
-    ASSERT_EQ(vfs_open(path, O_CREAT | O_RDWR, &f), 0);
-    vfs_close(&f);
+TEST(rmdir_rules) {
+    vfs_env_setup();
+    ASSERT_EQ(vfs_mkdir("/tmp/rd", 0755), 0);
+    ASSERT_EQ(mkfile("/tmp/rd/f", "x"), 0);
+    ASSERT_EQ(vfs_rmdir("/tmp/rd"), -ENOTEMPTY);
+    ASSERT_EQ(vfs_rmdir("/tmp/rd/f"), -ENOTDIR);
+    ASSERT_EQ(vfs_rmdir("/"), -EBUSY);
+    ASSERT_EQ(vfs_rmdir("/dev"), -EBUSY);   /* a mount point */
+    ASSERT_EQ(vfs_unlink("/tmp/rd/f"), 0);
+    /* An open, removed directory lists nothing and takes no new entries */
+    File *f;
+    ASSERT_EQ(vfs_open("/tmp/rd", O_RDONLY, 0, &f), 0);
+    ASSERT_EQ(vfs_rmdir("/tmp/rd"), 0);
+    Listing l;
+    listing_init(&l, 64);
+    ASSERT_EQ(vfs_iterate(f, &l.ctx), 0);
+    ASSERT_EQ(l.n, 0);
+    ASSERT_EQ(f->inode->flags & I_DEAD, I_DEAD);
+    fput(f);
+    ASSERT_EQ(mkfile("/tmp/rd/g", "x"), -ENOENT);
+    return 0;
+}
 
-    VfsStat st;
+TEST(name_limits) {
+    vfs_env_setup();
+    char path[300];
+    memset(path, 0, sizeof(path));
+    strcpy(path, "/tmp/");
+    memset(path + 5, 'n', 255);
+    ASSERT_EQ(mkfile(path, "x"), 0);   /* 255 bytes: the limit */
+    ASSERT_EQ(size_of(path), 1);
+    ASSERT_EQ(vfs_unlink(path), 0);
+    path[5 + 255] = 'n';
+    ASSERT_EQ(mkfile(path, "x"), -ENAMETOOLONG);
+    return 0;
+}
+
+/* --- Rename --- */
+
+TEST(rename_within_and_across_directories) {
+    vfs_env_setup();
+    ASSERT_EQ(vfs_mkdir("/tmp/rn", 0755), 0);
+    ASSERT_EQ(vfs_mkdir("/tmp/rn/a", 0755), 0);
+    ASSERT_EQ(vfs_mkdir("/tmp/rn/b", 0755), 0);
+    ASSERT_EQ(mkfile("/tmp/rn/a/f", "data"), 0);
+    struct stat before, after;
+    ASSERT_EQ(vfs_stat("/tmp/rn/a/f", &before), 0);
+    ASSERT_EQ(vfs_rename("/tmp/rn/a/f", "/tmp/rn/a/g"), 0);
+    ASSERT_EQ(size_of("/tmp/rn/a/f"), -1);
+    ASSERT_EQ(vfs_rename("/tmp/rn/a/g", "/tmp/rn/b/h"), 0);
+    ASSERT_EQ(vfs_stat("/tmp/rn/b/h", &after), 0);
+    ASSERT_EQ(after.st_ino, before.st_ino);   /* same inode, new name */
+    char buf[8];
+    ASSERT_EQ(vfs_env_read_file("/tmp/rn/b/h", buf, sizeof(buf)), 4);
+    ASSERT_EQ(vfs_rename("/tmp/rn/b/h", "/tmp/rn/b/h"), 0);   /* to itself: nothing */
+    ASSERT_EQ(vfs_rename("/tmp/rn/none", "/tmp/rn/x"), -ENOENT);
+    return 0;
+}
+
+TEST(rename_replaces_and_type_checks) {
+    vfs_env_setup();
+    ASSERT_EQ(vfs_mkdir("/tmp/rt", 0755), 0);
+    ASSERT_EQ(mkfile("/tmp/rt/old", "new text"), 0);
+    ASSERT_EQ(mkfile("/tmp/rt/victim", "old text"), 0);
+    ASSERT_EQ(vfs_mkdir("/tmp/rt/d", 0755), 0);
+    ASSERT_EQ(vfs_mkdir("/tmp/rt/full", 0755), 0);
+    ASSERT_EQ(mkfile("/tmp/rt/full/x", "x"), 0);
+    ASSERT_EQ(vfs_rename("/tmp/rt/old", "/tmp/rt/d"), -EISDIR);
+    ASSERT_EQ(vfs_rename("/tmp/rt/d", "/tmp/rt/victim"), -ENOTDIR);
+    ASSERT_EQ(vfs_rename("/tmp/rt/d", "/tmp/rt/full"), -ENOTEMPTY);
+    ASSERT_EQ(vfs_rename("/tmp/rt/d", "/tmp/rt/d/sub"), -EINVAL);    /* into itself */
+    ASSERT_EQ(vfs_rename("/tmp/rt/full/x", "/tmp/rt/full"), -ENOTEMPTY);   /* Linux: onto an ancestor */
+    ASSERT_EQ(vfs_rename("/tmp/rt/full", "/tmp"), -ENOTEMPTY);       /* onto an ancestor */
+    ASSERT_EQ(vfs_rename("/tmp/rt/old", "/dev/old"), -EXDEV);
+    ASSERT_EQ(vfs_rename("/tmp/rt/old", "/tmp/rt/victim"), 0);
+    char buf[16];
+    ASSERT_EQ(vfs_env_read_file("/tmp/rt/victim", buf, sizeof(buf)), 8);
+    ASSERT_STR_EQ(buf, "new text");
+    ASSERT_EQ(vfs_mkdir("/tmp/rt/empty", 0755), 0);
+    ASSERT_EQ(vfs_rename("/tmp/rt/d", "/tmp/rt/empty"), 0);   /* an empty directory may be replaced */
+    struct stat st;
+    ASSERT_EQ(vfs_stat("/tmp/rt/d", &st), -ENOENT);
+    ASSERT_EQ(vfs_stat("/tmp/rt/empty", &st), 0);
+    return 0;
+}
+
+TEST(rename_directory_moves_dotdot) {
+    vfs_env_setup();
+    ASSERT_EQ(vfs_mkdir("/tmp/rdd", 0755), 0);
+    ASSERT_EQ(vfs_mkdir("/tmp/rdd/p1", 0755), 0);
+    ASSERT_EQ(vfs_mkdir("/tmp/rdd/p2", 0755), 0);
+    ASSERT_EQ(vfs_mkdir("/tmp/rdd/p1/kid", 0755), 0);
+    ASSERT_EQ(mkfile("/tmp/rdd/p1/kid/f", "x"), 0);
+    ASSERT_EQ(vfs_rename("/tmp/rdd/p1/kid", "/tmp/rdd/p2/kid"), 0);
+    struct stat p1, p2;
+    ASSERT_EQ(vfs_stat("/tmp/rdd/p1", &p1), 0);
+    ASSERT_EQ(vfs_stat("/tmp/rdd/p2", &p2), 0);
+    ASSERT_EQ(p1.st_nlink, 2);
+    ASSERT_EQ(p2.st_nlink, 3);
+    Listing l;
+    ASSERT_EQ(list_dir("/tmp/rdd/p2/kid", &l), 0);
+    ASSERT_STR_EQ(l.names, ". .. f");
+    ASSERT_EQ(l.inos[1], p2.st_ino);   /* ".." is the new parent */
+    ASSERT_EQ(size_of("/tmp/rdd/p2/kid/f"), 1);
+    return 0;
+}
+
+/* --- Permissions --- */
+
+TEST(permissions_on_create_and_open) {
+    vfs_env_setup();
+    ASSERT_EQ(vfs_mkdir("/tmp/pm", 0755), 0);   /* root's, not writable by others */
+    ASSERT_EQ(mkfile("/tmp/pm/secret", "s"), 0);
+    PathLoc loc;
+    ASSERT_EQ(vfs_resolve("/tmp/pm/secret", &loc), 0);
+    InodeAttr a = {.valid = ATTR_MODE, .mode = 0600};
+    ASSERT_EQ(vfs_setattr(loc.inode, &a), 0);
+    loc_put(&loc);
+    vfs_env_as(1000, 1000);
+    File *f;
+    ASSERT_EQ(vfs_open("/tmp/pm/secret", O_RDONLY, 0, &f), -EACCES);
+    ASSERT_EQ(vfs_open("/tmp/pm/mine", O_CREAT | O_WRONLY, 0644, &f), -EACCES);
+    ASSERT_EQ(vfs_mkdir("/tmp/pm/d", 0755), -EACCES);
+    ASSERT_EQ(vfs_unlink("/tmp/pm/secret"), -EACCES);
+    /* /tmp is 01777: anyone may create; the file is the creator's */
+    ASSERT_EQ(vfs_open("/tmp/u1000", O_CREAT | O_WRONLY, 0666, &f), 0);
+    ASSERT_EQ(f->inode->uid, 1000);
+    ASSERT_EQ(f->inode->gid, 1000);
+    ASSERT_EQ(f->inode->mode, S_IFREG | 0644);   /* umask 022 */
+    fput(f);
+    vfs_env_as(0, 0);
+    return 0;
+}
+
+TEST(search_permission_on_path) {
+    vfs_env_setup();
+    ASSERT_EQ(vfs_mkdir("/tmp/sp", 0700), 0);
+    ASSERT_EQ(mkfile("/tmp/sp/f", "x"), 0);
+    vfs_env_as(1000, 1000);
+    struct stat st;
+    ASSERT_EQ(vfs_stat("/tmp/sp/f", &st), -EACCES);
+    vfs_env_as(0, 0);
+    return 0;
+}
+
+TEST(sticky_directory_protects_entries) {
+    vfs_env_setup();
+    vfs_env_as(1000, 1000);
+    ASSERT_EQ(mkfile("/tmp/st_1000", "x"), 0);
+    vfs_env_as(1001, 1001);
+    ASSERT_EQ(vfs_unlink("/tmp/st_1000"), -EPERM);
+    ASSERT_EQ(vfs_rename("/tmp/st_1000", "/tmp/st_mine"), -EPERM);
+    vfs_env_as(1000, 1000);
+    ASSERT_EQ(vfs_unlink("/tmp/st_1000"), 0);
+    vfs_env_as(0, 0);
+    return 0;
+}
+
+TEST(umask_applies) {
+    vfs_env_setup();
+    vfs_env_proc.umask = 077;
+    File *f;
+    ASSERT_EQ(vfs_open("/tmp/um", O_CREAT | O_WRONLY, 0666, &f), 0);
+    ASSERT_EQ(f->inode->mode, S_IFREG | 0600);
+    fput(f);
+    ASSERT_EQ(vfs_mkdir("/tmp/umd", 0777), 0);
+    struct stat st;
+    ASSERT_EQ(vfs_stat("/tmp/umd", &st), 0);
+    ASSERT_EQ(st.st_mode, S_IFDIR | 0700);
+    vfs_env_proc.umask = 022;
+    return 0;
+}
+
+/* --- Mounts --- */
+
+TEST(mounts_and_proc_mounts) {
+    vfs_env_setup();
+    struct stat tmp, dev;
+    ASSERT_EQ(vfs_stat("/tmp", &tmp), 0);
+    ASSERT_EQ(vfs_stat("/dev", &dev), 0);
+    ASSERT_NEQ(tmp.st_dev, dev.st_dev);   /* another filesystem */
+    char buf[1024];
+    vfs_format_mounts(buf, sizeof(buf));
+    ASSERT_TRUE(strstr(buf, "ramfs / ramfs rw 0 0\n") != NULL);
+    ASSERT_TRUE(strstr(buf, "devfs /dev devfs rw 0 0\n") != NULL);
+    ASSERT_TRUE(strstr(buf, "proc /proc proc rw 0 0\n") != NULL);
+    ASSERT_EQ(mkfile("/tmp/mfile", "x"), 0);
+    ASSERT_EQ(vfs_mount("/tmp/mfile", ramfs_create_sb(), "ramfs"), -ENOTDIR);
+    ASSERT_EQ(vfs_mount("/tmp/nodir", ramfs_create_sb(), "ramfs"), -ENOENT);
+    ASSERT_EQ(vfs_mount("/dev", ramfs_create_sb(), "ramfs"), -EBUSY);
+    return 0;
+}
+
+TEST(mount_covers_directory) {
+    vfs_env_setup();
+    ASSERT_EQ(vfs_mkdir("/tmp/mnt", 0755), 0);
+    ASSERT_EQ(mkfile("/tmp/mnt/hidden", "x"), 0);
+    ASSERT_EQ(vfs_mount("/tmp/mnt", ramfs_create_sb(), "scratch"), 0);
+    ASSERT_EQ(size_of("/tmp/mnt/hidden"), -1);   /* covered by the new root */
+    ASSERT_EQ(mkfile("/tmp/mnt/inner", "abc"), 0);
+    ASSERT_EQ(size_of("/tmp/mnt/inner"), 3);
+    ASSERT_EQ(vfs_rename("/tmp/mnt/inner", "/tmp/outer"), -EXDEV);
+    ASSERT_EQ(vfs_rmdir("/tmp/mnt"), -EBUSY);
+    return 0;
+}
+
+TEST(bind_mount_shares_subtree) {
+    vfs_env_setup();
+    ASSERT_EQ(vfs_mkdir("/tmp/data", 0755), 0);
+    ASSERT_EQ(vfs_mkdir("/tmp/data/apps", 0755), 0);
+    ASSERT_EQ(mkfile("/tmp/data/apps/tool", "bin"), 0);
+    ASSERT_EQ(vfs_mkdir("/tmp/apps", 0755), 0);
+    ASSERT_EQ(vfs_bind_mount("/tmp/data/apps", "/tmp/apps"), 0);
+    char buf[8];
+    ASSERT_EQ(vfs_env_read_file("/tmp/apps/tool", buf, sizeof(buf)), 3);
+    ASSERT_EQ(mkfile("/tmp/apps/new", "made via bind"), 0);
+    ASSERT_EQ(size_of("/tmp/data/apps/new"), 13);   /* one tree, two paths */
+    struct stat a, b;
+    ASSERT_EQ(vfs_stat("/tmp/apps/tool", &a), 0);
+    ASSERT_EQ(vfs_stat("/tmp/data/apps/tool", &b), 0);
+    ASSERT_EQ(a.st_ino, b.st_ino);
+    ASSERT_EQ(a.st_dev, b.st_dev);
+    /* Different mounts of one filesystem: rename between them is EXDEV, as on Linux */
+    ASSERT_EQ(vfs_rename("/tmp/apps/new", "/tmp/data/new"), -EXDEV);
+    char m[1024];
+    vfs_format_mounts(m, sizeof(m));
+    ASSERT_TRUE(strstr(m, " /tmp/apps ramfs rw 0 0\n") != NULL);
+    ASSERT_EQ(vfs_bind_mount("/tmp/none", "/tmp/apps2"), -ENOENT);
+    ASSERT_EQ(vfs_bind_mount("/tmp/data/apps/tool", "/tmp/data"), -ENOTDIR);
+    return 0;
+}
+
+/* --- Dentry cache --- */
+
+TEST(dcache_caches_and_forgets) {
+    vfs_env_setup();
+    ASSERT_EQ(vfs_mkdir("/tmp/dc", 0755), 0);
+    ASSERT_EQ(mkfile("/tmp/dc/f", "x"), 0);
+    uint32_t n0 = dcache_count();
+    struct stat st;
+    ASSERT_EQ(vfs_stat("/tmp/dc/f", &st), 0);
+    uint32_t n1 = dcache_count();
+    ASSERT_EQ(vfs_stat("/tmp/dc/f", &st), 0);
+    ASSERT_EQ(dcache_count(), n1);   /* the second walk is all hits */
+    ASSERT_TRUE(n1 >= n0);
+    ASSERT_EQ(vfs_unlink("/tmp/dc/f"), 0);
+    ASSERT_EQ(dcache_count(), n1 - 1);   /* the removed name went */
+    ASSERT_EQ(vfs_stat("/tmp/dc/f", &st), -ENOENT);
+    /* Long names are looked up every time, not cached */
+    char path[64] = "/tmp/dc/";
+    memset(path + 8, 'L', 40);
+    ASSERT_EQ(mkfile(path, "x"), 0);
+    uint32_t n2 = dcache_count();
     ASSERT_EQ(vfs_stat(path, &st), 0);
+    ASSERT_EQ(dcache_count(), n2);
     return 0;
 }
 
-static int test_deep_nested_path(void) {
-    setup_vfs();
-    ASSERT_EQ(vfs_mkdir("/a", 0755), 0);
-    ASSERT_EQ(vfs_mkdir("/a/b", 0755), 0);
-    ASSERT_EQ(vfs_mkdir("/a/b/c", 0755), 0);
-    ASSERT_EQ(vfs_mkdir("/a/b/c/d", 0755), 0);
-
-    VfsFile f;
-    ASSERT_EQ(vfs_open("/a/b/c/d/deep.txt", O_CREAT | O_RDWR, &f), 0);
-    vfs_close(&f);
-
-    VfsStat st;
-    ASSERT_EQ(vfs_stat("/a/b/c/d/deep.txt", &st), 0);
-    ASSERT_EQ(st.type, VFS_FILE);
-    return 0;
-}
-
-static int test_open_no_creat_nonexistent(void) {
-    setup_vfs();
-    VfsFile f;
-    ASSERT_EQ(vfs_open("/missing.txt", O_RDWR, &f), -ENOENT);
-    return 0;
-}
-
-static int test_open_no_creat_wronly_nonexistent(void) {
-    setup_vfs();
-    VfsFile f;
-    ASSERT_EQ(vfs_open("/missing.txt", O_WRONLY, &f), -ENOENT);
-    return 0;
-}
-
-static int test_write_extends_file_with_seek_gap(void) {
-    setup_vfs();
-    VfsFile f;
-    ASSERT_EQ(vfs_open("/gap.txt", O_CREAT | O_RDWR, &f), 0);
-    /* Seek to offset 10, then write */
-    vfs_seek(&f, 10, SEEK_SET);
-    vfs_write(&f, "hi", 2);
-    ASSERT_EQ(f.node->size, 12);
-
-    /* Read back — bytes 0-9 should be zero */
-    vfs_seek(&f, 0, SEEK_SET);
-    char buf[12];
-    int n = vfs_read(&f, buf, 12);
-    ASSERT_EQ(n, 12);
-    for (int i = 0; i < 10; i++) {
-        ASSERT_EQ(buf[i], 0);
+TEST(dcache_is_bounded) {
+    vfs_env_setup();
+    ASSERT_EQ(vfs_mkdir("/tmp/many", 0755), 0);
+    char path[64];
+    struct stat st;
+    for (int i = 0; i < DCACHE_MAX + 100; i++) {
+        snprintf(path, sizeof(path), "/tmp/many/f%d", i);
+        ASSERT_EQ(vfs_write_file(path, "", 0, 0644), 0);
+        ASSERT_EQ(vfs_stat(path, &st), 0);
     }
-    ASSERT_EQ(buf[10], 'h');
-    ASSERT_EQ(buf[11], 'i');
-    vfs_close(&f);
+    ASSERT_TRUE(dcache_count() <= DCACHE_MAX);
+    /* Evicted names still resolve (through the filesystem) */
+    ASSERT_EQ(vfs_stat("/tmp/many/f0", &st), 0);
     return 0;
 }
 
-static int test_double_unlink_fails(void) {
-    setup_vfs();
-    VfsFile f;
-    vfs_open("/once.txt", O_CREAT | O_RDWR, &f);
-    vfs_close(&f);
-    ASSERT_EQ(vfs_unlink("/once.txt"), 0);
-    ASSERT_EQ(vfs_unlink("/once.txt"), -ENOENT);
-    return 0;
-}
+/* --- Failures and leaks --- */
 
-static int test_unlink_nonempty_dir_fails(void) {
-    setup_vfs();
-    ASSERT_EQ(vfs_mkdir("/mydir", 0755), 0);
-    VfsFile f;
-    vfs_open("/mydir/child.txt", O_CREAT | O_RDWR, &f);
-    vfs_close(&f);
-    ASSERT_EQ(vfs_unlink("/mydir"), -ENOTEMPTY);
-    return 0;
-}
-
-static int test_unlink_empty_dir_succeeds(void) {
-    setup_vfs();
-    ASSERT_EQ(vfs_mkdir("/emptydir", 0755), 0);
-    ASSERT_EQ(vfs_unlink("/emptydir"), 0);
-    VfsStat st;
-    ASSERT_EQ(vfs_stat("/emptydir", &st), -ENOENT);
-    return 0;
-}
-
-static int test_open_directory_fails(void) {
-    setup_vfs();
-    ASSERT_EQ(vfs_mkdir("/adir", 0755), 0);
-    VfsFile f;
-    ASSERT_EQ(vfs_open("/adir", O_RDWR, &f), -EISDIR);
-    return 0;
-}
-
-static int test_mkdir_duplicate_fails(void) {
-    setup_vfs();
-    ASSERT_EQ(vfs_mkdir("/dup", 0755), 0);
-    ASSERT_EQ(vfs_mkdir("/dup", 0755), -EEXIST);
-    return 0;
-}
-
-static int test_read_past_eof_returns_zero(void) {
-    setup_vfs();
-    VfsFile f;
-    ASSERT_EQ(vfs_open("/small.txt", O_CREAT | O_RDWR, &f), 0);
-    vfs_write(&f, "ab", 2);
-    vfs_seek(&f, 100, SEEK_SET);
-    char buf[16];
-    int n = vfs_read(&f, buf, sizeof(buf));
-    ASSERT_EQ(n, 0);
-    vfs_close(&f);
-    return 0;
-}
-
-static int test_write_rdonly_fails(void) {
-    setup_vfs();
-    VfsFile f;
-    ASSERT_EQ(vfs_open("/ro.txt", O_CREAT | O_RDWR, &f), 0);
-    vfs_write(&f, "data", 4);
-    vfs_close(&f);
-
-    ASSERT_EQ(vfs_open("/ro.txt", O_RDONLY, &f), 0);
-    int n = vfs_write(&f, "nope", 4);
-    ASSERT_EQ(n, -EINVAL);
-    vfs_close(&f);
-    return 0;
-}
-
-static int test_read_wronly_fails(void) {
-    setup_vfs();
-    VfsFile f;
-    ASSERT_EQ(vfs_open("/wo.txt", O_CREAT | O_WRONLY, &f), 0);
-    vfs_write(&f, "data", 4);
-    vfs_seek(&f, 0, SEEK_SET);
-    char buf[16];
-    int n = vfs_read(&f, buf, sizeof(buf));
-    ASSERT_EQ(n, -EINVAL);
-    vfs_close(&f);
-    return 0;
-}
-
-static int test_readdir_max_limits_output(void) {
-    setup_vfs();
-    VfsFile f;
-    vfs_open("/a.txt", O_CREAT | O_RDWR, &f); vfs_close(&f);
-    vfs_open("/b.txt", O_CREAT | O_RDWR, &f); vfs_close(&f);
-    vfs_open("/c.txt", O_CREAT | O_RDWR, &f); vfs_close(&f);
-
-    VfsDirEntry entries[2];
-    int count = vfs_readdir("/", entries, 2);
-    ASSERT_EQ(count, 2);
-    return 0;
-}
-
-static int test_stat_directory_size_zero(void) {
-    setup_vfs();
-    ASSERT_EQ(vfs_mkdir("/szdir", 0755), 0);
-    VfsStat st;
-    ASSERT_EQ(vfs_stat("/szdir", &st), 0);
-    ASSERT_EQ(st.type, VFS_DIRECTORY);
-    ASSERT_EQ(st.size, 0);
-    return 0;
-}
-
-/* --- Multi-mount tests --- */
-
-static int test_mount_multiple(void) {
-    setup_vfs();
-
-    /* Create two dummy mount roots */
-    VfsNode *dev_root = kmalloc(sizeof(VfsNode), GFP_ZERO);
-    dev_root->type = VFS_DIRECTORY;
-    dev_root->inode_num = 9001;
-
-    VfsNode *proc_root = kmalloc(sizeof(VfsNode), GFP_ZERO);
-    proc_root->type = VFS_DIRECTORY;
-    proc_root->inode_num = 9002;
-
-    ASSERT_EQ(vfs_mount("/dev", dev_root), 0);
-    ASSERT_EQ(vfs_mount("/proc", proc_root), 0);
-
-    /* Both should be resolvable */
-    ASSERT_TRUE(vfs_resolve("/dev") == dev_root);
-    ASSERT_TRUE(vfs_resolve("/proc") == proc_root);
-
-    /* Root listing should include both */
-    VfsDirEntry entries[16];
-    int count = vfs_readdir("/", entries, 16);
-    int found_dev = 0, found_proc = 0;
-    for (int i = 0; i < count; i++) {
-        if (strcmp(entries[i].name, "dev") == 0) found_dev = 1;
-        if (strcmp(entries[i].name, "proc") == 0) found_proc = 1;
+TEST(out_of_memory_leaves_nothing) {
+    vfs_env_setup();
+    ASSERT_EQ(vfs_mkdir("/tmp/oom", 0755), 0);
+    struct stat st;
+    ASSERT_EQ(vfs_stat("/tmp/oom", &st), 0);   /* warm the dentry cache */
+    VfsEnvUsage before, after;
+    for (int n = 1; n <= 6; n++) {
+        vfs_env_usage(&before);
+        vfs_env_fail_alloc_in(n);
+        File *f = NULL;
+        int err = vfs_open("/tmp/oom/f", O_CREAT | O_RDWR, 0644, &f);
+        vfs_env_fail_alloc_in(0);
+        if (err == 0) {
+            fput(f);
+            ASSERT_EQ(vfs_unlink("/tmp/oom/f"), 0);
+        } else {
+            ASSERT_EQ(err, -ENOMEM);
+            /* As on Linux, open may fail after the create: the empty file stays */
+            if (vfs_stat("/tmp/oom/f", &st) == 0) ASSERT_EQ(vfs_unlink("/tmp/oom/f"), 0);
+        }
+        vfs_env_usage(&after);
+        ASSERT_TRUE(vfs_env_no_leak(&before, &after));
     }
-    ASSERT_TRUE(found_dev);
-    ASSERT_TRUE(found_proc);
-
-    kfree(dev_root);
-    kfree(proc_root);
     return 0;
 }
 
-static int test_mount_duplicate_rejected(void) {
-    setup_vfs();
-
-    VfsNode *dev_root = kmalloc(sizeof(VfsNode), GFP_ZERO);
-    dev_root->type = VFS_DIRECTORY;
-    dev_root->inode_num = 9001;
-
-    ASSERT_EQ(vfs_mount("/dev", dev_root), 0);
-    ASSERT_EQ(vfs_mount("/dev", dev_root), -EEXIST);
-
-    kfree(dev_root);
+TEST(create_write_remove_is_leak_free) {
+    vfs_env_setup();
+    ASSERT_EQ(vfs_mkdir("/tmp/lk", 0755), 0);
+    struct stat st;
+    ASSERT_EQ(vfs_stat("/tmp/lk", &st), 0);   /* warm the dentry cache */
+    VfsEnvUsage before, after;
+    vfs_env_usage(&before);
+    for (int i = 0; i < 20; i++) {
+        File *f;
+        ASSERT_EQ(vfs_open("/tmp/lk/f", O_CREAT | O_RDWR, 0644, &f), 0);
+        char big[6000];
+        memset(big, 'b', sizeof(big));
+        IoBuf b = iob_kernel(big, sizeof(big));
+        ASSERT_EQ(vfs_write(f, &b), (int64_t)sizeof(big));
+        fput(f);
+        ASSERT_EQ(vfs_mkdir("/tmp/lk/d", 0755), 0);
+        ASSERT_EQ(vfs_rename("/tmp/lk/f", "/tmp/lk/d/g"), 0);
+        ASSERT_EQ(vfs_unlink("/tmp/lk/d/g"), 0);
+        ASSERT_EQ(vfs_rmdir("/tmp/lk/d"), 0);
+    }
+    vfs_env_usage(&after);
+    ASSERT_TRUE(vfs_env_no_leak(&before, &after));
     return 0;
 }
-
-/* --- Permission integration tests --- */
-
-static int test_kernel_context_skips_checks(void) {
-    setup_vfs();
-    vfs_test_proc_ptr = NULL;
-    int r = vfs_mkdir("/testdir", 0000);
-    ASSERT_EQ(r, 0);
-    return 0;
-}
-
-static int test_open_readonly_checks_read(void) {
-    setup_vfs();
-    vfs_test_proc_ptr = NULL;
-    VfsFile f;
-    vfs_open("/testfile", O_CREAT | O_WRONLY, &f);
-    vfs_close(&f);
-    VfsNode *node = vfs_resolve("/testfile");
-    node->mode = 0000;
-    node->uid = 10;
-    node->gid = 10;
-    Process user_proc = { .euid = 99, .egid = 99 };
-    vfs_test_proc_ptr = &user_proc;
-    int r = vfs_open("/testfile", O_RDONLY, &f);
-    ASSERT_EQ(r, -EACCES);
-    return 0;
-}
-
-static int test_open_writable_checks_write(void) {
-    setup_vfs();
-    vfs_test_proc_ptr = NULL;
-    VfsFile f;
-    vfs_open("/testfile2", O_CREAT | O_WRONLY, &f);
-    vfs_close(&f);
-    VfsNode *node = vfs_resolve("/testfile2");
-    node->mode = 0444;
-    node->uid = 10;
-    node->gid = 10;
-    Process user_proc = { .euid = 99, .egid = 99 };
-    vfs_test_proc_ptr = &user_proc;
-    int r = vfs_open("/testfile2", O_WRONLY, &f);
-    ASSERT_EQ(r, -EACCES);
-    return 0;
-}
-
-static int test_mkdir_checks_parent_wx(void) {
-    setup_vfs();
-    vfs_test_proc_ptr = NULL;
-    vfs_mkdir("/restricted", 0555);
-    VfsNode *node = vfs_resolve("/restricted");
-    node->uid = 10;
-    node->gid = 10;
-    Process user_proc = { .euid = 99, .egid = 99 };
-    vfs_test_proc_ptr = &user_proc;
-    int r = vfs_mkdir("/restricted/sub", 0755);
-    ASSERT_EQ(r, -EACCES);
-    return 0;
-}
-
-static int test_create_sets_ownership(void) {
-    setup_vfs();
-    Process user_proc = { .euid = 42, .egid = 7 };
-    vfs_test_proc_ptr = &user_proc;
-    VfsNode *root = vfs_get_root();
-    root->mode = 0777;
-    VfsFile f;
-    int r = vfs_open("/owned_file", O_CREAT | O_WRONLY, &f);
-    ASSERT_EQ(r, 0);
-    vfs_close(&f);
-    VfsNode *node = vfs_resolve("/owned_file");
-    ASSERT_TRUE(node != NULL);
-    ASSERT_EQ(node->uid, 42);
-    ASSERT_EQ(node->gid, 7);
-    return 0;
-}
-
-static int test_umask_applied_on_create(void) {
-    setup_vfs();
-    Process user_proc = { .euid = 0, .egid = 0, .umask = 022 };
-    vfs_test_proc_ptr = &user_proc;
-    VfsFile f;
-    int r = vfs_open("/masked_file", O_CREAT | O_WRONLY, &f);
-    ASSERT_EQ(r, 0);
-    vfs_close(&f);
-    VfsNode *node = vfs_resolve("/masked_file");
-    ASSERT_TRUE(node != NULL);
-    /* Default file mode 0666 & ~022 = 0644 */
-    ASSERT_EQ(node->mode, 0644);
-    return 0;
-}
-
-static int test_umask_applied_on_mkdir(void) {
-    setup_vfs();
-    Process user_proc = { .euid = 0, .egid = 0, .umask = 077 };
-    vfs_test_proc_ptr = &user_proc;
-    int r = vfs_mkdir("/restricted", 0777);
-    ASSERT_EQ(r, 0);
-    VfsStat st;
-    ASSERT_EQ(vfs_stat("/restricted", &st), 0);
-    /* 0777 & ~077 = 0700 */
-    ASSERT_EQ(st.mode, 0700);
-    return 0;
-}
-
-static int test_umask_zero_preserves_mode(void) {
-    setup_vfs();
-    Process user_proc = { .euid = 0, .egid = 0, .umask = 0 };
-    vfs_test_proc_ptr = &user_proc;
-    VfsFile f;
-    int r = vfs_open("/full_perms", O_CREAT | O_WRONLY, &f);
-    ASSERT_EQ(r, 0);
-    vfs_close(&f);
-    VfsNode *node = vfs_resolve("/full_perms");
-    ASSERT_TRUE(node != NULL);
-    /* 0666 & ~0 = 0666 */
-    ASSERT_EQ(node->mode, 0666);
-    return 0;
-}
-
-static int test_umask_no_process_gets_default(void) {
-    setup_vfs();
-    vfs_test_proc_ptr = NULL;
-    VfsFile f;
-    int r = vfs_open("/kernel_file", O_CREAT | O_WRONLY, &f);
-    ASSERT_EQ(r, 0);
-    vfs_close(&f);
-    VfsNode *node = vfs_resolve("/kernel_file");
-    ASSERT_TRUE(node != NULL);
-    /* No process context: default 0666 */
-    ASSERT_EQ(node->mode, 0666);
-    return 0;
-}
-
-/* --- Test suite export --- */
 
 TestCase vfs_tests[] = {
-    { "init_has_root",          test_vfs_init_has_root },
-    { "mkdir_creates_directory", test_mkdir_creates_directory },
-    { "mkdir_nested",           test_mkdir_nested },
-    { "mkdir_no_parent_fails",  test_mkdir_no_parent_fails },
-    { "open_create_file",       test_open_create_file },
-    { "open_existing_file",     test_open_existing_file },
-    { "open_nonexistent_fails", test_open_nonexistent_fails },
-    { "write_then_read",        test_write_then_read },
-    { "write_append",           test_write_append },
-    { "write_grows_file",       test_write_grows_file },
-    { "seek_set_cur_end",       test_seek_set_cur_end },
-    { "readdir_lists_children", test_readdir_lists_children },
-    { "unlink_removes_file",    test_unlink_removes_file },
-    { "unlink_nonexistent_fails", test_unlink_nonexistent_fails },
-    { "stat_returns_info",      test_stat_returns_info },
-    { "open_trunc_clears_data",        test_open_trunc_clears_data },
-    { "open_trunc_then_write",         test_open_trunc_then_write },
-    { "open_creat_trunc_new_file",     test_open_creat_trunc_new_file },
-    { "ramfs_max_children_boundary",   test_ramfs_max_children_boundary },
-    { "ramfs_max_children_mkdir",      test_ramfs_max_children_mkdir },
-    { "long_filename_max_length",      test_long_filename_max_length },
-    { "deep_nested_path",              test_deep_nested_path },
-    { "open_no_creat_nonexistent",     test_open_no_creat_nonexistent },
-    { "open_no_creat_wronly_nonexistent", test_open_no_creat_wronly_nonexistent },
-    { "write_extends_file_with_seek_gap", test_write_extends_file_with_seek_gap },
-    { "double_unlink_fails",           test_double_unlink_fails },
-    { "unlink_nonempty_dir_fails",     test_unlink_nonempty_dir_fails },
-    { "unlink_empty_dir_succeeds",     test_unlink_empty_dir_succeeds },
-    { "open_directory_fails",          test_open_directory_fails },
-    { "mkdir_duplicate_fails",         test_mkdir_duplicate_fails },
-    { "read_past_eof_returns_zero",    test_read_past_eof_returns_zero },
-    { "write_rdonly_fails",            test_write_rdonly_fails },
-    { "read_wronly_fails",             test_read_wronly_fails },
-    { "readdir_max_limits_output",     test_readdir_max_limits_output },
-    { "stat_directory_size_zero",      test_stat_directory_size_zero },
-    { "mount_multiple",                test_mount_multiple },
-    { "mount_duplicate_rejected",      test_mount_duplicate_rejected },
-    { "kernel_context_skips_checks",   test_kernel_context_skips_checks },
-    { "open_readonly_checks_read",     test_open_readonly_checks_read },
-    { "open_writable_checks_write",    test_open_writable_checks_write },
-    { "mkdir_checks_parent_wx",        test_mkdir_checks_parent_wx },
-    { "create_sets_ownership",         test_create_sets_ownership },
-    { "umask_applied_on_create",       test_umask_applied_on_create },
-    { "umask_applied_on_mkdir",        test_umask_applied_on_mkdir },
-    { "umask_zero_preserves_mode",     test_umask_zero_preserves_mode },
-    { "umask_no_process_gets_default", test_umask_no_process_gets_default },
+    TEST_ENTRY(root_is_directory),
+    TEST_ENTRY(create_write_read),
+    TEST_ENTRY(open_flags),
+    TEST_ENTRY(access_mode_enforced),
+    TEST_ENTRY(append_writes_at_end),
+    TEST_ENTRY(sparse_file_beyond_4gib),
+    TEST_ENTRY(seek_and_offset_limits),
+    TEST_ENTRY(shared_offset_between_references),
+    TEST_ENTRY(bad_user_buffer_faults),
+    TEST_ENTRY(write_updates_times),
+    TEST_ENTRY(truncate_shrinks_and_zero_fills),
+    TEST_ENTRY(setattr_rules),
+    TEST_ENTRY(mkdir_and_nlink),
+    TEST_ENTRY(getdents_lists_dots_then_entries),
+    TEST_ENTRY(getdents_resumes_by_cookie),
+    TEST_ENTRY(unlink_rules),
+    TEST_ENTRY(unlinked_file_stays_readable_while_open),
+    TEST_ENTRY(rmdir_rules),
+    TEST_ENTRY(name_limits),
+    TEST_ENTRY(rename_within_and_across_directories),
+    TEST_ENTRY(rename_replaces_and_type_checks),
+    TEST_ENTRY(rename_directory_moves_dotdot),
+    TEST_ENTRY(permissions_on_create_and_open),
+    TEST_ENTRY(search_permission_on_path),
+    TEST_ENTRY(sticky_directory_protects_entries),
+    TEST_ENTRY(umask_applies),
+    TEST_ENTRY(mounts_and_proc_mounts),
+    TEST_ENTRY(mount_covers_directory),
+    TEST_ENTRY(bind_mount_shares_subtree),
+    TEST_ENTRY(dcache_caches_and_forgets),
+    TEST_ENTRY(dcache_is_bounded),
+    TEST_ENTRY(out_of_memory_leaves_nothing),
+    TEST_ENTRY(create_write_remove_is_leak_free),
 };
-
 int vfs_test_count = sizeof(vfs_tests) / sizeof(vfs_tests[0]);

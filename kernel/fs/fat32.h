@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include "fs/vfs.h"
 
+/* FAT32 volumes, read-only (M1-11): lookup, read, getdents. */
+
 /* Forward declaration */
 typedef struct BlockDevice BlockDevice;
 
@@ -74,34 +76,15 @@ typedef struct {
     uint32_t file_size;
 } __attribute__((packed)) Fat32DirEntry;
 
-/* Runtime volume context */
-typedef struct {
-    BlockDevice *dev;               /* Underlying block device */
-    uint8_t   sectors_per_cluster;
-    uint32_t  bytes_per_cluster;
-    uint32_t  fat_start;            /* First sector of FAT */
-    uint32_t  data_start;           /* First sector of data region */
-    uint32_t  root_cluster;
-    uint32_t  total_clusters;
-    uint32_t *fat;                  /* Cached FAT table */
-    uint32_t  fat_sectors;          /* Number of sectors in one FAT */
-    int       fat_dirty;            /* Nonzero if FAT modified since last sync */
-    VfsNode  *root_node;            /* VFS root for this volume */
-} Fat32Volume;
+/* FAT32 is read-only (M1-11 spec): it is the ESP format (ADR-0008); arc_os's
+ * own data lives on ext2. Mounted volumes refuse writes with -EROFS. */
 
-/* Per-node metadata (attached via VfsNode.private_data) */
-typedef struct {
-    Fat32Volume *vol;
-    uint32_t     first_cluster;     /* First cluster of this file/dir */
-    uint32_t     dir_cluster;       /* Parent directory's first cluster */
-    uint32_t     dir_entry_idx;     /* Index within parent directory */
-} Fat32NodeInfo;
+/* Directory entries per directory at most (FAT spec): inode numbers use 16
+ * bits for the entry index. */
+#define FAT32_DIR_MAX_ENTRIES 65536
 
-/* Mount a FAT32 volume from the given block device.
- * Returns the root VfsNode, or NULL on failure. */
-VfsNode *fat32_mount(BlockDevice *dev);
-
-/* Flush dirty FAT sectors back to disk. Returns 0 on success. */
-int fat32_sync(void);
+/* Mount a FAT32 volume from the given block device. Returns its superblock
+ * (type "vfat", read-only), or NULL when the device holds no FAT32. */
+SuperBlock *fat32_mount(BlockDevice *dev);
 
 #endif /* ARCHOS_FS_FAT32_H */

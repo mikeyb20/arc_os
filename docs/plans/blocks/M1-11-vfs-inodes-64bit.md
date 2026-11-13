@@ -33,7 +33,8 @@ cache and ext2. Today's `VfsNode` read/write take 32-bit offsets, which caps fil
    `dup` and `fork`; `O_APPEND`; rename across directories; a bind-style subtree mount.
 
 **Done when.**
-- [ ] Suites pass; no `uint32_t` offsets or sizes remain in `kernel/fs/`.
+- [x] Suites pass; no `uint32_t` offsets or sizes remain in `kernel/fs/` (FAT32's on-disk fields and in-cluster
+  offsets stay 32-bit, as the format defines them).
 
 **Cost.** Path lookup O(components) through a hashed dentry cache; inode, dentry and file from slab caches with size asserts; no scan of the mount table per component beyond mount points.
 
@@ -50,3 +51,38 @@ cache and ext2. Today's `VfsNode` read/write take 32-bit offsets, which caps fil
   row there: `pipe.c` moves bytes and checks reader/writer counts outside `pipe->lock`, and a writer's wakeup
   doesn't take it, so pipe I/O needs those under `pipe->lock` (or a lost wakeup and head/tail races follow)
   before the kernel lock comes off it. `/proc/sched_debug` took inode 1995.
+- 2026-11-13 (built). `vfs.h`: `Inode` (64-bit size and ino, timespec times, `RwSem` lock, `mapping` for M1-12),
+  `SuperBlock` (type, root, bdev, flags, rename lock, `st_dev`), `File` (64-bit pos under `pos_lock`, status
+  flags, refcount) and `IoBuf` (one read/write path for kernel and user buffers). `inode.c` (lifetime, inode
+  cache, permissions, stat), `dcache.c` (bounded LRU, positive entries only), `file.c` (open and I/O),
+  `vfs.c` (path walk, 16-entry mount table with bind mounts, namespace changes, `/proc/mounts`). `fd.c`: refcounted
+  tables, ctz bitmaps, close-on-exec. Every filesystem converted; `VfsNode` is gone. Syscalls: `open`/`openat`
+  with all the flags, `pread64`/`pwrite64`, `ftruncate`, `stat`/`lstat`/`fstat`/`newfstatat`, `fcntl`, `dup3`,
+  `pipe2`, `getdents64` (no entry limit), `rename`/`renameat`, `mkdirat`, `rmdir`, `unlinkat`, `fsync`.
+- Locks: see `docs/kernel/locking.md` "VFS locks". The VFS, fd tables and pipes no longer need the kernel lock,
+  but it is still taken at every syscall entry for the other rows, so the VFS locks have only run under it (and
+  in the host tests); the first real concurrency comes when the last row goes.
+- Tests: host runner `test_vfs_runner` builds the real `kernel/fs` sources, `fd.c` and `path.c` against
+  `tests/vfs_env.c` (allocators with leak counters and failure injection, faulting user copies): vfs, fd, pipe,
+  devfs, procfs, fat32 (an mtools image) and cred suites. QEMU `qemu.vfs` runs `fstest` (musl) and mounts the
+  FAT32 test image as a read-only virtio-blk disk (`qemu-test.py --disk`). Bind mounts are host-tested only (no
+  mount syscall yet; M1-13 makes the first real ones).
+- Decisions: FAT32 is read-only (`SB_RDONLY`, writes give `EROFS`), as the spec says; the ESP is written only by
+  the installer. Linux semantics where the old code differed: `unlink` of a directory is `EISDIR` (libarc gained
+  `rmdir`, `rm -d`), `open` honours the mode (libarc's `open` read a mode it wasn't given; callers pass 0666),
+  exec needs a regular file with an x bit (`EACCES`), an open that fails after creating leaves the file. Boot
+  modules are 0755 and `/tmp` is 01777. Socket fds are Files on anonymous `S_IFSOCK` inodes (one reference each).
+  The QEMU leak checks write 2 to `/proc/sys/vm/drop_caches` before they measure (dentries and the disk inodes
+  they hold are a cache, not a leak); M1-12 makes 1 drop clean page-cache pages for the same reason.
+- Next blocks: M1-12 moves ramfs data (a sparse page tree today) into `inode->mapping`, adds `readpage` (FAT32's
+  `io_lock` is level 45 so it can sit under the page lock), takes the exec size limit (`exec_read_elf` still
+  reads the whole file into one kmalloc) and drop_caches 1. M1-13 adds symlinks: `path_normalize` resolves ".."
+  by text before the walk, which is wrong once a component can be a symlink, so the walk must follow links and
+  handle ".." itself (`lstat` and `O_NOFOLLOW`/`AT_SYMLINK_NOFOLLOW` are no-ops until then). M1-13's subtree
+  mounts use `vfs_bind_mount`; a bind marks the covered directory, so a mount below the bound subtree shows at
+  both paths. M1-10 rebases `fat32.c` (its three `dev->read` calls). M1-16: pipe and tty sleeps can't be
+  interrupted by signals yet; fd tables are refcounted for threads already. M1-18: socket fds use
+  `socket_fops`; poll goes in `FileOps`.
+- Open: the FAT is read whole into one kmalloc at mount, so a FAT over 4 MiB (more than ~1M clusters) refuses to
+  mount (fine for an ESP). A tty read into a bad user buffer still loses the bytes (TTY row, lane KB). Inode
+  times are uptime until M1-06 gives wall-clock time.

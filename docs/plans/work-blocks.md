@@ -237,7 +237,9 @@ when its parent is in `review` with green CI and a clean independent review (§3
   - **Lane KB, CPU, time, devices and threads:** M1-09 → M1-10 → M1-04c → M1-06 → M1-21 → M1-16 → M1-17 → M1-18 →
     M1-20 → M1-08; after M1-22, M3-05, M4-08, M4-10, M4-11, M4-12, then M4-07 and M4-03.
   - Lane KA owns §7 lock levels 1–6 and lane KB levels 7–10; only the owning lane changes a level's rules.
-  - Two blocks that edit the same file never run at once (`fat32.c`: M1-10 merges before M1-11 starts; `vmm.c`:
+  - Two blocks that edit the same file never run at once (`fat32.c`: M1-11 went first and rewrote it read-only on
+    the new VFS, keeping its block reads as `dev->read` calls; M1-10 swaps those calls when it rebases on M1-11, or
+    M1-11 rebases if M1-10 merges first (2026-11-13, awaiting Michael's OK); `vmm.c`:
     M1-07, M1-08, M1-12, M1-19 never at once; `fd.c`: M1-16 starts after M1-11 merges). Add-only shared lists
     (`hal.h`, `helpers.md`, `budgets.md`, `locking.md`, this file) are exempt: the second PR rebases.
   - A block that uses the other lane's interface starts only after the producing block has **merged** (M1-10 →
@@ -343,7 +345,10 @@ Parallel sessions shorten the calendar; they don't save compute.
 - **Lock order**, outermost first. Debug builds check it from M1-05; [`docs/kernel/locking.md`](../kernel/locking.md)
   holds the full table with each lock's level (`kernel/proc/lockdep.h`), including the interim big kernel lock
   (level 0, before everything) and the object locks M1-05 added between 7 and 8 (pipe, socket, tty, wait4 and
-  mutex guards; the socket table just above them). It follows the order Linux documents for the same structures.
+  mutex guards; the socket table just above them). M1-11 added, in lane KA's range: the open-file position and
+  per-filesystem rename locks before 1, rename's second-directory and child subkeys of 1, a filesystem I/O lock
+  (FAT32's device reads) between 4 and 5, and the VFS leaf spinlocks (mount table, dentry cache, inode cache, fd
+  table) between 6 and 7. It follows the order Linux documents for the same structures.
   1. inode lock (sleeping; write, truncate, rename, directory changes)
   2. mm lock (sleeping read-write; mmap, munmap, mprotect, page faults)
   3. page lock (sleeping, per page)

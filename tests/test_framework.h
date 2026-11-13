@@ -66,4 +66,15 @@ typedef struct {
 #define TEST(name) static int test_##name(void)
 #define TEST_ENTRY(name) { #name, test_##name }
 
+/* A named list of tests; count points at the list's length variable. */
+typedef struct {
+    const char *name;
+    TestCase *tests;
+    int *count;
+} TestSuite;
+
+/* Run every suite, or only the one named by `--suite NAME`, and print the
+ * results under title. Returns the process exit status (1 if any failed). */
+int test_harness_main(int argc, char **argv, const char *title, const TestSuite *suites, int nsuites);
+
 #endif /* ARCHOS_TEST_FRAMEWORK_H */

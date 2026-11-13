@@ -165,6 +165,13 @@ static long meminfo_field(const char *text, const char *key) {
 }
 
 static int mem_snap(MemSnap *m) {
+    /* Empty the dentry cache first (M1-11): the entries and the disk inodes
+     * they hold are a cache, not a leak */
+    int dc = open("/proc/sys/vm/drop_caches", O_WRONLY);
+    if (dc >= 0) {
+        write(dc, "2\n", 2);
+        close(dc);
+    }
     char text[512];
     if (read_file("/proc/meminfo", text, sizeof(text)) <= 0) return -1;
     m->free_kb = meminfo_field(text, "MemFree");

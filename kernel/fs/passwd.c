@@ -37,8 +37,7 @@ static const char *parse_uint(const char *src, const char *end,
     return src;
 }
 
-int passwd_parse(const char *buf, uint32_t buf_len,
-                 PasswdEntry *entries, int max_entries) {
+int passwd_parse(const char *buf, size_t buf_len, PasswdEntry *entries, int max_entries) {
     if (buf == NULL || entries == NULL || max_entries <= 0) return -1;
 
     const char *ptr = buf;

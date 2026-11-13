@@ -19,6 +19,7 @@ typedef struct RwSem {
     Thread *writer;              /* the writer, or NULL */
     WaitQueue waiters;
     uint16_t level;              /* sleeping-lock level (LOCK_LEVEL_*, lockdep.h) */
+    uint16_t write_level;        /* level the writer took it at (rwsem_down_write_nested) */
 } RwSem;
 
 /* Initialize with its sleeping-lock level. */
@@ -36,6 +37,11 @@ void rwsem_up_read(RwSem *s);
 
 /* Take for writing; sleeps until no reader or writer holds it. */
 void rwsem_down_write(RwSem *s);
+
+/* Take for writing, checked by the lock-order checker as a lock of `level`
+ * instead of s->level: the second of two same-kind locks held together
+ * (rename's second directory, LOCK_LEVEL_INODE_2). */
+void rwsem_down_write_nested(RwSem *s, uint16_t level);
 
 /* Release the write hold. */
 void rwsem_up_write(RwSem *s);

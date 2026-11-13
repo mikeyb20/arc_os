@@ -99,11 +99,9 @@ Socket *socket_get(int idx);
  * connections are reset and freed too. */
 void socket_free(int idx);
 
-/* One more fd-table entry refers to socket idx (dup, dup2, fork). */
-void socket_addref(int idx);
-
-/* An fd-table entry referring to socket idx went away (close, exit, dup2
- * over it); the last one frees the socket (socket_free). */
+/* The socket's File went away (its last fd closed: close, exit, dup2 over
+ * it); the last reference frees the socket (socket_free). dup and fork share
+ * the File, so each socket has one reference (M1-11). */
 void socket_release(int idx);
 
 /* Bind a socket to a local address. */

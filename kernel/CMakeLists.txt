@@ -87,6 +87,9 @@ set(KERNEL_C_SOURCES
     drivers/ansi.c
     drivers/vt.c
     fs/vfs.c
+    fs/inode.c
+    fs/dcache.c
+    fs/file.c
     fs/fs_syscalls.c
     fs/ramfs.c
     fs/pipe.c

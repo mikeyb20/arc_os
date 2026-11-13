@@ -1,0 +1,4 @@
+# qemu.vfs (M1-11): files, directories, fds and /proc/mounts through the VFS,
+# with stock musl; "fat" also reads the FAT32 test disk at /disk (read-only).
+# Exit status = failed checks.
+fstest   /boot/fstest fat

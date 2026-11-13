@@ -42,7 +42,14 @@ Kernel and user space are separate worlds: the same function in `kernel/lib` and
 | CPU sets (affinity) | `CpuMask`, `cpumask_set`, `cpumask_test`, `cpumask_fill`, ... | `kernel/proc/cpumask.h` |
 | Run, wake, pin threads; per-CPU scheduler statistics | `sched_add_thread`, `sched_wake`, `sched_continue`, `sched_set_affinity`, `sched_core_mask`, `sched_cpu_stats`, `sched_wait_off_cpu` | `kernel/proc/sched.h` |
 | Sleeping locks and waits | mutex, semaphore, condvar, `wq_sleep` / `wq_wake` | `kernel/proc/{mutex,semaphore,condvar,waitqueue}.h` |
-| Close an fd, copy an fd (pipe/socket refs) | `fd_close`, `fd_file_addref` | `kernel/proc/fd.h` |
+| fd tables: install, look up (with a File reference), close, close-on-exec, fork copy | `fd_table_new` / `_dup` / `_get` / `_put`, `fd_install`, `fd_install_at`, `fd_get`, `fd_close`, `fd_get_cloexec` / `fd_set_cloexec`, `fd_close_on_exec` | `kernel/proc/fd.h` |
+| Open files: open by path, new File on an inode (pipes, sockets), references, I/O at the File's offset or at a given one, seek, directory listing | `vfs_open`, `file_new`, `fget_ref` / `fput`, `vfs_read` / `vfs_write`, `vfs_pread` / `vfs_pwrite`, `vfs_llseek`, `vfs_generic_llseek`, `vfs_iterate`, `vfs_ftruncate`, `vfs_fsync`; kernel whole-file write `vfs_write_file` | `kernel/fs/vfs.h` |
+| Kernel or user buffers for file I/O (one read/write path for both) | `IoBuf`, `iob_kernel`, `iob_user`, `iob_copy_in` / `_out`, `iob_zero` | `kernel/fs/vfs.h` |
+| Inodes: allocate, static, references, inode cache, times, permission, stat | `inode_new`, `inode_init_static`, `igrab` / `iput`, `icache_get` / `icache_add`, `vfs_now`, `vfs_check_perm`, `inode_permission`, `vfs_fill_stat` | `kernel/fs/vfs.h` |
+| Directory listing from a filesystem (getdents64 entries, "." and "..") | `dir_emit`, `dir_emit_dots`, `vfs_dtype` | `kernel/fs/vfs.h` |
+| Paths and names: resolve, parent + last name, namespace changes, mounts | `vfs_resolve` / `loc_put`, `vfs_resolve_parent`, `vfs_mkdir`, `vfs_unlink`, `vfs_rmdir`, `vfs_rename`, `vfs_stat`, `vfs_setattr`, `vfs_mount_root`, `vfs_mount`, `vfs_bind_mount`, `vfs_format_mounts`, `vfs_drop_caches` | `kernel/fs/vfs.h` |
+| Absolute, normalized path from cwd + input | `path_normalize` | `kernel/fs/path.h` |
+| Superblocks: set up, anonymous (pipes, sockets) | `vfs_sb_init`, `vfs_anon_sb` | `kernel/fs/vfs.h` |
 | End the current process (exit, fatal signal) | `proc_exit` | `kernel/proc/proc_syscalls.h` |
 | Hardware access from portable code | `hal_*`, FPU state, CPUID | `kernel/arch/hal.h` |
 | Per-CPU block (GS), running thread, entry stacks | `this_cpu`, `percpu_get`, `percpu_index_of_apic`; portable code: `hal_current_thread`, `hal_set_kernel_stack` | `kernel/arch/x86_64/percpu.h` (via `arch/hal.h`) |

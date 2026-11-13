@@ -19,4 +19,4 @@ chown       /bin/chown 1000 /tmp/c
 rm          /bin/rm /tmp/c
 # Remove what the suite made, so the leak budgets see only real leaks (M0-10)
 rm_file     /bin/rm /tmp/a
-rm_dir      /bin/rm /tmp/d
+rm_dir      /bin/rm -d /tmp/d

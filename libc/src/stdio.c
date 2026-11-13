@@ -69,7 +69,7 @@ FILE *fopen(const char *path, const char *mode) {
     else if (strcmp(mode, "r+") == 0) flags = O_RDWR;
     else if (strcmp(mode, "w+") == 0) flags = O_RDWR | O_CREAT | O_TRUNC;
 
-    int fd = open(path, flags);
+    int fd = open(path, flags, 0666);   /* POSIX fopen: 0666 less the umask */
     if (fd < 0) return NULL;
 
     FILE *f = malloc(sizeof(FILE));

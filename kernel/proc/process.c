@@ -165,10 +165,11 @@ Process *proc_fork(Process *parent, const ForkContext *user_ctx) {
     sig_fork_copy(&child->sig, &parent->sig);   /* actions and mask, nothing pending */
 
     /* 3. Duplicate FD table */
-    child->fd_table = fd_table_dup(parent->fd_table);
+    child->fd_table = parent->fd_table != NULL ? fd_table_dup(parent->fd_table) : NULL;
+    int fds_ok = parent->fd_table == NULL || child->fd_table != NULL;
 
     /* 4. Create child's kernel thread; it frees args when it starts */
-    ForkChildArgs *args = kmalloc(sizeof(ForkChildArgs), 0);
+    ForkChildArgs *args = fds_ok ? kmalloc(sizeof(ForkChildArgs), 0) : NULL;
     Thread *t = NULL;
     if (args != NULL) {
         args->child = child;
@@ -177,10 +178,9 @@ Process *proc_fork(Process *parent, const ForkContext *user_ctx) {
     }
     if (t == NULL) {
         /* Undo everything above: the copied pages (not just the tables), the
-         * pipe references fd_table_dup took, and the list entry */
+         * File references fd_table_dup took, and the list entry */
         kfree(args);
         proc_release_fds(child);
-        kfree(child->fd_table);
         mm_put(child_mm);
         proc_unlink(child);
         kfree(child);
@@ -233,7 +233,6 @@ int proc_reap(Process *child, int32_t *status_out) {
      * the tty go by pid/pgid, and PIDs are not reused. */
     sched_wait_off_cpu(child->main_thread);
     proc_unlink(child);
-    kfree(child->fd_table);          /* its files were closed at exit */
     thread_destroy(child->main_thread);
     kfree(child);
     return pid;

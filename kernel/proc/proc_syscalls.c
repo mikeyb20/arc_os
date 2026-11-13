@@ -36,10 +36,10 @@
 #define RUSAGE_SIZE 144
 
 void proc_release_fds(Process *p) {
-    if (p->fd_table == NULL) return;
-    for (int i = 0; i < MAX_FDS; i++) {
-        fd_close(p->fd_table, i);
-    }
+    FdTable *t = p->fd_table;
+    if (t == NULL) return;
+    p->fd_table = NULL;
+    fd_table_put(t);
 }
 
 void proc_exit(Process *p, int32_t exit_status, uint8_t term_signal) {
@@ -159,39 +159,42 @@ static int64_t sys_fork(uint64_t a0, uint64_t a1, uint64_t a2,
     return (int64_t)child->pid;
 }
 
-/* Read an ELF binary from VFS into a kmalloc'd buffer.
- * Caller must kfree(*out_buf) on success. */
-static int exec_read_elf(const char *path, void **out_buf, uint64_t *out_size) {
-    VfsFile file;
-    int err = vfs_open(path, O_RDONLY, &file);
+/* What execve needs from the program file, read through one open File so
+ * the setuid bits belong to the bytes loaded. */
+typedef struct ExecImage {
+    void *buf;   /* kmalloc'd; the caller frees it */
+    uint64_t size;
+    uint32_t mode, uid, gid;
+} ExecImage;
+
+/* Read the ELF at path. -EACCES unless a regular file with execute
+ * permission, -ENOEXEC when empty or over MAX_ELF_SIZE. */
+static int exec_read_elf(const char *path, ExecImage *img) {
+    File *file;
+    int err = vfs_open(path, O_RDONLY, 0, &file);
     if (err != 0) return err;
-
-    if (file.node->type != VFS_FILE) {
-        vfs_close(&file);
-        return -EACCES;
+    Inode *inode = file->inode;
+    if (!S_ISREG(inode->mode) || inode_permission(inode, X_OK) != 0) err = -EACCES;
+    loff_t size = inode->size;
+    if (err == 0 && (size <= 0 || size > MAX_ELF_SIZE)) err = -ENOEXEC;
+    uint8_t *buf = err == 0 ? kmalloc((size_t)size, 0) : NULL;
+    if (err == 0 && buf == NULL) err = -ENOMEM;
+    for (loff_t done = 0; err == 0 && done < size;) {
+        IoBuf b = iob_kernel(buf + done, (size_t)(size - done));
+        int64_t n = vfs_pread(file, &b, done);
+        if (n <= 0) err = n < 0 ? (int)n : -EIO;
+        done += n > 0 ? n : 0;
     }
-
-    uint64_t file_size = file.node->size;
-    if (file_size == 0 || file_size > MAX_ELF_SIZE) {
-        vfs_close(&file);
-        return -ENOEXEC;
+    img->mode = inode->mode;
+    img->uid = inode->uid;
+    img->gid = inode->gid;
+    fput(file);
+    if (err != 0) {
+        kfree(buf);
+        return err;
     }
-
-    void *elf_buf = kmalloc(file_size, 0);
-    if (elf_buf == NULL) {
-        vfs_close(&file);
-        return -ENOMEM;
-    }
-
-    int bytes = vfs_read(&file, elf_buf, (uint32_t)file_size);
-    vfs_close(&file);
-    if (bytes < 0 || (uint64_t)bytes != file_size) {
-        kfree(elf_buf);
-        return -EIO;
-    }
-
-    *out_buf = elf_buf;
-    *out_size = file_size;
+    img->buf = buf;
+    img->size = (uint64_t)size;
     return 0;
 }
 
@@ -295,9 +298,8 @@ static int64_t sys_execve(uint64_t path_addr, uint64_t argv_addr, uint64_t envp_
     if (err == 0) err = exec_copy_vector(envp_addr, strings, 1);
 
     /* 2. Read ELF binary from VFS */
-    void *elf_buf = NULL;
-    uint64_t file_size = 0;
-    if (err == 0) err = exec_read_elf(abs, &elf_buf, &file_size);
+    ExecImage img = {0};
+    if (err == 0) err = exec_read_elf(abs, &img);
 
     /* 3. Fresh user address space with the ELF segments and the stack */
     Mm *new_mm = NULL;
@@ -306,8 +308,8 @@ static int64_t sys_execve(uint64_t path_addr, uint64_t argv_addr, uint64_t envp_
         new_mm = mm_create();
         if (new_mm == NULL) err = -ENOMEM;
     }
-    if (err == 0) err = elf_load(elf_buf, file_size, new_mm, &result);
-    kfree(elf_buf);
+    if (err == 0) err = elf_load(img.buf, img.size, new_mm, &result);
+    kfree(img.buf);
     if (err == 0) err = mm_setup_stack(new_mm, result.stack_exec, result.brk_start);
     if (err != 0) {
         mm_put(new_mm);
@@ -317,20 +319,14 @@ static int64_t sys_execve(uint64_t path_addr, uint64_t argv_addr, uint64_t envp_
     }
 
     /* 4. setuid/setgid bits on the executable */
-    VfsNode *exec_node = vfs_resolve(abs);
-    if (exec_node != NULL) {
-        if (exec_node->mode & S_ISUID) {
-            p->euid = exec_node->uid;
-        }
-        if (exec_node->mode & S_ISGID) {
-            p->egid = exec_node->gid;
-        }
-    }
+    if (img.mode & S_ISUID) p->euid = img.uid;
+    if (img.mode & S_ISGID) p->egid = img.gid;
 
     /* 5. Point of no return: switch to the new address space */
     Mm *old_mm = p->mm;
     p->mm = new_mm;
     sig_exec_reset(&p->sig);
+    if (p->fd_table != NULL) fd_close_on_exec(p->fd_table);
     mm_switch(new_mm);
     mm_put(old_mm);
 

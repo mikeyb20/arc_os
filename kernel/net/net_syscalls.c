@@ -1,8 +1,8 @@
 /* arc_os — socket syscalls (Linux x86_64 numbers, ADR-0001).
  *
  * Moved out of arch/x86_64/syscall.c by M0-05. AF_INET only; the old send/recv
- * syscalls are sendto/recvfrom with a NULL address. A socket fd has no VfsNode:
- * its VfsFile stores the socket index in offset and VFS_SOCKET in flags. */
+ * syscalls are sendto/recvfrom with a NULL address. A socket fd is a File
+ * whose priv is the socket index (M1-11). */
 
 #include "net/net_syscalls.h"
 #include "arch/hal.h"
@@ -22,13 +22,66 @@
  * short transfer, which both may return) */
 #define SOCK_IO_MAX (64u * 1024)
 
-/* Socket behind fd, or NULL if fd is not a socket. */
+/* A socket fd is a File on an anonymous S_IFSOCK inode; its socket index is
+ * in File.priv. read and write on it are recv and send. */
+static int64_t sock_file_read(File *file, const IoBuf *buf, loff_t *pos);
+static int64_t sock_file_write(File *file, const IoBuf *buf, loff_t *pos);
+static void sock_file_release(Inode *inode, File *file);
+
+static const FileOps socket_fops = {
+    .fflags = FOP_STREAM,
+    .read = sock_file_read,
+    .write = sock_file_write,
+    .release = sock_file_release,
+};
+
+static uint64_t sock_ino = 1;
+
+static int sock_index(const File *f) {
+    return (int)(uintptr_t)f->priv;
+}
+
+static int64_t sock_file_read(File *file, const IoBuf *buf, loff_t *pos) {
+    (void)pos;
+    Socket *sk = socket_get(sock_index(file));
+    if (sk == NULL) return -EBADF;
+    size_t n = buf->len < SOCK_IO_MAX ? buf->len : SOCK_IO_MAX;
+    void *kbuf = kmalloc(n, 0);
+    if (kbuf == NULL) return -ENOMEM;
+    int r = socket_recv(sk, kbuf, (uint32_t)n);
+    if (r > 0 && iob_copy_out(buf, 0, kbuf, (size_t)r) != 0) r = -EFAULT;
+    kfree(kbuf);
+    return r;
+}
+
+static int64_t sock_file_write(File *file, const IoBuf *buf, loff_t *pos) {
+    (void)pos;
+    Socket *sk = socket_get(sock_index(file));
+    if (sk == NULL) return -EBADF;
+    size_t n = buf->len < SOCK_IO_MAX ? buf->len : SOCK_IO_MAX;
+    void *kbuf = kmalloc(n, 0);
+    if (kbuf == NULL) return -ENOMEM;
+    int r = iob_copy_in(kbuf, buf, 0, n) != 0 ? -EFAULT : socket_send(sk, kbuf, (uint32_t)n);
+    kfree(kbuf);
+    return r;
+}
+
+static void sock_file_release(Inode *inode, File *file) {
+    (void)inode;
+    socket_release(sock_index(file));
+}
+
+/* Socket behind fd, or NULL if fd is not a socket. The fd's File reference
+ * is dropped at once: the socket table, not the File, keeps the Socket, and
+ * syscalls still run under the big kernel lock (lane KB, M1-18). */
 static Socket *fd_to_socket(int fd) {
     Process *p = proc_current();
     if (p == NULL || p->fd_table == NULL) return NULL;
-    VfsFile *f = fd_get(p->fd_table, fd);
-    if (f == NULL || f->node != NULL || f->flags != VFS_SOCKET) return NULL;
-    return socket_get((int)f->offset);
+    File *f = fd_get(p->fd_table, fd);
+    if (f == NULL) return NULL;
+    Socket *sk = f->fop == &socket_fops ? socket_get(sock_index(f)) : NULL;
+    fput(f);
+    return sk;
 }
 
 /* Read a user sockaddr_in. Returns 0, -EFAULT, -EINVAL (short) or -EAFNOSUPPORT. */
@@ -56,12 +109,18 @@ static int sockaddr_in_to_user(uint64_t addr_ptr, uint64_t addrlen_ptr,
 
 /* Put socket index sk_idx in a new fd. Frees the socket on failure. */
 static int64_t socket_install_fd(Process *p, int sk_idx) {
-    int fd = fd_alloc(p->fd_table);
-    if (fd < 0) { socket_free(sk_idx); return -EMFILE; }
-    VfsFile *f = fd_get(p->fd_table, fd);
-    f->node = NULL;
-    f->offset = (uint64_t)sk_idx;
-    f->flags = VFS_SOCKET;
+    Inode *inode = inode_new(vfs_anon_sb(), __atomic_fetch_add(&sock_ino, 1, __ATOMIC_RELAXED), S_IFSOCK | 0777);
+    File *f = inode != NULL ? file_new(inode, &socket_fops, O_RDWR) : NULL;
+    if (f == NULL) {
+        if (inode != NULL) iput(inode);
+        socket_free(sk_idx);
+        return -ENOMEM;
+    }
+    inode->uid = p->euid;
+    inode->gid = p->egid;
+    f->priv = (void *)(uintptr_t)sk_idx;
+    int fd = fd_install(p->fd_table, f, 0, 0);
+    if (fd < 0) fput(f);   /* releases the socket */
     return fd;
 }
 

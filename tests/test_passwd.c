@@ -17,7 +17,7 @@ static inline void kprintf(const char *fmt, ...) { (void)fmt; }
 TEST(parse_single_user) {
     const char *buf = "root::0:0:root:/:/boot/shell\n";
     PasswdEntry entries[4];
-    int n = passwd_parse(buf, (uint32_t)strlen(buf), entries, 4);
+    int n = passwd_parse(buf, strlen(buf), entries, 4);
     ASSERT_EQ(n, 1);
     ASSERT_STR_EQ(entries[0].name, "root");
     ASSERT_STR_EQ(entries[0].password, "");
@@ -33,7 +33,7 @@ TEST(parse_multiple_users) {
         "root::0:0:root:/:/boot/shell\n"
         "user:pass:1000:1000:user:/home/user:/boot/shell\n";
     PasswdEntry entries[4];
-    int n = passwd_parse(buf, (uint32_t)strlen(buf), entries, 4);
+    int n = passwd_parse(buf, strlen(buf), entries, 4);
     ASSERT_EQ(n, 2);
     ASSERT_STR_EQ(entries[0].name, "root");
     ASSERT_EQ(entries[0].uid, 0);
@@ -52,7 +52,7 @@ TEST(parse_skip_comments) {
         "# Another comment\n"
         "user:pw:1:1:u:/h:/s\n";
     PasswdEntry entries[4];
-    int n = passwd_parse(buf, (uint32_t)strlen(buf), entries, 4);
+    int n = passwd_parse(buf, strlen(buf), entries, 4);
     ASSERT_EQ(n, 2);
     ASSERT_STR_EQ(entries[0].name, "root");
     ASSERT_STR_EQ(entries[1].name, "user");
@@ -63,7 +63,7 @@ TEST(parse_skip_blank_lines) {
     const char *buf =
         "\n\nroot::0:0:root:/:/s\n\n\n";
     PasswdEntry entries[4];
-    int n = passwd_parse(buf, (uint32_t)strlen(buf), entries, 4);
+    int n = passwd_parse(buf, strlen(buf), entries, 4);
     ASSERT_EQ(n, 1);
     ASSERT_STR_EQ(entries[0].name, "root");
     return 0;
@@ -75,7 +75,7 @@ TEST(parse_max_entries) {
         "b::1:1:b:/b:/b\n"
         "c::2:2:c:/c:/c\n";
     PasswdEntry entries[2];
-    int n = passwd_parse(buf, (uint32_t)strlen(buf), entries, 2);
+    int n = passwd_parse(buf, strlen(buf), entries, 2);
     ASSERT_EQ(n, 2);  /* Should stop at max */
     ASSERT_STR_EQ(entries[0].name, "a");
     ASSERT_STR_EQ(entries[1].name, "b");
@@ -99,7 +99,7 @@ TEST(find_user_by_name) {
         "root::0:0:r:/:/s\n"
         "user:pw:1000:1000:u:/h:/s\n";
     PasswdEntry entries[4];
-    int n = passwd_parse(buf, (uint32_t)strlen(buf), entries, 4);
+    int n = passwd_parse(buf, strlen(buf), entries, 4);
     ASSERT_EQ(n, 2);
 
     const PasswdEntry *found = passwd_find_user(entries, n, "user");
@@ -116,7 +116,7 @@ TEST(find_user_by_uid) {
         "root::0:0:r:/:/s\n"
         "user:pw:1000:1000:u:/h:/s\n";
     PasswdEntry entries[4];
-    int n = passwd_parse(buf, (uint32_t)strlen(buf), entries, 4);
+    int n = passwd_parse(buf, strlen(buf), entries, 4);
     ASSERT_EQ(n, 2);
 
     const PasswdEntry *found = passwd_find_uid(entries, n, 0);
@@ -131,7 +131,7 @@ TEST(find_user_by_uid) {
 TEST(parse_password_with_special_chars) {
     const char *buf = "test:p@ss!w0rd:500:500:t:/t:/s\n";
     PasswdEntry entries[4];
-    int n = passwd_parse(buf, (uint32_t)strlen(buf), entries, 4);
+    int n = passwd_parse(buf, strlen(buf), entries, 4);
     ASSERT_EQ(n, 1);
     ASSERT_STR_EQ(entries[0].password, "p@ss!w0rd");
     ASSERT_EQ(entries[0].uid, 500);

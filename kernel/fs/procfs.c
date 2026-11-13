@@ -1,3 +1,21 @@
+/* arc_os — procfs (procfs.h; M0, inodes M1-11)
+ *
+ * Owns: /proc. Fixed files (meminfo, uptime, cmdline, cpuinfo, slabinfo,
+ * kmsg, sched_debug, mounts) and sys/vm/drop_caches are static inodes; /proc/<pid> directories and
+ * their files are inodes made per lookup and freed with their last
+ * reference, so nothing is shared between lookups and no pool can be
+ * overrun. A file's text is generated whole at each read.
+ *
+ * Inode numbers (64-bit): 1 the root, 2.. the fixed files, 0x100.. sys/vm, (1 << 32) |
+ * pid << 8 a pid directory, + 1 + i its file i. No two can collide.
+ *
+ * Locks: none of its own. Process lookups and the process list are lane KB's
+ * (big kernel lock until M1-16). Lookups are not cached (SB_NO_DCACHE):
+ * /proc/<pid> comes and goes with processes.
+ *
+ * Cost: lookup O(fixed files) or one pid lookup; readdir walks the process
+ * list once per call. */
+
 #include "fs/procfs.h"
 #include "mm/pmm.h"
 #include "mm/kmalloc.h"
@@ -11,12 +29,16 @@
 #include "lib/string.h"
 #include "lib/cmdline.h"
 #include "lib/klog.h"
+#include "lib/kprintf.h"
+#include "uapi/dirent.h"
 
 /* Scratch buffer for content generation */
 #define PROCFS_SCRATCH_SIZE 2048   /* /proc/cpuinfo: ~80 bytes per CPU */
 /* /proc/<pid>/maps: ~80 bytes per VMA, allocated per read; a longer map is
- * cut at this size (M1-11's seq-file reads replace whole-file generation) */
+ * cut at this size (a later seq-file read can replace whole-file generation) */
 #define PROCFS_MAPS_SIZE    (32 * 1024)
+/* /proc/mounts: about 40 bytes per mount */
+#define PROCFS_MOUNTS_SIZE  2048
 
 /* --- Formatting helpers (no snprintf available) --- */
 
@@ -227,81 +249,89 @@ static int gen_pid_maps(char *buf, int bufsz, void *ctx) {
     return n;
 }
 
-/* --- Node types --- */
+/* /proc/mounts (M1-11): one line per mount */
+static int gen_mounts(char *buf, int bufsz, void *ctx) {
+    (void)ctx;
+    return vfs_format_mounts(buf, bufsz);
+}
+
+/* --- Inodes --- */
+
+#define PROC_INO_ROOT   1
+#define PROC_INO_PID(p) ((1ULL << 32) | ((uint64_t)(p) << 8))
+#define PROC_COOKIE0    2   /* first cookie after "." and ".." */
 
 typedef struct {
-    VfsNode       vnode;
     procfs_gen_fn generate;
-    void         *gen_ctx;
+    void *ctx;
     uint32_t scratch_size;   /* 0: PROCFS_SCRATCH_SIZE on the stack; else kmalloc'd */
-} ProcfsFileNode;
+} ProcGen;
 
-typedef struct {
-    VfsNode   vnode;
-    uint32_t  pid;
-} ProcfsDirNode;
+static SuperBlock proc_sb;
+static Inode proc_root;
 
-/* --- File read op --- */
-
-static int procfs_file_read(VfsNode *node, void *buf, uint32_t offset, uint32_t size) {
-    ProcfsFileNode *pn = (ProcfsFileNode *)node;
-    if (pn->generate == NULL) return 0;
+static int64_t procfs_file_read(File *file, const IoBuf *buf, loff_t *pos) {
+    const ProcGen *g = (const ProcGen *)file->inode->priv;
+    if (g == NULL || g->generate == NULL) return 0;
 
     char stack_scratch[PROCFS_SCRATCH_SIZE];
     char *scratch = stack_scratch;
     int scratch_size = PROCFS_SCRATCH_SIZE;
-    if (pn->scratch_size > PROCFS_SCRATCH_SIZE) {
-        scratch = kmalloc(pn->scratch_size, 0);
+    if (g->scratch_size > PROCFS_SCRATCH_SIZE) {
+        scratch = kmalloc(g->scratch_size, 0);
         if (scratch == NULL) return -ENOMEM;
-        scratch_size = (int)pn->scratch_size;
+        scratch_size = (int)g->scratch_size;
     }
-    int total = pn->generate(scratch, scratch_size, pn->gen_ctx);
-    uint32_t to_copy = 0;
-    if (total > 0 && offset < (uint32_t)total) {
-        uint32_t avail = (uint32_t)total - offset;
-        to_copy = size < avail ? size : avail;
-        memcpy(buf, scratch + offset, to_copy);
+    int total = g->generate(scratch, scratch_size, g->ctx);
+    int64_t n = 0;
+    if (total > 0 && *pos < total) {
+        size_t avail = (size_t)(total - *pos);
+        n = (int64_t)(buf->len < avail ? buf->len : avail);
+        if (iob_copy_out(buf, 0, scratch + *pos, (size_t)n) != 0) n = -EFAULT;
     }
     if (scratch != stack_scratch) kfree(scratch);
-    return (int)to_copy;
+    if (n > 0) *pos += n;
+    return n;
 }
 
-static const VfsOps procfs_file_ops = {
+static const FileOps procfs_file_fops = {
     .read = procfs_file_read,
 };
 
 /* /proc/kmsg (M1-04): the kernel log ring as Linux /proc/kmsg text ("<6>..."
  * per line), read without consuming it. Offset 0 is the oldest byte still in
  * the ring, so a reader may skip bytes the ring overwrites meanwhile. */
-static int procfs_kmsg_read(VfsNode *node, void *buf, uint32_t offset, uint32_t size) {
-    (void)node;
-    uint64_t pos = klog_tail() + offset;
-    return (int)klog_read(&pos, buf, size);
+static int64_t procfs_kmsg_read(File *file, const IoBuf *buf, loff_t *pos) {
+    (void)file;
+    char chunk[512];
+    size_t done = 0;
+    while (done < buf->len) {
+        uint64_t at = klog_tail() + (uint64_t)*pos;
+        size_t want = buf->len - done < sizeof(chunk) ? buf->len - done : sizeof(chunk);
+        size_t n = klog_read(&at, chunk, want);
+        if (n == 0) break;
+        if (iob_copy_out(buf, done, chunk, n) != 0) return done > 0 ? (int64_t)done : -EFAULT;
+        done += n;
+        *pos += (loff_t)n;
+    }
+    return (int64_t)done;
 }
 
-static const VfsOps procfs_kmsg_ops = {
+static const FileOps procfs_kmsg_fops = {
     .read = procfs_kmsg_read,
 };
 
-/* --- Static node pools --- */
-
-static ProcfsFileNode meminfo_node;
-static ProcfsFileNode uptime_node;
-static ProcfsFileNode cmdline_node;
-static ProcfsFileNode cpuinfo_node;
-static ProcfsFileNode slabinfo_node;
-static ProcfsFileNode kmsg_node;
-static ProcfsFileNode sched_debug_node;
-
-#define PROCFS_PID_POOL 8
-static ProcfsDirNode pid_dirs[PROCFS_PID_POOL];
-static int pid_dirs_next;
-static ProcfsFileNode pid_file_nodes[PROCFS_PID_POOL];   /* status and maps */
-static int pid_file_next;
-
-static ProcfsDirNode procfs_root_node;
-
-/* --- Directory ops for /proc/[pid] --- */
+/* Fixed files in /proc, in readdir order */
+static ProcGen fixed_gen[] = {
+    {gen_meminfo, NULL, 0},  {gen_uptime, NULL, 0}, {gen_cmdline, NULL, 0},     {gen_cpuinfo, NULL, 0},
+    {gen_slabinfo, NULL, 0}, {NULL, NULL, 0},       {gen_sched_debug, NULL, 0}, {gen_mounts, NULL, PROCFS_MOUNTS_SIZE},
+};
+static const char *const fixed_names[] = {"meminfo",  "uptime", "cmdline",     "cpuinfo",
+                                          "slabinfo", "kmsg",   "sched_debug", "mounts"};
+#define FIXED_COUNT (sizeof(fixed_names) / sizeof(fixed_names[0]))
+#define FIXED_KMSG  5
+_Static_assert(sizeof(fixed_gen) / sizeof(fixed_gen[0]) == FIXED_COUNT, "one generator per fixed file");
+static Inode fixed_inodes[FIXED_COUNT];
 
 /* Files in /proc/<pid>, in readdir order */
 static const struct {
@@ -314,53 +344,57 @@ static const struct {
 };
 #define PID_FILE_COUNT (sizeof(pid_files) / sizeof(pid_files[0]))
 
-static VfsNode *procfs_pid_lookup(VfsNode *dir, const char *name) {
-    ProcfsDirNode *pd = (ProcfsDirNode *)dir;
+static void pid_evict(Inode *inode) {
+    kfree(inode->priv);
+    inode->priv = NULL;
+}
+
+static const SuperOps proc_sops = {.evict_inode = pid_evict};
+
+static uint32_t pid_of(const Inode *dir) {
+    return (uint32_t)((dir->ino >> 8) & 0xFFFFFF);
+}
+
+static int procfs_pid_lookup(Inode *dir, const char *name, Inode **out) {
     uint32_t i = 0;
     while (i < PID_FILE_COUNT && strcmp(name, pid_files[i].name) != 0) i++;
-    if (i == PID_FILE_COUNT) return NULL;
-
-    int slot = pid_file_next % PROCFS_PID_POOL;
-    pid_file_next++;
-
-    ProcfsFileNode *fn = &pid_file_nodes[slot];
-    fn->vnode.inode_num = 3000 + pd->pid * 10 + 1 + i;
-    fn->vnode.type = VFS_FILE;
-    fn->vnode.size = 0;
-    fn->vnode.mode = 0444;
-    fn->vnode.ops = &procfs_file_ops;
-    fn->vnode.private_data = fn;
-    fn->generate = pid_files[i].gen;
-    fn->gen_ctx = (void *)(uintptr_t)pd->pid;
-    fn->scratch_size = pid_files[i].scratch_size;
-
-    return &fn->vnode;
-}
-
-static int procfs_pid_readdir(VfsNode *dir, VfsDirEntry *entries, uint32_t max) {
-    (void)dir;
-    uint32_t n = 0;
-    for (; n < PID_FILE_COUNT && n < max; n++) {
-        strncpy(entries[n].name, pid_files[n].name, VFS_NAME_MAX - 1);
-        entries[n].name[VFS_NAME_MAX - 1] = '\0';
-        entries[n].inode_num = 0;
-        entries[n].type = VFS_FILE;
+    if (i == PID_FILE_COUNT) return -ENOENT;
+    ProcGen *g = kmalloc(sizeof(*g), 0);
+    Inode *inode = g != NULL ? inode_new(&proc_sb, dir->ino + 1 + i, S_IFREG | 0444) : NULL;
+    if (inode == NULL) {
+        kfree(g);
+        return -ENOMEM;
     }
-    return (int)n;
+    g->generate = pid_files[i].gen;
+    g->ctx = (void *)(uintptr_t)pid_of(dir);
+    g->scratch_size = pid_files[i].scratch_size;
+    inode->priv = g;
+    inode->uid = dir->uid;
+    inode->gid = dir->gid;
+    inode->fop = &procfs_file_fops;
+    *out = inode;
+    return 0;
 }
 
-static const VfsOps procfs_pid_dir_ops = {
-    .lookup  = procfs_pid_lookup,
-    .readdir = procfs_pid_readdir,
-};
+static int procfs_pid_iterate(File *file, DirContext *ctx) {
+    Inode *dir = file->inode;
+    if (!dir_emit_dots(ctx, dir->ino, PROC_INO_ROOT)) return 0;
+    for (uint64_t i = (uint64_t)ctx->pos - PROC_COOKIE0; i < PID_FILE_COUNT; i++) {
+        if (!dir_emit(ctx, pid_files[i].name, strlen(pid_files[i].name), dir->ino + 1 + i, DT_REG,
+                      (loff_t)(i + 1 + PROC_COOKIE0)))
+            return 0;
+    }
+    return 0;
+}
 
-/* --- Directory ops for /proc root --- */
+static const InodeOps procfs_pid_iops = {.lookup = procfs_pid_lookup};
+static const FileOps procfs_pid_fops = {.iterate = procfs_pid_iterate};
 
 static int procfs_parse_uint(const char *s, uint32_t *out) {
     if (*s == '\0') return -1;
     uint32_t val = 0;
     while (*s) {
-        if (*s < '0' || *s > '9') return -1;
+        if (*s < '0' || *s > '9' || val > 0x00FFFFFF / 10) return -1;
         val = val * 10 + (uint32_t)(*s - '0');
         s++;
     }
@@ -368,154 +402,161 @@ static int procfs_parse_uint(const char *s, uint32_t *out) {
     return 0;
 }
 
-/* Fixed files in /proc, in readdir order */
-static const struct {
+/* --- /proc/sys/vm/drop_caches (Linux): writing 2 or 3 empties the dentry
+ * cache and frees the disk inodes only it held; 1 (the page cache) has
+ * nothing to free until M1-12. Root only (mode 0200, as on Linux). --- */
+
+#define PROC_INO_SYS         0x100
+#define PROC_INO_SYS_VM      0x101
+#define PROC_INO_DROP_CACHES 0x102
+
+/* A directory with one entry */
+typedef struct {
     const char *name;
-    ProcfsFileNode *node;
-} root_files[] = {
-    {"meminfo", &meminfo_node},         {"uptime", &uptime_node},     {"cmdline", &cmdline_node},
-    {"cpuinfo", &cpuinfo_node},         {"slabinfo", &slabinfo_node}, {"kmsg", &kmsg_node},
-    {"sched_debug", &sched_debug_node},
-};
-#define ROOT_FILE_COUNT (sizeof(root_files) / sizeof(root_files[0]))
+    Inode *child;
+    uint8_t type;   /* DT_ */
+    uint64_t parent_ino;
+} ProcSubdir;
 
-static VfsNode *procfs_root_lookup(VfsNode *dir, const char *name) {
+static Inode proc_sys, proc_sys_vm, proc_drop_caches;
+static const ProcSubdir sys_entry = {"vm", &proc_sys_vm, DT_DIR, PROC_INO_ROOT};
+static const ProcSubdir vm_entry = {"drop_caches", &proc_drop_caches, DT_REG, PROC_INO_SYS};
+
+static int procfs_subdir_lookup(Inode *dir, const char *name, Inode **out) {
+    const ProcSubdir *s = (const ProcSubdir *)dir->priv;
+    if (strcmp(name, s->name) != 0) return -ENOENT;
+    *out = igrab(s->child);
+    return 0;
+}
+
+static int procfs_subdir_iterate(File *file, DirContext *ctx) {
+    Inode *dir = file->inode;
+    const ProcSubdir *s = (const ProcSubdir *)dir->priv;
+    if (!dir_emit_dots(ctx, dir->ino, s->parent_ino)) return 0;
+    if (ctx->pos == PROC_COOKIE0) dir_emit(ctx, s->name, strlen(s->name), s->child->ino, s->type, PROC_COOKIE0 + 1);
+    return 0;
+}
+
+static int64_t procfs_drop_caches_write(File *file, const IoBuf *buf, loff_t *pos) {
+    (void)file;
+    char text[8];
+    size_t n = buf->len < sizeof(text) - 1 ? buf->len : sizeof(text) - 1;
+    if (iob_copy_in(text, buf, 0, n) != 0) return -EFAULT;
+    while (n > 0 && (text[n - 1] == '\n' || text[n - 1] == ' ')) n--;
+    text[n] = '\0';
+    uint32_t v;
+    if (procfs_parse_uint(text, &v) != 0 || v < 1 || v > 3) return -EINVAL;
+    if (v & 2) vfs_drop_caches();
+    *pos += (loff_t)buf->len;
+    return (int64_t)buf->len;
+}
+
+static const InodeOps procfs_subdir_iops = {.lookup = procfs_subdir_lookup};
+static const FileOps procfs_subdir_fops = {.iterate = procfs_subdir_iterate};
+static const FileOps procfs_drop_caches_fops = {.write = procfs_drop_caches_write};
+
+static void procfs_subdir_init(Inode *dir, uint64_t ino, const ProcSubdir *entry) {
+    inode_init_static(dir, &proc_sb, ino, S_IFDIR | 0555);
+    dir->nlink = entry->type == DT_DIR ? 3 : 2;
+    dir->priv = (void *)entry;
+    dir->iop = &procfs_subdir_iops;
+    dir->fop = &procfs_subdir_fops;
+}
+
+static int procfs_root_lookup(Inode *dir, const char *name, Inode **out) {
     (void)dir;
-    for (uint32_t i = 0; i < ROOT_FILE_COUNT; i++) {
-        if (strcmp(name, root_files[i].name) == 0) return &root_files[i].node->vnode;
+    if (strcmp(name, "sys") == 0) {
+        *out = igrab(&proc_sys);
+        return 0;
     }
-
+    for (uint32_t i = 0; i < FIXED_COUNT; i++) {
+        if (strcmp(name, fixed_names[i]) == 0) {
+            *out = igrab(&fixed_inodes[i]);
+            return 0;
+        }
+    }
     uint32_t pid;
     if (strcmp(name, "self") == 0) {   /* Linux: a symlink to the caller's pid; here the same directory */
         Process *self = proc_current();
-        if (self == NULL) return NULL;
+        if (self == NULL) return -ENOENT;
         pid = self->pid;
     } else if (procfs_parse_uint(name, &pid) != 0) {
-        return NULL;
+        return -ENOENT;
     }
-
     Process *p = proc_get_by_pid(pid);
-    if (p == NULL) return NULL;
-
-    int slot = pid_dirs_next % PROCFS_PID_POOL;
-    pid_dirs_next++;
-
-    ProcfsDirNode *pd = &pid_dirs[slot];
-    pd->vnode.inode_num = 2000 + pid;
-    pd->vnode.type = VFS_DIRECTORY;
-    pd->vnode.size = 0;
-    pd->vnode.mode = 0555;
-    pd->vnode.ops = &procfs_pid_dir_ops;
-    pd->vnode.private_data = pd;
-    pd->pid = pid;
-
-    return &pd->vnode;
+    if (p == NULL) return -ENOENT;
+    Inode *inode = inode_new(&proc_sb, PROC_INO_PID(pid), S_IFDIR | 0555);
+    if (inode == NULL) return -ENOMEM;
+    inode->nlink = 2;
+    inode->uid = p->euid;
+    inode->gid = p->egid;
+    inode->iop = &procfs_pid_iops;
+    inode->fop = &procfs_pid_fops;
+    *out = inode;
+    return 0;
 }
 
-/* Callback for proc_foreach to enumerate PIDs */
+/* Root directory listing: cookies 2.. are the fixed files, then "sys", then
+ * "self", then pid + PID_COOKIE0 for each process (pids grow, so a pid cookie
+ * resumes the walk where it stopped). */
+#define SYS_COOKIE  (PROC_COOKIE0 + FIXED_COUNT)
+#define SELF_COOKIE (SYS_COOKIE + 1)
+#define PID_COOKIE0 (SELF_COOKIE + 1)
+
 struct procfs_readdir_ctx {
-    VfsDirEntry *entries;
-    uint32_t max;
-    uint32_t count;
+    DirContext *dctx;
+    int full;
 };
 
-static void procfs_enum_pid(Process *p, void *ctx) {
-    struct procfs_readdir_ctx *rc = (struct procfs_readdir_ctx *)ctx;
-    if (rc->count >= rc->max) return;
-
-    /* Convert PID to decimal string */
-    char pidbuf[12];
-    int pos = 0;
-    uint32_t pid = p->pid;
-    char tmp[12];
-    int len = 0;
-    if (pid == 0) {
-        tmp[len++] = '0';
-    } else {
-        while (pid > 0 && len < 10) {
-            tmp[len++] = '0' + (pid % 10);
-            pid /= 10;
-        }
-    }
-    for (int i = len - 1; i >= 0; i--) {
-        pidbuf[pos++] = tmp[i];
-    }
-    pidbuf[pos] = '\0';
-
-    VfsDirEntry *e = &rc->entries[rc->count];
-    strncpy(e->name, pidbuf, VFS_NAME_MAX - 1);
-    e->name[VFS_NAME_MAX - 1] = '\0';
-    e->inode_num = 2000 + p->pid;
-    e->type = VFS_DIRECTORY;
-    rc->count++;
+static void procfs_enum_pid(Process *p, void *arg) {
+    struct procfs_readdir_ctx *rc = (struct procfs_readdir_ctx *)arg;
+    if (rc->full || (loff_t)(p->pid + PID_COOKIE0) < rc->dctx->pos) return;
+    char name[12];
+    int len = ksnprintf(name, sizeof(name), "%u", p->pid);
+    if (!dir_emit(rc->dctx, name, (size_t)len, PROC_INO_PID(p->pid), DT_DIR, (loff_t)(p->pid + PID_COOKIE0 + 1)))
+        rc->full = 1;
 }
 
-static int procfs_root_readdir(VfsNode *dir, VfsDirEntry *entries, uint32_t max) {
-    (void)dir;
-    uint32_t count = 0;
-
-    for (uint32_t i = 0; i < ROOT_FILE_COUNT && count < max; i++) {
-        strncpy(entries[count].name, root_files[i].name, VFS_NAME_MAX - 1);
-        entries[count].name[VFS_NAME_MAX - 1] = '\0';
-        entries[count].inode_num = root_files[i].node->vnode.inode_num;
-        entries[count].type = VFS_FILE;
-        count++;
+static int procfs_root_iterate(File *file, DirContext *ctx) {
+    (void)file;
+    if (!dir_emit_dots(ctx, PROC_INO_ROOT, PROC_INO_ROOT)) return 0;
+    for (uint64_t i = (uint64_t)ctx->pos - PROC_COOKIE0; i < FIXED_COUNT; i++) {
+        if (!dir_emit(ctx, fixed_names[i], strlen(fixed_names[i]), fixed_inodes[i].ino, DT_REG,
+                      (loff_t)(i + 1 + PROC_COOKIE0)))
+            return 0;
     }
-
-    if (count < max) {
-        strncpy(entries[count].name, "self", VFS_NAME_MAX - 1);
-        entries[count].inode_num = 0;
-        entries[count].type = VFS_DIRECTORY;
-        count++;
+    if (ctx->pos == SYS_COOKIE && !dir_emit(ctx, "sys", 3, PROC_INO_SYS, DT_DIR, SELF_COOKIE)) return 0;
+    if (ctx->pos == SELF_COOKIE) {
+        Process *self = proc_current();
+        uint64_t ino = self != NULL ? PROC_INO_PID(self->pid) : PROC_INO_ROOT;
+        if (!dir_emit(ctx, "self", 4, ino, DT_DIR, PID_COOKIE0)) return 0;
     }
-
-    struct procfs_readdir_ctx ctx = { entries, max, count };
-    proc_foreach(procfs_enum_pid, &ctx);
-
-    return (int)ctx.count;
+    struct procfs_readdir_ctx rc = {ctx, 0};
+    proc_foreach(procfs_enum_pid, &rc);
+    return 0;
 }
 
-static const VfsOps procfs_root_dir_ops = {
-    .lookup  = procfs_root_lookup,
-    .readdir = procfs_root_readdir,
-};
+static const InodeOps procfs_root_iops = {.lookup = procfs_root_lookup};
+static const FileOps procfs_root_fops = {.iterate = procfs_root_iterate};
 
-/* --- Init --- */
-
-static void procfs_init_file(ProcfsFileNode *fn, uint64_t ino,
-                             procfs_gen_fn gen, void *ctx) {
-    fn->vnode.inode_num = ino;
-    fn->vnode.type = VFS_FILE;
-    fn->vnode.size = 0;
-    fn->vnode.mode = 0444;
-    fn->vnode.ops = &procfs_file_ops;
-    fn->vnode.private_data = fn;
-    fn->generate = gen;
-    fn->gen_ctx = ctx;
-}
-
-VfsNode *procfs_init(void) {
-    procfs_root_node.vnode.inode_num = 2000;
-    procfs_root_node.vnode.type = VFS_DIRECTORY;
-    procfs_root_node.vnode.size = 0;
-    procfs_root_node.vnode.mode = 0555;
-    procfs_root_node.vnode.ops = &procfs_root_dir_ops;
-    procfs_root_node.vnode.private_data = &procfs_root_node;
-    procfs_root_node.pid = 0;
-
-    procfs_init_file(&meminfo_node, 2001, gen_meminfo, NULL);
-    procfs_init_file(&uptime_node, 2002, gen_uptime, NULL);
-    /* 1999: below the 2000+pid range used by /proc/<pid> directories */
-    procfs_init_file(&cmdline_node, 1999, gen_cmdline, NULL);
-    procfs_init_file(&cpuinfo_node, 1998, gen_cpuinfo, NULL);
-    procfs_init_file(&slabinfo_node, 1997, gen_slabinfo, NULL);
-    procfs_init_file(&kmsg_node, 1996, NULL, NULL);
-    kmsg_node.vnode.ops = &procfs_kmsg_ops;
-    kmsg_node.vnode.mode = 0400;
-    procfs_init_file(&sched_debug_node, 1995, gen_sched_debug, NULL);
-
-    pid_dirs_next = 0;
-    pid_file_next = 0;
-
-    return &procfs_root_node.vnode;
+SuperBlock *procfs_init(void) {
+    vfs_sb_init(&proc_sb, "proc", &proc_sops);
+    proc_sb.flags = SB_NO_DCACHE;
+    inode_init_static(&proc_root, &proc_sb, PROC_INO_ROOT, S_IFDIR | 0555);
+    proc_root.nlink = 2;
+    proc_root.iop = &procfs_root_iops;
+    proc_root.fop = &procfs_root_fops;
+    for (uint32_t i = 0; i < FIXED_COUNT; i++) {
+        inode_init_static(&fixed_inodes[i], &proc_sb, PROC_COOKIE0 + i, S_IFREG | 0444);
+        fixed_inodes[i].priv = &fixed_gen[i];
+        fixed_inodes[i].fop = &procfs_file_fops;
+    }
+    fixed_inodes[FIXED_KMSG].mode = S_IFREG | 0400;
+    fixed_inodes[FIXED_KMSG].fop = &procfs_kmsg_fops;
+    procfs_subdir_init(&proc_sys, PROC_INO_SYS, &sys_entry);
+    procfs_subdir_init(&proc_sys_vm, PROC_INO_SYS_VM, &vm_entry);
+    inode_init_static(&proc_drop_caches, &proc_sb, PROC_INO_DROP_CACHES, S_IFREG | 0200);
+    proc_drop_caches.fop = &procfs_drop_caches_fops;
+    proc_sb.root = &proc_root;
+    return &proc_sb;
 }

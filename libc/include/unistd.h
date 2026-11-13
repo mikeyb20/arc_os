@@ -21,6 +21,7 @@ off_t   lseek(int fd, off_t offset, int whence);
 int     dup(int fd);
 int     dup2(int oldfd, int newfd);
 int     unlink(const char *path);
+int rmdir(const char *path);
 int     pipe(int pipefd[2]);
 
 /* Process operations */
