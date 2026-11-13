@@ -328,7 +328,13 @@ TEST(fb_scrollback_freezes_and_returns) {
 TEST(fb_panic_view_colours_and_freezes) {
     Framebuffer fb = make_test_fb();
     init_with_cells(&fb);
-    fb_console_panic_view();
+    /* The newest log line, 30 columns without a space: wrapped at the 20-column width */
+    klog_write(0, "\nABCDEFGHIJKLMNOPQRSTUVWXYZ0123\n", 32);
+    fb_console_panic_view(10 * FONT_WIDTH);   /* under FB_PANIC_MIN_COLS: full width */
+    uint32_t white = pack_color(0xFFFFFF);
+    ASSERT_TRUE(cell_fg_pixels(cols - 1, rows - 2, white) > 0);   /* 'T' ends the first row */
+    ASSERT_TRUE(cell_fg_pixels(9, rows - 1, white) > 0);          /* '3' ends the second */
+    ASSERT_EQ(cell_fg_pixels(10, rows - 1, white), 0);
     ASSERT_EQ(test_fb_pixels[0], pack_color(0xFFFF00));                    /* banner */
     ASSERT_EQ(test_fb_pixels[FONT_HEIGHT * TEST_FB_W], pack_color(0x8B0000));   /* row 1 background */
     uint32_t snapshot = test_fb_pixels[(rows - 1) * FONT_HEIGHT * TEST_FB_W + 3];

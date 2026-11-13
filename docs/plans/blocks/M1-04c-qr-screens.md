@@ -68,7 +68,9 @@ block reads the ring and pauses the console.
   entry's photos. The pager pauses the console instead of removing the log hook, and draws with the console
   owner held, waiting with it released. The largest QR version is picked from the screen (version 30 needs
   580 px at 4 px per module); below 4 px the text pager runs instead. The panic code uses 4 px modules (8 on 2x
-  screens), top right, so the register dump stays readable for a photo; `panic_set_screen` now passes the
+  screens), top right, and the panic view redraws the log wrapped (at a space) to the columns left of it, so no
+  register or frame is hidden under the code on any screen at least 40 columns wide beside it (the D3 review
+  found CR2 hidden at 1024x768 with a 16-frame trace before this); `panic_set_screen` now passes the
   `PanicInfo`, and test mode prints `ARC_TEST PANIC` before the screen. `arc.qrhold=1` (test mode only) holds
   the panic screen 60 s for the screendump; the harness ends QEMU.
 - Tests: QEMU `qemu.qr.report` (2 pages), `qemu.qr.log` (7 pages), `qemu.qr.panic` decode every screendump with
@@ -77,5 +79,9 @@ block reads the ring and pauses the console.
 - Size: kernel image 328,564 -> 348,042 bytes (11.6 KB .bss for the static panic buffers, 7.9 KB code); limit
   345,000 -> 365,000 in `tests/budgets.txt`.
 - Not done here: the laptop smoke boot read by QR (Done when, item 3) is Michael's; console locking unchanged
-  (the TTY still draws outside the console owner until M1-18). Serial carries lines the log doesn't (early
+  (the TTY still draws outside the console owner until M1-09 takes TTY/VT off the kernel lock; that block
+  should also list the QR pager, which draws even when `klog_console_acquire` times out, as VT and TTY do).
+  Report and log codes use every text row but the caption's (`qr_screen_page_height`), so on a height that
+  isn't a whole number of rows the caption no longer covers the quiet zone. `klog_for_each_line` keeps the
+  line `from` starts on (it used to skip it). Serial carries lines the log doesn't (early
   `[BOOT] stage:` lines go straight to the port), so the log check matches lines in order, not one run.

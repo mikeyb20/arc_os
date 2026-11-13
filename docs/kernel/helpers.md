@@ -56,7 +56,7 @@ Kernel and user space are separate worlds: the same function in `kernel/lib` and
 | Boot report line, TSC-timed delay, key wait, command-line flag (diagnostic mode) | `diag_line`, `diag_delay_ms`, `diag_wait_key`, `diag_flag_on` | `kernel/diag/diag.h` |
 | QR code from bytes (byte mode, level M, versions 1-30; no allocation) | `qr_encode`, `qr_capacity`, `qr_module` | `kernel/diag/qr.h` |
 | Text as numbered `ARC1` QR pages: sanitize (no links), split, header and CRCs | `qr_text_sanitize`, `qr_text_paginate`, `qr_text_page` | `kernel/diag/qr_text.h` |
-| QR page or panic code on screen; panic and log-tail texts | `qr_screen_show_page`, `qr_screen_draw_panic`, `qr_screen_scale`, `qr_panic_encode`, `qr_panic_text`, `qr_log_text` | `kernel/diag/qr_screen.h` |
+| QR page or panic code on screen; panic and log-tail texts | `qr_screen_show_page`, `qr_screen_draw_panic`, `qr_screen_scale`, `qr_screen_page_height`, `qr_panic_encode`, `qr_panic_text`, `qr_log_text` | `kernel/diag/qr_screen.h` |
 | CPU features, x86-64-v3 floor, core type | `cpu_features`, `cpu_floor_missing`, `cpu_core_type_detect`, `cpu_describe` | `kernel/arch/x86_64/cpu.h` (via `arch/hal.h`) |
 | Signal actions and masks (rt_sigaction, fork, execve) | `sig_set_action`, `sig_fork_copy`, `sig_exec_reset` | `kernel/proc/signal.h` |
 | Linux ABI values and structs | `__NR_*`, errno, flags, `struct stat`, ... | `kernel/include/uapi/` |

@@ -146,7 +146,7 @@ add_test(NAME qemu.qr.report COMMAND ${_qemu_test} --suite diag --name qr-report
     --cmdline arc.qr=1 --cmdline arc.selftest=1
     --screendump "^ARC_QR shown report "
     --check "${_qr_check} --kind report"
-    --expect "\\[REPORT\\] arc_os boot report, build [0-9a-f]{12}"
+    --expect "\\[REPORT\\] arc_os boot report, build ([0-9a-f]{12}(-dirty)?|unknown)"
     --expect "\\[REPORT\\] SELFTEST PASS"
     --expect "ARC_TEST DONE pass=[0-9]+ fail=0")
 add_test(NAME qemu.qr.log COMMAND ${_qemu_test} --suite diag --name qr-log

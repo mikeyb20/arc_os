@@ -60,10 +60,17 @@ void fb_console_erase_display(int mode);
 /* Erase line: 0=cursor to end, 1=start to cursor, 2=entire line */
 void fb_console_erase_line(int mode);
 
+/* Narrowest text column the panic view wraps to (below it, full width) */
+#define FB_PANIC_MIN_COLS 40
+
 /* Panic screen (called by the panic screen hook, diag/qr_mode.c): the end
  * of the kernel log, white on dark red under a yellow banner; the screen then
- * stays frozen. Takes no lock (panic path). */
-void fb_console_panic_view(void);
+ * stays frozen. With text_width > 0, lines wrap (at a space where there is
+ * one) to the whole columns that fit in that many pixels from the left edge,
+ * so a QR code drawn right of them covers no text; 0, or a width under
+ * FB_PANIC_MIN_COLS columns, uses the full width. May be called again to
+ * redraw. Takes no lock (panic path). Cost: two walks of the log ring. */
+void fb_console_panic_view(uint32_t text_width);
 
 /* ---- Drawing outside the text grid (QR screens, M1-04c) ---- */
 

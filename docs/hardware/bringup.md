@@ -87,7 +87,8 @@ The two QR entries show the same text as codes, so it arrives exactly, with noth
    (iPhone: "Copy"; Android camera or Google Lens: "Copy text"). Don't open anything.
 4. Paste each page into the thread in order. Every page starts `ARC1 <build> report <n>/<N> <crc>`; the last one
    ends with `all <crc>`. The reading thread checks both CRCs, so a page that was misread or missed shows up.
-5. A panic screen carries one code at the top right (kind `panic`): reason, CPU, registers and backtrace.
+5. A panic screen carries one code at the top right (kind `panic`): reason, CPU, registers and backtrace. The
+   log text wraps to the left of the code, so every register stays readable in a photo too.
 
 **Is it safe to scan?** A QR code is only text; the risk is what a phone does with it, such as open a link,
 join a Wi-Fi network or call a number. arc_os's codes always start with `ARC1` and can never hold a link (the

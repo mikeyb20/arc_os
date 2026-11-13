@@ -15,6 +15,7 @@
 #include <unistd.h>
 
 #include "../kernel/diag/qr_screen.c"
+#include "../kernel/drivers/font8x16.h"
 #include "zbar_decode.h"
 
 /* ---- A host screen ---- */
@@ -123,7 +124,8 @@ static int check_pages_on_screen(const char *text, size_t len) {
             return 1;
         }
         /* Centred above the caption row, white everywhere else */
-        uint32_t row_h = fb_console_row_height(), avail = (uint32_t)screen_fb.height - row_h;
+        uint32_t rows = fb_console_rows(), avail = qr_screen_page_height();
+        ASSERT_EQ(avail, (rows - 1) * fb_console_row_height());   /* the caption row's top */
         Box b = dark_box(avail);
         uint32_t scale = qr_screen_scale((uint32_t)code.size, (uint32_t)screen_fb.width, avail);
         ASSERT_EQ(b.x1 - b.x0, (uint32_t)code.size * scale);
@@ -132,6 +134,14 @@ static int check_pages_on_screen(const char *text, size_t len) {
         ASSERT_EQ(b.x0, ((uint32_t)screen_fb.width - box) / 2 + QR_SCREEN_QUIET * scale);
         ASSERT_EQ(b.y0, (avail - box) / 2 + QR_SCREEN_QUIET * scale);
         ASSERT_EQ(grey_at(0, 0), 255);
+        /* The whole quiet zone under the code is white: the caption stays below it */
+        uint32_t q = QR_SCREEN_QUIET * scale;
+        for (uint32_t y = b.y1; y < b.y1 + q; y++)
+            for (uint32_t x = b.x0 - q; x < b.x1 + q; x++)
+                if (grey_at(x, y) != 255) {
+                    printf("  FAIL: page %d: quiet zone pixel (%u, %u) is not white\n", i + 1, x, y);
+                    return 1;
+                }
         /* The caption: some dark glyph pixels in the bottom row, none below the code otherwise */
         Box cap = dark_box((uint32_t)screen_fb.height);
         ASSERT_TRUE(cap.y1 > avail);
@@ -158,6 +168,14 @@ TEST(qrscreen_report_pages_decode_32bpp) {
 TEST(qrscreen_report_pages_decode_24bpp_bgr) {
     screen_init(1366, 768, 1);   /* the low-tier class, BGR, padded pitch */
     size_t len = make_report(25);
+    return check_pages_on_screen(text_buf, len);
+}
+
+/* A height that is not a whole number of text rows: the caption row starts
+ * above the screen's last 16 pixels, and the code stays above the caption */
+TEST(qrscreen_report_pages_uneven_height) {
+    screen_init(1280, 790, 0);   /* 49 rows, the caption at y = 768 */
+    size_t len = make_report(20);
     return check_pages_on_screen(text_buf, len);
 }
 
@@ -213,7 +231,7 @@ TEST(qrscreen_panic_code_decodes) {
     PanicInfo pi = make_panic("Page Fault", 16);
     int ver = qr_panic_encode(&pi, "0123456789ab-dirty", &work);
     ASSERT_TRUE(ver >= 1 && ver <= 30);
-    fb_console_panic_view();
+    fb_console_panic_view(0);
     ASSERT_EQ(qr_screen_draw_panic(&work.qr), 0);
     /* Top right, under the banner row, at most 3/5 of the width */
     uint32_t row_h = fb_console_row_height();
@@ -259,6 +277,94 @@ TEST(qrscreen_panic_cuts_frames) {
     return 0;
 }
 
+/* The character drawn in text cell (col, row) at scale 1, white on any
+ * darker background, or '\0' if no glyph matches */
+static char cell_char(uint32_t col, uint32_t row) {
+    for (int ch = 0x20; ch < 0x7F; ch++) {
+        int match = 1;
+        for (uint32_t gy = 0; gy < FONT_HEIGHT && match; gy++)
+            for (uint32_t gx = 0; gx < FONT_WIDTH && match; gx++) {
+                int on = (font8x16_data[ch][gy] & (0x80 >> gx)) != 0;
+                match = on == (grey_at(col * FONT_WIDTH + gx, row * FONT_HEIGHT + gy) > 128);
+            }
+        if (match) return (char)ch;
+    }
+    return '\0';
+}
+
+/* Append " <text>" with every run of spaces as one space */
+static void squeeze_append(char *out, size_t cap, const char *text) {
+    size_t pos = strlen(out);
+    for (const char *p = text; *p != '\0' && pos + 2 < cap; p++) {
+        if (*p == ' ' && pos > 0 && out[pos - 1] == ' ') continue;
+        out[pos++] = *p;
+    }
+    if (pos > 0 && out[pos - 1] != ' ' && pos + 1 < cap) out[pos++] = ' ';
+    out[pos] = '\0';
+}
+
+/* A 16-frame panic on a 1024x768 screen: the code is about half the width,
+ * and the 101-character register lines must not run under it. They wrap
+ * left of the code, so every register and frame stays readable */
+TEST(qrscreen_panic_text_beside_code) {
+    screen_init(1024, 768, 0);
+    PanicInfo pi = make_panic("Page Fault", 16);
+    char line[160];
+    klog_write(0, "\nPANIC: Page Fault on CPU 3\n", 28);
+    for (uint32_t i = 0; i < pi.nregs; i += 4) {
+        int n = snprintf(line, sizeof(line), "%-6s %016lx   %-6s %016lx   %-6s %016lx   %-6s %016lx\n", pi.reg_names[i],
+                         pi.reg_values[i], pi.reg_names[i + 1], pi.reg_values[i + 1], pi.reg_names[i + 2],
+                         pi.reg_values[i + 2], pi.reg_names[i + 3], pi.reg_values[i + 3]);
+        ASSERT_EQ(n, 102);   /* 101 columns, as panic_report prints them */
+        klog_write(0, line, (size_t)n);
+    }
+    klog_write(0, "Backtrace:\n", 11);
+    for (uint32_t i = 0; i < pi.nframes; i++) {
+        int n = snprintf(line, sizeof(line), "  #%-2u %016lx some_function_with_a_long_name+0x%x\n", i, pi.frames[i],
+                         0x100 + i);
+        klog_write(0, line, (size_t)n);
+    }
+    klog_write(0, "====\n", 5);
+    ASSERT_TRUE(qr_panic_encode(&pi, "0123456789ab", &work) > 0);
+    fb_console_panic_view(0);
+    ASSERT_EQ(qr_screen_draw_panic(&work.qr), 0);
+
+    uint32_t box = ((uint32_t)work.qr.size + 2 * QR_SCREEN_QUIET) * QR_SCREEN_MIN_SCALE;
+    uint32_t text_cols = (1024 - box) / FONT_WIDTH;
+    ASSERT_TRUE(text_cols >= FB_PANIC_MIN_COLS && text_cols < 101);   /* the case that wraps */
+    long got = decode_screen(1024 - box, FONT_HEIGHT, 1024, FONT_HEIGHT + box, decoded, sizeof(decoded));
+    ASSERT_TRUE(got > 0);
+
+    /* Read the text left of the code back off the screen */
+    static char seen[16384];
+    seen[0] = '\0';
+    for (uint32_t row = 1; row < fb_console_rows(); row++) {
+        char text[128];
+        for (uint32_t c = 0; c < text_cols; c++) text[c] = cell_char(c, row);
+        text[text_cols] = '\0';
+        ASSERT_TRUE(strlen(text) == text_cols);   /* every cell holds a glyph */
+        squeeze_append(seen, sizeof(seen), text);
+    }
+    for (uint32_t i = 0; i < pi.nregs; i++) {
+        char want[64];
+        snprintf(want, sizeof(want), " %s %016lx ", pi.reg_names[i], pi.reg_values[i]);
+        if (strstr(seen, want) == NULL) {
+            printf("  FAIL: register %s not readable on screen\n", pi.reg_names[i]);
+            return 1;
+        }
+    }
+    for (uint32_t i = 0; i < pi.nframes; i++) {
+        char want[64];
+        snprintf(want, sizeof(want), "#%u %016lx ", i, pi.frames[i]);
+        if (strstr(seen, want) == NULL) {
+            printf("  FAIL: frame #%u not readable on screen\n", i);
+            return 1;
+        }
+    }
+    ASSERT_TRUE(strstr(seen, "PANIC: Page Fault on CPU 3 ") != NULL);
+    return 0;
+}
+
 TEST(qrscreen_panic_small_screen) {
     screen_init(400, 300, 0);
     PanicInfo pi = make_panic("Page Fault", 4);
@@ -296,10 +402,12 @@ TestCase qr_screen_tests[] = {
     TEST_ENTRY(qrscreen_scale),
     TEST_ENTRY(qrscreen_report_pages_decode_32bpp),
     TEST_ENTRY(qrscreen_report_pages_decode_24bpp_bgr),
+    TEST_ENTRY(qrscreen_report_pages_uneven_height),
     TEST_ENTRY(qrscreen_page_too_small_screen),
     TEST_ENTRY(qrscreen_panic_text_format),
     TEST_ENTRY(qrscreen_panic_code_decodes),
     TEST_ENTRY(qrscreen_panic_cuts_frames),
+    TEST_ENTRY(qrscreen_panic_text_beside_code),
     TEST_ENTRY(qrscreen_panic_small_screen),
     TEST_ENTRY(qrscreen_log_text),
 };

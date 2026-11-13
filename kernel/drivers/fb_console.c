@@ -132,7 +132,7 @@ static void redraw_all(void) {
  * at the top, since reading the framebuffer back is far too slow. */
 static void scroll_up(void) {
     if (cells == NULL) {
-        fill_screen(bg_color);
+        if (screen_live()) fill_screen(bg_color);
         cur_row = 0;
         return;
     }
@@ -361,13 +361,18 @@ typedef struct {
     uint32_t fg, bg;   /* packed */
 } LogView;
 
-static void draw_log_line(uint32_t index, const char *text, uint32_t len, void *ctx) {
-    const LogView *v = ctx;
-    uint32_t row = 1 + index - v->first;
+/* Draw text[0..len) on row `row`, padded with spaces to the full width, with
+ * control bytes as spaces (pixels only). */
+static void draw_row(uint32_t row, const char *text, uint32_t len, uint32_t fg, uint32_t bg) {
     for (uint32_t c = 0; c < cols; c++) {
         uint8_t ch = (c < len && (uint8_t)text[c] >= 0x20 && (uint8_t)text[c] < 0x7F) ? (uint8_t)text[c] : ' ';
-        draw_glyph(c, row, ch, v->fg, v->bg);
+        draw_glyph(c, row, ch, fg, bg);
     }
+}
+
+static void draw_log_line(uint32_t index, const char *text, uint32_t len, void *ctx) {
+    const LogView *v = ctx;
+    draw_row(1 + index - v->first, text, len, v->fg, v->bg);
 }
 
 /* Fill rows 1.. with log lines [first, end), then blank the rows below them
@@ -415,14 +420,64 @@ void fb_console_scrollback(int pages) {
     draw_log_page(first, end, pack_color(0xAAAAAA), pack_color(0x000000));
 }
 
-void fb_console_panic_view(void) {
+/* Length of the next screen row of a wrapped line text[0..len), at most width
+ * columns: a longer line breaks at its last space within the row (or at the
+ * width when there is none). *used is how many bytes the row consumes, the
+ * spaces at the break included. */
+static uint32_t wrap_row(const char *text, uint32_t len, uint32_t width, uint32_t *used) {
+    if (len <= width) {
+        *used = len;
+        return len;
+    }
+    for (uint32_t c = width; c > 0; c--) {
+        if (text[c] == ' ') {
+            uint32_t u = c + 1;
+            while (u < len && text[u] == ' ') u++;   /* the next row starts at text, not spaces */
+            *used = u;
+            return c;
+        }
+    }
+    *used = width;
+    return width;
+}
+
+/* The panic view's walk: the log's lines wrapped at `width` columns, screen
+ * rows numbered from the oldest; rows [first, first + rows - 1) are drawn */
+typedef struct {
+    uint32_t width, first, index;
+    int draw;
+} WrapView;
+
+static void wrap_line(const char *text, size_t len, void *ctx) {
+    WrapView *v = ctx;
+    uint32_t pos = 0, n = len < KLOG_LINE_MAX ? (uint32_t)len : KLOG_LINE_MAX;
+    do {
+        uint32_t used, seg = wrap_row(text + pos, n - pos, v->width, &used);
+        if (v->draw && v->index >= v->first && v->index - v->first < rows - 1)
+            draw_row(1 + v->index - v->first, text + pos, seg, pack_color(0xFFFFFF), pack_color(0x8B0000));
+        v->index++;
+        pos += used;
+    } while (pos < n);
+}
+
+void fb_console_panic_view(uint32_t text_width) {
     if (!fb_initialized || rows < 2) return;
     view_pages = UINT32_MAX;   /* freeze: later output updates cells only */
-    uint32_t total = log_lines(0, 0, NULL, NULL);
-    uint32_t first = total > rows - 1 ? total - (rows - 1) : 0;
+    uint32_t width = text_width / (FONT_WIDTH * scale);
+    if (text_width == 0 || width >= cols || width < FB_PANIC_MIN_COLS) width = cols;
+    WrapView v = {.width = width};
+    klog_for_each_line(klog_tail(), klog_console_level(), wrap_line, &v);   /* count the rows */
+    uint32_t total = v.index;
+    v.first = total > rows - 1 ? total - (rows - 1) : 0;
+    v.index = 0;
+    v.draw = 1;
     draw_text_row(0, " arc_os KERNEL PANIC - scan the code or photograph this screen", pack_color(0x000000),
                   pack_color(0xFFFF00));
-    draw_log_page(first, total, pack_color(0xFFFFFF), pack_color(0x8B0000));
+    klog_for_each_line(klog_tail(), klog_console_level(), wrap_line, &v);
+    /* Lines written between the two walks may have moved the window: blank what is left */
+    uint32_t drawn = v.index > v.first ? v.index - v.first : 0;
+    for (uint32_t r = 1 + (drawn < rows - 1 ? drawn : rows - 1); r < rows; r++)
+        draw_row(r, "", 0, pack_color(0xFFFFFF), pack_color(0x8B0000));
 }
 
 /* ---- Drawing outside the text grid (QR screens, M1-04c) ---- */

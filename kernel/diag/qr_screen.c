@@ -29,6 +29,11 @@ uint32_t qr_screen_scale(uint32_t size, uint32_t avail_w, uint32_t avail_h) {
     return s >= QR_SCREEN_MIN_SCALE ? s : 0;
 }
 
+uint32_t qr_screen_page_height(void) {
+    uint32_t rows = fb_console_rows();
+    return rows >= 2 ? (rows - 1) * fb_console_row_height() : 0;
+}
+
 /* Draw qr with its quiet zone, top-left of the border at (x, y). */
 static void draw_code(const QrCode *qr, uint32_t scale, uint32_t x, uint32_t y) {
     fb_console_draw_bitmap(qr->modules, (uint32_t)qr->size, (uint32_t)qr->size, QR_ROW_BYTES, QR_SCREEN_QUIET, scale, x,
@@ -42,10 +47,9 @@ int qr_screen_show_page(const QrTextFormat *fmt, const char *text, const QrTextP
     int ver = qr_encode((const uint8_t *)payload, (size_t)len, fmt->max_version, qr);
     if (ver < 0) return ver;
 
-    uint32_t w = fb_console_width(), h = fb_console_height(), row_h = fb_console_row_height();
-    uint32_t rows = fb_console_rows();
-    if (rows < 2 || h <= row_h) return -ENOSPC;
-    uint32_t avail_h = h - row_h;   /* the bottom text row holds the caption */
+    uint32_t w = fb_console_width(), rows = fb_console_rows();
+    uint32_t avail_h = qr_screen_page_height();   /* the bottom text row holds the caption */
+    if (avail_h == 0) return -ENOSPC;
     uint32_t scale = qr_screen_scale((uint32_t)qr->size, w, avail_h);
     if (scale == 0) return -ENOSPC;
     uint32_t px = ((uint32_t)qr->size + 2 * QR_SCREEN_QUIET) * scale;
@@ -127,6 +131,7 @@ int qr_screen_draw_panic(const QrCode *qr) {
     uint32_t scale = qr_panic_scale(row_h);
     if (scale > fit) scale = fit;
     uint32_t px = ((uint32_t)qr->size + 2 * QR_SCREEN_QUIET) * scale;
+    fb_console_panic_view(w - px);   /* the log text wraps left of the code, none hidden under it */
     draw_code(qr, scale, w - px, row_h);
     return 0;
 }

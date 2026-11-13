@@ -246,7 +246,12 @@ void klog_for_each_line(uint64_t from, int max_level, void (*fn)(const char *lin
     size_t len = 0;
     int marker = 3, skip = 0;
     uint64_t pos = from;
-    int partial = pos > 0;   /* may start mid-line (e.g. once the ring has wrapped) */
+    int partial = 0;   /* starts mid-line (e.g. once the ring has wrapped): skip to the next line */
+    if (pos > 0) {
+        uint64_t at = pos - 1;   /* the byte before: a '\n' there means `from` starts a line */
+        char c = 0;
+        partial = klog_read(&at, &c, 1) != 1 || at != pos || c != '\n';   /* at != pos: overwritten */
+    }
     size_t n;
     while ((n = klog_read(&pos, chunk, sizeof(chunk))) > 0) {
         for (size_t i = 0; i < n; i++) {

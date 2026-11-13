@@ -77,10 +77,9 @@ void diag_qr_run(int can_halt, int passes, int fails) {
     int log_mode = strcmp(val, "log") == 0;
     QrTextFormat fmt = {.commit = arc_build_commit, .kind = log_mode ? "log" : "report", .max_version = 0};
     /* The largest version that fits this screen at the minimum scale, so every page fits */
-    for (int v = QR_VERSION_MAX; v >= 1 && fmt.max_version == 0; v--) {
-        uint32_t h = fb_console_height(), row_h = fb_console_row_height();
-        if (h > row_h && qr_screen_scale((uint32_t)(17 + 4 * v), fb_console_width(), h - row_h) != 0)
-            fmt.max_version = v;
+    uint32_t page_h = qr_screen_page_height();
+    for (int v = QR_VERSION_MAX; v >= 1 && fmt.max_version == 0 && page_h > 0; v--) {
+        if (qr_screen_scale((uint32_t)(17 + 4 * v), fb_console_width(), page_h) != 0) fmt.max_version = v;
     }
 
     size_t raw_len = 0;
@@ -143,7 +142,7 @@ void diag_qr_panic_setup(void) {
 }
 
 void diag_qr_panic_screen(const PanicInfo *info) {
-    fb_console_panic_view();
+    fb_console_panic_view(0);   /* the text first, in case the encode goes wrong */
     if (fb_console_width() == 0) return;
     int ver = qr_panic_encode(info, arc_build_commit, &panic_work);
     int rc = ver > 0 ? qr_screen_draw_panic(&panic_work.qr) : ver;

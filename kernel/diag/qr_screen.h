@@ -37,6 +37,10 @@ typedef struct {
  * that is under QR_SCREEN_MIN_SCALE. */
 uint32_t qr_screen_scale(uint32_t size, uint32_t avail_w, uint32_t avail_h);
 
+/* Height in pixels a report or log page's code may use: every text row but
+ * the bottom one, which holds the caption (0 before init or under 2 rows). */
+uint32_t qr_screen_page_height(void);
+
 /* Encode page `index` of npages (qr_text_paginate over text) into qr, using
  * payload (QR_BYTES_MAX bytes) as scratch, and show it: the screen white, the
  * code centred above the bottom text row, which says "arc_os <kind>  page n/N
@@ -66,10 +70,11 @@ uint32_t qr_panic_scale(uint32_t row_h);
 
 /* Draw an encoded panic code at the top right of the screen, under the
  * banner row, at qr_panic_scale (less only if the code would then take more
- * than 3/5 of the width or the height under the banner), so the registers
- * and backtrace stay readable beside it for a photo. Returns 0, or -ENOSPC if
- * it doesn't fit at QR_SCREEN_MIN_SCALE. Pixels only; takes no lock (panic
- * path). */
+ * than 3/5 of the width or the height under the banner), after redrawing the
+ * panic view wrapped to the columns left of it (fb_console_panic_view), so
+ * the registers and backtrace stay readable beside it for a photo. Returns 0,
+ * or -ENOSPC if it doesn't fit at QR_SCREEN_MIN_SCALE (nothing redrawn).
+ * Pixels only; takes no lock (panic path). */
 int qr_screen_draw_panic(const QrCode *qr);
 
 /* Copy the printable log lines (level at or below max_level, markers

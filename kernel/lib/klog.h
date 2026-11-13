@@ -70,7 +70,7 @@ size_t klog_read(uint64_t *pos, char *out, size_t n);
 #define KLOG_LINE_MAX 256
 
 /* Call fn for each whole log line from position `from` on (skipping the line
- * `from` falls inside, unless it is 0) whose level is at or below max_level,
+ * `from` falls inside, unless it starts there) whose level is at or below max_level,
  * without its "<L>" marker or newline, cut at KLOG_LINE_MAX bytes. Lines
  * written meanwhile are included; bytes overwritten meanwhile are skipped
  * (klog_read). Takes no lock beyond klog_read's. Cost: O(bytes from `from` to
