@@ -128,7 +128,7 @@ Start every block with `/os/implement-block <ID>`. These rules are what keep ses
 | M1-06 | Clocks, timers, tickless idle | M | D | KB | M1-05 | `clock_gettime`, `nanosleep`; idle CPUs get no timer interrupts | todo |
 | M1-07 | VMAs, demand paging, anonymous mmap | L | D | KA | M1-02, M1-05 | musl malloc works; bad pointers give `-EFAULT`; TLB shootdown | todo |
 | M1-08 | Copy-on-write fork + 2 MiB pages | M | D | KB | M1-07 | COW fork; huge pages for large anonymous memory | todo |
-| M1-09 | Driver model, MSI-X, DMA helpers | M | D | KB | M1-05 | virtio on the bus model with MSI-X | review |
+| M1-09 | Driver model, MSI-X, DMA helpers | M | D | KB | M1-05 | virtio on the bus model with MSI-X | review (#39) |
 | M1-10 | Async block layer + GPT | M | D | KB | M1-09 | Many requests in flight; partitions found by label | todo |
 | M1-11 | VFS rework: inodes, 64-bit offsets | L | D | KA | M0-06 | Files past 4 GiB; every filesystem converted | todo |
 | M1-12 | Page cache + file mmap | L | D | KA | M1-07, M1-10, M1-11 | `read`/`write` and `mmap` always agree | todo |
