@@ -1,4 +1,5 @@
 #include "proc/elf.h"
+#include "mm/mm.h"
 #include "mm/vmm.h"
 #include "mm/pmm.h"
 #include "lib/mem.h"
@@ -72,9 +73,10 @@ static void elf_copy_page_data(void *page_virt, uint64_t vaddr,
     }
 }
 
-/* Load a single PT_LOAD segment: validate bounds, map pages, copy data. */
-static int elf_load_segment(const Elf64_Phdr *phdr, uint64_t bias, const void *data,
-                            size_t file_size, uint64_t pml4_phys,
+/* Load a single PT_LOAD segment: validate bounds, add its VMA, map and fill
+ * the pages that hold file data. Pages past the file data (.bss) are left to
+ * demand paging: the VMA is anonymous, so they read as zero (M1-07). */
+static int elf_load_segment(const Elf64_Phdr *phdr, uint64_t bias, const void *data, size_t file_size, Mm *mm,
                             uint64_t hhdm, uint64_t *highest_addr) {
     uint64_t start = phdr->p_vaddr + bias;
 
@@ -101,31 +103,44 @@ static int elf_load_segment(const Elf64_Phdr *phdr, uint64_t bias, const void *d
     if (phdr->p_flags & PF_W) vmm_flags |= VMM_FLAG_WRITABLE;
     if (!(phdr->p_flags & PF_X)) vmm_flags |= VMM_FLAG_NOEXEC;
 
-    /* Map pages for this segment */
     uint64_t seg_start = PAGE_ALIGN_DOWN(start);
     uint64_t seg_end = PAGE_ALIGN_UP(start + phdr->p_memsz);
+    uint32_t prot = ((phdr->p_flags & PF_R) ? VMA_READ : 0) | ((phdr->p_flags & PF_W) ? VMA_WRITE : 0) |
+                    ((phdr->p_flags & PF_X) ? VMA_EXEC : 0);
+    int err = mm_setup_vma(mm, seg_start, seg_end, prot, 0);
+    if (err != 0) {
+        kprintf("[ELF] Segment at 0x%lx overlaps another\n", start);
+        return err == -ENOMEM ? -ENOMEM : -ENOEXEC;
+    }
 
+    /* Pages with file bytes now; the rest on first touch */
+    uint64_t data_end = PAGE_ALIGN_UP(start + phdr->p_filesz);
     for (uint64_t vaddr = seg_start; vaddr < seg_end; vaddr += PAGE_SIZE) {
         uint64_t phys;
         uint32_t flags = vmm_flags;
-        int old = vmm_get_flags_in(pml4_phys, vaddr);
+        int old = vmm_get_flags_in(mm->pgd, vaddr);
         if (old >= 0) {
             /* A page the previous segment also covers (e.g. the end of .text
              * and the start of .data): keep its contents, allow both. */
-            phys = PAGE_ALIGN_DOWN(vmm_get_phys_in(pml4_phys, vaddr));
+            phys = PAGE_ALIGN_DOWN(vmm_get_phys_in(mm->pgd, vaddr));
             flags |= (uint32_t)old & VMM_FLAG_WRITABLE;
             if (!((uint32_t)old & VMM_FLAG_NOEXEC)) flags &= ~(uint32_t)VMM_FLAG_NOEXEC;
-        } else {
-            phys = pmm_alloc_page();
-            if (phys == 0) {
-                kprintf("[ELF] Out of memory mapping segment\n");
-                return -ENOMEM;
-            }
-            memset((void *)(phys + hhdm), 0, PAGE_SIZE);
+            elf_copy_page_data((void *)(phys + hhdm), vaddr, phdr, bias, data);
+            if (vmm_map_page_in(mm->pgd, vaddr, phys, flags) != 0) return -ENOMEM;
+            continue;
         }
-
+        if (phdr->p_filesz == 0 || vaddr >= data_end) continue;   /* .bss only */
+        phys = pmm_alloc_page();
+        if (phys == 0) {
+            kprintf("[ELF] Out of memory mapping segment\n");
+            return -ENOMEM;
+        }
+        memset((void *)(phys + hhdm), 0, PAGE_SIZE);
         elf_copy_page_data((void *)(phys + hhdm), vaddr, phdr, bias, data);
-        vmm_map_page_in(pml4_phys, vaddr, phys, flags);
+        if (mm_setup_page(mm, vaddr, phys, flags) != 0) {
+            pmm_free_page(phys);
+            return -ENOMEM;
+        }
     }
 
     /* Track highest loaded address for brk */
@@ -140,7 +155,7 @@ static int elf_load_segment(const Elf64_Phdr *phdr, uint64_t bias, const void *d
     return 0;
 }
 
-int elf_load(const void *data, size_t size, uint64_t pml4_phys, ElfLoadResult *result) {
+int elf_load(const void *data, size_t size, Mm *mm, ElfLoadResult *result) {
     if (data == NULL || result == NULL || size < sizeof(Elf64_Ehdr)) {
         return -ENOEXEC;
     }
@@ -193,7 +208,7 @@ int elf_load(const void *data, size_t size, uint64_t pml4_phys, ElfLoadResult *r
     for (uint16_t i = 0; i < ehdr->e_phnum; i++) {
         const Elf64_Phdr *phdr = elf_phdr(data, ehdr, i);
         if (phdr->p_type != PT_LOAD || phdr->p_memsz == 0) continue;
-        err = elf_load_segment(phdr, bias, data, size, pml4_phys, hhdm, &highest_addr);
+        err = elf_load_segment(phdr, bias, data, size, mm, hhdm, &highest_addr);
         if (err != 0) return err;
 
         /* No PT_PHDR: the headers are wherever the segment holding e_phoff put them */

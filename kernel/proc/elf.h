@@ -92,14 +92,16 @@ typedef struct {
 
 /* Load a static ELF64 executable (ET_EXEC, or ET_DYN without PT_INTERP) into
  * a process's address space (ADR-0002). Each PT_LOAD page gets its segment's
- * permissions; a page two segments share gets both. Pages it mapped before a
- * failure stay mapped: the caller frees the address space.
+ * permissions and VMA (M1-07); a page two segments share gets both (its own
+ * one-page VMA). Pages with file data are filled now, .bss pages on first
+ * touch. What it mapped before a failure stays: the caller frees the mm.
  * data: pointer to ELF file in memory
  * size: size of ELF file
- * pml4_phys: physical address of process's PML4
+ * mm: the new address space (nobody else can reach it yet)
  * result: output — entry point and break start
  * Returns 0, -ENOEXEC for a file that is not a static x86_64 ELF executable
  * (including any program with PT_INTERP), or -ENOMEM. */
-int elf_load(const void *data, size_t size, uint64_t pml4_phys, ElfLoadResult *result);
+struct Mm;
+int elf_load(const void *data, size_t size, struct Mm *mm, ElfLoadResult *result);
 
 #endif /* ARCHOS_PROC_ELF_H */

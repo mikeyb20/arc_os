@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include "arch/x86_64/gdt.h"
 #include "arch/x86_64/cpu.h"
+#include "proc/cpumask.h"
 
 /* Per-CPU data, found through GS (M1-03).
  *
@@ -20,6 +21,15 @@
  * IST stacks (#DF, NMI, #MC), then the PerCpu page. The BSP's are static. */
 
 #define MAX_CPUS CPU_MAX
+
+/* One CPU's TLB shootdown request (tlb.c): the range other CPUs flush, and
+ * how many have not done it yet. */
+typedef struct TlbRequest {
+    uint64_t pgd;      /* address space (PML4 phys), or 0: kernel mappings, every CPU */
+    uint64_t start;
+    uint64_t end;
+    uint32_t acks;     /* CPUs still to flush; the sender waits for 0 */
+} TlbRequest;
 
 #define PERCPU_AREA_ORDER 2                               /* 16 KiB */
 #define PERCPU_AREA_SIZE  (4096u << PERCPU_AREA_ORDER)
@@ -49,6 +59,9 @@ typedef struct __attribute__((aligned(64))) PerCpu {
     volatile uint8_t online;          /* set by the CPU itself once it is up */
     TSS *tss;                         /* this CPU's TSS (tss_storage) */
     void *sched;                      /* this CPU's run queue (proc/sched.c) */
+    void *mm;                         /* user address space loaded here, or NULL (mm/mm.c) */
+    TlbRequest tlb_req;               /* this CPU's TLB shootdown request (tlb.c) */
+    CpuMask tlb_from;                 /* CPUs whose request this CPU still has to run (tlb.c) */
 
     GDTEntry gdt[GDT_ENTRY_COUNT];    /* this CPU's GDT (LTR marks its TSS busy) */
     TSS tss_storage;                  /* RSP0 + IST pointers */

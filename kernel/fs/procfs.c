@@ -2,6 +2,8 @@
 #include "mm/pmm.h"
 #include "mm/kmalloc.h"
 #include "mm/slab.h"
+#include "mm/mm.h"
+#include "mm/vmm.h"
 #include "arch/hal.h"
 #include "proc/process.h"
 #include "proc/sched.h"
@@ -12,6 +14,9 @@
 
 /* Scratch buffer for content generation */
 #define PROCFS_SCRATCH_SIZE 2048   /* /proc/cpuinfo: ~80 bytes per CPU */
+/* /proc/<pid>/maps: ~80 bytes per VMA, allocated per read; a longer map is
+ * cut at this size (M1-11's seq-file reads replace whole-file generation) */
+#define PROCFS_MAPS_SIZE    (32 * 1024)
 
 /* --- Formatting helpers (no snprintf available) --- */
 
@@ -57,6 +62,10 @@ static int gen_meminfo(char *buf, int bufsz, void *ctx) {
     pos = procfs_append_u64(buf, pos, bufsz, total_kb);
     pos = procfs_append_str(buf, pos, bufsz, " kB\nMemFree: ");
     pos = procfs_append_u64(buf, pos, bufsz, free_kb);
+    pos = procfs_append_str(buf, pos, bufsz, " kB\nAnonPages: ");
+    pos = procfs_append_u64(buf, pos, bufsz, mm_anon_pages() * (PAGE_SIZE / 1024));
+    pos = procfs_append_str(buf, pos, bufsz, " kB\nPageTables: ");
+    pos = procfs_append_u64(buf, pos, bufsz, vmm_user_table_pages() * (PAGE_SIZE / 1024));
     pos = procfs_append_str(buf, pos, bufsz, " kB\nPageDescriptors: ");
     pos = procfs_append_u64(buf, pos, bufsz, pmm_get_descriptor_bytes() / 1024);
     pos = procfs_append_str(buf, pos, bufsz, " kB\nHeapUsed: ");
@@ -205,12 +214,26 @@ static int gen_pid_status(char *buf, int bufsz, void *ctx) {
     return pos;
 }
 
+/* /proc/<pid>/maps (M1-07): the address space in Linux's format. The mm is
+ * pinned while it is read (the read may sleep on its lock, and the process
+ * may exit meanwhile). */
+static int gen_pid_maps(char *buf, int bufsz, void *ctx) {
+    Process *p = proc_get_by_pid((uint32_t)(uintptr_t)ctx);
+    if (p == NULL || p->mm == NULL) return 0;
+    Mm *mm = p->mm;
+    mm_get(mm);
+    int n = mm_format_maps(mm, buf, bufsz);
+    mm_put(mm);
+    return n;
+}
+
 /* --- Node types --- */
 
 typedef struct {
     VfsNode       vnode;
     procfs_gen_fn generate;
     void         *gen_ctx;
+    uint32_t scratch_size;   /* 0: PROCFS_SCRATCH_SIZE on the stack; else kmalloc'd */
 } ProcfsFileNode;
 
 typedef struct {
@@ -224,15 +247,22 @@ static int procfs_file_read(VfsNode *node, void *buf, uint32_t offset, uint32_t 
     ProcfsFileNode *pn = (ProcfsFileNode *)node;
     if (pn->generate == NULL) return 0;
 
-    char scratch[PROCFS_SCRATCH_SIZE];
-    int total = pn->generate(scratch, PROCFS_SCRATCH_SIZE, pn->gen_ctx);
-    if (total <= 0) return 0;
-
-    if (offset >= (uint32_t)total) return 0;
-    uint32_t avail = (uint32_t)total - offset;
-    uint32_t to_copy = size < avail ? size : avail;
-    memcpy(buf, scratch + offset, to_copy);
-
+    char stack_scratch[PROCFS_SCRATCH_SIZE];
+    char *scratch = stack_scratch;
+    int scratch_size = PROCFS_SCRATCH_SIZE;
+    if (pn->scratch_size > PROCFS_SCRATCH_SIZE) {
+        scratch = kmalloc(pn->scratch_size, 0);
+        if (scratch == NULL) return -ENOMEM;
+        scratch_size = (int)pn->scratch_size;
+    }
+    int total = pn->generate(scratch, scratch_size, pn->gen_ctx);
+    uint32_t to_copy = 0;
+    if (total > 0 && offset < (uint32_t)total) {
+        uint32_t avail = (uint32_t)total - offset;
+        to_copy = size < avail ? size : avail;
+        memcpy(buf, scratch + offset, to_copy);
+    }
+    if (scratch != stack_scratch) kfree(scratch);
     return (int)to_copy;
 }
 
@@ -266,41 +296,57 @@ static ProcfsFileNode sched_debug_node;
 #define PROCFS_PID_POOL 8
 static ProcfsDirNode pid_dirs[PROCFS_PID_POOL];
 static int pid_dirs_next;
-static ProcfsFileNode pid_status_nodes[PROCFS_PID_POOL];
-static int pid_status_next;
+static ProcfsFileNode pid_file_nodes[PROCFS_PID_POOL];   /* status and maps */
+static int pid_file_next;
 
 static ProcfsDirNode procfs_root_node;
 
 /* --- Directory ops for /proc/[pid] --- */
 
+/* Files in /proc/<pid>, in readdir order */
+static const struct {
+    const char *name;
+    procfs_gen_fn gen;
+    uint32_t scratch_size;
+} pid_files[] = {
+    {"status", gen_pid_status, 0},
+    {"maps", gen_pid_maps, PROCFS_MAPS_SIZE},
+};
+#define PID_FILE_COUNT (sizeof(pid_files) / sizeof(pid_files[0]))
+
 static VfsNode *procfs_pid_lookup(VfsNode *dir, const char *name) {
     ProcfsDirNode *pd = (ProcfsDirNode *)dir;
-    if (strcmp(name, "status") != 0) return NULL;
+    uint32_t i = 0;
+    while (i < PID_FILE_COUNT && strcmp(name, pid_files[i].name) != 0) i++;
+    if (i == PID_FILE_COUNT) return NULL;
 
-    int slot = pid_status_next % PROCFS_PID_POOL;
-    pid_status_next++;
+    int slot = pid_file_next % PROCFS_PID_POOL;
+    pid_file_next++;
 
-    ProcfsFileNode *fn = &pid_status_nodes[slot];
-    fn->vnode.inode_num = 3000 + pd->pid * 10 + 1;
+    ProcfsFileNode *fn = &pid_file_nodes[slot];
+    fn->vnode.inode_num = 3000 + pd->pid * 10 + 1 + i;
     fn->vnode.type = VFS_FILE;
     fn->vnode.size = 0;
     fn->vnode.mode = 0444;
     fn->vnode.ops = &procfs_file_ops;
     fn->vnode.private_data = fn;
-    fn->generate = gen_pid_status;
+    fn->generate = pid_files[i].gen;
     fn->gen_ctx = (void *)(uintptr_t)pd->pid;
+    fn->scratch_size = pid_files[i].scratch_size;
 
     return &fn->vnode;
 }
 
 static int procfs_pid_readdir(VfsNode *dir, VfsDirEntry *entries, uint32_t max) {
     (void)dir;
-    if (max < 1) return 0;
-    strncpy(entries[0].name, "status", VFS_NAME_MAX - 1);
-    entries[0].name[VFS_NAME_MAX - 1] = '\0';
-    entries[0].inode_num = 0;
-    entries[0].type = VFS_FILE;
-    return 1;
+    uint32_t n = 0;
+    for (; n < PID_FILE_COUNT && n < max; n++) {
+        strncpy(entries[n].name, pid_files[n].name, VFS_NAME_MAX - 1);
+        entries[n].name[VFS_NAME_MAX - 1] = '\0';
+        entries[n].inode_num = 0;
+        entries[n].type = VFS_FILE;
+    }
+    return (int)n;
 }
 
 static const VfsOps procfs_pid_dir_ops = {
@@ -340,7 +386,13 @@ static VfsNode *procfs_root_lookup(VfsNode *dir, const char *name) {
     }
 
     uint32_t pid;
-    if (procfs_parse_uint(name, &pid) != 0) return NULL;
+    if (strcmp(name, "self") == 0) {   /* Linux: a symlink to the caller's pid; here the same directory */
+        Process *self = proc_current();
+        if (self == NULL) return NULL;
+        pid = self->pid;
+    } else if (procfs_parse_uint(name, &pid) != 0) {
+        return NULL;
+    }
 
     Process *p = proc_get_by_pid(pid);
     if (p == NULL) return NULL;
@@ -410,6 +462,13 @@ static int procfs_root_readdir(VfsNode *dir, VfsDirEntry *entries, uint32_t max)
         count++;
     }
 
+    if (count < max) {
+        strncpy(entries[count].name, "self", VFS_NAME_MAX - 1);
+        entries[count].inode_num = 0;
+        entries[count].type = VFS_DIRECTORY;
+        count++;
+    }
+
     struct procfs_readdir_ctx ctx = { entries, max, count };
     proc_foreach(procfs_enum_pid, &ctx);
 
@@ -456,7 +515,7 @@ VfsNode *procfs_init(void) {
     procfs_init_file(&sched_debug_node, 1995, gen_sched_debug, NULL);
 
     pid_dirs_next = 0;
-    pid_status_next = 0;
+    pid_file_next = 0;
 
     return &procfs_root_node.vnode;
 }

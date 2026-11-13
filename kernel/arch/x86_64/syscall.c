@@ -33,6 +33,14 @@
 /* Syscall handler table, indexed by Linux number. 512 slots, 4 KiB. */
 static syscall_handler_t syscall_table[ARC_NR_SYSCALLS];
 
+/* syscall_entry.asm reads SyscallFrame by these offsets */
+_Static_assert(__builtin_offsetof(SyscallFrame, ret_rcx) == 0, "SyscallFrame layout");
+_Static_assert(__builtin_offsetof(SyscallFrame, ret_r11) == 8, "SyscallFrame layout");
+_Static_assert(__builtin_offsetof(SyscallFrame, r9) == 16, "SyscallFrame layout");
+_Static_assert(__builtin_offsetof(SyscallFrame, rcx) == 112, "SyscallFrame layout");
+_Static_assert(__builtin_offsetof(SyscallFrame, r11) == 120, "SyscallFrame layout");
+_Static_assert(__builtin_offsetof(SyscallFrame, rsp) == 128, "SyscallFrame layout");
+
 /* fork_return_to_user (usermode.asm) reads ForkContext by these offsets */
 _Static_assert(__builtin_offsetof(ForkContext, user_r15) == 64, "ForkContext layout");
 _Static_assert(__builtin_offsetof(ForkContext, user_rdi) == 72, "ForkContext layout");

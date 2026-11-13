@@ -42,6 +42,7 @@
 #define ENOSYS          38
 #define ENOTEMPTY       39
 #define ELOOP           40
+#define EOVERFLOW        75
 #define EWOULDBLOCK     EAGAIN
 #define ENOTSOCK        88
 #define EDESTADDRREQ    89

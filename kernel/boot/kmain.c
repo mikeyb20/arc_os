@@ -7,12 +7,12 @@
 #include "mm/vmm.h"
 #include "mm/kmalloc.h"
 #include "mm/slab.h"
+#include "mm/mm.h"
 #include "boot/bootinfo.h"
 #include "proc/thread.h"
 #include "proc/sched.h"
 #include "proc/lockdep.h"
 #include "proc/process.h"
-#include "arch/x86_64/syscall.h"
 #include "proc/init.h"
 #include "drivers/acpi.h"
 #include "drivers/pci.h"
@@ -450,6 +450,7 @@ void kmain(void) {
     vmm_init(info);
     serial_puts("[BOOT] stage: heap\n");
     kmalloc_init();
+    mm_init();   /* VMA and address-space caches (M1-07) */
     klog_setup_buffer();
     heap_self_test();
     pmm_self_test();

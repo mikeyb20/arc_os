@@ -21,6 +21,9 @@ add_executable(test_runner
     test_fd.c
     test_fd_refs.c
     test_vmm.c
+    test_rbtree.c
+    test_vma.c
+    test_mm.c
     test_spinlock.c
     test_gdt.c
     test_idt.c
@@ -102,6 +105,9 @@ add_test(NAME test_elf      COMMAND test_runner --suite elf)
 add_test(NAME test_fd       COMMAND test_runner --suite fd)
 add_test(NAME test_fd_refs  COMMAND test_runner --suite fd_refs)
 add_test(NAME test_vmm      COMMAND test_runner --suite vmm)
+add_test(NAME test_rbtree   COMMAND test_runner --suite rbtree)
+add_test(NAME test_vma      COMMAND test_runner --suite vma)
+add_test(NAME test_mm       COMMAND test_runner --suite mm)
 add_test(NAME test_spinlock  COMMAND test_runner --suite spinlock)
 add_test(NAME test_gdt       COMMAND test_runner --suite gdt)
 add_test(NAME test_lapic     COMMAND test_runner --suite lapic)

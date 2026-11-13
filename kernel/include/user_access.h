@@ -16,20 +16,35 @@ static inline int user_ptr_valid(const void *ptr, size_t len) {
     return (end > start) && (end <= USER_ADDR_LIMIT);
 }
 
-/* Fault-free user copies (kernel/mm/uaccess.c). The kernel has no page-fault
- * fixups yet (M1-19), so these check that every page of the user range is
- * mapped for user access in the current address space before touching it.
- * Cost: one page-table walk per page crossed. All return -EFAULT on a bad range. */
+/* The only way kernel code touches user memory (work-blocks.md §7; SMAP
+ * enforces it from M1-19). Implemented in kernel/mm/uaccess.c on top of one
+ * copy routine with an exception-table fixup (M1-07): a page that isn't there
+ * yet is faulted in (demand paging, stack growth); an address the process
+ * can't use ends the copy with -EFAULT instead of a kernel crash.
+ *
+ * Rules: never call these while holding a spinlock (the fault can't be
+ * resolved then and the copy fails with -EFAULT) or the current process's mm
+ * lock (the fault takes it). Cost: one REP MOVSB, plus a page fault per page
+ * not yet mapped. */
 
-/* Copy len bytes from user src to kernel dst. Returns 0 or -EFAULT. */
+/* Copy len bytes from user src to kernel dst. Returns 0 or -EFAULT (then the
+ * bytes not copied are zeroed in dst). */
 int copy_from_user(void *dst, const void *src, size_t len);
 
-/* Copy len bytes from kernel src to user dst (pages must be writable).
- * Returns 0 or -EFAULT. */
+/* Copy len bytes from kernel src to user dst. Returns 0 or -EFAULT (some
+ * bytes may have been written). */
 int copy_to_user(void *dst, const void *src, size_t len);
 
 /* Copy a NUL-terminated user string into dst[size]. Returns its length
  * (without the NUL), -EFAULT, or -ENAMETOOLONG if no NUL within size bytes. */
 long strncpy_from_user(char *dst, const char *src, size_t size);
+
+/* One value of x's type from / to a user pointer. Return 0 or -EFAULT. */
+#define get_user(x, uptr) copy_from_user(&(x), (const void *)(uptr), sizeof(x))
+#define put_user(x, uptr)                                                    \
+    ({                                                                       \
+        __typeof__(x) put_user_val_ = (x);                                   \
+        copy_to_user((void *)(uptr), &put_user_val_, sizeof(put_user_val_)); \
+    })
 
 #endif /* ARCHOS_USER_ACCESS_H */

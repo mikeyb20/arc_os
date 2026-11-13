@@ -29,7 +29,12 @@ Kernel and user space are separate worlds: the same function in `kernel/lib` and
 | Kernel heap (16 B-4 MiB, no header) | `kmalloc`, `kfree`, `krealloc` | `kernel/mm/kmalloc.h` |
 | Object caches for hot structures | `kmem_cache_create`, `kmem_cache_alloc`, `kmem_cache_free`, `kmem_cache_shrink`; `slab_owner` | `kernel/mm/slab.h` |
 | PFN-linked page lists (O(1) push/remove through `lru`) | `page_list_push`, `page_list_remove`, `page_list_first` | `kernel/mm/page.h` |
-| User memory | `copy_from_user`, `copy_to_user`, `strncpy_from_user` | `kernel/include/user_access.h` |
+| User memory (every user pointer; `-EFAULT`, never a raw dereference) | `copy_from_user`, `copy_to_user`, `strncpy_from_user`, `get_user`, `put_user`; range check only: `user_ptr_valid` | `kernel/include/user_access.h` |
+| Intrusive red-black tree (caller compares keys) | `rb_link_node`, `rb_insert_color`, `rb_erase`, `rb_first`, `rb_next`, `rb_entry` | `kernel/lib/rbtree.h` |
+| Sleeping read-write lock | `rwsem_init`, `rwsem_down_read` / `_up_read`, `rwsem_down_write` / `_up_write`, `rwsem_try_read`, `rwsem_write_held` | `kernel/proc/rwsem.h` |
+| VMA sets: lookup, split, merge, gap search | `vma_find`, `vma_find_containing`, `vma_range_free`, `vma_insert`, `vma_remove`, `vma_split`, `vma_merge_around`, `vma_find_gap` | `kernel/mm/vma.h` |
+| User address spaces: create, fork, load, map, fault | `mm_create`, `mm_get` / `mm_put`, `mm_fork`, `mm_switch`, `mm_map_anon`, `mm_unmap`, `mm_protect`, `mm_fault`, `mm_setup_vma` / `_page` / `_stack` (exec) | `kernel/mm/mm.h` |
+| Flush a user range's TLB entries on every CPU that has the mm loaded | `mm_flush_tlb_range`; portable code below mm: `hal_tlb_flush`, kernel ranges `hal_tlb_flush_kernel` | `kernel/mm/mm.h`, `kernel/arch/hal.h` (`arch/x86_64/tlb.h`) |
 | Spinlock (caller keeps the interrupt flags; every lock has a level) | `spin_lock_irqsave` / `spin_unlock_irqrestore`, `spin_lock` / `spin_unlock`, `spin_trylock`, `SPINLOCK_INIT(level, name)`, `spin_lock_init` | `kernel/proc/spinlock.h` |
 | Lock levels and the debug lock-order checker | `LOCK_LEVEL_*`, `lockdep_check_order` | `kernel/proc/lockdep.h` (`docs/kernel/locking.md`) |
 | Big kernel lock (interim, until subsystems have their own locks) | `kernel_lock`, `kernel_lock_irq`, `kernel_unlock`, `kernel_lock_held` | `kernel/proc/kernel_lock.h` |

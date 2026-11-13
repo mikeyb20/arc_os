@@ -15,6 +15,10 @@
 #define PTE_GLOBAL     (1ULL << 8)
 #define PTE_NX         (1ULL << 63)  /* No-execute */
 
+/* Software bit (ignored by the CPU in a not-present entry): a PROT_NONE user
+ * page. The entry is not present, but still holds its frame (M1-07). */
+#define PTE_PROTNONE (1ULL << 9)
+
 /* Mask to extract physical address from PTE (bits 12-51) */
 #define PTE_ADDR_MASK  0x000FFFFFFFFFF000ULL
 

@@ -48,10 +48,8 @@ typedef struct Process {
     int32_t         exit_status;    /* Exit status for wait() */
     uint8_t         term_signal;    /* Nonzero: killed by this signal (wait4 status) */
     Thread         *main_thread;
-    uint64_t        page_table;     /* PML4 phys addr (0 = use kernel PML4) */
-    FdTable        *fd_table;       /* Per-process file descriptor table */
-    uint64_t        brk_current;    /* Current program break */
-    uint64_t        brk_start;      /* Initial program break */
+    struct Mm *mm;             /* user address space (mm/mm.h); NULL: kernel only, or exited */
+    FdTable *fd_table;       /* Per-process file descriptor table */
     char            cwd[PATH_MAX];  /* Current working directory */
     uid_t           uid;            /* Real user ID */
     gid_t           gid;            /* Real group ID */
@@ -98,9 +96,9 @@ Process *proc_fork(Process *parent, const ForkContext *user_ctx);
 /* Find a zombie child of the given parent. Returns NULL if none. */
 Process *proc_find_zombie_child(Process *parent);
 
-/* Reap a zombie child: copy its exit status, unlink it and free everything it
- * held (user pages and page tables, fd table, main thread, PCB). Returns its
- * pid; child is invalid afterwards. O(pages it mapped). */
+/* Reap a zombie child: copy its exit status, unlink it and free what it
+ * still held (fd table, main thread, PCB; its address space went at exit).
+ * Returns its pid; child is invalid afterwards. O(1). */
 int proc_reap(Process *child, int32_t *status_out);
 
 /* Check if a process has any unreaped children. */

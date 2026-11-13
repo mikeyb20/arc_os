@@ -1,6 +1,6 @@
 /* arc_os — Inter-Processor Interrupt infrastructure
  *
- * Provides TLB shootdown, cross-core reschedule (M1-05: wakes an idle CPU or
+ * Provides the TLB shootdown vector (handled in tlb.c), cross-core reschedule (M1-05: wakes an idle CPU or
  * makes a CPU move a thread its affinity no longer allows), halt and
  * call-function IPIs. */
 
@@ -9,18 +9,9 @@
 #include "arch/x86_64/lapic.h"
 #include "arch/x86_64/percpu.h"
 #include "arch/x86_64/cpuid.h"
+#include "arch/x86_64/tlb.h"
 #include "proc/sched.h"
 #include "lib/kprintf.h"
-
-/* TLB shootdown handler — flush TLB on this CPU */
-static void ipi_tlb_handler(InterruptFrame *frame) {
-    (void)frame;
-    /* Flush entire TLB by reloading CR3 */
-    uint64_t cr3;
-    __asm__ volatile ("mov %%cr3, %0" : "=r"(cr3));
-    __asm__ volatile ("mov %0, %%cr3" : : "r"(cr3) : "memory");
-    lapic_eoi();
-}
 
 /* Reschedule handler: another CPU queued a thread here (or moved one away) */
 static void ipi_schedule_handler(InterruptFrame *frame) {
@@ -68,18 +59,13 @@ uint32_t ipi_call_others(void (*fn)(void *arg), void *arg, uint64_t max_cycles) 
 }
 
 void ipi_init(void) {
-    isr_register_handler(IPI_VEC_TLB_SHOOTDOWN, ipi_tlb_handler);
+    tlb_init();   /* IPI_VEC_TLB_SHOOTDOWN: range shootdowns (tlb.c, M1-07) */
     isr_register_handler(IPI_VEC_SCHEDULE, ipi_schedule_handler);
     isr_register_handler(IPI_VEC_HALT, ipi_halt_handler);
     isr_register_handler(IPI_VEC_CALL, ipi_call_handler);
 
     kprintf("[IPI] Handlers registered (TLB=0x%x, Sched=0x%x, Halt=0x%x)\n",
             IPI_VEC_TLB_SHOOTDOWN, IPI_VEC_SCHEDULE, IPI_VEC_HALT);
-}
-
-void ipi_tlb_shootdown(void) {
-    if (cpu_count <= 1) return;
-    lapic_send_ipi_all_excluding_self(IPI_VEC_TLB_SHOOTDOWN);
 }
 
 void ipi_reschedule(uint32_t cpu_id) {

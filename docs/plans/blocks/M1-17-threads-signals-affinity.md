@@ -38,6 +38,12 @@ threads, per-thread masks, CPU affinity and the CPU description files llama.cpp 
   user code never sees one; `SA_RESTART`/`SA_ONSTACK` are stored but not acted on.
 
 **Notes.**
+- From M1-07: CPU exceptions in user mode become signals (`isr.c` `user_exception`, Linux's vector to signal and
+  `si_code` table), and signals are delivered on every return to user mode from an interrupt
+  (`user_return_work`), through a `SyscallFrame` copy of the interrupt frame. `SyscallFrame` starts with
+  `ret_rcx`/`ret_r11`: the values RCX/R11 get back; when they differ from RIP/RFLAGS the syscall exit leaves
+  through IRET. Without `rt_sigprocmask` a handler that `siglongjmp`s out keeps its signal blocked; the next
+  fault signal then kills (Linux's forced-signal rule). `mmtest` uses `SA_NODEFER` for that reason.
 - From M1-01: `SA_RESTART`, `SA_ONSTACK` and `SA_NOCLDSTOP`/`SA_NOCLDWAIT` are stored in `SigState` but not
   acted on; sigaltstack is not implemented (`uc_stack` is filled as disabled). Kernel-sent SIGCHLD carries
   `si_code = SI_USER` and the sender's pid; Linux uses `CLD_EXITED`/`CLD_KILLED` with status fields.

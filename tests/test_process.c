@@ -8,6 +8,7 @@
 #define ARCHOS_PROC_SCHED_H
 #define ARCHOS_MM_KMALLOC_H
 #define ARCHOS_MM_VMM_H          /* Guard vmm.h — we stub its functions */
+#define ARCHOS_MM_MM_H           /* mm.h: stubbed below */
 #define ARCHOS_LIB_KPRINTF_H
 #define ARCHOS_LIB_MEM_H        /* Use libc memset/memcpy */
 #define ARCHOS_PROC_PROCESS_H
@@ -134,10 +135,8 @@ typedef struct Process {
     uint8_t         state;
     int32_t         exit_status;
     Thread         *main_thread;
-    uint64_t        page_table;
-    FdTable        *fd_table;
-    uint64_t        brk_current;
-    uint64_t        brk_start;
+    struct Mm *mm;
+    FdTable *fd_table;
     char            cwd[PATH_MAX];
     uint32_t        uid;
     uint32_t        gid;
@@ -151,16 +150,36 @@ typedef struct Process {
     struct Process *next;
 } Process;
 
-/* VMM stubs: count address spaces freed */
-static int vmm_free_calls;
-static uint64_t vmm_free_last;
-static uint64_t vmm_create_user_pml4(void) {
-    return 0x300000;
+/* mm.h stubs: count address spaces made, copied, loaded and dropped */
+typedef struct Mm {
+    uint64_t pgd;
+    int heap;   /* made by a stub: mm_put frees it */
+} Mm;
+static int mm_put_calls;
+static Mm *mm_put_last;
+static Mm *mm_fork_src;
+static Mm *mm_switch_last;
+static int mm_create_fail;
+static Mm *mm_new(uint64_t pgd) {
+    Mm *mm = calloc(1, sizeof(Mm));
+    mm->pgd = pgd;
+    mm->heap = 1;
+    return mm;
 }
-static uint64_t vmm_fork_address_space(uint64_t src) { (void)src; return 0x400000; }
-static void vmm_free_user_pages(uint64_t pml4) {
-    vmm_free_calls++;
-    vmm_free_last = pml4;
+static Mm *mm_create(void) {
+    return mm_create_fail ? NULL : mm_new(0x300000);
+}
+static Mm *mm_fork(Mm *src) {
+    mm_fork_src = src;
+    return mm_new(0x400000);
+}
+static void mm_put(Mm *mm) {
+    mm_put_calls++;
+    mm_put_last = mm;
+    if (mm->heap) free(mm);
+}
+static void mm_switch(Mm *next) {
+    mm_switch_last = next;
 }
 
 /* FD stubs: fork's table copy is a real allocation, so reaping must free it */
@@ -316,8 +335,11 @@ static void reset_proc_state(void) {
     proc_list = NULL;
     next_pid = 0;
     init_proc = NULL;
-    vmm_free_calls = 0;
-    vmm_free_last = 0;
+    mm_put_calls = 0;
+    mm_put_last = NULL;
+    mm_fork_src = NULL;
+    mm_switch_last = NULL;
+    mm_create_fail = 0;
     release_fds_calls = 0;
     thread_destroy_calls = 0;
     thread_destroy_last = NULL;
@@ -558,6 +580,8 @@ static Process *make_zombie_child(Process *parent) {
     memset(&ctx, 0, sizeof(ctx));
     Process *c = proc_fork(parent, &ctx);
     if (c == NULL) return NULL;
+    mm_put(c->mm);   /* proc_exit drops the address space */
+    c->mm = NULL;
     c->state = PROC_ZOMBIE;
     c->exit_status = 7;
     return c;
@@ -566,7 +590,8 @@ static Process *make_zombie_child(Process *parent) {
 static Process *make_parent(void) {
     Process *p = proc_create((thread_entry_t)0xDEAD, NULL);
     if (p == NULL) return NULL;
-    p->page_table = 0x300000;
+    static Mm parent_mm = {0x300000, 0};
+    p->mm = &parent_mm;
     static FdTable parent_fds;
     p->fd_table = &parent_fds;
     test_current_thread = p->main_thread;
@@ -581,15 +606,14 @@ static int test_reap_frees_everything(void) {
     Process *c = make_zombie_child(parent);
     ASSERT_TRUE(c != NULL);
     Thread *ct = c->main_thread;
-    uint64_t pml4 = c->page_table;
     pid_t pid = c->pid;
     int live_before = kmalloc_call_count - kfree_call_count;
+    int puts_before = mm_put_calls;
 
     int32_t status = 0;
     ASSERT_EQ(proc_reap(c, &status), (int)pid);
     ASSERT_EQ(status, 7);
-    ASSERT_EQ(vmm_free_calls, 1);                 /* user pages + page tables */
-    ASSERT_EQ(vmm_free_last, pml4);
+    ASSERT_EQ(mm_put_calls, puts_before);         /* the mm went at exit */
     ASSERT_EQ(thread_destroy_calls, 1);           /* stack, FPU area, TCB */
     ASSERT_TRUE(thread_destroy_last == ct);
     /* The fd table and the PCB: the two allocations fork made that remain */
@@ -627,7 +651,8 @@ static int test_reap_rejects_live_child(void) {
     Process *c = proc_fork(parent, &ctx);
     ASSERT_TRUE(c != NULL);
     ASSERT_EQ(proc_reap(c, NULL), -EINVAL);
-    ASSERT_EQ(vmm_free_calls, 0);
+    ASSERT_EQ(mm_put_calls, 0);
+    ASSERT_TRUE(c->mm != NULL);
     ASSERT_TRUE(list_contains(c));
     return 0;
 }
@@ -640,11 +665,14 @@ static int test_reparent_to_init(void) {
     Process *mid = make_zombie_child(init);
     mid->state = PROC_ALIVE;
     test_current_thread = mid->main_thread;
-    mid->page_table = 0x300000;
+    static Mm mid_mm = {0x300000, 0};
+    mid->mm = &mid_mm;
     static FdTable mid_fds;
     mid->fd_table = &mid_fds;
     Process *live = make_zombie_child(mid);
     live->state = PROC_ALIVE;
+    static Mm live_mm = {0x300000, 0};
+    live->mm = &live_mm;   /* alive again: it has an address space to fork */
     Process *other = make_zombie_child(init);     /* not mid's: untouched */
 
     /* No zombie among mid's children: init needs no wake-up */
@@ -684,8 +712,37 @@ static int test_fork_failure_unlinks_and_frees(void) {
     memset(&ctx, 0, sizeof(ctx));
     ASSERT_TRUE(proc_fork(parent, &ctx) == NULL);
     ASSERT_TRUE(proc_list == head && list_well_formed());
-    ASSERT_EQ(vmm_free_calls, 1);                 /* copied pages too */
+    ASSERT_EQ(mm_put_calls, 1);                   /* the copied address space too */
     ASSERT_EQ(release_fds_calls, 1);              /* pipe refs fd_table_dup took */
+    ASSERT_EQ(kmalloc_call_count - kfree_call_count, live_before);
+    return 0;
+}
+
+/* fork copies the parent's address space into a new mm (mm_fork) */
+static int test_fork_copies_mm(void) {
+    reset_proc_state();
+    proc_init();
+    Process *parent = make_parent();
+    ForkContext ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    Process *c = proc_fork(parent, &ctx);
+    ASSERT_TRUE(c != NULL);
+    ASSERT_TRUE(mm_fork_src == parent->mm);
+    ASSERT_TRUE(c->mm != NULL && c->mm != parent->mm);
+    ASSERT_EQ(c->mm->pgd, 0x400000);
+    return 0;
+}
+
+/* A user process gets its own mm; without one it is not made at all */
+static int test_create_user_needs_mm(void) {
+    reset_proc_state();
+    proc_init();
+    Process *p = proc_create_user();
+    ASSERT_TRUE(p != NULL && p->mm != NULL);
+    ASSERT_EQ(p->mm->pgd, 0x300000);
+    int live_before = kmalloc_call_count - kfree_call_count;
+    mm_create_fail = 1;
+    ASSERT_TRUE(proc_create_user() == NULL);
     ASSERT_EQ(kmalloc_call_count - kfree_call_count, live_before);
     return 0;
 }
@@ -701,7 +758,8 @@ static int test_proc_fork_copies_fpu_and_fs_base(void) {
 
     Process *parent = proc_create((thread_entry_t)0xDEAD, NULL);
     ASSERT_TRUE(parent != NULL);
-    parent->page_table = 0x300000;
+    static Mm fpu_parent_mm = {0x300000, 0};
+    parent->mm = &fpu_parent_mm;
     static uint8_t parent_area[512];
     parent->main_thread->fpu_state = parent_area;
     parent->main_thread->fs_base = 0x7000123450ULL;
@@ -738,6 +796,8 @@ TestCase process_tests[] = {
     {"reparent_to_init", test_reparent_to_init},
     {"reparent_when_init_exits", test_reparent_when_init_exits},
     {"fork_failure_unlinks_and_frees", test_fork_failure_unlinks_and_frees},
+    {"fork_copies_mm", test_fork_copies_mm},
+    {"create_user_needs_mm", test_create_user_needs_mm},
     {"state_alive_to_zombie", test_state_alive_to_zombie},
     {"state_values_distinct", test_state_values_distinct},
     {"max_processes_boundary", test_max_processes_boundary},

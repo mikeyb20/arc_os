@@ -37,9 +37,9 @@ kernel; TLB shootdown works across CPUs (ADR-0004).
    the mm loaded and each one acknowledges (threads in M1-16 and reclaim in M1-14 test it for real).
 
 **Done when.**
-- [ ] Tests pass.
-- [ ] No syscall path dereferences a user pointer directly (review now; SMAP enforces it from M1-19).
-- [ ] Files this block rewrites outside `kernel/arch/` include `arch/hal.h` or arch-neutral headers, not
+- [x] Tests pass.
+- [x] No syscall path dereferences a user pointer directly (review now; SMAP enforces it from M1-19).
+- [x] Files this block rewrites outside `kernel/arch/` include `arch/hal.h` or arch-neutral headers, not
   `arch/x86_64/`, and call the HAL through `hal_*` functions, not x86 names (work-blocks.md §7); the
   `arch_includes_outside_arch` limit in the budgets file is lowered to match (ADR-0020).
 
@@ -66,3 +66,16 @@ kernel; TLB shootdown works across CPUs (ADR-0004).
   lock 50; the kernel page-table lock in `vmm.c` is already level 50) and moves mm off the kernel-lock list there.
   User page faults still panic; the fault path this block writes must take the mm lock, not the kernel lock. CR3 is compared with what each CPU has loaded (`rq->cr3` in
   sched.c), so a migrated single-threaded process reloads it; shootdown is needed once threads share an mm (M1-16).
+- 2026-11-13 (built). `struct Mm` (mm/mm.h, mm.c) with a VMA set (rbtree + list, vma.c), `RwSem` mm lock and
+  per-mm `pt_lock`; demand-zero faults, stack growth to 8 MiB with a 1 MiB guard gap, OOM kill of the largest
+  RSS (reaps another victim at once, never panics; fault.c). User copies go through one routine with an
+  exception-table entry (`arch_copy_user`, uaccess.asm); fs/net/proc syscalls use bounce buffers. TLB
+  shootdown: per-CPU request slot + sender mask, IPI only to `Mm.cpus` (tlb.c). CPU exceptions become Linux
+  signals and signals are delivered on interrupt return (isr.c); `SyscallFrame` gained `ret_rcx`/`ret_r11`.
+- Decisions: the address space is freed at exit (`proc_exit`), not at reap; exec builds a new mm and drops the
+  old. ELF segments are one VMA each; `.bss` pages come by fault. mprotect over a hole fails whole (-ENOMEM).
+- Surprises: musl's `sbrk(n)` refuses n != 0, `mprotect()` rounds the address, and `siglongjmp` needs
+  `rt_sigprocmask` (M1-17), so `mmtest` uses raw brk and `SA_NODEFER`. A kernel fault under a spinlock skips
+  resolution and fails the copy; copy user data before taking any lock.
+- Next blocks: M1-08 owns COW (zap lists use `lru`, see its Notes), M1-16 shares `Mm` between threads, M1-12
+  adds file VMAs (`VmaOps.fault`). Open: `vma_find_gap` is O(VMAs passed) when the hint misses.

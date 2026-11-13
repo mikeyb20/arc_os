@@ -28,43 +28,68 @@ uint64_t vmm_get_kernel_pml4(void);
 uint64_t vmm_get_hhdm_offset(void);
 
 /* User-space address space constants */
-#define USER_STACK_TOP    0x00007FFFFFFFE000ULL
-#define USER_STACK_PAGES  16  /* 64 KB; ls keeps 64 dir entries (~17 KB) on its stack */
-#define USER_BASE         0x0000000000400000ULL  /* Default ELF load address */
-#define USER_HEAP_BASE    0x0000000010000000ULL
+#define USER_STACK_TOP 0x00007FFFFFFFE000ULL
+#define USER_BASE      0x0000000000400000ULL  /* Default ELF load address */
 
-/* Create a new PML4 for a user process (copies kernel-half entries 256-511). */
+/* Leaf entry that keeps its page but allows no access (PROT_NONE, M1-07) */
+#define VMM_FLAG_PROTNONE (1 << 3)
+
+/* Create a new PML4 for a user process (copies kernel-half entries 256-511).
+ * Returns its physical address, or 0 when out of memory. */
 uint64_t vmm_create_user_pml4(void);
 
-/* Map a page in a specific address space (given PML4 physical address). */
-void vmm_map_page_in(uint64_t pml4, uint64_t virt, uint64_t phys, uint32_t flags);
+/* Map a 4 KiB page in a user address space (any old entry is replaced; the
+ * caller frees what it held). Returns 0, or -ENOMEM when a page table can't
+ * be allocated. No TLB flush: the caller flushes (mm.c). */
+int vmm_map_page_in(uint64_t pml4, uint64_t virt, uint64_t phys, uint32_t flags);
 
-/* Unmap a page in a specific address space. */
+/* Unmap a page in a specific address space (local TLB entry flushed). */
 void vmm_unmap_page_in(uint64_t pml4, uint64_t virt);
 
-/* Get the physical address for a virtual address in a specific address space. */
+/* Get the physical address for a virtual address in a specific address space
+ * (present pages only; 0 if none). */
 uint64_t vmm_get_phys_in(uint64_t pml4, uint64_t virt);
 
-/* VMM_FLAG_* of a mapped 4 KiB page in a specific address space, or -1 if
- * the page is not mapped. */
+/* VMM_FLAG_* of a mapped 4 KiB page in a specific address space
+ * (VMM_FLAG_PROTNONE for a PROT_NONE one), or -1 if no page is mapped. */
 int vmm_get_flags_in(uint64_t pml4, uint64_t virt);
 
-/* Check that user code could access virt in this address space: present and
- * user at every level (no huge pages), and writable too when write != 0.
- * Returns 1 if so. Used by the user copy helpers (user_access.h). */
-int vmm_user_access_ok(uint64_t pml4, uint64_t virt, int write);
+/* 1 if virt has a page (present or PROT_NONE); sets *phys (may be NULL) to
+ * its frame. 0 if not. */
+int vmm_lookup_in(uint64_t pml4, uint64_t virt, uint64_t *phys);
 
-/* Fork a user address space: create new PML4, copy all user-half pages.
- * Returns new PML4 physical address, or 0 on failure. */
-uint64_t vmm_fork_address_space(uint64_t src_pml4_phys);
+/* Receives each frame an unmap took out: a user page (table 0) or an emptied
+ * page-table page (table 1). It must not free it before the TLB flush. */
+typedef void (*vmm_defer_free_t)(uint64_t phys, int table, void *ctx);
+
+/* Clear every leaf entry in [start, end) (page aligned) and free the page
+ * tables that leaves empty, handing each frame to defer. Returns the number
+ * of user pages taken out. No TLB flush. */
+uint64_t vmm_unmap_range_in(uint64_t pml4, uint64_t start, uint64_t end, vmm_defer_free_t defer, void *ctx);
+
+/* Free a page-table page an unmap handed to its defer callback (keeps the
+ * PageTables count right). */
+void vmm_release_table(uint64_t phys);
+
+/* Give every page mapped in [start, end) the flags (VMM_FLAG_PROTNONE
+ * included). Unmapped pages stay unmapped. No TLB flush. */
+void vmm_protect_range_in(uint64_t pml4, uint64_t start, uint64_t end, uint32_t flags);
+
+/* Fork: copy every page mapped in [start, end) of src into a new page at the
+ * same address in dst, same flags; adds the pages copied to *copied. Returns
+ * 0, or -ENOMEM (dst keeps what was copied; the caller destroys it). */
+int vmm_copy_range_in(uint64_t src, uint64_t dst, uint64_t start, uint64_t end, uint64_t *copied);
+
+/* mremap: move the entries of [from, from + len) to [to, to + len) (empty)
+ * without copying pages. Returns 0, or -ENOMEM with the pages not yet moved
+ * still at from. No TLB flush. */
+int vmm_move_range_in(uint64_t pml4, uint64_t from, uint64_t to, uint64_t len);
 
 /* Free all user-half leaf pages AND page table structures for a PML4.
  * After this, the PML4 is destroyed (cannot be reused). */
 void vmm_free_user_pages(uint64_t pml4_phys);
 
-/* Allocate and map zeroed user stack pages in the given address space, no-
- * execute unless exec is set (PT_GNU_STACK asked for an executable stack, or
- * the program has none: Linux's default). Returns 0 or a negative errno. */
-int vmm_map_user_stack(uint64_t pml4_phys, int exec);
+/* Page-table pages held by user address spaces (/proc/meminfo PageTables). */
+uint64_t vmm_user_table_pages(void);
 
 #endif /* ARCHOS_MM_VMM_H */

@@ -61,7 +61,7 @@ static void test_std_fds(void) {
 }
 
 static void test_enosys(void) {
-    CHECK(raw3(__NR_mmap, 0, 4096, 3) == -ENOSYS);      /* real number, not implemented yet */
+    CHECK(raw3(237, 0, 0, 0) == -ENOSYS);               /* mbind: a real number arc_os never implements */
     CHECK(raw3(511, 0, 0, 0) == -ENOSYS);               /* last table slot, empty */
     CHECK(raw3(512, 0, 0, 0) == -ENOSYS);               /* past the table */
     CHECK(raw3(100000, 0, 0, 0) == -ENOSYS);

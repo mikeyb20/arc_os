@@ -52,10 +52,10 @@ static const uint8_t default_action[NSIG] = {
  * restored RIP must lie below this (Linux's TASK_SIZE_MAX) */
 #define SIG_USER_RIP_LIMIT 0x00007FFFFFFFF000ULL
 
-/* RFLAGS bits rt_sigreturn takes from the frame: the arithmetic flags and DF.
- * Linux also takes TF and AC; arc_os doesn't yet, because a user #DB or #AC
- * still halts the kernel instead of raising a signal. */
-#define SIG_FIX_EFLAGS 0x0CD5ULL   /* OF DF SF ZF AF PF CF */
+/* RFLAGS bits rt_sigreturn takes from the frame, as Linux (minus RF, which
+ * SYSRET clears anyway): the arithmetic flags, DF, TF and AC. A user #DB or
+ * #AC raises a signal (M1-07), so user code may set TF and AC. */
+#define SIG_FIX_EFLAGS 0x40DD5ULL   /* AC OF DF TF SF ZF AF PF CF */
 #define RFLAGS_TF      (1ULL << 8)
 #define RFLAGS_DF      (1ULL << 10)
 
@@ -188,8 +188,10 @@ static int sig_restore_frame(SigState *ss, SyscallFrame *frame, int64_t *rax) {
     frame->rbx = sc->rbx;
     frame->rdx = sc->rdx;
     frame->rsp = sc->rsp;
-    frame->rcx = sc->rip;   /* SYSRET: RCX -> RIP, R11 -> RFLAGS */
+    frame->rcx = sc->rip;   /* the RIP and RFLAGS slots */
     frame->r11 = (frame->r11 & ~SIG_FIX_EFLAGS) | (sc->eflags & SIG_FIX_EFLAGS);
+    frame->ret_rcx = sc->rcx;   /* differ from RIP/RFLAGS: the stub leaves through IRET */
+    frame->ret_r11 = sc->r11;
     *rax = (int64_t)sc->rax;
     ss->blocked = uc.uc_sigmask & ~SIG_UNBLOCKABLE;
     return 0;
@@ -223,7 +225,7 @@ static int sig_setup_frame(Process *p, SyscallFrame *frame, int signo, int64_t s
     sc->r8 = frame->r8;
     sc->r9 = frame->r9;
     sc->r10 = frame->r10;
-    sc->r11 = frame->r11;
+    sc->r11 = frame->ret_r11;
     sc->r12 = frame->r12;
     sc->r13 = frame->r13;
     sc->r14 = frame->r14;
@@ -234,7 +236,7 @@ static int sig_setup_frame(Process *p, SyscallFrame *frame, int signo, int64_t s
     sc->rbx = frame->rbx;
     sc->rdx = frame->rdx;
     sc->rax = (uint64_t)syscall_ret;
-    sc->rcx = frame->rcx;
+    sc->rcx = frame->ret_rcx;
     sc->rsp = frame->rsp;
     sc->rip = frame->rcx;
     sc->eflags = frame->r11;
@@ -244,9 +246,15 @@ static int sig_setup_frame(Process *p, SyscallFrame *frame, int signo, int64_t s
     sc->fpstate = fp_addr;
     sf.uc.uc_sigmask = ss->blocked;
     sf.info.si_signo = signo;
-    sf.info.si_code = SI_USER;
-    sf.info.si_pid = ss->sender_pid[signo];
-    sf.info.si_uid = ss->sender_uid[signo];
+    if (signo == ss->fault_signo) {
+        sf.info.si_code = ss->fault_code;
+        if (ss->fault_code != SI_KERNEL) sf.info.si_addr = ss->fault_addr;
+        ss->fault_signo = 0;
+    } else {
+        sf.info.si_code = SI_USER;
+        sf.info.si_pid = ss->sender_pid[signo];
+        sf.info.si_uid = ss->sender_uid[signo];
+    }
     if (copy_to_user((void *)sf_addr, &sf, sizeof(sf)) != 0) return -1;
 
     /* The handler runs with sa_mask (and signo itself, unless SA_NODEFER)
@@ -264,7 +272,46 @@ static int sig_setup_frame(Process *p, SyscallFrame *frame, int signo, int64_t s
     frame->rsi = sf_addr + offsetof(struct rt_sigframe, info);
     frame->rdx = sf_addr + offsetof(struct rt_sigframe, uc);
     frame->r11 &= ~(RFLAGS_DF | RFLAGS_TF);
+    frame->ret_rcx = frame->rcx;   /* handler entry: SYSRET is fine */
+    frame->ret_r11 = frame->r11;
     return 0;
+}
+
+/* The next signal to deliver: a fault's first, then the lowest pending one
+ * that is not blocked; 0 if none */
+static int sig_next(const SigState *ss) {
+    int f = ss->fault_signo;
+    if (f != 0 && (ss->pending & (1u << f)) && !sig_blocked(ss, f)) return f;
+    for (int signo = 1; signo < NSIG; signo++) {
+        if ((ss->pending & (1u << signo)) && !sig_blocked(ss, signo)) return signo;
+    }
+    return 0;
+}
+
+void sig_force_fault(int signo, int code, uint64_t addr) {
+    Process *p = proc_current();
+    if (p == NULL || signo < 1 || signo >= NSIG) return;
+    SigState *ss = &p->sig;
+    if (sig_blocked(ss, signo) || ss->action[signo].sa_handler == (uint64_t)SIG_IGN) {
+        memset(&ss->action[signo], 0, sizeof(ss->action[signo]));   /* SIG_DFL */
+        ss->blocked &= ~SIGSET_BIT(signo);
+    }
+    sig_post(p, signo);
+    ss->fault_signo = (uint8_t)signo;
+    ss->fault_code = code;
+    ss->fault_addr = addr;
+}
+
+int sig_work_pending(void) {
+    Process *p = proc_current();
+    if (p == NULL) return 0;
+    uint32_t pending = __atomic_load_n(&p->sig.pending, __ATOMIC_RELAXED);
+    return (pending & ~(uint32_t)p->sig.blocked) != 0 || (pending & (1u << SIGKILL)) != 0;
+}
+
+void sig_fatal(int signo) {
+    sig_terminate(proc_current(), signo);
+    __builtin_unreachable();
 }
 
 int64_t sig_maybe_deliver(SyscallFrame *frame, int64_t syscall_ret) {
@@ -277,10 +324,8 @@ int64_t sig_maybe_deliver(SyscallFrame *frame, int64_t syscall_ret) {
         sig_terminate(p, SIGSEGV);
         return syscall_ret;
     }
-    if (ss->pending == 0) return syscall_ret;
-
-    for (int signo = 1; signo < NSIG; signo++) {
-        if (!(ss->pending & (1u << signo)) || sig_blocked(ss, signo)) continue;
+    int signo;
+    while ((signo = sig_next(ss)) != 0) {
         ss->pending &= ~(1u << signo);
 
         if (signo == SIGKILL) {

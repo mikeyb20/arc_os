@@ -94,6 +94,12 @@ extern TestCase cred_tests[];
 extern int cred_test_count;
 extern TestCase mutex_tests[];
 extern int mutex_test_count;
+extern TestCase rbtree_tests[];
+extern int rbtree_test_count;
+extern TestCase vma_tests[];
+extern int vma_test_count;
+extern TestCase mm_tests[];
+extern int mm_test_count;
 extern TestCase acpi_tests[];
 extern int acpi_test_count;
 extern TestCase lapic_tests[];
@@ -181,6 +187,9 @@ int main(int argc, char **argv) {
         { "icmp",         icmp_tests,         &icmp_test_count },
         { "cred",         cred_tests,         &cred_test_count },
         { "mutex",        mutex_tests,        &mutex_test_count },
+        { "rbtree",       rbtree_tests,       &rbtree_test_count },
+        { "vma",          vma_tests,          &vma_test_count },
+        { "mm",           mm_tests,           &mm_test_count },
         { "acpi",         acpi_tests,         &acpi_test_count },
         { "lapic",        lapic_tests,        &lapic_test_count },
         { "percpu",       percpu_tests,       &percpu_test_count },

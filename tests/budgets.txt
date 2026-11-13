@@ -16,8 +16,12 @@
 # scrollback, TSC calibration, SMBIOS, and the boot report / self-test / benchmark);
 # 317173 after M1-05 (SMP scheduler, lock-order checker; within the +5% margin);
 # 317173 -> 328564 after M1-04b: the QR encoder (~8.3 KB), its text pages (~2.5 KB),
-# CRC-32 (~1.2 KB, 1 KiB of it the table) and their backtrace names. Limit = measured + 5%)
-kernel_image_bytes     345000      max  bytes  M0-08  build
+# CRC-32 (~1.2 KB, 1 KiB of it the table) and their backtrace names;
+# 328564 -> 362163 after M1-07: ~29 KB of code and its .ksyms names for address
+# spaces (VMA tree, rwsem, mm.c: mmap/munmap/mprotect/mremap/brk, fork copy, maps),
+# the page-fault path and OOM killer, TLB shootdown, user copies, exception signals.
+# Limit = measured + 5%)
+kernel_image_bytes     380000      max  bytes  M0-08  build
 
 # Free memory when init starts, booted with -m 4G (qemu.smoke; measured 4251873280)
 boot_free_bytes        3830000000  min  bytes  M0-08  smoke
@@ -51,9 +55,11 @@ idle_timer_irqs_5s     0           max  irqs   M1-06  smoke     off
 # removes an instance lowers the limit in the same PR (the checker warns when a
 # count is 20% under). Run `python3 tools/hygiene.py` to see every location.
 # arch_includes_outside_arch: 43 -> 26 in M1-03 (kmain, sched, init, process);
-# 26 -> 24 in M1-04 (kprintf.c, testmode.c); 24 -> 23 in M1-05 (proc_syscalls.c).
+# 26 -> 24 in M1-04 (kprintf.c, testmode.c); 24 -> 23 in M1-05 (proc_syscalls.c);
+# 23 -> 14 in M1-07 (syscall.h and usermode.h now come through arch/hal.h: the four
+# *_syscalls.c, process.c, init.c, kmain.c; vmm.c's paging.h).
 dup_windows                 12   max  regions  M0-09  hygiene
 dup_static_names            2    max  copies   M0-09  hygiene
-arch_includes_outside_arch  23   max  includes M0-09  hygiene
+arch_includes_outside_arch  14   max  includes M0-09  hygiene
 long_functions              3    max  funcs    M0-09  hygiene
 untracked_todos             0    max  todos    M0-09  hygiene

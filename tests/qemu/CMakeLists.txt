@@ -103,6 +103,26 @@ add_test(NAME qemu.lockorder COMMAND ${_qemu_test} --suite lockorder --expect-pa
     --expect "LOCK ORDER VIOLATION: taking test outer \\(page tables\\) \\(level 50\\)"
     --expect "held: test inner \\(wait queue\\) \\(level 80\\)")
 
+# Address spaces (M1-07): musl's malloc, the mmap family, SIGSEGV codes,
+# read()/write() on untouched and unmapped buffers, brk, stack growth,
+# /proc/self/maps, fork's private pages
+add_test(NAME qemu.mm COMMAND ${_qemu_test} --suite mm --module mmtest
+    --expect "mmtest: malloc ok"
+    --expect "mmtest: mmap ok"
+    --expect "mmtest: segv ok"
+    --expect "mmtest: copy ok"
+    --expect "mmtest: brk ok"
+    --expect "mmtest: stack ok"
+    --expect "mmtest: maps ok"
+    --expect "mmtest: fork ok"
+    --expect "mmtest: 0 failures")
+# OOM (M1-07): on a 256 MiB machine an endless allocator gets SIGKILL; the
+# kernel says whom it killed and goes on
+add_test(NAME qemu.mm.oom COMMAND ${_qemu_test} --suite mmoom --module mmtest --memory 256M --timeout 300
+    --expect "\\[OOM\\] out of memory \\([0-9]+ pages free\\): killing pid [0-9]+"
+    --expect "mmtest: oom ok \\(child killed by signal 9\\)"
+    --expect "mmtest: 0 failures")
+
 # Harness self-checks: a failing program is reported by name and reason,
 # and a kernel panic ends the run within seconds instead of at the timeout.
 add_test(NAME qemu.selftest.fail COMMAND ${_qemu_test} --suite selftest --module testfail)
@@ -132,14 +152,16 @@ add_test(NAME qemu.diag COMMAND ${_qemu_test} --suite diag
     --expect "\\[REPORT\\] PCI +[0-9]+ devices"
     --expect "\\[REPORT\\] SELFTEST PASS avx2 +4 CPUs"
     --expect "\\[REPORT\\] SELFTEST PASS sched +4 of 4 CPUs ran a pinned thread"
+    --expect "\\[REPORT\\] SELFTEST PASS tlb +3 of 3 CPUs with the mm loaded answered; 3 read the new page, 0 a stale one"
     --expect "\\[REPORT\\] BENCH context switch"
-    --expect "ARC_TEST DONE pass=6 fail=0")
+    --expect "ARC_TEST DONE pass=7 fail=0")
 
 set_tests_properties(qemu.smoke qemu.mem.buddy qemu.mem.cap qemu.userland qemu.abi qemu.musl qemu.fpu qemu.cpufloor
     qemu.smp.xapic qemu.smp.x2apic qemu.sched qemu.lockorder qemu.selftest.fail qemu.selftest.panic
-    qemu.panic.fault qemu.diag
+    qemu.panic.fault qemu.diag qemu.mm qemu.mm.oom
     PROPERTIES LABELS qemu TIMEOUT 180 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     FIXTURES_SETUP qemu_logs)
+set_tests_properties(qemu.mm.oom PROPERTIES TIMEOUT 320)
 
 # Budgets (ADR-0019, M0-08): sizes and counts from the build and from the
 # suites' `ARC_TEST budget` lines, against tests/budgets.txt. Runs after the

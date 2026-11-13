@@ -15,9 +15,8 @@
 #include "fs/vfs.h"
 #include "fs/fs_syscalls.h"
 #include "mm/vmm.h"
+#include "mm/mm.h"
 #include "mm/kmalloc.h"
-#include "arch/x86_64/syscall.h"
-#include "arch/x86_64/usermode.h"
 #include "lib/kprintf.h"
 #include "lib/mem.h"
 #include "lib/string.h"
@@ -46,6 +45,13 @@ void proc_release_fds(Process *p) {
 void proc_exit(Process *p, int32_t exit_status, uint8_t term_signal) {
     /* Close all open file descriptors (critical for pipe EOF signaling) */
     proc_release_fds(p);
+
+    /* The address space goes now, not at reap: a zombie holds no memory.
+     * Off this CPU first (no CPU may have it loaded when it is freed). */
+    Mm *mm = p->mm;
+    p->mm = NULL;
+    mm_switch(NULL);
+    mm_put(mm);
 
     p->exit_status = exit_status;
     p->term_signal = term_signal;
@@ -236,8 +242,14 @@ void proc_enter_user(Process *p, const ElfLoadResult *elf, ExecStrings *strings,
         KERNEL_PANIC();
     }
 
-    /* p's address space is live (CR3): copy the stack image in */
-    memcpy((void *)rsp, stack_buf + (rsp - base), USER_STACK_TOP - rsp);
+    /* p's address space is live (CR3): copy the stack image in (its pages
+     * come on demand; a larger image grows the stack VMA) */
+    if (copy_to_user((void *)rsp, stack_buf + (rsp - base), USER_STACK_TOP - rsp) != 0) {
+        kprintf("[EXEC] pid %u: no memory for the initial stack\n", p->pid);
+        kfree(stack_buf);
+        kfree(strings);
+        sig_fatal(SIGKILL);
+    }
     kfree(stack_buf);
     kfree(strings);
 
@@ -288,17 +300,17 @@ static int64_t sys_execve(uint64_t path_addr, uint64_t argv_addr, uint64_t envp_
     if (err == 0) err = exec_read_elf(abs, &elf_buf, &file_size);
 
     /* 3. Fresh user address space with the ELF segments and the stack */
-    uint64_t new_pml4 = 0;
+    Mm *new_mm = NULL;
     ElfLoadResult result;
     if (err == 0) {
-        new_pml4 = vmm_create_user_pml4();
-        if (new_pml4 == 0) err = -ENOMEM;
+        new_mm = mm_create();
+        if (new_mm == NULL) err = -ENOMEM;
     }
-    if (err == 0) err = elf_load(elf_buf, file_size, new_pml4, &result);
+    if (err == 0) err = elf_load(elf_buf, file_size, new_mm, &result);
     kfree(elf_buf);
-    if (err == 0) err = vmm_map_user_stack(new_pml4, result.stack_exec);
+    if (err == 0) err = mm_setup_stack(new_mm, result.stack_exec, result.brk_start);
     if (err != 0) {
-        if (new_pml4 != 0) vmm_free_user_pages(new_pml4);
+        mm_put(new_mm);
         kfree(strings);
         kfree(stack_buf);
         return err;
@@ -316,13 +328,11 @@ static int64_t sys_execve(uint64_t path_addr, uint64_t argv_addr, uint64_t envp_
     }
 
     /* 5. Point of no return: switch to the new address space */
-    uint64_t old_pml4 = p->page_table;
-    p->page_table = new_pml4;
-    p->brk_start = result.brk_start;
-    p->brk_current = result.brk_start;
+    Mm *old_mm = p->mm;
+    p->mm = new_mm;
     sig_exec_reset(&p->sig);
-    hal_switch_address_space(new_pml4);
-    vmm_free_user_pages(old_pml4);
+    mm_switch(new_mm);
+    mm_put(old_mm);
 
     kdebug("[EXEC] pid=%u loaded '%s' argc=%u envc=%u entry=0x%lx\n", p->pid, abs, strings->argc, strings->envc,
            result.entry_point);
@@ -357,7 +367,7 @@ static int64_t sys_wait4(uint64_t pid_arg, uint64_t status_addr, uint64_t option
     if (status_addr != 0 && !user_ptr_valid((void *)status_addr, sizeof(int32_t)))
         return -EFAULT;
     if (rusage_addr != 0 && !user_ptr_valid((void *)rusage_addr, RUSAGE_SIZE))
-        return -EFAULT;
+        return -EFAULT;   /* early, as Linux: before a child is reaped */
 
     int want_stopped = (options & WUNTRACED) != 0;
     int64_t ret;
@@ -391,8 +401,12 @@ static int64_t sys_wait4(uint64_t pid_arg, uint64_t status_addr, uint64_t option
     }
     spin_unlock_irqrestore(&wait_lock, irqf);
 
-    if (status_addr != 0) *(int32_t *)status_addr = encoded;
-    if (rusage_addr != 0) memset((void *)rusage_addr, 0, RUSAGE_SIZE);
+    /* The child is reaped already: a fault now still reports it (Linux) */
+    if (status_addr != 0 && put_user(encoded, (int32_t *)status_addr) != 0) return -EFAULT;
+    if (rusage_addr != 0) {
+        static const uint8_t zero[RUSAGE_SIZE];
+        if (copy_to_user((void *)rusage_addr, zero, RUSAGE_SIZE) != 0) return -EFAULT;
+    }
     return ret;
 }
 

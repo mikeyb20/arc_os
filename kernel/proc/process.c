@@ -3,8 +3,7 @@
 #include "proc/fd.h"
 #include "proc/proc_syscalls.h"
 #include "mm/kmalloc.h"
-#include "mm/vmm.h"
-#include "arch/x86_64/usermode.h"
+#include "mm/mm.h"
 #include "arch/hal.h"
 #include "lib/kprintf.h"
 #include "lib/string.h"
@@ -65,8 +64,7 @@ Process *proc_create(thread_entry_t entry, void *arg) {
     }
 
     proc_setup(p);
-    proc_set_main_thread(p, t);
-    p->page_table = 0;  /* Share kernel page tables for now */
+    proc_set_main_thread(p, t);   /* p->mm stays NULL: kernel page tables only */
 
     sched_add_thread(t);
 
@@ -78,10 +76,14 @@ Process *proc_create_user(void) {
     Process *p = kmalloc(sizeof(Process), GFP_ZERO);
     if (p == NULL) return NULL;
 
+    p->mm = mm_create();
+    if (p->mm == NULL) {
+        kfree(p);
+        return NULL;
+    }
     proc_setup(p);
-    p->page_table = vmm_create_user_pml4();
 
-    kdebug("[PROC] Created user process pid=%u (pml4=0x%lx)\n", p->pid, p->page_table);
+    kdebug("[PROC] Created user process pid=%u (pml4=0x%lx)\n", p->pid, p->mm->pgd);
     return p;
 }
 
@@ -131,29 +133,27 @@ static void fork_child_entry(void *arg) {
     hal_set_kernel_stack(t->kernel_stack_top);
 
     /* Switch to child's address space */
-    hal_switch_address_space(child->page_table);
+    mm_switch(child->mm);
 
     /* Return to user mode with RAX=0, restoring callee-saved registers */
     fork_return_to_user(&args->ctx);
 }
 
 Process *proc_fork(Process *parent, const ForkContext *user_ctx) {
-    if (parent == NULL || parent->page_table == 0) return NULL;
+    if (parent == NULL || parent->mm == NULL) return NULL;
 
     /* 1. Fork address space */
-    uint64_t child_pml4 = vmm_fork_address_space(parent->page_table);
-    if (child_pml4 == 0) return NULL;
+    Mm *child_mm = mm_fork(parent->mm);
+    if (child_mm == NULL) return NULL;
 
     /* 2. Create child process PCB */
     Process *child = kmalloc(sizeof(Process), GFP_ZERO);
     if (child == NULL) {
-        vmm_free_user_pages(child_pml4);
+        mm_put(child_mm);
         return NULL;
     }
     proc_setup(child);
-    child->page_table = child_pml4;
-    child->brk_start = parent->brk_start;
-    child->brk_current = parent->brk_current;
+    child->mm = child_mm;
     strncpy(child->cwd, parent->cwd, PATH_MAX);
     child->uid  = parent->uid;
     child->gid  = parent->gid;
@@ -181,7 +181,7 @@ Process *proc_fork(Process *parent, const ForkContext *user_ctx) {
         kfree(args);
         proc_release_fds(child);
         kfree(child->fd_table);
-        vmm_free_user_pages(child_pml4);
+        mm_put(child_mm);
         proc_unlink(child);
         kfree(child);
         return NULL;
@@ -226,18 +226,13 @@ int proc_reap(Process *child, int32_t *status_out) {
     }
     int pid = (int)child->pid;
 
-    /* The caller runs in its own address space, so the child's CR3 is not
-     * loaded here (no CPU keeps a dead thread's CR3: switching away from it
-     * loads the next thread's). The child's thread is DEAD; it may still be
-     * finishing its last switch on another CPU, so wait until it is off that
-     * CPU before freeing its stack. Nothing else holds the Process: wait
-     * queues hold only running threads' sleepers, signals and the tty go by
-     * pid/pgid, and PIDs are not reused. */
+    /* The address space went at exit (proc_exit). The child's thread is DEAD;
+     * it may still be finishing its last switch on another CPU, so wait until
+     * it is off that CPU before freeing its stack. Nothing else holds the
+     * Process: wait queues hold only running threads' sleepers, signals and
+     * the tty go by pid/pgid, and PIDs are not reused. */
     sched_wait_off_cpu(child->main_thread);
     proc_unlink(child);
-    if (child->page_table != 0) {
-        vmm_free_user_pages(child->page_table);
-    }
     kfree(child->fd_table);          /* its files were closed at exit */
     thread_destroy(child->main_thread);
     kfree(child);

@@ -1,11 +1,12 @@
 /* arc_os — file and directory syscalls (Linux x86_64 numbers, ADR-0001).
  *
  * Moved out of arch/x86_64/syscall.c by M0-05. Handlers return -errno on
- * failure. Paths, iovecs and termios structs are copied with the page-checked
- * helpers (copy_from_user etc., M0-06); older handlers still only range-check
- * buffers with user_ptr_valid until M1-19 adds page-fault fixups. */
+ * failure. Every user buffer goes through the copy helpers (user_access.h):
+ * read and write move data through a kernel bounce buffer, so the file
+ * systems and drivers below only ever see kernel memory (M1-07). */
 
 #include "fs/fs_syscalls.h"
+#include "arch/hal.h"
 #include "fs/vfs.h"
 #include "fs/pipe.h"
 #include "fs/path.h"
@@ -17,7 +18,6 @@
 #include "mm/kmalloc.h"
 #include "lib/mem.h"
 #include "lib/string.h"
-#include "arch/x86_64/syscall.h"
 #include "user_access.h"
 #include "uapi/unistd.h"
 #include "uapi/stat.h"
@@ -38,6 +38,12 @@
 #define DIRENT_MIN_RECLEN    24
 #define GETDENTS_MAX_ENTRIES 256
 
+/* read/write move at most this much through one kernel buffer; a regular file
+ * takes several rounds, a pipe or terminal one (a short transfer ends the
+ * call). Small calls use the stack. */
+#define RW_CHUNK       (64u * 1024)
+#define RW_STACK_BYTES 256u
+
 int fs_user_path(uint64_t path_addr, char *abs, size_t size) {
     char path[PATH_MAX];
     long len = strncpy_from_user(path, (const char *)path_addr, sizeof(path));
@@ -47,7 +53,25 @@ int fs_user_path(uint64_t path_addr, char *abs, size_t size) {
     return path_normalize(cwd, path, abs, size);
 }
 
-/* read(fd, buf, count) — 0 */
+/* A regular file (not a pipe, socket or terminal): a full chunk means more
+ * may follow at once */
+static int rw_loops(const VfsFile *file) {
+    return file != NULL && file->node != NULL && file->node->type == VFS_FILE && !devfs_is_tty(file->node);
+}
+
+/* A bounce buffer of up to RW_CHUNK bytes for count: the stack one, or
+ * kmalloc. *size gets its size; NULL when out of memory. */
+static uint8_t *rw_buffer(uint8_t *stack_buf, uint64_t count, uint32_t *size) {
+    if (count <= RW_STACK_BYTES) {
+        *size = RW_STACK_BYTES;
+        return stack_buf;
+    }
+    *size = count < RW_CHUNK ? (uint32_t)count : RW_CHUNK;
+    return kmalloc(*size, 0);
+}
+
+/* read(fd, buf, count) — 0. An unwritable buffer gives -EFAULT; a regular
+ * file's offset then stays where the copied bytes end. */
 static int64_t sys_read(uint64_t fd, uint64_t buf_addr, uint64_t count,
                         uint64_t a3, uint64_t a4, uint64_t a5) {
     (void)a3; (void)a4; (void)a5;
@@ -56,11 +80,32 @@ static int64_t sys_read(uint64_t fd, uint64_t buf_addr, uint64_t count,
 
     Process *p = proc_current();
     VfsFile *file = (p != NULL && p->fd_table != NULL) ? fd_get(p->fd_table, (int)fd) : NULL;
-    if (file != NULL) return vfs_read(file, (void *)buf_addr, (uint32_t)count);
-
     /* stdin with no fd-table entry (nothing dup2'd over it) reads the TTY */
-    if (fd == FD_STDIN) return tty_read((void *)buf_addr, (uint32_t)count);
-    return -EBADF;
+    if (file == NULL && fd != FD_STDIN) return -EBADF;
+    if (count > 0x7FFFF000ULL) count = 0x7FFFF000ULL;   /* Linux MAX_RW_COUNT */
+
+    uint8_t stack_buf[RW_STACK_BYTES];
+    uint32_t size;
+    uint8_t *kbuf = rw_buffer(stack_buf, count, &size);
+    if (kbuf == NULL) return -ENOMEM;
+    int64_t total = 0;
+    while ((uint64_t)total < count) {
+        uint32_t n = (count - (uint64_t)total < size) ? (uint32_t)(count - (uint64_t)total) : size;
+        int64_t r = file != NULL ? vfs_read(file, kbuf, n) : tty_read(kbuf, n);
+        if (r < 0) {
+            if (total == 0) total = r;
+            break;
+        }
+        if (r > 0 && copy_to_user((uint8_t *)buf_addr + total, kbuf, (size_t)r) != 0) {
+            if (rw_loops(file)) file->offset -= (uint64_t)r;   /* not delivered: read again */
+            if (total == 0) total = -EFAULT;
+            break;
+        }
+        total += r;
+        if ((uint32_t)r < n || !rw_loops(file)) break;
+    }
+    if (kbuf != stack_buf) kfree(kbuf);
+    return total;
 }
 
 /* write(fd, buf, count) — 1 */
@@ -72,15 +117,32 @@ static int64_t sys_write(uint64_t fd, uint64_t buf_addr, uint64_t count,
 
     Process *p = proc_current();
     VfsFile *file = (p != NULL && p->fd_table != NULL) ? fd_get(p->fd_table, (int)fd) : NULL;
-    if (file != NULL) {
-        int64_t ret = vfs_write(file, (const void *)buf_addr, (uint32_t)count);
-        if (ret == -EPIPE) sig_send(p->pid, SIGPIPE);
-        return ret;
-    }
-
     /* stdout/stderr with no fd-table entry write to the TTY */
-    if (fd == FD_STDOUT || fd == FD_STDERR) return tty_write((const void *)buf_addr, (uint32_t)count);
-    return -EBADF;
+    if (file == NULL && fd != FD_STDOUT && fd != FD_STDERR) return -EBADF;
+    if (count > 0x7FFFF000ULL) count = 0x7FFFF000ULL;
+
+    uint8_t stack_buf[RW_STACK_BYTES];
+    uint32_t size;
+    uint8_t *kbuf = rw_buffer(stack_buf, count, &size);
+    if (kbuf == NULL) return -ENOMEM;
+    int64_t total = 0;
+    while ((uint64_t)total < count) {
+        uint32_t n = (count - (uint64_t)total < size) ? (uint32_t)(count - (uint64_t)total) : size;
+        if (copy_from_user(kbuf, (const uint8_t *)buf_addr + total, n) != 0) {
+            if (total == 0) total = -EFAULT;
+            break;
+        }
+        int64_t r = file != NULL ? vfs_write(file, kbuf, n) : tty_write(kbuf, n);
+        if (r < 0) {
+            if (r == -EPIPE) sig_send(p->pid, SIGPIPE);
+            if (total == 0) total = r;
+            break;
+        }
+        total += r;
+        if ((uint32_t)r < n) break;
+    }
+    if (kbuf != stack_buf) kfree(kbuf);
+    return total;
 }
 
 /* readv/writev: at most this many iovecs (Linux UIO_MAXIOV) */
@@ -190,9 +252,10 @@ static void stat_fill(struct stat *out, uint64_t ino, uint8_t vfs_type, uint64_t
 /* stat(path, statbuf) — 4 */
 static int64_t sys_stat(uint64_t path_addr, uint64_t stat_addr, uint64_t a2,
                         uint64_t a3, uint64_t a4, uint64_t a5) {
-    (void)a2; (void)a3; (void)a4; (void)a5;
-    if (!user_ptr_valid((void *)stat_addr, sizeof(struct stat))) return -EFAULT;
-
+    (void)a2;
+    (void)a3;
+    (void)a4;
+    (void)a5;
     char abs[PATH_MAX];
     int perr = fs_user_path(path_addr, abs, PATH_MAX);
     if (perr != 0) return perr;
@@ -200,30 +263,33 @@ static int64_t sys_stat(uint64_t path_addr, uint64_t stat_addr, uint64_t a2,
     VfsStat vs;
     int err = vfs_stat(abs, &vs);
     if (err != 0) return err;
-    stat_fill((struct stat *)stat_addr, vs.inode_num, vs.type, vs.size, vs.mode, vs.uid, vs.gid);
-    return 0;
+    struct stat st;
+    stat_fill(&st, vs.inode_num, vs.type, vs.size, vs.mode, vs.uid, vs.gid);
+    return copy_to_user((void *)stat_addr, &st, sizeof(st));
 }
 
 /* fstat(fd, statbuf) — 5 */
 static int64_t sys_fstat(uint64_t fd, uint64_t stat_addr, uint64_t a2,
                          uint64_t a3, uint64_t a4, uint64_t a5) {
-    (void)a2; (void)a3; (void)a4; (void)a5;
-    if (!user_ptr_valid((void *)stat_addr, sizeof(struct stat))) return -EFAULT;
+    (void)a2;
+    (void)a3;
+    (void)a4;
+    (void)a5;
     Process *p = proc_current();
     if (p == NULL || p->fd_table == NULL) return -EBADF;
 
     VfsFile *file = fd_get(p->fd_table, (int)fd);
     if (file == NULL) return -EBADF;
 
-    struct stat *out = (struct stat *)stat_addr;
+    struct stat st;
     if (file->node == NULL) {
         /* Sockets have no VfsNode (the fd stores the socket index) */
-        stat_fill(out, 0, VFS_SOCKET, 0, 0777, 0, 0);
-        return 0;
+        stat_fill(&st, 0, VFS_SOCKET, 0, 0777, 0, 0);
+    } else {
+        VfsNode *n = file->node;
+        stat_fill(&st, n->inode_num, n->type, n->size, n->mode, n->uid, n->gid);
     }
-    VfsNode *n = file->node;
-    stat_fill(out, n->inode_num, n->type, n->size, n->mode, n->uid, n->gid);
-    return 0;
+    return copy_to_user((void *)stat_addr, &st, sizeof(st));
 }
 
 /* lseek(fd, offset, whence) — 8 */
@@ -259,16 +325,14 @@ static int64_t sys_ioctl(uint64_t fd, uint64_t request, uint64_t arg,
 
     switch (request) {
     case TIOCSPGRP: {
-        if (!user_ptr_valid((const void *)arg, sizeof(int32_t))) return -EFAULT;
-        int32_t pgid = *(const int32_t *)arg;
+        int32_t pgid;
+        if (get_user(pgid, arg) != 0) return -EFAULT;
         if (pgid <= 0) return -EINVAL;
         tty_set_fg_pgid((uint32_t)pgid);
         return 0;
     }
     case TIOCGPGRP:
-        if (!user_ptr_valid((void *)arg, sizeof(int32_t))) return -EFAULT;
-        *(int32_t *)arg = (int32_t)tty_get_fg_pgid();
-        return 0;
+        return put_user((int32_t)tty_get_fg_pgid(), arg);
     case TCGETS: {
         struct termios t;
         tty_get_termios(&t);
@@ -311,7 +375,7 @@ static void pipe_setup_fd(FdTable *ft, int fd, VfsNode *node, uint32_t flags) {
 static int64_t sys_pipe(uint64_t pipefd_addr, uint64_t a1, uint64_t a2,
                         uint64_t a3, uint64_t a4, uint64_t a5) {
     (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
-    if (!user_ptr_valid((void *)pipefd_addr, 2 * sizeof(int32_t))) return -EFAULT;
+    if (!user_ptr_valid((void *)pipefd_addr, 2 * sizeof(int32_t))) return -EFAULT;   /* before creating */
 
     Process *p = proc_current();
     if (p == NULL || p->fd_table == NULL) return -EBADF;
@@ -337,9 +401,12 @@ static int64_t sys_pipe(uint64_t pipefd_addr, uint64_t a1, uint64_t a2,
     pipe_setup_fd(p->fd_table, rfd, read_node, O_RDONLY);
     pipe_setup_fd(p->fd_table, wfd, write_node, O_WRONLY);
 
-    int32_t *user_fds = (int32_t *)pipefd_addr;
-    user_fds[0] = (int32_t)rfd;
-    user_fds[1] = (int32_t)wfd;
+    int32_t fds[2] = {(int32_t)rfd, (int32_t)wfd};
+    if (copy_to_user((void *)pipefd_addr, fds, sizeof(fds)) != 0) {
+        fd_close(p->fd_table, rfd);   /* Linux: the fds go again */
+        fd_close(p->fd_table, wfd);
+        return -EFAULT;
+    }
     return 0;
 }
 
@@ -393,9 +460,7 @@ static int64_t sys_getcwd(uint64_t buf_addr, uint64_t size, uint64_t a2,
 
     size_t cwd_len = strlen(p->cwd) + 1;
     if (size < cwd_len) return -ERANGE;
-    if (!user_ptr_valid((void *)buf_addr, cwd_len)) return -EFAULT;
-
-    memcpy((void *)buf_addr, p->cwd, cwd_len);
+    if (copy_to_user((void *)buf_addr, p->cwd, cwd_len) != 0) return -EFAULT;
     return (int64_t)cwd_len;
 }
 
@@ -510,6 +575,7 @@ static int64_t sys_getdents64(uint64_t fd, uint64_t dirp, uint64_t count,
     if (file->node == NULL || file->node->type != VFS_DIRECTORY) return -ENOTDIR;
     if (count == 0) return -EINVAL;
     if (!user_ptr_valid((void *)dirp, count)) return -EFAULT;
+    if (count > 0x7FFFF000ULL) count = 0x7FFFF000ULL;
 
     uint64_t start = file->offset;
     if (start >= GETDENTS_MAX_ENTRIES) return 0;
@@ -525,7 +591,9 @@ static int64_t sys_getdents64(uint64_t fd, uint64_t dirp, uint64_t count,
         return n;
     }
 
-    uint8_t *out = (uint8_t *)dirp;
+    /* Each record is built here, then copied out */
+    uint8_t rec[(DIRENT_NAME_OFF + VFS_NAME_MAX + 7) & ~7] __attribute__((aligned(8)));
+    struct linux_dirent64 *d = (struct linux_dirent64 *)rec;
     uint64_t pos = 0;
     uint64_t i = start;
     for (; i < (uint64_t)n; i++) {
@@ -534,13 +602,16 @@ static int64_t sys_getdents64(uint64_t fd, uint64_t dirp, uint64_t count,
         uint64_t reclen = (DIRENT_NAME_OFF + namelen + 1 + 7) & ~7ULL;
         if (pos + reclen > count) break;
 
-        struct linux_dirent64 *d = (struct linux_dirent64 *)(out + pos);
-        memset(d, 0, reclen);
+        memset(rec, 0, reclen);
         d->d_ino = list[i].inode_num;
         d->d_off = (int64_t)(i + 1);
         d->d_reclen = (uint16_t)reclen;
         d->d_type = dirent_type(list[i].type);
         memcpy(d->d_name, list[i].name, namelen);
+        if (copy_to_user((uint8_t *)dirp + pos, rec, reclen) != 0) {
+            kfree(list);
+            return -EFAULT;
+        }
         pos += reclen;
     }
     kfree(list);

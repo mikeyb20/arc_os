@@ -21,6 +21,14 @@ SECTIONS {
         *(.rodata .rodata.*)
     }
 
+    /* Exception table (M1-07): pairs of (instruction that may fault on user
+     * memory, fixup address); uaccess.asm writes them, isr.c reads them */
+    .ex_table ALIGN(8) : {
+        __ex_table_start = .;
+        KEEP(*(.ex_table))
+        __ex_table_end = .;
+    }
+
     /* Function symbols for panic backtraces (tools/gen-ksyms.py). Placed after
      * all code so the second kernel link moves no function. */
     .ksyms ALIGN(16) : {

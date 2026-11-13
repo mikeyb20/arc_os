@@ -37,10 +37,10 @@ same PR that changes a syscall (the `add-syscall` skill does this). Since M0-06 
 | 5 | fstat | partial (times and st_dev are 0) | 12 | musl; inventory: musl, C++, SQLite, zstd (M0-05) |
 | 6 | lstat | missing | — | inventory: SQLite (M1-11) |
 | 8 | lseek | done | 7 | all; inventory: musl, SQLite, llama.cpp |
-| 9 | mmap | missing | — | musl, llama.cpp; inventory: musl, musl threads, C++, SQLite, zstd, llama.cpp (M1-07) |
-| 10 | mprotect | missing | — | musl; inventory: musl, musl threads, C++, zstd, llama.cpp (M1-07) |
-| 11 | munmap | missing | — | musl; inventory: musl, musl threads, C++, SQLite, zstd, llama.cpp (M1-07) |
-| 12 | brk | done | 6 | musl; inventory: musl, C++, SQLite, zstd, llama.cpp (M1-07) |
+| 9 | mmap | partial (anonymous private only: MAP_FIXED, MAP_FIXED_NOREPLACE, MAP_NORESERVE, MAP_POPULATE, MAP_32BIT, MAP_GROWSDOWN; file mappings -ENODEV until M1-12, MAP_SHARED anonymous -EINVAL until M1-08) | — | musl, llama.cpp; inventory: musl, musl threads, C++, SQLite, zstd, llama.cpp (M1-07) |
+| 10 | mprotect | partial (a range with a hole fails whole with -ENOMEM; Linux changes the part before it; PROT_GROWSDOWN/UP -EINVAL) | — | musl; inventory: musl, musl threads, C++, zstd, llama.cpp (M1-07) |
+| 11 | munmap | done (splits VMAs, frees pages and emptied page tables after the TLB flush, M1-07) | — | musl; inventory: musl, musl threads, C++, SQLite, zstd, llama.cpp (M1-07) |
+| 12 | brk | done (a [heap] VMA, pages on first touch; one free page kept above, M1-07) | 6 | musl; inventory: musl, C++, SQLite, zstd, llama.cpp (M1-07) |
 | 13 | rt_sigaction | partial (SA_RESTORER, SA_NODEFER, SA_RESETHAND and sa_mask act; SA_RESTART, SA_ONSTACK, SA_NOCLD* stored, act in M1-17) | 20 | musl; inventory: musl, SQLite, zstd, llama.cpp (M1-01) |
 | 14 | rt_sigprocmask | missing | — | musl threads; inventory: musl, musl threads, C++, SQLite, zstd, llama.cpp (M1-01) |
 | 15 | rt_sigreturn | done (Linux rt_sigframe with XSAVE image, M1-01) | 22 | musl; inventory: musl (M1-01) |
@@ -51,7 +51,8 @@ same PR that changes a syscall (the `add-syscall` skill does this). Since M0-06 
 | 20 | writev | done | — | inventory: musl, musl threads, C++, SQLite, zstd, llama.cpp (M0-06) |
 | 21 | access | missing | — | inventory: musl, SQLite (M1-20) |
 | 22 | pipe | done | 19 | shell; inventory: musl |
-| 28 | madvise | missing | — | llama.cpp; inventory: llama.cpp (M1-07) |
+| 25 | mremap | partial (MREMAP_MAYMOVE, MREMAP_FIXED; MREMAP_DONTUNMAP and old_len 0 -EINVAL) | — | musl realloc; inventory: musl (M1-07) |
+| 28 | madvise | partial (MADV_DONTNEED and MADV_FREE drop the pages now; NORMAL, RANDOM, SEQUENTIAL, WILLNEED, HUGEPAGE, NOHUGEPAGE accepted, no effect yet) | — | llama.cpp; inventory: llama.cpp (M1-07) |
 | 32 | dup | done | 13 | shell; inventory: musl |
 | 33 | dup2 | done | 14 | shell |
 | 35 | nanosleep | missing | — | M1; inventory: musl, C++ (M1-06) |

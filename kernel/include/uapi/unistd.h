@@ -33,6 +33,7 @@
 #define __NR_writev            20
 #define __NR_access            21
 #define __NR_pipe              22
+#define __NR_mremap            25
 #define __NR_madvise           28
 #define __NR_dup               32
 #define __NR_dup2              33

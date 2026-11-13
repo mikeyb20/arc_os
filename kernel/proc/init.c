@@ -7,10 +7,10 @@
 #include "proc/fd.h"
 #include "fs/vfs.h"
 #include "mm/vmm.h"
+#include "mm/mm.h"
 #include "mm/pmm.h"
 #include "mm/kmalloc.h"
 #include "arch/hal.h"
-#include "arch/x86_64/usermode.h"
 #include "lib/kprintf.h"
 #include "lib/testmode.h"
 #include "proc/proc_syscalls.h"
@@ -40,23 +40,19 @@ static void init_thread_entry(void *arg) {
 
     /* Load ELF into the process's address space */
     ElfLoadResult result;
-    int err = elf_load(args->elf_data, args->elf_size, p->page_table, &result);
+    int err = elf_load(args->elf_data, args->elf_size, p->mm, &result);
     if (err != 0) {
         kprintf("[INIT] FATAL: elf_load failed (%d)\n", err);
         return;
     }
 
-    /* Set program break */
-    p->brk_start = result.brk_start;
-    p->brk_current = result.brk_start;
-
-    /* Allocate and map user stack pages */
-    if (vmm_map_user_stack(p->page_table, result.stack_exec) != 0) {
+    /* Stack VMA (pages come on first touch) and program break */
+    if (mm_setup_stack(p->mm, result.stack_exec, result.brk_start) != 0) {
         kprintf("[INIT] FATAL: out of memory for user stack\n");
         return;
     }
-    kprintf("[INIT] User stack mapped: 0x%lx - 0x%lx\n", (uint64_t)(USER_STACK_TOP - (USER_STACK_PAGES * PAGE_SIZE)),
-            (uint64_t)USER_STACK_TOP);
+    kprintf("[INIT] User stack: 0x%lx - 0x%lx, grows to %lu KiB\n", (uint64_t)(USER_STACK_TOP - MM_STACK_INIT),
+            (uint64_t)USER_STACK_TOP, (uint64_t)(MM_STACK_MAX / 1024));
 
     /* argv = { path }, envp = { HOME=/, TERM=linux } as Linux gives init */
     ExecStrings *strings = kmalloc(sizeof(ExecStrings), 0);
@@ -78,7 +74,7 @@ static void init_thread_entry(void *arg) {
     hal_set_kernel_stack(t->kernel_stack_top);
 
     /* Switch to the process's address space */
-    hal_switch_address_space(p->page_table);
+    mm_switch(p->mm);
 
     kprintf("[INIT] Jumping to user mode: entry=0x%lx\n", result.entry_point);
 

@@ -12,10 +12,6 @@
 /* Initialize IPI handlers. Call after IDT and LAPIC are set up. */
 void ipi_init(void);
 
-/* Send a TLB shootdown IPI to all other CPUs.
- * Called after vmm_unmap_page to ensure stale TLB entries are flushed. */
-void ipi_tlb_shootdown(void);
-
 /* Send a reschedule IPI to a specific CPU. */
 void ipi_reschedule(uint32_t cpu_id);
 

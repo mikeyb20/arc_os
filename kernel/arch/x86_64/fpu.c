@@ -184,14 +184,12 @@ int fpu_signal_restore(Thread *t, uint64_t user_src) {
         fpu_load_init();
         return 0;
     }
-    /* Build the image in the thread's own area (scratch while it runs: its
-     * live state is in the registers), check it, then XRSTOR from there. This
-     * relies on nothing switching the thread out in between, which holds while
-     * syscalls run with IF clear and copy_from_user can't sleep (revisit in
-     * M1-05/M1-07). On failure the area is reset to the init image, because a
-     * later switch-in XRSTORs from it and a bad header would #GP in the
-     * kernel. */
-    uint8_t *area = (uint8_t *)t->fpu_state;
+    /* Build the image in a scratch area, check it, then XRSTOR from there.
+     * Not in the thread's own area: copy_from_user may sleep on a page fault
+     * (M1-07), and switching out saves the live registers there. */
+    (void)t;
+    uint8_t *area = fpu_state_alloc();
+    if (area == NULL) return -EFAULT;
     struct _fpstate *fx = (struct _fpstate *)area;
     if (copy_from_user(area, (const void *)user_src, XSAVE_LEGACY_SIZE) != 0) goto bad;
 
@@ -221,9 +219,10 @@ int fpu_signal_restore(Thread *t, uint64_t user_src) {
     }
     if (fx->mxcsr & ~mxcsr_mask) goto bad;   /* XRSTOR would #GP */
     xrstor(area);
+    fpu_state_free(area);
     return 0;
 bad:
-    memcpy(area, fpu_init_image, xsave_size);
+    fpu_state_free(area);   /* the live registers are untouched */
     return -EFAULT;
 }
 

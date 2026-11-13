@@ -14,10 +14,10 @@ of that level (a lock without a subkey counts as 0). Give every lock of a nestab
 |---|---|---|---|---|
 | 0 | `LOCK_LEVEL_KERNEL` | big kernel lock | `kernel_lock` (see below) | M1-05, interim |
 | 10 | `LOCK_LEVEL_INODE` | sleeping | inode lock: write, truncate, rename, directory changes | M1-11 |
-| 20 | `LOCK_LEVEL_MM` | sleeping, read-write | mm lock: mmap, munmap, mprotect, page faults | M1-07 |
+| 20 | `LOCK_LEVEL_MM` | sleeping, read-write | `Mm.lock` (`RwSem`), per address space: VMA changes write, page faults and fork read | M1-07 |
 | 30 | `LOCK_LEVEL_PAGE` | sleeping, per page | page lock | M1-12 |
 | 40 | `LOCK_LEVEL_MAPPING` | sleeping | mapping-tree lock (VMAs mapping a file; reclaim, truncate) | M1-12 |
-| 50 | `LOCK_LEVEL_PAGE_TABLE` | spinlock | page-table lock, per mm; today the kernel page tables (`vmm.c`) | M1-05 |
+| 50 | `LOCK_LEVEL_PAGE_TABLE` | spinlock | `Mm.pt_lock`, per address space (inside `Mm.lock`); the kernel page tables (`vmm.c`) | M1-05, M1-07 |
 | 60 | `LOCK_LEVEL_PAGE_CACHE` | spinlock | page-cache index lock, per address space | M1-12 |
 | 70 | `LOCK_LEVEL_SIGNAL` | spinlock | thread-group and signal lock | M1-16 |
 | 75 | `LOCK_LEVEL_OBJECT` | spinlock | one object's state, the lock handed to `wq_sleep`: pipe, socket, tty, wait4, mutex and semaphore guards | M1-05 |
@@ -80,7 +80,6 @@ off removes the lock.
 
 | Subsystem still under the kernel lock | Lane | Taken off by |
 |---|---|---|
-| mm: user address spaces, `brk`, page-table setup in exec and fork | KA | M1-07 |
 | VFS, ramfs, devfs, procfs, FAT32, path lookup | KA | M1-11 |
 | fd tables (open, close, dup, fork copy) | KA | M1-11 |
 | Pipe buffers and reader/writer counts (`pipe.c` moves bytes and checks counts outside `pipe->lock`) | KA | M1-11 |
@@ -88,6 +87,28 @@ off removes the lock.
 | Signal state (`SigState`, delivery, stop and continue) | KB | M1-16 |
 | Network stack outside the socket locks (interfaces, ARP, IP, UDP/TCP demux) | KB | M1-18 |
 | TTY line discipline and VT/ANSI state (the keyboard IRQ holds the lock) | KB | M1-09 |
+
+## Address-space locks (M1-07)
+
+Every user address space (`struct Mm`, `kernel/mm/mm.h`) has two locks, and the mm needs no kernel lock: user
+page faults run without it.
+
+- `Mm.lock`, a sleeping read-write lock. Writers: mmap, munmap, mprotect, madvise, mremap, brk, stack growth
+  (the fault drops its read hold and takes the write hold), the OOM reaper. Readers: page faults, fork's copy,
+  `/proc/<pid>/maps`. A waiting writer holds new readers back. Not recursive.
+- `Mm.pt_lock`, a spinlock taken inside `Mm.lock` around every change to that mm's page tables. Nothing sleeps
+  or allocates a user page under it (a page-table page may be allocated: that never sleeps).
+- **Never touch user memory while holding either.** The fault would take `Mm.lock` again (a deadlock behind a
+  waiting writer). Copy user data into a kernel buffer first, then lock.
+- A kernel fault on a user address (inside `copy_from_user` and friends) with a spinlock held is not resolved:
+  the copy fails with `-EFAULT`. So user copies happen with no spinlock held.
+- TLB: unmapped pages and emptied page tables go on a list; the range is flushed on every CPU in `Mm.cpus`
+  after `pt_lock` is released and before anything on the list is freed. `tlb_shootdown` must be called with no
+  spinlock held; a CPU spinning with interrupts off for another CPU's lock answers shootdowns by hand
+  (`kernel_lock_irq`, `tlb_shootdown_poll`).
+- `Mm.users` (atomic) keeps an mm alive for a holder that may sleep while it reads another process's mm (OOM
+  reaper, `/proc/<pid>/maps`). The `Process.mm` pointer itself changes only in exec and exit, which still run
+  under the kernel lock (the process row above, M1-16).
 
 ## Scheduler locks (M1-05)
 
