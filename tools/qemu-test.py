@@ -100,6 +100,10 @@ def qemu_command(args, iso, serial_log):
            "-no-reboot",
            "-boot", "d",
            "-cdrom", iso]
+    if args.disk:
+        # Read-only to QEMU too: a test can't change the image (M1-11)
+        cmd += ["-drive", f"file={args.disk},format=raw,if=none,readonly=on,id=disk0",
+                "-device", "virtio-blk-pci,drive=disk0"]
     flags = "".join("," + f for f in args.cpu_flags.split(",") if f)
     if kvm_usable() and not args.no_kvm and args.cpu is None:
         cmd += ["-accel", "kvm", "-cpu", "host" + flags]
@@ -227,6 +231,7 @@ def main():
     ap.add_argument("--cmdline", action="append", default=[],
                     help="extra kernel command-line word, e.g. arc.mem=4G")
     ap.add_argument("--name", help="name for the ISO and serial log (default: the suite)")
+    ap.add_argument("--disk", help="raw disk image attached read-only as a virtio-blk disk")
     ap.add_argument("--smp", type=int, default=4)
     ap.add_argument("--qemu", default="qemu-system-x86_64")
     ap.add_argument("--no-kvm", action="store_true", help="force TCG")
@@ -246,6 +251,11 @@ def main():
                     help="run CMD SERIAL_LOG SHOT... after the run; non-zero fails the suite")
     args = ap.parse_args()
     args.build_dir = os.path.abspath(args.build_dir)
+    if args.disk:
+        args.disk = args.disk if os.path.isabs(args.disk) else os.path.join(ROOT, args.disk)
+        if not os.path.isfile(args.disk):
+            log(f"disk image {args.disk} not found")
+            return 2
 
     if not os.path.isfile(os.path.join(args.build_dir, "kernel.elf")):
         log(f"{args.build_dir}/kernel.elf not found; run the cross build first")

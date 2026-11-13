@@ -48,6 +48,7 @@ int main(int argc, char **argv) {
     int count = 0;
     struct dirent *de;
     while ((de = readdir(dir)) != NULL) {
+        if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) continue;   /* no -a */
         count++;
         if (long_format) {
             /* Build full path for stat */

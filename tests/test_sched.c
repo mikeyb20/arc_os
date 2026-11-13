@@ -15,6 +15,7 @@
 #define ARCHOS_PROC_KERNEL_LOCK_H
 #define ARCHOS_MM_KMALLOC_H
 #define ARCHOS_MM_VMM_H
+#define ARCHOS_MM_MM_H
 #define ARCHOS_ARCH_HAL_H
 
 /* Unique names: test_thread.c links the real thread.c and its own switch stub */
@@ -35,9 +36,13 @@ static inline void kprintf(const char *fmt, ...) {
         abort();                        \
     } while (0)
 
-/* process.h: only the page table is read */
+/* process.h / mm.h: the scheduler only hands the next thread's mm to
+ * mm_switch, which is stubbed below (its own tests are in test_mm.c) */
+typedef struct Mm {
+    uint64_t pgd;
+} Mm;
 typedef struct Process {
-    uint64_t page_table;
+    Mm *mm;
 } Process;
 
 /* kmalloc.h / vmm.h (sched_start only) */
@@ -127,6 +132,18 @@ static inline void hal_switch_address_space(uint64_t cr3) {
     cr3_last = cr3;
     cpu_cr3[test_cpu] = cr3;
 }
+/* mm.h: mm_switch compares with this CPU's loaded mm (the real one is tested
+ * in test_mm.c); the recorder checks what the scheduler hands it */
+static Mm *cpu_mm[TEST_CPUS];
+static int mm_switch_calls;
+static Mm *mm_switch_last;
+static void mm_switch(Mm *next) {
+    mm_switch_calls++;
+    mm_switch_last = next;
+    if (cpu_mm[test_cpu] == next) return;
+    cpu_mm[test_cpu] = next;
+    hal_switch_address_space(next != NULL ? next->pgd : 0x1000);
+}
 static int timer_starts, timer_stops;
 static inline void hal_slice_timer_start(uint64_t ns) {
     (void)ns;
@@ -207,6 +224,9 @@ static void reset_sched_state(void) {
     cr3_writes = 0;
     cr3_last = 0;
     for (int i = 0; i < TEST_CPUS; i++) cpu_cr3[i] = 0x1000;   /* kernel PML4 */
+    for (int i = 0; i < TEST_CPUS; i++) cpu_mm[i] = NULL;
+    mm_switch_calls = 0;
+    mm_switch_last = NULL;
     timer_starts = timer_stops = 0;
     ctx_switch_count = 0;
     ctx_switch_old = ctx_switch_new = NULL;
@@ -381,13 +401,16 @@ static int test_sched_yield(void) {
     return 0;
 }
 
-/* CR3 follows the next thread's process, compared with what this CPU has
- * loaded; a thread with no process runs on the kernel page tables */
+/* The address space follows the next thread's process; a thread with no
+ * process runs on the kernel page tables (mm NULL) */
 static int test_sched_cr3_from_thread_proc(void) {
     reset_sched_state();
+    static Mm ma, mb;
     static Process pa, pb;
-    pa.page_table = 0xA000;
-    pb.page_table = 0xB000;
+    ma.pgd = 0xA000;
+    mb.pgd = 0xB000;
+    pa.mm = &ma;
+    pb.mm = &mb;
     Thread *a = make_thread(0, 100, THREAD_RUNNING);
     Thread *b = make_thread(1, 200, THREAD_CREATED);
     Thread *k = make_thread(2, 300, THREAD_CREATED);
@@ -395,30 +418,35 @@ static int test_sched_cr3_from_thread_proc(void) {
     a->proc = &pa;
     b->proc = &pb;
     boot_cpu(a);
+    cpu_mm[0] = &ma;
     a->state = THREAD_DEAD;   /* exiting: never queued again */
     sched_add_thread(b);
     sched_schedule();         /* a -> b */
-    ASSERT_EQ(cr3_writes, 1);
+    ASSERT_TRUE(mm_switch_last == &mb);
     ASSERT_EQ(cr3_last, 0xB000);
     ASSERT_TRUE(bsp_rq.head == NULL);
     b->state = THREAD_DEAD;
     sched_add_thread(k);
     sched_schedule();         /* b -> k (no process) */
-    ASSERT_EQ(cr3_writes, 2);
+    ASSERT_TRUE(mm_switch_last == NULL);
     ASSERT_EQ(cr3_last, 0x1000);
     k->state = THREAD_DEAD;
+    int writes = cr3_writes;
     sched_add_thread(k2);
     sched_schedule();         /* k -> k2: same page tables, no write */
-    ASSERT_EQ(cr3_writes, 2);
+    ASSERT_EQ(cr3_writes, writes);
     return 0;
 }
 
-/* exec loads its new PML4 itself and frees the old one, which the next fork
- * gets back: a switch to that child must still load CR3 (review finding 1) */
+/* The scheduler keeps no CR3 cache of its own: every switch goes through
+ * mm_switch, which compares mm pointers. An exec'd process has a new mm, so
+ * a reused PML4 can't be skipped (M1-05 review finding 1) */
 static int test_sched_cr3_after_exec(void) {
     reset_sched_state();
+    static Mm ma, mc;
     static Process pa, pc;
-    pa.page_table = 0xA000;
+    ma.pgd = 0xA000;
+    pa.mm = &ma;
     Thread *boot = make_thread(0, 100, THREAD_RUNNING);
     Thread *a = make_thread(1, 200, THREAD_CREATED);
     Thread *c = make_thread(2, 300, THREAD_CREATED);
@@ -426,16 +454,22 @@ static int test_sched_cr3_after_exec(void) {
     boot_cpu(boot);
     boot->state = THREAD_DEAD;
     sched_add_thread(a);
-    sched_schedule();                   /* boot -> a: the scheduler loads 0xA000 */
+    int calls = mm_switch_calls;
+    sched_schedule();         /* boot -> a */
+    ASSERT_EQ(mm_switch_calls, calls + 1);
     ASSERT_EQ(cpu_cr3[0], 0xA000);
-    pa.page_table = 0xC000;             /* a execs: loads its new PML4 itself */
-    hal_switch_address_space(0xC000);
-    pc.page_table = 0xA000;             /* a fork child gets the freed PML4 back */
+    static Mm mnew;
+    mnew.pgd = 0xC000;        /* a execs: new mm, switched to by exec itself */
+    pa.mm = &mnew;
+    mm_switch(&mnew);
+    mc.pgd = 0xA000;          /* a fork child gets the freed PML4 back */
+    pc.mm = &mc;
     c->proc = &pc;
     a->state = THREAD_DEAD;
     sched_add_thread(c);
     int before = cr3_writes;
-    sched_schedule();                   /* a -> c must load 0xA000 again */
+    sched_schedule();         /* a -> c must load 0xA000 again */
+    ASSERT_TRUE(mm_switch_last == &mc);
     ASSERT_EQ(cr3_writes, before + 1);
     ASSERT_EQ(cpu_cr3[0], 0xA000);
     return 0;

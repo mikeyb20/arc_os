@@ -2,6 +2,7 @@
 
 add_executable(test_runner
     test_main.c
+    test_harness.c
     test_mem.c
     test_pmm.c
     test_kprintf.c
@@ -15,12 +16,12 @@ add_executable(test_runner
     test_pci.c
     test_virtio.c
     test_string.c
-    test_vfs.c
     test_syscall.c
     test_elf.c
-    test_fd.c
-    test_fd_refs.c
     test_vmm.c
+    test_rbtree.c
+    test_vma.c
+    test_mm.c
     test_spinlock.c
     test_gdt.c
     test_idt.c
@@ -30,12 +31,8 @@ add_executable(test_runner
     test_tty.c
     test_keyboard.c
     test_shell.c
-    test_pipe.c
     test_signal.c
     test_waitqueue.c
-    test_fat32.c
-    test_devfs.c
-    test_procfs.c
     test_path.c
     test_exec_argv.c
     test_net_util.c
@@ -43,7 +40,6 @@ add_executable(test_runner
     test_arp.c
     test_ipv4.c
     test_icmp.c
-    test_cred.c
     test_mutex.c
     test_acpi.c
     test_lapic.c
@@ -97,12 +93,12 @@ add_test(NAME test_process COMMAND test_runner --suite process)
 add_test(NAME test_pci     COMMAND test_runner --suite pci)
 add_test(NAME test_virtio  COMMAND test_runner --suite virtio)
 add_test(NAME test_string  COMMAND test_runner --suite string)
-add_test(NAME test_vfs      COMMAND test_runner --suite vfs)
 add_test(NAME test_syscall  COMMAND test_runner --suite syscall)
 add_test(NAME test_elf      COMMAND test_runner --suite elf)
-add_test(NAME test_fd       COMMAND test_runner --suite fd)
-add_test(NAME test_fd_refs  COMMAND test_runner --suite fd_refs)
 add_test(NAME test_vmm      COMMAND test_runner --suite vmm)
+add_test(NAME test_rbtree   COMMAND test_runner --suite rbtree)
+add_test(NAME test_vma      COMMAND test_runner --suite vma)
+add_test(NAME test_mm       COMMAND test_runner --suite mm)
 add_test(NAME test_spinlock  COMMAND test_runner --suite spinlock)
 add_test(NAME test_gdt       COMMAND test_runner --suite gdt)
 add_test(NAME test_lapic     COMMAND test_runner --suite lapic)
@@ -114,12 +110,8 @@ add_test(NAME test_user_access  COMMAND test_runner --suite user_access)
 add_test(NAME test_tty          COMMAND test_runner --suite tty)
 add_test(NAME test_keyboard     COMMAND test_runner --suite keyboard)
 add_test(NAME test_shell        COMMAND test_runner --suite shell)
-add_test(NAME test_pipe         COMMAND test_runner --suite pipe)
 add_test(NAME test_signal       COMMAND test_runner --suite signal)
 add_test(NAME test_waitqueue    COMMAND test_runner --suite waitqueue)
-add_test(NAME test_fat32        COMMAND test_runner --suite fat32)
-add_test(NAME test_devfs        COMMAND test_runner --suite devfs)
-add_test(NAME test_procfs       COMMAND test_runner --suite procfs)
 add_test(NAME test_path         COMMAND test_runner --suite path)
 add_test(NAME test_exec_argv   COMMAND test_runner --suite exec_argv)
 add_test(NAME test_net_util    COMMAND test_runner --suite net_util)
@@ -127,7 +119,6 @@ add_test(NAME test_ethernet    COMMAND test_runner --suite ethernet)
 add_test(NAME test_arp         COMMAND test_runner --suite arp)
 add_test(NAME test_ipv4        COMMAND test_runner --suite ipv4)
 add_test(NAME test_icmp        COMMAND test_runner --suite icmp)
-add_test(NAME test_cred        COMMAND test_runner --suite cred)
 add_test(NAME test_mutex       COMMAND test_runner --suite mutex)
 add_test(NAME test_acpi        COMMAND test_runner --suite acpi)
 add_test(NAME test_fb_console  COMMAND test_runner --suite fb_console)
@@ -141,8 +132,38 @@ add_test(NAME test_panic       COMMAND test_runner --suite panic)
 add_test(NAME test_smbios      COMMAND test_runner --suite smbios)
 add_test(NAME test_qr          COMMAND test_runner --suite qr)
 add_test(NAME test_qr_screen   COMMAND test_runner --suite qr_screen)
-set_tests_properties(test_fat32 PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 set_tests_properties(arc_os_tests PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+
+# M1-11: the VFS suites run the real kernel/fs sources (and proc/fd.c), each
+# its own object as in the kernel, over host stand-ins for the rest of the
+# kernel (vfs_env.c). Their own program: test_runner's suites include private
+# copies of some of these files.
+add_library(arc_vfs_host STATIC
+    ${CMAKE_SOURCE_DIR}/kernel/fs/inode.c
+    ${CMAKE_SOURCE_DIR}/kernel/fs/dcache.c
+    ${CMAKE_SOURCE_DIR}/kernel/fs/vfs.c
+    ${CMAKE_SOURCE_DIR}/kernel/fs/file.c
+    ${CMAKE_SOURCE_DIR}/kernel/fs/ramfs.c
+    ${CMAKE_SOURCE_DIR}/kernel/fs/pipe.c
+    ${CMAKE_SOURCE_DIR}/kernel/fs/devfs.c
+    ${CMAKE_SOURCE_DIR}/kernel/fs/procfs.c
+    ${CMAKE_SOURCE_DIR}/kernel/fs/fat32.c
+    ${CMAKE_SOURCE_DIR}/kernel/fs/path.c
+    ${CMAKE_SOURCE_DIR}/kernel/proc/fd.c
+    ${CMAKE_SOURCE_DIR}/kernel/lib/rbtree.c
+    vfs_env.c
+)
+target_include_directories(arc_vfs_host PUBLIC ${CMAKE_SOURCE_DIR}/kernel ${CMAKE_SOURCE_DIR}/tests)
+target_compile_options(arc_vfs_host PUBLIC -Wall -Wextra -std=c11 -DARC_HOST_TEST
+    -idirafter ${CMAKE_SOURCE_DIR}/kernel/include)
+add_executable(test_vfs_runner vfs_main.c test_harness.c
+    test_vfs.c test_fd.c test_pipe.c test_devfs.c test_procfs.c test_fat32.c test_cred.c)
+target_link_libraries(test_vfs_runner PRIVATE arc_vfs_host)
+add_test(NAME vfs_tests COMMAND test_vfs_runner)
+foreach(_suite vfs fd pipe devfs procfs fat32 cred)
+    add_test(NAME test_${_suite} COMMAND test_vfs_runner --suite ${_suite})
+endforeach()
+set_tests_properties(vfs_tests test_fat32 PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 
 # The FAT32 suite reads tests/fat32_test.img (gitignored); build it first.
 # Needs mkfs.fat (dosfstools) and mtools, both installed by tools/dev-setup.sh.
@@ -151,7 +172,7 @@ add_test(NAME fat32_test_image
 set_tests_properties(fat32_test_image PROPERTIES
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     FIXTURES_SETUP fat32_image)
-set_tests_properties(test_fat32 arc_os_tests PROPERTIES FIXTURES_REQUIRED fat32_image)
+set_tests_properties(test_fat32 vfs_tests PROPERTIES FIXTURES_REQUIRED fat32_image)
 
 # M0-05: kernel/include/uapi against the host's Linux headers (sizes, offsets,
 # syscall numbers, errno and flag values). Its own program: the two header sets

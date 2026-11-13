@@ -14,6 +14,7 @@ set(KERNEL_ASM_SOURCES
     arch/x86_64/syscall_entry.asm
     arch/x86_64/usermode.asm
     arch/x86_64/selftest_avx2.asm
+    arch/x86_64/uaccess.asm
 )
 
 # --- C sources ---
@@ -30,6 +31,7 @@ set(KERNEL_C_SOURCES
     lib/cmdline.c
     lib/testmode.c
     lib/crc32.c
+    lib/rbtree.c
     arch/x86_64/debug_exit.c
     arch/x86_64/serial.c
     arch/x86_64/gdt.c
@@ -41,6 +43,9 @@ set(KERNEL_C_SOURCES
     mm/pmm.c
     mm/vmm.c
     mm/uaccess.c
+    mm/vma.c
+    mm/mm.c
+    mm/fault.c
     mm/mm_syscalls.c
     mm/slab.c
     mm/kmalloc.c
@@ -52,6 +57,7 @@ set(KERNEL_C_SOURCES
     arch/x86_64/percpu.c
     arch/x86_64/smp.c
     arch/x86_64/ipi.c
+    arch/x86_64/tlb.c
     proc/thread.c
     proc/sched.c
     proc/kernel_lock.c
@@ -65,6 +71,7 @@ set(KERNEL_C_SOURCES
     proc/signal.c
     proc/waitqueue.c
     proc/mutex.c
+    proc/rwsem.c
     proc/semaphore.c
     proc/condvar.c
     drivers/acpi.c
@@ -80,6 +87,9 @@ set(KERNEL_C_SOURCES
     drivers/ansi.c
     drivers/vt.c
     fs/vfs.c
+    fs/inode.c
+    fs/dcache.c
+    fs/file.c
     fs/fs_syscalls.c
     fs/ramfs.c
     fs/pipe.c

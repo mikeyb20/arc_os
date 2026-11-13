@@ -3,11 +3,16 @@
 
 #include "fs/vfs.h"
 
-/* Initialize devfs and return the root VfsNode for /dev.
- * All nodes are statically allocated — no kmalloc needed. */
-VfsNode *devfs_init(void);
+/* The /dev filesystem: null, zero and tty, all static (no allocation). Call
+ * once after vfs_init; returns its superblock. */
+SuperBlock *devfs_init(void);
 
-/* Return 1 if node is a terminal device (/dev/tty), else 0. ioctl uses it. */
-int devfs_is_tty(const VfsNode *node);
+/* The terminal as an open File (O_RDWR), for fds 0-2 of a process that has
+ * nothing there. Returns it with a new reference. */
+File *devfs_console(void);
+
+/* Terminal ioctl (TIOCSPGRP, TIOCGPGRP, TCGETS, TCSETS*, TIOCGWINSZ,
+ * TIOCSWINSZ); arg is a user address. -ENOTTY for anything else. */
+int64_t devfs_tty_ioctl(File *file, uint64_t request, uint64_t arg);
 
 #endif /* ARCHOS_FS_DEVFS_H */

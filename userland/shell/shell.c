@@ -457,7 +457,7 @@ static int apply_redirects(const Redirect *r) {
     if (r->out_file) {
         int flags = O_WRONLY | O_CREAT;
         flags |= r->append ? O_APPEND : O_TRUNC;
-        int fd = open(r->out_file, flags);
+        int fd = open(r->out_file, flags, 0666);
         if (fd < 0) { print_error(r->out_file, errno); return -1; }
         dup2(fd, 1);
         close(fd);
@@ -688,6 +688,7 @@ static void cmd_ls(int argc, char *argv[]) {
     }
     struct dirent *de;
     while ((de = readdir(dir)) != NULL) {
+        if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) continue;   /* no -a */
         /* Build full path for stat: path + "/" + name */
         char fullpath[512];
         uint64_t plen = strlen(path);
@@ -787,14 +788,14 @@ static void cmd_rm(int argc, char *argv[]) {
 
 static void cmd_touch(int argc, char *argv[]) {
     if (argc < 2) { puts("usage: touch <file>"); return; }
-    int fd = open(argv[1], O_CREAT | O_WRONLY);
+    int fd = open(argv[1], O_CREAT | O_WRONLY, 0666);
     if (fd < 0) { print_error(argv[1], errno); return; }
     close(fd);
 }
 
 static void cmd_write(int argc, char *argv[]) {
     if (argc < 3) { puts("usage: write <file> <text...>"); return; }
-    int fd = open(argv[1], O_CREAT | O_WRONLY | O_TRUNC);
+    int fd = open(argv[1], O_CREAT | O_WRONLY | O_TRUNC, 0666);
     if (fd < 0) { print_error(argv[1], errno); return; }
 
     for (int i = 2; i < argc; i++) {

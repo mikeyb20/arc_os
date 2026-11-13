@@ -19,6 +19,7 @@
 #include "uapi/wait.h"
 #include "uapi/auxvec.h"
 #include "uapi/prctl.h"
+#include "uapi/mman.h"
 
 typedef struct stat               abi_stat;
 typedef struct linux_dirent64     abi_dirent64;

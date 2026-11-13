@@ -1,232 +1,144 @@
-/* arc_os — Host-side tests for devfs */
+/* arc_os — /dev on the real devfs.c (M1-11): null, zero, the terminal, the
+ * console File, ioctls, the listing, and refusing new names. */
 
 #include "test_framework.h"
-#include <stdint.h>
-#include <stddef.h>
+#include "vfs_env.h"
 
-/* Guard kernel headers */
-#define ARCHOS_FS_VFS_H
-#define ARCHOS_FS_DEVFS_H
-#define ARCHOS_DRIVERS_TTY_H
-#define ARCHOS_LIB_MEM_H
-#define ARCHOS_LIB_STRING_H
+#include "fs/devfs.h"
+#include "uapi/errno.h"
+#include "uapi/fcntl.h"
+#include "uapi/termios.h"
 
-/* VFS types (inline — match vfs.h) */
-#define VFS_FILE      0
-#define VFS_DIRECTORY 1
-#define VFS_NAME_MAX  256
-
-typedef struct VfsNode VfsNode;
-typedef struct VfsDirEntry VfsDirEntry;
 
 typedef struct {
-    int      (*read)(VfsNode *node, void *buf, uint32_t offset, uint32_t size);
-    int      (*write)(VfsNode *node, const void *buf, uint32_t offset, uint32_t size);
-    VfsNode *(*lookup)(VfsNode *dir, const char *name);
-    VfsNode *(*create)(VfsNode *dir, const char *name, uint8_t type);
-    int      (*unlink)(VfsNode *dir, const char *name);
-    int      (*readdir)(VfsNode *dir, VfsDirEntry *entries, uint32_t max);
-    void     (*truncate)(VfsNode *node, uint64_t size);
-} VfsOps;
+    DirContext ctx;
+    char names[128];
+} Names;
 
-struct VfsNode {
-    uint64_t       inode_num;
-    uint8_t        type;
-    uint64_t       size;
-    uint32_t       mode;
-    uint32_t       uid;
-    uint32_t       gid;
-    const VfsOps  *ops;
-    void          *private_data;
-};
-
-struct VfsDirEntry {
-    char     name[VFS_NAME_MAX];
-    uint64_t inode_num;
-    uint8_t  type;
-};
-
-/* --- TTY stubs with capture buffers --- */
-
-static char tty_write_capture[256];
-static int tty_write_capture_len;
-static char tty_read_data[256];
-static int tty_read_data_len;
-static int tty_read_data_pos;
-
-static int tty_read(void *buf, uint32_t count) {
-    int avail = tty_read_data_len - tty_read_data_pos;
-    int to_read = (int)count < avail ? (int)count : avail;
-    memcpy(buf, tty_read_data + tty_read_data_pos, to_read);
-    tty_read_data_pos += to_read;
-    return to_read;
-}
-
-static int tty_write(const void *buf, uint32_t count) {
-    int to_copy = (int)count;
-    if (tty_write_capture_len + to_copy > (int)sizeof(tty_write_capture))
-        to_copy = (int)sizeof(tty_write_capture) - tty_write_capture_len;
-    memcpy(tty_write_capture + tty_write_capture_len, buf, to_copy);
-    tty_write_capture_len += to_copy;
-    return (int)count;
-}
-
-static void tty_reset(void) {
-    tty_write_capture_len = 0;
-    memset(tty_write_capture, 0, sizeof(tty_write_capture));
-    tty_read_data_len = 0;
-    tty_read_data_pos = 0;
-    memset(tty_read_data, 0, sizeof(tty_read_data));
-}
-
-/* Declare devfs_init before including the .c */
-VfsNode *devfs_init(void);
-
-#include "../kernel/fs/devfs.c"
-
-/* --- Tests --- */
-
-TEST(init_returns_non_null) {
-    VfsNode *root = devfs_init();
-    ASSERT_TRUE(root != NULL);
+static int names_actor(DirContext *ctx, const char *name, size_t len, uint64_t ino, uint8_t dtype, loff_t next) {
+    (void)ino, (void)dtype, (void)next;
+    Names *n = (Names *)ctx;
+    size_t at = strlen(n->names);
+    snprintf(n->names + at, sizeof(n->names) - at, "%s%.*s", at ? " " : "", (int)len, name);
     return 0;
 }
 
-TEST(root_is_directory) {
-    VfsNode *root = devfs_init();
-    ASSERT_EQ(root->type, VFS_DIRECTORY);
+TEST(nodes_are_character_devices) {
+    vfs_env_setup();
+    struct stat st;
+    ASSERT_EQ(vfs_stat("/dev/null", &st), 0);
+    ASSERT_EQ(st.st_mode, S_IFCHR | 0666);
+    ASSERT_EQ(st.st_rdev, (1 << 8) | 3);
+    ASSERT_EQ(vfs_stat("/dev/zero", &st), 0);
+    ASSERT_EQ(st.st_rdev, (1 << 8) | 5);
+    ASSERT_EQ(vfs_stat("/dev/tty", &st), 0);
+    ASSERT_EQ(st.st_rdev, (5 << 8) | 0);
+    ASSERT_EQ(vfs_stat("/dev/none", &st), -ENOENT);
     return 0;
 }
 
-TEST(lookup_null) {
-    VfsNode *root = devfs_init();
-    VfsNode *n = root->ops->lookup(root, "null");
-    ASSERT_TRUE(n != NULL);
-    ASSERT_EQ(n->type, VFS_FILE);
-    return 0;
-}
-
-TEST(lookup_zero) {
-    VfsNode *root = devfs_init();
-    VfsNode *n = root->ops->lookup(root, "zero");
-    ASSERT_TRUE(n != NULL);
-    ASSERT_EQ(n->type, VFS_FILE);
-    return 0;
-}
-
-TEST(lookup_tty) {
-    VfsNode *root = devfs_init();
-    VfsNode *n = root->ops->lookup(root, "tty");
-    ASSERT_TRUE(n != NULL);
-    ASSERT_EQ(n->type, VFS_FILE);
-    return 0;
-}
-
-TEST(lookup_nonexistent) {
-    VfsNode *root = devfs_init();
-    VfsNode *n = root->ops->lookup(root, "nonexistent");
-    ASSERT_TRUE(n == NULL);
-    return 0;
-}
-
-TEST(null_read_returns_eof) {
-    VfsNode *root = devfs_init();
-    VfsNode *n = root->ops->lookup(root, "null");
+TEST(null_and_zero) {
+    vfs_env_setup();
+    File *f;
     char buf[16];
-    int rd = n->ops->read(n, buf, 0, 16);
-    ASSERT_EQ(rd, 0);
+    ASSERT_EQ(vfs_open("/dev/null", O_RDWR, 0, &f), 0);
+    IoBuf b = iob_kernel(buf, sizeof(buf));
+    ASSERT_EQ(vfs_read(f, &b), 0);
+    ASSERT_EQ(vfs_write(f, &b), 16);
+    ASSERT_EQ(vfs_llseek(f, 100, SEEK_SET), 0);
+    fput(f);
+    ASSERT_EQ(vfs_open("/dev/zero", O_RDONLY, 0, &f), 0);
+    memset(buf, 'x', sizeof(buf));
+    ASSERT_EQ(vfs_read(f, &b), 16);
+    for (int i = 0; i < 16; i++) ASSERT_EQ(buf[i], 0);
+    IoBuf r = iob_kernel(buf, 4);
+    ASSERT_EQ(vfs_pread(f, &r, 1ll << 40), 4);   /* any offset */
+    fput(f);
     return 0;
 }
 
-TEST(null_write_discards) {
-    VfsNode *root = devfs_init();
-    VfsNode *n = root->ops->lookup(root, "null");
-    int wr = n->ops->write(n, "hello", 0, 5);
-    ASSERT_EQ(wr, 5);
+TEST(tty_reads_and_writes_the_terminal) {
+    vfs_env_setup();
+    File *f;
+    ASSERT_EQ(vfs_open("/dev/tty", O_RDWR, 0, &f), 0);
+    vfs_env_tty_out_len = 0;
+    IoBuf w = iob_kernel("hi\n", 3);
+    ASSERT_EQ(vfs_write(f, &w), 3);
+    ASSERT_EQ(vfs_env_tty_out_len, 3);
+    ASSERT_MEM_EQ(vfs_env_tty_out, "hi\n", 3);
+    vfs_env_tty_input("typed\n");
+    char buf[16];
+    IoBuf r = iob_kernel(buf, sizeof(buf));
+    ASSERT_EQ(vfs_read(f, &r), 6);
+    ASSERT_MEM_EQ(buf, "typed\n", 6);
+    ASSERT_EQ(vfs_llseek(f, 0, SEEK_SET), -ESPIPE);
+    /* Longer than one bounce chunk */
+    char big[1300];
+    memset(big, 'b', sizeof(big));
+    vfs_env_tty_out_len = 0;
+    IoBuf wb = iob_kernel(big, sizeof(big));
+    ASSERT_EQ(vfs_write(f, &wb), 1300);
+    ASSERT_EQ(vfs_env_tty_out_len, 1300);
+    fput(f);
     return 0;
 }
 
-TEST(zero_read_returns_zeros) {
-    VfsNode *root = devfs_init();
-    VfsNode *n = root->ops->lookup(root, "zero");
-    uint8_t buf[32];
-    memset(buf, 0xFF, sizeof(buf));
-    int rd = n->ops->read(n, buf, 0, 32);
-    ASSERT_EQ(rd, 32);
-    for (int i = 0; i < 32; i++) {
-        ASSERT_EQ(buf[i], 0);
-    }
+TEST(console_is_the_terminal) {
+    vfs_env_setup();
+    File *c = devfs_console();
+    ASSERT_TRUE(c != NULL);
+    struct stat st;
+    vfs_fill_stat(c->inode, &st);
+    ASSERT_EQ(st.st_rdev, (5 << 8) | 0);
+    ASSERT_EQ(c->flags & O_ACCMODE, O_RDWR);
+    fput(c);
+    File *again = devfs_console();   /* never freed: the console keeps its own reference */
+    ASSERT_TRUE(again == c);
+    fput(again);
     return 0;
 }
 
-TEST(zero_write_discards) {
-    VfsNode *root = devfs_init();
-    VfsNode *n = root->ops->lookup(root, "zero");
-    int wr = n->ops->write(n, "data", 0, 4);
-    ASSERT_EQ(wr, 4);
+TEST(tty_ioctls) {
+    vfs_env_setup();
+    File *f;
+    ASSERT_EQ(vfs_open("/dev/tty", O_RDWR, 0, &f), 0);
+    struct winsize ws;
+    ASSERT_EQ(devfs_tty_ioctl(f, TIOCGWINSZ, (uint64_t)(uintptr_t)&ws), 0);
+    ASSERT_EQ(ws.ws_col, 80);
+    int32_t pgid = 7;
+    ASSERT_EQ(devfs_tty_ioctl(f, TIOCSPGRP, (uint64_t)(uintptr_t)&pgid), 0);
+    pgid = 0;
+    ASSERT_EQ(devfs_tty_ioctl(f, TIOCGPGRP, (uint64_t)(uintptr_t)&pgid), 0);
+    ASSERT_EQ(pgid, 7);
+    pgid = -1;
+    ASSERT_EQ(devfs_tty_ioctl(f, TIOCSPGRP, (uint64_t)(uintptr_t)&pgid), -EINVAL);
+    ASSERT_EQ(devfs_tty_ioctl(f, TIOCGWINSZ, VFS_ENV_BAD_UADDR), -EFAULT);
+    ASSERT_EQ(devfs_tty_ioctl(f, 0x1234, 0), -ENOTTY);
+    struct termios t;
+    ASSERT_EQ(devfs_tty_ioctl(f, TCGETS, (uint64_t)(uintptr_t)&t), 0);
+    fput(f);
     return 0;
 }
 
-TEST(tty_read_calls_through) {
-    tty_reset();
-    VfsNode *root = devfs_init();
-    VfsNode *n = root->ops->lookup(root, "tty");
-    memcpy(tty_read_data, "abc", 3);
-    tty_read_data_len = 3;
-
-    char buf[16] = {0};
-    int rd = n->ops->read(n, buf, 0, 3);
-    ASSERT_EQ(rd, 3);
-    ASSERT_MEM_EQ(buf, "abc", 3);
+TEST(listing_and_no_new_names) {
+    vfs_env_setup();
+    File *d;
+    ASSERT_EQ(vfs_open("/dev", O_RDONLY | O_DIRECTORY, 0, &d), 0);
+    Names n;
+    memset(&n, 0, sizeof(n));
+    n.ctx.actor = names_actor;
+    ASSERT_EQ(vfs_iterate(d, &n.ctx), 0);
+    ASSERT_STR_EQ(n.names, ". .. null zero tty");
+    fput(d);
+    File *f;
+    ASSERT_EQ(vfs_open("/dev/newdev", O_CREAT | O_WRONLY, 0644, &f), -EACCES);
+    ASSERT_EQ(vfs_mkdir("/dev/sub", 0755), -EPERM);
+    ASSERT_EQ(vfs_unlink("/dev/null"), -EPERM);
     return 0;
 }
-
-TEST(tty_write_calls_through) {
-    tty_reset();
-    VfsNode *root = devfs_init();
-    VfsNode *n = root->ops->lookup(root, "tty");
-
-    int wr = n->ops->write(n, "hello", 0, 5);
-    ASSERT_EQ(wr, 5);
-    ASSERT_EQ(tty_write_capture_len, 5);
-    ASSERT_MEM_EQ(tty_write_capture, "hello", 5);
-    return 0;
-}
-
-TEST(readdir_lists_three) {
-    VfsNode *root = devfs_init();
-    VfsDirEntry entries[8];
-    int count = root->ops->readdir(root, entries, 8);
-    ASSERT_EQ(count, 3);
-    ASSERT_STR_EQ(entries[0].name, "null");
-    ASSERT_STR_EQ(entries[1].name, "zero");
-    ASSERT_STR_EQ(entries[2].name, "tty");
-    return 0;
-}
-
-TEST(no_create_or_unlink) {
-    VfsNode *root = devfs_init();
-    ASSERT_TRUE(root->ops->create == NULL);
-    ASSERT_TRUE(root->ops->unlink == NULL);
-    return 0;
-}
-
-/* --- Suite --- */
 
 TestCase devfs_tests[] = {
-    TEST_ENTRY(init_returns_non_null),
-    TEST_ENTRY(root_is_directory),
-    TEST_ENTRY(lookup_null),
-    TEST_ENTRY(lookup_zero),
-    TEST_ENTRY(lookup_tty),
-    TEST_ENTRY(lookup_nonexistent),
-    TEST_ENTRY(null_read_returns_eof),
-    TEST_ENTRY(null_write_discards),
-    TEST_ENTRY(zero_read_returns_zeros),
-    TEST_ENTRY(zero_write_discards),
-    TEST_ENTRY(tty_read_calls_through),
-    TEST_ENTRY(tty_write_calls_through),
-    TEST_ENTRY(readdir_lists_three),
-    TEST_ENTRY(no_create_or_unlink),
+    TEST_ENTRY(nodes_are_character_devices), TEST_ENTRY(null_and_zero), TEST_ENTRY(tty_reads_and_writes_the_terminal),
+    TEST_ENTRY(console_is_the_terminal),     TEST_ENTRY(tty_ioctls),    TEST_ENTRY(listing_and_no_new_names),
 };
 int devfs_test_count = sizeof(devfs_tests) / sizeof(devfs_tests[0]);

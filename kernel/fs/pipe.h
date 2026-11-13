@@ -3,18 +3,13 @@
 
 #include "fs/vfs.h"
 
-/* Pipe buffer size (bytes) */
+/* Pipe buffer size (bytes); writes up to this size are not interleaved with
+ * other writers' (POSIX PIPE_BUF) */
 #define PIPE_BUF_SIZE 4096
 
-/* Create a pipe. Sets *read_node and *write_node to the two ends.
- * Returns 0 on success, -ENOMEM on failure. */
-int pipe_create(VfsNode **read_node, VfsNode **write_node);
-
-/* Close one end of a pipe. Decrements the appropriate ref count.
- * Frees the PipeNode when both ends reach 0. */
-void pipe_close(VfsNode *node);
-
-/* Add a reference to one end of a pipe (used by dup2/fork). */
-void pipe_addref(VfsNode *node);
+/* Create a pipe: *rd is its read end (O_RDONLY), *wr its write end
+ * (O_WRONLY), each a File with one reference; extra_flags (O_NONBLOCK) go on
+ * both. 0, or -ENOMEM. */
+int pipe_create(File **rd, File **wr, uint32_t extra_flags);
 
 #endif /* ARCHOS_FS_PIPE_H */

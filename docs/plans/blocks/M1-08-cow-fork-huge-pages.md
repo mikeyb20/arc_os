@@ -31,4 +31,12 @@
 - Splitting a huge mapping needs a TLB flush (shootdown from M1-07).
 
 **Notes.**
--
+- From M1-07: `mm_fork` (mm.c) copies every page under the source's `pt_lock` through `vmm_copy_range_in` (a long
+  hold for a big process; COW replaces it). `zap_range` collects unmapped frames on a `page_list` through each
+  page's `lru` link and frees them after the TLB flush: a COW page mapped by two mms can't sit on two lists, so the
+  unmap path must drop a reference and list only pages whose count reaches 0. `MAP_SHARED | MAP_ANONYMOUS` returns
+  `-EINVAL` until pages are refcounted. The fault path's "page already there" case rewrites the entry with the
+  VMA's flags; with COW that must not make a shared page writable. The kernel reaches frames through the HHDM
+  (`page_to_virt`); the HHDM-wide flags question is left here. COW needs CR0.WP, which the kernel never sets
+  (Limine leaves it on): set it per CPU so a kernel write to a read-only user PTE faults. `walk_pt` skips a user
+  PDE with PS set, so range walks ignore 2 MiB pages until this block handles them.

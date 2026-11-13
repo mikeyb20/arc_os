@@ -4,23 +4,28 @@
  * came online; an AVX2 checksum on every CPU matches the scalar one (XCR0
  * checked first); a 256 MB memory pattern test; the TSC rate against the PIT;
  * the PIT interrupt rate against the TSC; a kernel thread pinned to each CPU
- * runs there (M1-05: this starts the other CPUs' schedulers early).
+ * runs there (M1-05: this starts the other CPUs' schedulers early); a TLB
+ * range flush reaches every CPU that has the address space loaded (M1-07).
  * Invariants: runs only in diagnostic mode, where init never starts, so no
  * user thread exists on any CPU while the AVX2 routine runs (ADR-0003 note);
  * the scheduler check runs last, after it. Every wait is bounded by TSC time.
  * Locks: none of its own (boot thread, pinned to the BSP).
- * Cost: about 1 s of memory traffic plus 300 ms of timed waits; one 16 KiB
- * kernel thread per CPU that is never freed (diagnostic mode only). */
+ * Cost: about 1 s of memory traffic plus 300 ms of timed waits; two 16 KiB
+ * kernel threads per CPU that are never freed (diagnostic mode only). */
 
 #include "diag/diag.h"
 #include "arch/hal.h"
 #include "drivers/acpi.h"
 #include "mm/pmm.h"
 #include "mm/kmalloc.h"
+#include "mm/mm.h"
+#include "mm/vmm.h"
+#include "mm/page.h"
 #include "proc/thread.h"
 #include "proc/sched.h"
 #include "lib/kprintf.h"
 #include "lib/testmode.h"
+#include "lib/mem.h"
 #include <stdarg.h>
 
 #define AVX_ORDER       4                                  /* 64 KiB buffer */
@@ -30,6 +35,8 @@
 #define TIMER_CHECK_MS  200
 #define TIMER_HZ        100                                  /* kmain starts the PIT at 100 Hz */
 #define SCHED_CHECK_MS  2000 /* every pinned thread has run by then */
+#define TLB_CHECK_MS    2000 /* each step of the TLB check */
+#define TLB_TEST_ADDR   0x40000000ULL
 
 static int passed, failed;
 
@@ -258,6 +265,114 @@ static void check_sched(void) {
            e_cores, sched_misplaced);
 }
 
+/* ---- TLB shootdown (M1-07): a range flush reaches every CPU with the mm ----
+ * A thread pinned to each other CPU loads a test address space and reads a
+ * user page through it (its TLB now caches the translation). The BSP points
+ * the page-table entry at another frame and flushes the range: the shootdown
+ * must be answered by every one of those CPUs, and each must then read the
+ * new frame, not the stale one its TLB held. */
+
+static Mm *tlb_mm;
+static volatile uint32_t tlb_loaded; /* threads that read the old frame */
+static volatile uint32_t tlb_go; /* the BSP has flushed */
+static volatile uint32_t tlb_fresh; /* threads that then read the new frame */
+static volatile uint32_t tlb_stale; /* ... or still the old one, or nothing */
+
+/* Read the test page through tlb_mm, interrupts off (a preemption in
+ * between would load the kernel's page tables again) */
+static uint32_t tlb_read(void) {
+    uint64_t flags = irq_save();
+    mm_switch(tlb_mm);
+    uint32_t v = 0;
+    if (hal_copy_user(&v, (const void *)TLB_TEST_ADDR, sizeof(v)) != 0) v = 0;
+    irq_restore(flags);
+    return v;
+}
+
+static void tlb_entry(void *arg) {
+    (void)arg;
+    uint32_t old = tlb_read();
+    __atomic_fetch_add(&tlb_loaded, old == 0xA1A1A1A1u ? 1 : 0x10000, __ATOMIC_RELEASE);
+    uint64_t start = hal_tsc_read();
+    uint64_t khz = hal_tsc_info()->khz;
+    uint64_t limit = khz != 0 ? khz * TLB_CHECK_MS : CALL_MAX_CYCLES;
+    while (!__atomic_load_n(&tlb_go, __ATOMIC_ACQUIRE) && hal_tsc_read() - start < limit) hal_cpu_relax();
+    uint32_t now = tlb_read();
+    __atomic_fetch_add(now == 0xB2B2B2B2u ? &tlb_fresh : &tlb_stale, 1, __ATOMIC_RELEASE);
+    uint64_t flags = irq_save();
+    mm_switch(NULL);
+    irq_restore(flags);
+}
+
+/* Wait until cond() or TLB_CHECK_MS have passed */
+static void tlb_wait(int (*cond)(void)) {
+    uint64_t start = hal_tsc_read();
+    uint64_t khz = hal_tsc_info()->khz;
+    uint64_t limit = khz != 0 ? khz * TLB_CHECK_MS : CALL_MAX_CYCLES;
+    while (!cond() && hal_tsc_read() - start < limit) {
+        sched_yield();
+        hal_cpu_relax();
+    }
+}
+
+static uint32_t tlb_threads;
+static int tlb_all_loaded(void) {
+    return __atomic_load_n(&tlb_loaded, __ATOMIC_ACQUIRE) >= tlb_threads;
+}
+static int tlb_all_done(void) {
+    return __atomic_load_n(&tlb_fresh, __ATOMIC_ACQUIRE) + __atomic_load_n(&tlb_stale, __ATOMIC_ACQUIRE) >= tlb_threads;
+}
+static int tlb_mm_unloaded(void) {
+    for (int w = 0; w < CPUMASK_WORDS; w++) {
+        if (__atomic_load_n(&tlb_mm->cpus.bits[w], __ATOMIC_ACQUIRE) != 0) return 0;
+    }
+    return 1;
+}
+
+static void check_tlb(void) {
+    tlb_mm = mm_create();
+    struct page *a = alloc_pages(0, 0), *b = alloc_pages(0, 0);
+    if (tlb_mm == NULL || a == NULL || b == NULL ||
+        mm_setup_page(tlb_mm, TLB_TEST_ADDR, page_to_phys(a), VMM_FLAG_USER) != 0) {
+        result("tlb", 0, "out of memory");
+        return;
+    }
+    memset(page_to_virt(a), 0xA1, PAGE_SIZE);
+    memset(page_to_virt(b), 0xB2, PAGE_SIZE);
+    uint32_t self = hal_cpu_index();
+    for (uint32_t cpu = 0; cpu < HAL_MAX_CPUS; cpu++) {
+        SchedCpuStats st;
+        if (cpu == self || sched_cpu_stats(cpu, &st) != 0) continue;
+        Thread *t = thread_create(tlb_entry, NULL);
+        if (t == NULL) break;
+        CpuMask only;
+        cpumask_clear(&only);
+        cpumask_set(&only, cpu);
+        sched_set_affinity(t, &only);
+        sched_add_thread(t);
+        tlb_threads++;
+    }
+    tlb_wait(tlb_all_loaded);
+    uint32_t loaded = 0;
+    for (uint32_t cpu = 0; cpu < SCHED_MAX_CPUS; cpu++) loaded += (uint32_t)cpumask_test(&tlb_mm->cpus, cpu);
+
+    /* The swap: same address, other frame; then the range flush */
+    vmm_map_page_in(tlb_mm->pgd, TLB_TEST_ADDR, page_to_phys(b), VMM_FLAG_USER);
+    uint32_t acked = hal_tlb_flush(&tlb_mm->cpus, tlb_mm->pgd, TLB_TEST_ADDR, TLB_TEST_ADDR + PAGE_SIZE);
+    __atomic_store_n(&tlb_go, 1, __ATOMIC_RELEASE);
+    tlb_wait(tlb_all_done);
+    tlb_wait(tlb_mm_unloaded);
+
+    int ok = tlb_threads > 0 && tlb_loaded == tlb_threads && loaded == tlb_threads && acked == loaded &&
+             tlb_fresh == tlb_threads && tlb_stale == 0;
+    result("tlb", ok, "%u of %u CPUs with the mm loaded answered; %u read the new page, %u a stale one", acked, loaded,
+           tlb_fresh, tlb_stale);
+    if (tlb_mm_unloaded()) {
+        pmm_free_page(page_to_phys(a)); /* b goes with the mm */
+        mm_put(tlb_mm);
+    }
+}
+
 void diag_selftest(int *passes, int *fails) {
     passed = failed = 0;
     diag_line("Self-test");
@@ -266,7 +381,8 @@ void diag_selftest(int *passes, int *fails) {
     check_memory();
     check_tsc();
     check_timer_irq();
-    check_sched(); /* last: starts the other CPUs' schedulers */
+    check_sched(); /* starts the other CPUs' schedulers */
+    check_tlb(); /* needs them */
     diag_line("Self-test: %d PASS, %d FAIL", passed, failed);
     *passes = passed;
     *fails = failed;

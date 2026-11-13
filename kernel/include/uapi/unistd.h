@@ -33,6 +33,7 @@
 #define __NR_writev            20
 #define __NR_access            21
 #define __NR_pipe              22
+#define __NR_mremap            25
 #define __NR_madvise           28
 #define __NR_dup               32
 #define __NR_dup2              33
@@ -85,9 +86,12 @@
 #define __NR_clock_gettime     228
 #define __NR_exit_group        231
 #define __NR_openat            257
+#define __NR_mkdirat           258
 #define __NR_newfstatat        262
 #define __NR_unlinkat          263
+#define __NR_renameat          264
 #define __NR_utimensat         280
+#define __NR_dup3              292
 #define __NR_pipe2             293
 
 #endif /* ARCHOS_UAPI_UNISTD_H */

@@ -3,7 +3,8 @@
 
 #include "fs/vfs.h"
 
-/* Initialize ramfs and return the root directory VfsNode */
-VfsNode *ramfs_init(void);
+/* A new, empty in-memory filesystem (root directory 0755, owned by root).
+ * NULL when out of memory. */
+SuperBlock *ramfs_create_sb(void);
 
 #endif /* ARCHOS_FS_RAMFS_H */

@@ -1,0 +1,3 @@
+# qemu.mm.oom (M1-07): on a small machine a process that allocates without
+# end gets SIGKILL from the OOM killer; the kernel neither panics nor stops.
+mmoom    /boot/mmtest oom

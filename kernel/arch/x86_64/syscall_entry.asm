@@ -24,10 +24,13 @@ extern syscall_exit_work
 %define PERCPU_KERNEL_RSP 8
 %define PERCPU_USER_RSP   16
 
-; SyscallFrame offsets (proc/signal.h): r9 at the lowest address
-%define FRAME_RIP     96
-%define FRAME_RFLAGS  104
-%define FRAME_RSP     112
+; SyscallFrame offsets (proc/signal.h): ret_rcx at the lowest address
+%define FRAME_RET_RCX 0
+%define FRAME_RET_R11 8
+%define FRAME_R9      16
+%define FRAME_RIP     112
+%define FRAME_RFLAGS  120
+%define FRAME_RSP     128
 
 ; User selectors with RPL 3 (gdt.h)
 %define USER_DATA_RPL3  0x1B
@@ -54,6 +57,8 @@ syscall_entry:
     push r10
     push r8
     push r9
+    push r11                            ; ret_r11: R11 and RCX on return (SYSRET
+    push rcx                            ; ret_rcx:  gives RFLAGS and RIP back)
 
     ; Shuffle registers for C calling convention:
     ;   syscall_dispatch(num, a0, a1, a2, a3, a4, a5)
@@ -86,13 +91,21 @@ syscall_entry:
     ; SYSRET to a non-canonical RIP faults in ring 0 on Intel, with the user's
     ; RSP already loaded. rt_sigreturn can set any RIP, so check it here and
     ; leave through IRET instead (its fault, if any, comes on the kernel stack).
+    ; IRET too when RCX/R11 must differ from RIP/RFLAGS (rt_sigreturn to an
+    ; interrupted context, M1-07): SYSRET can't give them back.
     mov rcx, [rsp + FRAME_RIP]
     mov r11, rcx
     shl r11, 16
     sar r11, 16
     cmp r11, rcx
     jne .return_iret
+    cmp rcx, [rsp + FRAME_RET_RCX]
+    jne .return_iret
+    mov r11, [rsp + FRAME_RFLAGS]
+    cmp r11, [rsp + FRAME_RET_R11]
+    jne .return_iret
 
+    add rsp, 16             ; ret_rcx, ret_r11: equal to RIP, RFLAGS
     pop r9
     pop r8
     pop r10
@@ -112,26 +125,27 @@ syscall_entry:
     o64 sysret              ; return to user mode (64-bit SYSRET)
 
 .return_iret:
-    ; Rare path: restore registers from the frame, then IRET with RCX/R11 set
-    ; as SYSRET would have left them
-    mov r11, [rsp + FRAME_RFLAGS]
-    mov r9,  [rsp + 0]
-    mov r8,  [rsp + 8]
-    mov r10, [rsp + 16]
-    mov rdx, [rsp + 24]
-    mov rsi, [rsp + 32]
-    mov rdi, [rsp + 40]
-    mov r15, [rsp + 48]
-    mov r14, [rsp + 56]
-    mov r13, [rsp + 64]
-    mov r12, [rsp + 72]
-    mov rbp, [rsp + 80]
-    mov rbx, [rsp + 88]
-    push USER_DATA_RPL3                 ; SS
-    push qword [rsp + 8 + FRAME_RSP]    ; RSP (address computed before the push)
-    push r11                            ; RFLAGS
-    push USER_CODE_RPL3                 ; CS
-    push rcx                            ; RIP
+    ; Rare path: build the IRET frame, restore registers from the frame with
+    ; RCX/R11 from ret_rcx/ret_r11
+    push USER_DATA_RPL3                     ; SS
+    push qword [rsp + 8 + FRAME_RSP]        ; RSP (address computed before the push)
+    push qword [rsp + 16 + FRAME_RFLAGS]    ; RFLAGS
+    push USER_CODE_RPL3                     ; CS
+    push qword [rsp + 32 + FRAME_RIP]       ; RIP
+    mov rcx, [rsp + 40 + FRAME_RET_RCX]
+    mov r11, [rsp + 40 + FRAME_RET_R11]
+    mov r9,  [rsp + 40 + FRAME_R9 + 0]
+    mov r8,  [rsp + 40 + FRAME_R9 + 8]
+    mov r10, [rsp + 40 + FRAME_R9 + 16]
+    mov rdx, [rsp + 40 + FRAME_R9 + 24]
+    mov rsi, [rsp + 40 + FRAME_R9 + 32]
+    mov rdi, [rsp + 40 + FRAME_R9 + 40]
+    mov r15, [rsp + 40 + FRAME_R9 + 48]
+    mov r14, [rsp + 40 + FRAME_R9 + 56]
+    mov r13, [rsp + 40 + FRAME_R9 + 64]
+    mov r12, [rsp + 40 + FRAME_R9 + 72]
+    mov rbp, [rsp + 40 + FRAME_R9 + 80]
+    mov rbx, [rsp + 40 + FRAME_R9 + 88]
     swapgs
 syscall_iret_user:                      ; a #GP here is the user's (M1-07)
     iretq
