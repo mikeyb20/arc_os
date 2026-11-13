@@ -1,0 +1,41 @@
+# Kiwix catalog (M3-01, docs/plans/content-lane.md): cloud sessions can't reach
+# library.kiwix.org, so this job reads the English catalog with
+# tools/content/catalog.py, prints the table into the log and keeps it (and the raw
+# feed) as an artifact. It only reads public catalog data: the content list built
+# from it stays out of this repo. No ZIM is downloaded.
+name: catalog
+
+on:
+  workflow_dispatch:
+  push:
+    branches-ignore: [master]
+    paths:
+      - tools/content/catalog.py
+      - .github/workflows/catalog.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: catalog-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  catalog:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the English catalog
+        run: |
+          mkdir -p out
+          python3 -I tools/content/catalog.py --lang eng --save out/catalog-eng.xml --out out/catalog-eng.tsv
+          cat out/catalog-eng.tsv
+
+      - name: Upload the table
+        uses: actions/upload-artifact@v4
+        with:
+          name: kiwix-catalog-eng
+          path: out
+          retention-days: 30
