@@ -17,10 +17,12 @@
 # 317173 after M1-05 (SMP scheduler, lock-order checker; within the +5% margin);
 # 317173 -> 328564 after M1-04b: the QR encoder (~8.3 KB), its text pages (~2.5 KB),
 # CRC-32 (~1.2 KB, 1 KiB of it the table) and their backtrace names. Limit = measured + 5%;
-# 328564 -> 369900 after M1-09: the driver model, IRQ layer, PCI interrupts, MMIO and DMA
-# helpers, per-CPU vector tables and the test-mode edu driver (~22 KB code, ~4.5 KB of
-# backtrace names), and the PCI table growing to 192 B per function (+9 KB .bss: the
-# embedded Device, subsystem IDs, BAR sizes, name). Limit = measured + ~4%)
+# 328564 -> 372028 after M1-09 (+43464): the driver model, IRQ layer, PCI interrupts,
+# MMIO and DMA helpers and the test-mode edu driver (.text +23167, .rodata +2427,
+# .data +542), their backtrace names (.ksyms +4668), and .bss +12660, mostly the
+# 64-entry PCI table growing to 200 B per function (the embedded Device, subsystem IDs,
+# BAR sizes, name). Limit = measured + ~3.5%. Merging with M1-04c (#38, ~+19.5 KB)
+# goes over: re-measure and raise it then)
 kernel_image_bytes     385000      max  bytes  M0-08  build
 
 # Free memory when init starts, booted with -m 4G (qemu.smoke; measured 4251873280)
@@ -55,9 +57,10 @@ idle_timer_irqs_5s     0           max  irqs   M1-06  smoke     off
 # removes an instance lowers the limit in the same PR (the checker warns when a
 # count is 20% under). Run `python3 tools/hygiene.py` to see every location.
 # arch_includes_outside_arch: 43 -> 26 in M1-03 (kmain, sched, init, process);
-# 26 -> 24 in M1-04 (kprintf.c, testmode.c); 24 -> 23 in M1-05 (proc_syscalls.c).
+# 26 -> 24 in M1-04 (kprintf.c, testmode.c); 24 -> 23 in M1-05 (proc_syscalls.c);
+# 23 -> 17 in M1-09 (pci.c, virtio.c, virtio_blk.c, three in virtio_net.c).
 dup_windows                 12   max  regions  M0-09  hygiene
 dup_static_names            2    max  copies   M0-09  hygiene
-arch_includes_outside_arch  23   max  includes M0-09  hygiene
+arch_includes_outside_arch  17   max  includes M0-09  hygiene
 long_functions              3    max  funcs    M0-09  hygiene
 untracked_todos             0    max  todos    M0-09  hygiene

@@ -155,9 +155,11 @@ add_test(NAME qemu.devices COMMAND ${_qemu_test} --suite devices ${_devices_qemu
     --expect "\\[BUS\\] 0000:00:[0-9a-f.]+: bound to virtio-net"
     --expect "\\[DEVTEST\\] edu: id 0x[0-9a-f]+, liveness ok"
     --expect "\\[DEVTEST\\] edu: msi interrupt on cpu[0-9] ok"
-    --expect "\\[DEVTEST\\] edu: affinity cpu[0-9] -> cpu[0-9] ok"
+    --expect "\\[DEVTEST\\] edu: affinity move refused without per-vector masking ok"
     --expect "\\[DEVTEST\\] edu: dma 4096 bytes round trip ok"
     --expect "\\[DEVTEST\\] net: ARP reply from the gateway after [1-9][0-9]* RX interrupt\\(s\\) ok"
+    --expect "\\[DEVTEST\\] net: rx interrupt moved cpu[0-9] -> cpu[0-9]"
+    --expect "\\[DEVTEST\\] net: rx interrupt arrived on cpu[0-9] ok"
     --expect "\\[FAT32\\] Mounted at /disk"
     --expect ":( +[0-9]+)* +[1-9][0-9]*( +[0-9]+)*  PCI-MSIX 0000:00:[0-9a-f.]+ 1 cpu[0-9]/0x[0-9a-f]+  virtio-blk-queue"
     --expect ":( +[0-9]+)* +[1-9][0-9]*( +[0-9]+)*  PCI-MSIX 0000:00:[0-9a-f.]+ 1 cpu[0-9]/0x[0-9a-f]+  virtio-net-rx"
@@ -165,6 +167,7 @@ add_test(NAME qemu.devices COMMAND ${_qemu_test} --suite devices ${_devices_qemu
 add_test(NAME qemu.devices.intx COMMAND ${_qemu_test} --suite devices --name devices-intx ${_devices_qemu}
     --qemu-arg=-device --qemu-arg=virtio-blk-pci,drive=disk0,disable-modern=on,vectors=0
     --cmdline arc.devtest=intx
+    --expect "\\[PCI\\] 0000:00:[0-9a-f.]+: WARNING: INTx on line [0-9]+ from the firmware's irq_line"
     --expect "\\[DEVTEST\\] edu: intx interrupt on cpu0 ok"
     --expect "\\[DEVTEST\\] edu: dma 4096 bytes round trip ok"
     --expect "\\[FAT32\\] Mounted at /disk"

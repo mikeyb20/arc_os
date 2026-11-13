@@ -7,13 +7,19 @@
  * MSI-X, else MSI, else INTx); the driver then attaches a handler to each by
  * index with irq_request. MSI and MSI-X interrupts get their own vector on one
  * CPU (spread over the CPUs that can be MSI targets: APIC ID below 256, no
- * interrupt remapping) and can move with irq_set_affinity. INTx is the legacy
- * line the firmware set up, shared, on the boot CPU.
+ * interrupt remapping) and can move with irq_set_affinity, except plain MSI
+ * without per-vector masking. INTx is the legacy line the firmware set up,
+ * shared, on the boot CPU.
  *
  * Handlers run in hard-IRQ context with interrupts off: they must not sleep or
  * allocate (work-blocks §7), and should only acknowledge the device and wake a
  * thread. They return IRQ_HANDLED, or IRQ_NONE when the device did not raise
  * the interrupt (shared lines).
+ *
+ * A handler can run on two CPUs at once: after an affinity move, a message
+ * already in flight to the old vector still runs it on the old CPU while a new
+ * one runs it on the new CPU. Handlers must tolerate that (take their own
+ * IRQ-safe lock around shared state, as virtio-net's rx_lock does).
  *
  * Locks: irq_lock (LOCK_LEVEL_IRQ_DESC, IRQ-safe) around request, free,
  * affinity and /proc/interrupts; the interrupt path takes none. Per-CPU counts
@@ -38,8 +44,14 @@ typedef int (*irq_handler_fn)(void *arg);
 typedef struct IrqDesc IrqDesc;
 
 /* How a bus programs one kind of interrupt source. */
+/* IrqChip flags. FIXED_TARGET: mask() is not a real mask (MSI without
+ * per-vector masking turns MSI off, and an event meanwhile is lost), so the
+ * target never moves after request. */
+#define IRQCHIP_FIXED_TARGET 0x1
+
 typedef struct IrqChip {
     const char *name;                                             /* "PCI-MSIX", "PCI-MSI", "INTx" */
+    unsigned flags;                                               /* IRQCHIP_* */
     void (*write_msg)(IrqDesc *d, uint64_t addr, uint32_t data);  /* MSI kinds: where it goes */
     void (*mask)(IrqDesc *d);
     void (*unmask)(IrqDesc *d);
@@ -100,8 +112,8 @@ int irq_request(Device *dev, unsigned index, irq_handler_fn fn, void *arg, unsig
 void irq_free(Device *dev, unsigned index);
 
 /* Move MSI or MSI-X interrupt index of dev to CPU index cpu. Returns 0,
- * -EINVAL, -EOPNOTSUPP (INTx), -ERANGE (the CPU's APIC ID is above 255) or
- * -ENOSPC. */
+ * -EINVAL, -EOPNOTSUPP (INTx, or a chip with IRQCHIP_FIXED_TARGET), -ERANGE
+ * (the CPU's APIC ID is above 255) or -ENOSPC. */
 int irq_set_affinity(Device *dev, unsigned index, uint32_t cpu);
 
 /* CPU index interrupt index of dev is delivered to, or -1. */

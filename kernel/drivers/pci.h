@@ -87,7 +87,7 @@ typedef struct PciDevice {
 } PciDevice;
 
 /* PCI_MAX_DEVICES of these sit in .bss (kernel_image_bytes budget) */
-_Static_assert(sizeof(PciDevice) <= 192, "PciDevice grew: check the kernel image budget");
+_Static_assert(sizeof(PciDevice) <= 200, "PciDevice grew: check the kernel image budget");
 
 /* One match-table entry. PCI_ANY_ID matches any value; the class is
  * (class << 16) | (subclass << 8) | prog_if, compared under class_mask

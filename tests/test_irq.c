@@ -134,7 +134,7 @@ static void fake_unmask(IrqDesc *d) {
     ((FakeSrc *)d->chip_data)->masked = 0;
 }
 
-static const IrqChip fake_chip = {"FAKE", fake_write_msg, fake_mask, fake_unmask};
+static const IrqChip fake_chip = {"FAKE", 0, fake_write_msg, fake_mask, fake_unmask};
 
 static int handler(void *arg) {
     FakeSrc *s = arg;
@@ -272,6 +272,27 @@ static int test_irq_affinity_retired_vector(void) {
     ASSERT_EQ(irq_set_affinity(&f.dev, 0, 1), 0);
     ASSERT_EQ(f.src[0].writes, writes);
     ASSERT_EQ(irq_set_affinity(&f.dev, 0, 99), -EINVAL);
+    return 0;
+}
+
+/* A chip whose mask is not a real mask (MSI without per-vector masking) keeps
+ * its target: a move is refused and nothing is written */
+static const IrqChip fixed_chip = {"FIXED", IRQCHIP_FIXED_TARGET, fake_write_msg, fake_mask, fake_unmask};
+
+static int test_irq_fixed_target_refuses_move(void) {
+    reset(2);
+    FakeDev f;
+    make_dev(&f, "dev0", 1, IRQ_KIND_MSI, 0);
+    f.descs[0]->chip = &fixed_chip;
+    ASSERT_EQ(irq_request(&f.dev, 0, handler, &f.src[0], 0, "q"), 0);
+    int cpu = irq_get_cpu(&f.dev, 0);
+    int writes = f.src[0].writes;
+    ASSERT_EQ(irq_set_affinity(&f.dev, 0, (uint32_t)(1 - cpu)), -EOPNOTSUPP);
+    ASSERT_EQ(irq_get_cpu(&f.dev, 0), cpu);
+    ASSERT_EQ(f.src[0].writes, writes);
+    ASSERT_FALSE(f.src[0].masked);
+    ASSERT_EQ(deliver_msi(&f.src[0], (uint32_t)cpu), 0);
+    ASSERT_EQ(f.src[0].handled, 1);
     return 0;
 }
 
@@ -428,6 +449,7 @@ TestCase irq_tests[] = {
     {"irq_msi_spread_and_count", test_irq_msi_spread_and_count},
     {"irq_msi_skips_high_apic", test_irq_msi_skips_high_apic},
     {"irq_affinity_retired_vector", test_irq_affinity_retired_vector},
+    {"irq_fixed_target_refuses_move", test_irq_fixed_target_refuses_move},
     {"irq_free_releases_vectors", test_irq_free_releases_vectors},
     {"irq_vector_exhaustion", test_irq_vector_exhaustion},
     {"irq_intx_shared", test_irq_intx_shared},

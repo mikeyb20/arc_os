@@ -569,6 +569,13 @@ static int test_pci_msix_limits(void) {
     pci_free_irq_vectors(d);
     ASSERT_EQ(pci_alloc_irq_vectors(d, 5, 8, PCI_IRQ_MSIX), -ENODEV);
     ASSERT_EQ(pci_alloc_irq_vectors(d, 3, 2, PCI_IRQ_MSIX), -EINVAL);
+
+    /* a table that runs past the end of its BAR is not mapped */
+    d = irq_device(1, 0, 0);
+    fake_slots[0].config[0x64 / 4] = 0xFC8 | 1;   /* 4 x 16 bytes from 0xFC8 > 4 KiB */
+    ASSERT_EQ(pci_alloc_irq_vectors(d, 1, 4, PCI_IRQ_MSIX), -ENODEV);
+    ASSERT_EQ(mmio_maps, 0);
+    ASSERT_FALSE(cfg16(0, 0x62) & 0x8000);
     return 0;
 }
 
@@ -611,6 +618,7 @@ static int test_pci_msi_pvm(void) {
     ASSERT_EQ(cfg16(0, 0x42) & 0x0071, 0);   /* off, MME cleared */
     ASSERT_TRUE(cfg16(0, 0x04) & PCI_CMD_INTX_DISABLE);
     IrqDesc *m = d->dev.irqs[0];
+    ASSERT_FALSE(m->chip->flags & IRQCHIP_FIXED_TARGET);   /* a real mask: may move */
     m->chip->mask(m);
     ASSERT_EQ(cfg(0, 0x50) & 1, 1);           /* mask register after the 64-bit data */
     m->chip->write_msg(m, 0xFEE02000ULL, 0x52);
@@ -627,11 +635,13 @@ static int test_pci_msi_pvm(void) {
     return 0;
 }
 
-/* MSI, 32-bit, no per-vector mask: masking turns MSI off */
+/* MSI, 32-bit, no per-vector mask: masking turns MSI off, so the target is
+ * fixed once requested */
 static int test_pci_msi_plain(void) {
     PciDevice *d = irq_device(0, 1, 0);
     ASSERT_EQ(pci_alloc_irq_vectors(d, 1, 1, PCI_IRQ_ALL), 1);
     IrqDesc *m = d->dev.irqs[0];
+    ASSERT_TRUE(m->chip->flags & IRQCHIP_FIXED_TARGET);
     m->chip->write_msg(m, 0xFEE00000ULL, 0x33);
     ASSERT_EQ(cfg(0, 0x44), 0xFEE00000);
     ASSERT_EQ(cfg16(0, 0x48), 0x33);

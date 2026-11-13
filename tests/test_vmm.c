@@ -41,7 +41,7 @@ static inline void kprintf(const char *fmt, ...) { (void)fmt; }
 #define VMM_FLAG_WRITABLE  (1 << 0)
 #define VMM_FLAG_USER      (1 << 1)
 #define VMM_FLAG_NOEXEC    (1 << 2)
-#define VMM_FLAG_UNCACHED  (1 << 3)
+#define VMM_FLAG_UNCACHED  (1 << 4)
 
 /* User-space constants (from vmm.h) */
 #define USER_STACK_TOP    0x00007FFFFFFFE000ULL

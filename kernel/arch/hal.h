@@ -313,6 +313,13 @@ static inline isr_handler_t hal_irq_line_handler(uint8_t line) {
     return isr_get_handler(HAL_IRQ_LINE_BASE + line);
 }
 
+/* 1 when a PCI function's firmware irq_line is where its INTx arrives (PIC
+ * mode). In APIC mode the I/O APIC pin comes from ACPI _PRT (M4-11; usually
+ * pins 16-23 on real chipsets), so irq_line is a guess that holds in QEMU. */
+static inline int hal_irq_line_routing_known(void) {
+    return !isr_apic_mode();
+}
+
 /* Let line through to the boot CPU for a device interrupt: the PIC unmasks it;
  * in APIC mode the I/O APIC already routes lines 0-15 (ioapic_route_isa, level
  * triggered where the MADT says so). Its EOI moves after the handler. */

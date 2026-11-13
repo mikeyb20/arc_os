@@ -2,6 +2,7 @@
 #define ARCHOS_DRIVERS_VIRTIO_NET_H
 
 #include <stdint.h>
+#include "drivers/bus.h"
 
 #define VIRTIO_NET_VENDOR_ID   0x1AF4
 #define VIRTIO_NET_DEVICE_ID   0x1000
@@ -37,6 +38,11 @@ uint64_t virtio_net_rx_wakeups(void);
 
 /* Receive interrupts so far (each wakes the RX worker). */
 uint64_t virtio_net_rx_kicks(void);
+
+/* The bound device and the interrupt index its RX queue uses on MSI-X (for
+ * irq_set_affinity; the device self-test moves it), or -1 (no device, or
+ * INTx). */
+int virtio_net_rx_irq(Device **dev);
 
 /* Get the device MAC address. */
 void virtio_net_get_mac(uint8_t mac[6]);

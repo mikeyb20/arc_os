@@ -59,6 +59,7 @@
 static volatile uint8_t *edu;
 static volatile uint64_t irq_count;
 static volatile uint32_t last_status;
+static volatile uint32_t last_cpu;   /* CPU that ran the last handled interrupt */
 
 static uint32_t rd(uint32_t reg) {
     return mmio_read32(edu + reg);
@@ -78,7 +79,8 @@ static int edu_irq(void *arg) {
     if (status == 0) return IRQ_NONE;   /* shared INTx: not ours */
     wr(EDU_IRQ_ACK, status);
     last_status = status;
-    __atomic_add_fetch(&irq_count, 1, __ATOMIC_RELEASE);
+    last_cpu = hal_cpu_index();
+    __atomic_add_fetch(&irq_count, 1, __ATOMIC_RELEASE);   /* publishes the two above */
     return IRQ_HANDLED;
 }
 
@@ -116,24 +118,36 @@ static int edu_dma(uint64_t src, uint64_t dst, uint32_t count, uint32_t dir) {
     return wait_irq(before) && (last_status & EDU_DMA_IRQ_BIT) && !(rd(EDU_DMA_CMD) & EDU_DMA_START);
 }
 
+/* The next CPU after from that can take MSI messages, or -1 (only one). */
+static int other_msi_cpu(int from) {
+    uint32_t base = from < 0 ? 0 : (uint32_t)from;
+    for (uint32_t i = 1; i <= irq_cpu_slots(); i++) {
+        uint32_t c = (base + i) % irq_cpu_slots();
+        if (hal_irq_msi_target_ok(c) && (int)c != from) return (int)c;
+    }
+    return -1;
+}
+
+/* edu's plain MSI has no per-vector masking (QEMU), so its target is fixed:
+ * the move must be refused and the interrupt keep arriving where it was. A
+ * device with masking moves; MSI-X moves are tested on virtio-net (test_net). */
 static void test_affinity(Device *dev) {
     int from = irq_get_cpu(dev, 0);
-    uint32_t to = from < 0 ? 0 : (uint32_t)from;
-    for (uint32_t i = 1; i <= irq_cpu_slots(); i++) {
-        uint32_t c = ((uint32_t)(from < 0 ? 0 : from) + i) % irq_cpu_slots();
-        if (hal_irq_msi_target_ok(c) && (int)c != from) {
-            to = c;
-            break;
-        }
-    }
-    int rc = irq_set_affinity(dev, 0, to);
-    if (rc != 0) {
-        kprintf("[DEVTEST] edu: affinity cpu%d -> cpu%u refused (%d)\n", from, to, rc);
+    int to = other_msi_cpu(from);
+    if (to < 0) {
+        kprintf("[DEVTEST] edu: affinity skipped (one MSI target CPU)\n");
         return;
     }
-    uint64_t before = dev->irqs[0]->counts[to];
-    int ok = raise_and_wait() && dev->irqs[0]->counts[to] == before + 1;
-    kprintf("[DEVTEST] edu: affinity cpu%d -> cpu%u %s\n", from, to, ok ? "ok" : "FAILED");
+    int rc = irq_set_affinity(dev, 0, (uint32_t)to);
+    /* The handler's CPU, not irq counts: the IRQ layer counts after the
+     * handler returns, which another CPU may not have done yet. */
+    if (dev->irqs[0]->chip->flags & IRQCHIP_FIXED_TARGET) {
+        int ok = rc == -EOPNOTSUPP && irq_get_cpu(dev, 0) == from && raise_and_wait() && (int)last_cpu == from;
+        kprintf("[DEVTEST] edu: affinity move refused without per-vector masking %s\n", ok ? "ok" : "FAILED");
+        return;
+    }
+    int ok = rc == 0 && raise_and_wait() && (int)last_cpu == to;
+    kprintf("[DEVTEST] edu: affinity cpu%d -> cpu%d %s\n", from, to, ok ? "ok" : "FAILED");
 }
 
 /* Round trip RAM -> edu -> RAM. Out of a coherent buffer (the 32-bit mask
@@ -209,8 +223,27 @@ static PciDriver edu_driver = {
     .probe = edu_probe,
 };
 
+/* Move virtio-net's RX interrupt (MSI-X) to another CPU before the ARP test.
+ * Returns the target CPU, or -1 (INTx, one CPU, or refused: printed). */
+static int move_net_rx(Device **ndev, int *index, uint64_t *before) {
+    *index = virtio_net_rx_irq(ndev);
+    if (*index < 0) return -1;
+    int from = irq_get_cpu(*ndev, (unsigned)*index);
+    int to = other_msi_cpu(from);
+    if (to < 0) return -1;
+    int rc = irq_set_affinity(*ndev, (unsigned)*index, (uint32_t)to);
+    if (rc != 0) {
+        kprintf("[DEVTEST] net: rx interrupt cpu%d -> cpu%d refused (%d) FAILED\n", from, to, rc);
+        return -1;
+    }
+    *before = __atomic_load_n(&(*ndev)->irqs[*index]->counts[to], __ATOMIC_ACQUIRE);
+    kprintf("[DEVTEST] net: rx interrupt moved cpu%d -> cpu%d\n", from, to);
+    return to;
+}
+
 /* ARP request for QEMU's gateway (10.0.2.2), then its reply: TX, the RX
- * interrupt, and the receive path into the stack. */
+ * interrupt (moved to another CPU first, on MSI-X), and the receive path into
+ * the stack. */
 static void test_net(void) {
     NetIf *nif = netif_get_default();
     if (nif == NULL || nif->gateway == 0) {   /* no virtio-net: only loopback */
@@ -229,6 +262,11 @@ static void test_net(void) {
     req.spa = nif->ip_addr;
     req.tpa = gw;
     static const uint8_t broadcast[ETH_ALEN] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+
+    Device *ndev = NULL;
+    int rxi = -1;
+    uint64_t moved_before = 0;
+    int moved_to = move_net_rx(&ndev, &rxi, &moved_before);
 
     uint64_t first = virtio_net_rx_kicks();
     uint64_t before = first;
@@ -254,6 +292,11 @@ static void test_net(void) {
     }
     kprintf("[DEVTEST] net: ARP reply from the gateway after %lu RX interrupt(s) %s\n", virtio_net_rx_kicks() - first,
             got ? "ok" : "FAILED");
+    if (moved_to >= 0) {
+        /* Counted on the new CPU once its handler returned (wait for that) */
+        int ok = got && wait_change(&ndev->irqs[rxi]->counts[moved_to], moved_before);
+        kprintf("[DEVTEST] net: rx interrupt arrived on cpu%d %s\n", moved_to, ok ? "ok" : "FAILED");
+    }
 }
 
 void devtest_register(void) {

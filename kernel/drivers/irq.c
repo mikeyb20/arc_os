@@ -248,7 +248,7 @@ void irq_free(Device *dev, unsigned index) {
 int irq_set_affinity(Device *dev, unsigned index, uint32_t cpu) {
     IrqDesc *d = desc_of(dev, index);
     if (d == NULL || cpu >= cpu_slots) return -EINVAL;
-    if (d->kind == IRQ_KIND_INTX) return -EOPNOTSUPP;
+    if (d->kind == IRQ_KIND_INTX || (d->chip->flags & IRQCHIP_FIXED_TARGET)) return -EOPNOTSUPP;
     uint64_t flags;
     spin_lock_irqsave(&irq_lock, &flags);
     int rc = 0;

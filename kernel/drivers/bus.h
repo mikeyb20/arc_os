@@ -48,6 +48,8 @@ struct Device {
     uint64_t dma_mask;           /* highest bus address the device reaches (dma.h); bus default 64-bit */
     struct IrqDesc **irqs;       /* interrupts the bus gave the device (irq.h) */
     uint16_t nr_irqs;
+    Device *parent;              /* the device this one sits behind (a bridge, a USB host); NULL at the root.
+                                    Set by the bus before bus_add_device; nothing sets it yet (M4-02) */
     Device *next, *prev;         /* on bus->devices */
 };
 
@@ -74,9 +76,10 @@ int driver_register(Bus *bus, Driver *drv);
 /* Unbind dev from its driver (remove runs). */
 void device_unbind(Device *dev);
 
-/* Call suspend (or resume) of every bound driver, devices in bus order
- * (resume in reverse). Returns 0, or the first error; suspend stops there and
- * resumes the devices already suspended. */
+/* Call suspend of every bound driver, children before parents: the newest bus
+ * first, each bus's devices newest first (a bus adds a parent before what sits
+ * behind it). Resume runs the exact reverse. Returns 0, or the first error;
+ * suspend stops there and resumes the devices already suspended. */
 int bus_suspend_all(int how);
 int bus_resume_all(int how);
 

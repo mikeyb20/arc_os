@@ -14,6 +14,7 @@
 #include "drivers/pci.h"
 #include "drivers/irq.h"
 #include "drivers/mmio.h"
+#include "arch/hal.h"
 #include "mm/kmalloc.h"
 #include "lib/kprintf.h"
 #include "uapi/errno.h"
@@ -69,15 +70,18 @@ static void msix_unmask(IrqDesc *d) {
     msix_set_mask(d, 0);
 }
 
-static const IrqChip msix_chip = {"PCI-MSIX", msix_write_msg, msix_mask, msix_unmask};
+static const IrqChip msix_chip = {"PCI-MSIX", 0, msix_write_msg, msix_mask, msix_unmask};
 
-/* Map dev's MSI-X table (once). Returns 0 or -ENODEV. */
+/* Map dev's MSI-X table (once). Returns 0, or -ENODEV (no BAR, or a table
+ * that doesn't fit inside it). */
 static int msix_map_table(PciDevice *dev) {
     if (dev->msix_table != NULL) return 0;
     uint32_t loc = pci_read32(dev, (uint8_t)(dev->cap_msix + MSIX_TABLE));
-    uint64_t base = pci_bar_phys(dev, (int)(loc & MSIX_BIR_MASK));
-    if (base == 0) return -ENODEV;
-    dev->msix_table = mmio_map(base + (loc & ~MSIX_BIR_MASK), (uint64_t)dev->msix_entries * MSIX_ENTRY_SIZE);
+    int bir = (int)(loc & MSIX_BIR_MASK);
+    uint64_t base = bir < PCI_NUM_BARS ? pci_bar_phys(dev, bir) : 0;
+    uint64_t off = loc & ~MSIX_BIR_MASK, len = (uint64_t)dev->msix_entries * MSIX_ENTRY_SIZE;
+    if (base == 0 || off + len > dev->bar_size[bir]) return -ENODEV;
+    dev->msix_table = mmio_map(base + off, len);
     return dev->msix_table != NULL ? 0 : -ENODEV;
 }
 
@@ -112,7 +116,9 @@ static void msi_write_msg(IrqDesc *d, uint64_t addr, uint32_t data) {
 }
 
 /* Mask with the per-vector mask bit when the device has one, else by turning
- * MSI off (INTx stays disabled, so nothing else signals meanwhile). */
+ * MSI off (INTx stays disabled, so nothing signals meanwhile, and an event in
+ * that window may be lost: that chip is IRQCHIP_FIXED_TARGET, so this only
+ * runs at request and free). */
 static void msi_set_mask(IrqDesc *d, int masked) {
     PciDevice *p = d->chip_data;
     uint8_t ctl = (uint8_t)(p->cap_msi + MSI_CTRL);
@@ -136,7 +142,8 @@ static void msi_unmask(IrqDesc *d) {
     msi_set_mask(d, 0);
 }
 
-static const IrqChip msi_chip = {"PCI-MSI", msi_write_msg, msi_mask, msi_unmask};
+static const IrqChip msi_chip = {"PCI-MSI", 0, msi_write_msg, msi_mask, msi_unmask};
+static const IrqChip msi_fixed_chip = {"PCI-MSI", IRQCHIP_FIXED_TARGET, msi_write_msg, msi_mask, msi_unmask};
 
 /* ---- INTx ---- */
 
@@ -156,7 +163,7 @@ static void intx_unmask(IrqDesc *d) {
     set_intx_disable(d->chip_data, 0);
 }
 
-static const IrqChip intx_chip = {"INTx", NULL, intx_mask, intx_unmask};
+static const IrqChip intx_chip = {"INTx", 0, NULL, intx_mask, intx_unmask};
 
 /* ---- Allocation ---- */
 
@@ -198,12 +205,21 @@ int pci_alloc_irq_vectors(PciDevice *dev, unsigned min, unsigned max, unsigned t
     }
     if (irq_msi_available() && (types & PCI_IRQ_MSI) && dev->cap_msi != 0 && min == 1) {
         uint8_t ctl = (uint8_t)(dev->cap_msi + MSI_CTRL);
-        pci_write16(dev, ctl, (uint16_t)(pci_read16(dev, ctl) & ~(MSI_CTRL_ENABLE | MSI_CTRL_MME_MASK)));
-        int rc = make_descs(dev, 1, IRQ_KIND_MSI, &msi_chip);
+        uint16_t c = pci_read16(dev, ctl);
+        pci_write16(dev, ctl, (uint16_t)(c & ~(MSI_CTRL_ENABLE | MSI_CTRL_MME_MASK)));
+        int rc = make_descs(dev, 1, IRQ_KIND_MSI, (c & MSI_CTRL_PVM) ? &msi_chip : &msi_fixed_chip);
         if (rc > 0) set_intx_disable(dev, 1);   /* MSI itself goes on at the first unmask */
         return rc;
     }
     if ((types & PCI_IRQ_INTX) && min == 1 && dev->irq_pin != 0 && dev->irq_line >= 1 && dev->irq_line < 16) {
+        if (!hal_irq_line_routing_known()) {
+            /* ADR-0006 risk: real chipsets route PCI INTx to I/O APIC pins
+             * 16-23 through ACPI _PRT (M4-11); irq_line is the 8259 routing,
+             * right in QEMU only. The device may never interrupt. */
+            kprintf("[PCI] %s: WARNING: INTx on line %u from the firmware's irq_line, unverified in APIC mode "
+                    "(no ACPI _PRT until M4-11); this device may get no interrupts\n",
+                    dev->dev.name, dev->irq_line);
+        }
         set_intx_disable(dev, 1);   /* until irq_request unmasks it */
         return make_descs(dev, 1, IRQ_KIND_INTX, &intx_chip);
     }

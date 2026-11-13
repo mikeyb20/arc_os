@@ -47,6 +47,7 @@ static int fake_probe(Device *dev) {
 
 static int fake_probe_fail(Device *dev) {
     log_ev("x:", dev);
+    dev->driver_data = dev;   /* state a failed probe leaves behind */
     return -5;
 }
 
@@ -135,6 +136,9 @@ static int test_bus_probe_failure(void) {
     bus_add_device(&b, &d.dev);
     ASSERT_EQ(driver_register(&b, &bad.drv), 0);
     ASSERT_TRUE(d.dev.driver == NULL);
+    ASSERT_TRUE(d.dev.driver_data == NULL);
+    ASSERT_EQ(driver_register(&b, &bad.drv), 0);   /* twice: ignored, no probe */
+    ASSERT_TRUE(b.drivers == &bad.drv && bad.drv.next == NULL);
     ASSERT_EQ(driver_register(&b, &good.drv), 1);
     ASSERT_TRUE(d.dev.driver == &good.drv);
     /* a bound device is not offered to later drivers */
@@ -165,7 +169,8 @@ static int test_bus_unbind(void) {
     return 0;
 }
 
-/* Suspend runs in bus order, resume in reverse; unbound devices are skipped */
+/* Suspend runs children first (newest bus, newest device first), resume in
+ * reverse; unbound devices are skipped */
 static int test_bus_suspend_resume_order(void) {
     reset();
     Bus b1, b2;
@@ -188,14 +193,14 @@ static int test_bus_suspend_resume_order(void) {
     driver_register(&b2, &drv2.drv);
     log_buf[0] = 0;
     ASSERT_EQ(bus_suspend_all(PM_SYSTEM), 0);
-    ASSERT_STR_EQ(log_buf, "s:x s:y s:a ");
+    ASSERT_STR_EQ(log_buf, "s:y s:x s:a ");
     log_buf[0] = 0;
     ASSERT_EQ(bus_resume_all(PM_SYSTEM), 0);
-    ASSERT_STR_EQ(log_buf, "r:a r:y r:x ");
+    ASSERT_STR_EQ(log_buf, "r:a r:x r:y ");
     return 0;
 }
 
-/* A refusal resumes exactly the devices already suspended, newest first */
+/* A refusal resumes exactly the devices already suspended, in reverse */
 static int test_bus_suspend_rollback(void) {
     reset();
     Bus b1, b2;
@@ -209,7 +214,7 @@ static int test_bus_suspend_rollback(void) {
     init_dev(&y, "y", 2);
     init_drv(&d1, "one", 1);
     init_drv(&d2, "two", 2);
-    d1.fail_on = "b";
+    d1.fail_on = "a";
     d1.suspend_rc = -16;
     bus_add_device(&b1, &a.dev);
     bus_add_device(&b1, &b.dev);
@@ -219,12 +224,12 @@ static int test_bus_suspend_rollback(void) {
     driver_register(&b2, &d2.drv);
     log_buf[0] = 0;
     ASSERT_EQ(bus_suspend_all(PM_RUNTIME), -16);
-    ASSERT_STR_EQ(log_buf, "s:x s:y s:a r:a r:y r:x ");
+    ASSERT_STR_EQ(log_buf, "s:y s:x s:b r:b r:x r:y ");
     return 0;
 }
 
-/* A bound driver without suspend refuses (ADR-0017), and the first device is
- * resumed again */
+/* A bound driver without suspend refuses (ADR-0017), and the device already
+ * suspended is resumed again */
 static int test_bus_missing_hook_refuses(void) {
     reset();
     Bus b;
@@ -236,8 +241,8 @@ static int test_bus_missing_hook_refuses(void) {
     init_drv(&ok, "ok", 1);
     init_drv(&nohook, "nohook", 2);
     nohook.drv.suspend = NULL;
+    bus_add_device(&b, &c.dev);   /* suspended last */
     bus_add_device(&b, &a.dev);
-    bus_add_device(&b, &c.dev);
     driver_register(&b, &ok.drv);
     driver_register(&b, &nohook.drv);
     log_buf[0] = 0;

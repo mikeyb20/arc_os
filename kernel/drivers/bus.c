@@ -2,9 +2,12 @@
  *
  * Owns: the list of buses, each bus's device and driver lists, and binding
  * (match, then probe). Buses own their devices' memory; drivers are static.
- * Invariants: a device is on exactly one bus list; dev->driver is set only
+ * Invariants: a device is on exactly one bus list, after any device it sits
+ * behind (a bus adds a parent before its children); dev->driver is set only
  * after a successful probe and cleared before remove returns; a driver is
  * probed against a device only while the device is unbound.
+ * Power order: suspend runs children before parents (newest bus first, newest
+ * device first), resume the exact reverse.
  * Locks: device_lock (sleeping, LOCK_LEVEL_DEVICE) around every list walk,
  * binding, and probe/remove/suspend/resume call.
  * Cost: binding is O(devices x drivers) at registration time only; no hot
@@ -25,6 +28,7 @@ static int try_bind(Device *dev, Driver *drv) {
     int rc = bus->probe != NULL ? bus->probe(dev, drv) : (drv->probe != NULL ? drv->probe(dev) : -1);
     if (rc != 0) {
         kprintf("[BUS] %s: %s probe failed (%d)\n", dev->name, drv->name, rc);
+        dev->driver_data = NULL;   /* whatever the failed probe left */
         return 0;
     }
     dev->driver = drv;
@@ -68,6 +72,12 @@ void bus_add_device(Bus *bus, Device *dev) {
 int driver_register(Bus *bus, Driver *drv) {
     int bound = 0;
     mutex_lock(&device_lock);
+    for (Driver *d = bus->drivers; d != NULL; d = d->next) {
+        if (d == drv) {   /* twice would loop the list */
+            mutex_unlock(&device_lock);
+            return 0;
+        }
+    }
     drv->bus = bus;
     drv->next = bus->drivers;
     bus->drivers = drv;
@@ -102,11 +112,11 @@ static int pm_call(Device *dev, int how, int resume) {
     return fn != NULL ? fn(dev, how) : -EOPNOTSUPP;
 }
 
-/* Resume, newest first, the devices of bus from d back to its first; lock
- * held. Returns the first error. */
+/* Resume, oldest first, the devices of a bus from d to its last (the reverse
+ * of suspend order); lock held. Returns the first error. */
 static int resume_bus_from(Device *d, int how) {
     int rc = 0;
-    for (; d != NULL; d = d->prev) {
+    for (; d != NULL; d = d->next) {
         int r = pm_call(d, how, 1);
         if (r != 0 && rc == 0) rc = r;
     }
@@ -114,7 +124,7 @@ static int resume_bus_from(Device *d, int how) {
 }
 
 /* Resume every device of the buses before stop (all buses when stop is NULL),
- * in the reverse of suspend order: last bus first, newest device first; lock
+ * in the reverse of suspend order: oldest bus first, oldest device first; lock
  * held. Bus lists are short (a handful), so the backwards walk is quadratic in
  * buses only. Returns the first error. */
 static int resume_buses_before(Bus *stop, int how) {
@@ -122,7 +132,7 @@ static int resume_buses_before(Bus *stop, int how) {
     for (Bus *end = stop; end != buses;) {
         Bus *b = buses;
         while (b->next != end) b = b->next;
-        int r = resume_bus_from(b->devices_tail, how);
+        int r = resume_bus_from(b->devices, how);
         if (r != 0 && rc == 0) rc = r;
         end = b;
     }
@@ -132,11 +142,11 @@ static int resume_buses_before(Bus *stop, int how) {
 int bus_suspend_all(int how) {
     mutex_lock(&device_lock);
     for (Bus *bus = buses; bus != NULL; bus = bus->next) {
-        for (Device *dev = bus->devices; dev != NULL; dev = dev->next) {
+        for (Device *dev = bus->devices_tail; dev != NULL; dev = dev->prev) {
             int rc = pm_call(dev, how, 0);
             if (rc == 0) continue;
             kprintf("[BUS] %s: suspend refused (%d)\n", dev->name, rc);
-            resume_bus_from(dev->prev, how);
+            resume_bus_from(dev->next, how);
             resume_buses_before(bus, how);
             mutex_unlock(&device_lock);
             return rc;

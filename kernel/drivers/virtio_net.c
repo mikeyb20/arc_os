@@ -37,6 +37,7 @@
 
 static VirtioDevice net_vdev;
 static int net_initialized;
+static int rx_irq_index = -1;   /* interrupt index RX arrives on (MSI-X), or -1 */
 static uint8_t net_mac[6];
 
 /* RX buffer tracking */
@@ -156,6 +157,12 @@ uint64_t virtio_net_rx_kicks(void) {
     return __atomic_load_n(&rx_kicks, __ATOMIC_RELAXED);
 }
 
+int virtio_net_rx_irq(Device **dev) {
+    if (!net_initialized || rx_irq_index < 0) return -1;
+    *dev = &net_vdev.pci->dev;
+    return rx_irq_index;
+}
+
 /* MSI-X entry 0 = config, entry 1 = RX (one vector: RX takes entry 0); TX has
  * none. INTx: one shared handler. TX never interrupts either way. */
 static int net_setup_irqs(VirtioDevice *v) {
@@ -166,6 +173,7 @@ static int net_setup_irqs(VirtioDevice *v) {
     if (!v->msix) return irq_request(dev, 0, net_intx_irq, v, IRQF_SHARED, "virtio-net");
     uint16_t rxvec = n >= 2 ? 1 : 0;
     int rc = irq_request(dev, rxvec, net_rx_irq, v, 0, "virtio-net-rx");
+    if (rc == 0) rx_irq_index = rxvec;
     if (rc == 0 && n >= 2) rc = irq_request(dev, 0, net_config_irq, v, 0, "virtio-net-config");
     if (rc != 0) return rc;
     if (virtio_set_queue_vector(v, RX_QUEUE, rxvec) != 0 ||

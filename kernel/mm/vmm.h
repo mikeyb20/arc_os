@@ -4,11 +4,16 @@
 #include <stdint.h>
 #include "boot/bootinfo.h"
 
-/* Portable VMM flags (mapped to architecture-specific PTE flags internally) */
+/* Portable VMM flags (mapped to architecture-specific PTE flags internally).
+ * Every VMM_FLAG_* lives in this block and in the assert below, one bit each.
+ * Bit 3 is taken by M1-07's VMM_FLAG_PROTNONE. */
 #define VMM_FLAG_WRITABLE  (1 << 0)
 #define VMM_FLAG_USER      (1 << 1)
 #define VMM_FLAG_NOEXEC    (1 << 2)
-#define VMM_FLAG_UNCACHED  (1 << 3)   /* device memory: no caching (MMIO, M1-09) */
+#define VMM_FLAG_UNCACHED  (1 << 4)   /* device memory: no caching (MMIO, M1-09) */
+#define VMM_FLAGS_ALL_     (VMM_FLAG_WRITABLE | VMM_FLAG_USER | VMM_FLAG_NOEXEC | VMM_FLAG_UNCACHED)
+_Static_assert((VMM_FLAG_WRITABLE ^ VMM_FLAG_USER ^ VMM_FLAG_NOEXEC ^ VMM_FLAG_UNCACHED) == VMM_FLAGS_ALL_,
+               "VMM_FLAG_* bits must be distinct");
 
 /* Initialize VMM: create kernel page tables and switch CR3. */
 void vmm_init(const BootInfo *info);
