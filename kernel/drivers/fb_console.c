@@ -12,7 +12,7 @@
  * Pixel colours are packed with the framebuffer's own mask sizes and shifts.
  * Locks: none of its own. kprintf output arrives through the log drain, which
  * has one owner at a time (lib/klog.c); the scrollback keys take that owner
- * too. TTY output still writes without it (M1-05 moves it under the owner). */
+ * too, and so do TTY output and VT switches (klog_console_acquire, M1-05). */
 
 #include "drivers/fb_console.h"
 #include "drivers/font8x16.h"

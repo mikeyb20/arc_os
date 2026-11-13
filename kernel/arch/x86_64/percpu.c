@@ -22,6 +22,7 @@ _Static_assert(offsetof(PerCpu, self) == PERCPU_SELF, "PerCpu layout (syscall_en
 _Static_assert(offsetof(PerCpu, kernel_rsp) == PERCPU_KERNEL_RSP, "PerCpu layout (syscall_entry.asm)");
 _Static_assert(offsetof(PerCpu, user_rsp) == PERCPU_USER_RSP, "PerCpu layout (syscall_entry.asm)");
 _Static_assert(offsetof(PerCpu, current_thread) == PERCPU_CURRENT, "PerCpu layout (percpu.h)");
+_Static_assert(offsetof(PerCpu, lock_depth) == PERCPU_LOCK_DEPTH, "PerCpu layout (hal_lock.h)");
 _Static_assert(offsetof(PerCpu, online) < 64, "PerCpu hot fields share one cache line");
 _Static_assert(sizeof(PerCpu) <= PERCPU_AREA_SIZE - 3 * PERCPU_IST_SIZE, "PerCpu fits its page");
 
@@ -89,6 +90,11 @@ void percpu_load(PerCpu *cpu) {
     wrmsr(MSR_GS_BASE, (uint64_t)cpu);
     wrmsr(MSR_KERNEL_GS_BASE, 0);   /* the user GS base, swapped in on the way out */
     cpu->core_type = cpu_core_type_detect();   /* runs on the CPU itself */
+}
+
+void percpu_early_init(void) {
+    bsp_block.self = &bsp_block;
+    wrmsr(MSR_GS_BASE, (uint64_t)&bsp_block);
 }
 
 void percpu_init_bsp(void) {

@@ -1,12 +1,15 @@
 /* arc_os — Inter-Processor Interrupt infrastructure
  *
- * Provides TLB shootdown, cross-core reschedule, and halt IPIs. */
+ * Provides TLB shootdown, cross-core reschedule (M1-05: wakes an idle CPU or
+ * makes a CPU move a thread its affinity no longer allows), halt and
+ * call-function IPIs. */
 
 #include "arch/x86_64/ipi.h"
 #include "arch/x86_64/isr.h"
 #include "arch/x86_64/lapic.h"
 #include "arch/x86_64/percpu.h"
 #include "arch/x86_64/cpuid.h"
+#include "proc/sched.h"
 #include "lib/kprintf.h"
 
 /* TLB shootdown handler — flush TLB on this CPU */
@@ -19,13 +22,11 @@ static void ipi_tlb_handler(InterruptFrame *frame) {
     lapic_eoi();
 }
 
-/* Reschedule handler — trigger scheduler on this CPU */
+/* Reschedule handler: another CPU queued a thread here (or moved one away) */
 static void ipi_schedule_handler(InterruptFrame *frame) {
     (void)frame;
-    lapic_eoi();
-    /* The timer IRQ handler normally calls sched_schedule().
-     * For cross-core wakeup, we just need to mark that a reschedule
-     * is needed. The next timer tick will pick it up. */
+    lapic_eoi();   /* first: sched_preempt may switch threads */
+    sched_preempt();
 }
 
 /* Halt handler — stop this CPU */

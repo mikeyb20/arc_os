@@ -14,6 +14,7 @@
 #define ARCHOS_ARCH_HAL_H
 #define ARCHOS_PROC_PROCESS_H
 #define ARCHOS_PROC_THREAD_H
+#define ARCHOS_PROC_SCHED_H
 #define ARCHOS_PROC_SIGNAL_H
 #define ARCHOS_PROC_WAITQUEUE_H
 #define ARCHOS_PROC_SPINLOCK_H
@@ -164,6 +165,27 @@ static int cpu_describe(uint32_t cpu, uint32_t *apic_id, uint8_t *core_type) {
 }
 static const char *cpu_core_type_name(uint8_t type) {
     return type == 0x40 ? "P" : type == 0x20 ? "E" : "-";
+}
+
+/* sched.h: run queues on CPUs 0 and 2 */
+#define HAL_MAX_CPUS CPU_MAX
+typedef struct {
+    uint32_t nr_running;
+    uint64_t nr_switches;
+    uint64_t nr_migrations;
+    uint64_t idle_ns;
+    uint64_t busy_ns;
+    const char *core;
+} SchedCpuStats;
+static int sched_cpu_stats(uint32_t cpu, SchedCpuStats *out) {
+    if (cpu != 0 && cpu != 2) return -1;
+    out->nr_running = cpu == 0 ? 2 : 0;
+    out->nr_switches = 100 + cpu;
+    out->nr_migrations = cpu;
+    out->idle_ns = 5000000000ULL;
+    out->busy_ns = cpu == 0 ? 7 : 0;
+    out->core = cpu == 0 ? "P" : "E";
+    return 0;
 }
 
 static void kmalloc_get_stats(HeapStats *out) {
@@ -340,6 +362,19 @@ TEST(slabinfo_content) {
     return 0;
 }
 
+TEST(sched_debug_content) {
+    VfsNode *root = procfs_init();
+    VfsNode *n = root->ops->lookup(root, "sched_debug");
+    ASSERT_TRUE(n != NULL);
+    char buf[256] = {0};
+    int rd = n->ops->read(n, buf, 0, sizeof(buf) - 1);
+    ASSERT_TRUE(rd > 0);
+    ASSERT_STR_EQ(buf, "cpu core nr_running nr_switches nr_migrations idle_ns busy_ns\n"
+                       "0 P 2 100 0 5000000000 7\n"
+                       "2 E 0 102 2 5000000000 0\n");
+    return 0;
+}
+
 TEST(pid_status_content) {
     setup_test_procs();
     VfsNode *root = procfs_init();
@@ -366,15 +401,16 @@ TEST(readdir_root) {
     VfsNode *root = procfs_init();
     VfsDirEntry entries[16];
     int count = root->ops->readdir(root, entries, 16);
-    /* meminfo + uptime + cmdline + cpuinfo + slabinfo + kmsg + 3 non-terminated PIDs (0, 1, 2) */
-    ASSERT_EQ(count, 9);
+    /* meminfo + uptime + cmdline + cpuinfo + slabinfo + kmsg + sched_debug + 3 non-terminated PIDs (0, 1, 2) */
+    ASSERT_EQ(count, 10);
     ASSERT_STR_EQ(entries[0].name, "meminfo");
     ASSERT_STR_EQ(entries[1].name, "uptime");
     ASSERT_STR_EQ(entries[2].name, "cmdline");
     ASSERT_STR_EQ(entries[3].name, "cpuinfo");
     ASSERT_STR_EQ(entries[4].name, "slabinfo");
     ASSERT_STR_EQ(entries[5].name, "kmsg");
-    ASSERT_STR_EQ(entries[6].name, "0");
+    ASSERT_STR_EQ(entries[6].name, "sched_debug");
+    ASSERT_STR_EQ(entries[7].name, "0");
     return 0;
 }
 
@@ -426,5 +462,6 @@ TestCase procfs_tests[] = {
     TEST_ENTRY(uptime_content),        TEST_ENTRY(cmdline_content),    TEST_ENTRY(cpuinfo_content),
     TEST_ENTRY(slabinfo_content),      TEST_ENTRY(pid_status_content), TEST_ENTRY(readdir_root),
     TEST_ENTRY(readdir_pid_dir),       TEST_ENTRY(no_create_ops),      TEST_ENTRY(kmsg_reads_log),
+    TEST_ENTRY(sched_debug_content),
 };
 int procfs_test_count = sizeof(procfs_tests) / sizeof(procfs_tests[0]);

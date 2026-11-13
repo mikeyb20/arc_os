@@ -11,6 +11,7 @@
 #include "lib/kprintf.h"
 #include "lib/klog.h"
 #include "drivers/fb_console.h"
+#include "proc/kernel_lock.h"
 
 #define KB_DATA_PORT 0x60
 
@@ -87,9 +88,19 @@ static void keyboard_scrollback(int pages) {
     }
 }
 
+static void keyboard_scancode(uint8_t scancode);
+
+/* IRQ 1. Under the kernel lock: the TTY and signal paths it feeds have no
+ * locks of their own yet (M1-05). */
 static void keyboard_irq_handler(InterruptFrame *frame) {
     (void)frame;
     uint8_t scancode = inb(KB_DATA_PORT);
+    kernel_lock_irq();
+    keyboard_scancode(scancode);
+    kernel_unlock();
+}
+
+static void keyboard_scancode(uint8_t scancode) {
 
     /* Extended keys (E0 xx) other than these are handled like their plain
      * twins, as before (right Ctrl, right Alt, keypad Enter) */

@@ -6,7 +6,7 @@
 #include "lib/kprintf.h"
 
 /* SMP-safe: protects kernel page table modifications */
-static Spinlock vmm_lock = SPINLOCK_INIT;
+static Spinlock vmm_lock = SPINLOCK_INIT(LOCK_LEVEL_PAGE_TABLE, "kernel page tables");
 
 /* Errno value needed for vmm_map_user_stack (defined in fs/vfs.h;
  * duplicated here to avoid mm→fs layer dependency). */
@@ -95,15 +95,17 @@ static uint64_t *walk_to_pt_entry(uint64_t pml4_phys, uint64_t virt) {
 }
 
 void vmm_map_page(uint64_t virt, uint64_t phys, uint32_t flags) {
-    spinlock_acquire(&vmm_lock);
+    uint64_t irqf;
+    spin_lock_irqsave(&vmm_lock, &irqf);
     vmm_map_page_in(kernel_pml4_phys, virt, phys, flags);
-    spinlock_release(&vmm_lock);
+    spin_unlock_irqrestore(&vmm_lock, irqf);
 }
 
 void vmm_unmap_page(uint64_t virt) {
-    spinlock_acquire(&vmm_lock);
+    uint64_t irqf;
+    spin_lock_irqsave(&vmm_lock, &irqf);
     vmm_unmap_page_in(kernel_pml4_phys, virt);
-    spinlock_release(&vmm_lock);
+    spin_unlock_irqrestore(&vmm_lock, irqf);
 }
 
 uint64_t vmm_get_phys(uint64_t virt) {

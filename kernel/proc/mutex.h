@@ -11,19 +11,21 @@
  * NOT recursive — re-locking from the same thread is undefined behavior.
  * Interrupts remain enabled while blocked (unlike spinlocks). */
 typedef struct {
-    Spinlock  guard;      /* Protects internal state */
-    Thread   *owner;      /* Current holder (NULL if unlocked) */
+    Spinlock guard;      /* Protects internal state */
+    Thread *owner;      /* Current holder (NULL if unlocked) */
     WaitQueue waiters;    /* Threads waiting to acquire */
+    uint16_t level;      /* sleeping-lock level (LOCK_LEVEL_*, lockdep.h) */
 } Mutex;
 
-#define MUTEX_INIT { \
-    .guard = SPINLOCK_INIT, \
-    .owner = NULL, \
-    .waiters = WAITQUEUE_INIT \
-}
+#define MUTEX_INIT(lvl)                                                                                     \
+    {                                                                                                       \
+        .guard = SPINLOCK_INIT(LOCK_LEVEL_OBJECT, "mutex guard"), .owner = NULL, .waiters = WAITQUEUE_INIT, \
+        .level = (lvl)                                                                                      \
+    }
 
-/* Initialize a mutex. */
-void mutex_init(Mutex *m);
+/* Initialize a mutex with its sleeping-lock level (LOCK_LEVEL_*, lockdep.h;
+ * one of the sleeping levels, below LOCK_LEVEL_PAGE_TABLE). */
+void mutex_init(Mutex *m, uint16_t level);
 
 /* Acquire the mutex.  Blocks (sleeps) if already held by another thread. */
 void mutex_lock(Mutex *m);

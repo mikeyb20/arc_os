@@ -43,3 +43,9 @@
 **Notes.**
 - From M1-03: user GS base is always 0 (no `ARCH_SET_GS`), so it is not context-switched. If a thread ever gets
   its own GS base, save and restore MSR_KERNEL_GS_BASE (the user's value while in the kernel) on every switch.
+- From M1-05: process and signal state are covered by the interim big kernel lock; the thread-group and
+  signal lock is level 70 (`LOCK_LEVEL_SIGNAL`). A thread that blocks gives the kernel lock up inside
+  `sched_schedule` and takes it back after. `proc_reap` waits for the dead thread's last switch to finish
+  (`sched_wait_off_cpu`) before freeing its stack; thread exit needs the same. fork copies the CPU affinity.
+  Mutexes take a lock level (`mutex_init(m, level)`); debug builds check it. Threads sharing an mm need TLB
+  shootdown on unmap (M1-07).

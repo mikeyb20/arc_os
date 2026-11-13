@@ -11,6 +11,16 @@
 #define ARCHOS_ARCH_X86_64_SERIAL_H
 #define ARCHOS_LIB_KPRINTF_H
 #define ARCHOS_DRIVERS_TTY_H
+#define ARCHOS_PROC_KERNEL_LOCK_H
+
+/* kernel_lock.h stubs: the IRQ handler holds the kernel lock around the TTY */
+static int klock_irq_held;
+static void kernel_lock_irq(void) {
+    klock_irq_held++;
+}
+static void kernel_unlock(void) {
+    klock_irq_held--;
+}
 
 /* Stub kprintf */
 static inline void kprintf(const char *fmt, ...) { (void)fmt; }

@@ -11,12 +11,12 @@
 #include "proc/signal.h"
 #include "proc/waitqueue.h"
 #include "proc/spinlock.h"
+#include "proc/kernel_lock.h"
 #include "fs/vfs.h"
 #include "fs/fs_syscalls.h"
 #include "mm/vmm.h"
 #include "mm/kmalloc.h"
 #include "arch/x86_64/syscall.h"
-#include "arch/x86_64/paging.h"
 #include "arch/x86_64/usermode.h"
 #include "lib/kprintf.h"
 #include "lib/mem.h"
@@ -51,10 +51,10 @@ void proc_exit(Process *p, int32_t exit_status, uint8_t term_signal) {
     p->term_signal = term_signal;
     Process *heir = proc_reparent_children(p);
     p->state = PROC_ZOMBIE;
-    /* DEAD before any wake-up: the scheduler never queues it again. Syscalls
-     * and signal delivery run with interrupts off on one CPU, so nothing runs
-     * (and no wait4 frees this thread) until sched_schedule() has switched
-     * away from it for the last time. */
+    /* DEAD before any wake-up: the scheduler never queues it again, and
+     * sched_wake ignores it. The parent may reap as soon as this thread gives
+     * up the kernel lock in sched_schedule(); proc_reap then waits until the
+     * switch away has finished before it frees the stack (sched_wait_off_cpu). */
     thread_current()->state = THREAD_DEAD;
 
     /* Kernel test mode: init exiting ends the QEMU run with its status */
@@ -246,6 +246,7 @@ void proc_enter_user(Process *p, const ElfLoadResult *elf, ExecStrings *strings,
     fpu_load_init();
     thread_current()->clear_child_tid = 0;
 
+    kernel_unlock();   /* taken at syscall entry (execve) or by init_thread_entry */
     jump_to_usermode(elf->entry_point, rsp);
 }
 
@@ -320,7 +321,7 @@ static int64_t sys_execve(uint64_t path_addr, uint64_t argv_addr, uint64_t envp_
     p->brk_start = result.brk_start;
     p->brk_current = result.brk_start;
     sig_exec_reset(&p->sig);
-    paging_write_cr3(new_pml4);
+    hal_switch_address_space(new_pml4);
     vmm_free_user_pages(old_pml4);
 
     kdebug("[EXEC] pid=%u loaded '%s' argc=%u envc=%u entry=0x%lx\n", p->pid, abs, strings->argc, strings->envc,
@@ -340,11 +341,12 @@ static int32_t wait_status_stopped(int signo) {
 }
 
 /* Serializes wait4 against itself; children wake the parent's child_exit_wq. */
-static Spinlock wait_lock = SPINLOCK_INIT;
+static Spinlock wait_lock = SPINLOCK_INIT(LOCK_LEVEL_OBJECT, "wait4");
 
 /* wait4(pid, wstatus, options, rusage) — 61 */
 static int64_t sys_wait4(uint64_t pid_arg, uint64_t status_addr, uint64_t options,
                          uint64_t rusage_addr, uint64_t a4, uint64_t a5) {
+    uint64_t irqf;
     (void)a4; (void)a5;
     Process *p = proc_current();
     if (p == NULL) return -ECHILD;
@@ -361,7 +363,7 @@ static int64_t sys_wait4(uint64_t pid_arg, uint64_t status_addr, uint64_t option
     int64_t ret;
     int32_t encoded = 0;
 
-    spinlock_acquire(&wait_lock);
+    spin_lock_irqsave(&wait_lock, &irqf);
     for (;;) {
         Process *child = proc_find_waitable(p, pid, want_stopped);
         if (child != NULL && child->state == PROC_ZOMBIE) {
@@ -377,17 +379,17 @@ static int64_t sys_wait4(uint64_t pid_arg, uint64_t status_addr, uint64_t option
             break;
         }
         if (!proc_has_selected_child(p, pid)) {
-            spinlock_release(&wait_lock);
+            spin_unlock_irqrestore(&wait_lock, irqf);
             return -ECHILD;
         }
         if (options & WNOHANG) {
-            spinlock_release(&wait_lock);
+            spin_unlock_irqrestore(&wait_lock, irqf);
             return 0;   /* Children exist but none is ready */
         }
-        wq_sleep(&p->child_exit_wq, &wait_lock);
-        spinlock_acquire(&wait_lock);
+        wq_sleep(&p->child_exit_wq, &wait_lock, irqf);
+        spin_lock_irqsave(&wait_lock, &irqf);
     }
-    spinlock_release(&wait_lock);
+    spin_unlock_irqrestore(&wait_lock, irqf);
 
     if (status_addr != 0) *(int32_t *)status_addr = encoded;
     if (rusage_addr != 0) memset((void *)rusage_addr, 0, RUSAGE_SIZE);

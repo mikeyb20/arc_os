@@ -7,24 +7,31 @@
 
 /* Guard kernel headers that need stubbing */
 #define ARCHOS_LIB_KPRINTF_H
-#define ARCHOS_ARCH_X86_64_PIT_H
 #define ARCHOS_MM_VMM_H
-#define ARCHOS_PROC_SPINLOCK_H
+#define ARCHOS_ARCH_X86_64_TSC_H
+#define ARCHOS_ARCH_X86_64_ISR_H
 
 static inline void kprintf(const char *fmt, ...) {
     (void)fmt;
 }
-static uint64_t pit_get_ticks(void) {
-    return 0;
-}
 static uint64_t vmm_get_hhdm_offset(void) {
     return 0;
 }   /* MMIO "phys" = host address */
-static uint64_t irq_save(void) {
-    return 0;
+/* tsc.h / isr.h stubs: the slice timer's calibration and vector */
+typedef struct {
+    uint64_t khz;
+} TscInfo;
+static TscInfo fake_tsc;
+static const TscInfo *tsc_info(void) {
+    return &fake_tsc;
 }
-static void irq_restore(uint64_t flags) {
-    (void)flags;
+typedef struct InterruptFrame InterruptFrame;
+typedef void (*isr_handler_t)(InterruptFrame *frame);
+static int registered_vec;
+static isr_handler_t registered_handler;
+static void isr_register_handler(int vec, isr_handler_t fn) {
+    registered_vec = vec;
+    registered_handler = fn;
 }
 
 /* Real constants, then fake MSRs and CPUID in place of the instructions */

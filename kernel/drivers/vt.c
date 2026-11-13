@@ -10,6 +10,7 @@
 #include "mm/kmalloc.h"
 #include "lib/mem.h"
 #include "lib/kprintf.h"
+#include "lib/klog.h"
 
 static VirtualTerminal vts[VT_COUNT];
 static int active_vt;
@@ -84,8 +85,10 @@ void vt_switch(int n) {
 
     active_vt = n;
 
-    /* Redraw new VT */
+    /* Redraw new VT, as console owner (like TTY output, kmain.c) */
+    int owned = klog_console_acquire();
     vt_redraw();
+    if (owned) klog_console_release();
 
     kprintf("[VT] Switched to VT%d\n", n + 1);
 }

@@ -27,6 +27,7 @@
 
 /* Stub kprintf */
 static inline void kprintf(const char *fmt, ...) { (void)fmt; }
+#define kdebug(...) ((void)0)
 
 /* Track vmm_map_page_in calls, and the resulting mappings */
 #define MAX_MAP_CALLS 64
