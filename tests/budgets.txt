@@ -13,8 +13,11 @@
 # per-CPU, APIC ID and MADT tables sized for 256 CPUs; 221831 -> 294768 after
 # M1-04: the function-name table for panic backtraces (.ksyms, 26 KB), the 16 KiB
 # boot log ring (.bss) and ~30 KB of code: log ring, panic screen, console
-# scrollback, TSC calibration, SMBIOS, and the boot report / self-test / benchmark)
-kernel_image_bytes     310000      max  bytes  M0-08  build
+# scrollback, TSC calibration, SMBIOS, and the boot report / self-test / benchmark);
+# 317173 after M1-05 (SMP scheduler, lock-order checker; within the +5% margin);
+# 317173 -> 328564 after M1-04b: the QR encoder (~8.3 KB), its text pages (~2.5 KB),
+# CRC-32 (~1.2 KB, 1 KiB of it the table) and their backtrace names. Limit = measured + 5%)
+kernel_image_bytes     345000      max  bytes  M0-08  build
 
 # Free memory when init starts, booted with -m 4G (qemu.smoke; measured 4251873280)
 boot_free_bytes        3830000000  min  bytes  M0-08  smoke

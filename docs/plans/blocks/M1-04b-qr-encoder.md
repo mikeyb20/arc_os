@@ -88,9 +88,9 @@ Memory: the caller's `QrCode` (about 6 KiB at version 30), static in M1-04c.
 - Encode time on the build host (Xeon 2.1 GHz): version 30 = 4.1 ms at -O2 and 8.9 ms at -O0 (the kernel builds
   without -O); version 10 = 0.6 / 1.6 ms. The mask penalty dominates. The Cost estimate above (about a million
   operations) was low by a few times; it still only runs on diagnostic and panic paths.
-- Kernel image grows about 12 KB (qr 8.3 KB, qr_text 2.5 KB, crc32 1.2 KB of text): `kernel_image_bytes` is
-  306,363 against the 310,000 limit. M1-04c adds drawing code and the 7 KB static `QrCode` (bss counts), so it
-  will pass the limit and must raise it with a reason line (the check fails only above +5%).
+- Kernel image grows about 11 KB (qr 8.3 KB, qr_text 2.5 KB, crc32 1.2 KB of text, plus backtrace names):
+  328,564 on top of M1-05's 317,173, so `kernel_image_bytes` went from 310,000 to 345,000 (measured + 5%) with a
+  reason line in `tests/budgets.txt`. M1-04c adds drawing code and the 7 KB static `QrCode` (bss counts).
 - Choices: mask rule 3 counts the literal 11-module windows `10111010000` and `00001011101`, with modules outside
   the symbol counted as light (they are the quiet zone); scaled look-alikes are not counted. A different reading
   only picks a different mask, and every mask decodes (tested). Pages reserve room for the longest header their
