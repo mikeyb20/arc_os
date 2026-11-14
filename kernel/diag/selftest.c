@@ -1,7 +1,8 @@
 /* arc_os — Hardware self-test, arc.selftest=1 (M1-04)
  *
  * Owns: the bring-up checks, one PASS/FAIL report line each: every MADT CPU
- * came online; an AVX2 checksum on every CPU matches the scalar one (XCR0
+ * came online; NX, SMEP and SMAP alike on every CPU and the kernel mapped
+ * W^X (M1-19); an AVX2 checksum on every CPU matches the scalar one (XCR0
  * checked first); a 256 MB memory pattern test; the TSC rate against the PIT;
  * the TSCs in step on every CPU and a one-shot kernel timer firing on time
  * (M1-06); a kernel thread pinned to each CPU
@@ -140,6 +141,41 @@ static void check_avx2(void) {
     /* A CPU that answers after the timeout still reads the buffer and writes
      * avx_res: free the buffer only when every CPU answered; avx_res stays */
     if (answered + 1 >= hal_cpu_count()) free_pages(pg, AVX_ORDER);
+}
+
+/* ---- NX, SMEP, SMAP on every CPU; kernel W^X (M1-19) ---- */
+
+static uint32_t protect_seen[HAL_MAX_CPUS]; /* each CPU's HAL_PROTECT_* bits, plus bit 31 = answered */
+
+#define PROTECT_ANSWERED (1u << 31)
+
+static void protect_on_this_cpu(void *arg) {
+    (void)arg;
+    uint32_t i = hal_cpu_index();
+    if (i < HAL_MAX_CPUS) protect_seen[i] = hal_protect_flags() | PROTECT_ANSWERED;
+}
+
+static void check_protect(void) {
+    protect_on_this_cpu(NULL);
+    (void)hal_run_on_other_cpus(protect_on_this_cpu, NULL, CALL_MAX_CYCLES);
+    uint32_t want = protect_seen[hal_cpu_index()]; /* the BSP's: every CPU must match it */
+    uint32_t cpus = 0, bad = 0, first_bad = 0;
+    for (uint32_t i = 0; i < HAL_MAX_CPUS; i++) {
+        uint32_t apic;
+        const char *core;
+        if (hal_cpu_info(i, &apic, &core) != 0) continue;
+        cpus++;
+        if (protect_seen[i] != want && bad++ == 0) first_bad = i;
+    }
+    VmmWxCheck wx;
+    int wx_rc = vmm_kernel_wx_check(&wx);
+    int ok = bad == 0 && (want & HAL_PROTECT_NX) && (want & HAL_PROTECT_WP) && wx_rc == 0;
+    result("protect", ok, "NX %s, SMEP %s, SMAP %s; %u CPUs, %u differ; kernel W^X %s (%lu W+X, %lu wrong pages)",
+           (want & HAL_PROTECT_NX) ? "on" : "OFF", (want & HAL_PROTECT_SMEP) ? "on" : "off",
+           (want & HAL_PROTECT_SMAP) ? "on" : "off", cpus, bad, wx_rc == 0 ? "ok" : "BROKEN", wx.wx_pages,
+           wx.wrong_pages);
+    if (bad)
+        diag_line("           first differing CPU %u: flags %x, boot CPU %x", first_bad, protect_seen[first_bad], want);
 }
 
 /* ---- Memory pattern ---- */
@@ -413,6 +449,7 @@ void diag_selftest(int *passes, int *fails) {
     passed = failed = 0;
     diag_line("Self-test");
     check_cpus();
+    check_protect();
     check_avx2();
     check_memory();
     check_tsc();

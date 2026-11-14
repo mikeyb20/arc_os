@@ -58,6 +58,7 @@ set(KERNEL_C_SOURCES
     mm/kmalloc.c
     arch/x86_64/syscall.c
     arch/x86_64/cpu.c
+    arch/x86_64/protect.c
     arch/x86_64/fpu.c
     arch/x86_64/lapic.c
     arch/x86_64/ioapic.c
@@ -166,6 +167,7 @@ if(KERNEL_SOURCES)
     # NASM flags
     target_compile_options(kernel_objs PRIVATE
         $<$<COMPILE_LANGUAGE:ASM_NASM>:-f elf64>
+        $<$<COMPILE_LANGUAGE:ASM_NASM>:-I${CMAKE_CURRENT_SOURCE_DIR}/arch/x86_64/>   # smap.inc (M1-19)
     )
 
     # Kernel C never touches x87/SSE/AVX registers: they hold the running

@@ -136,6 +136,8 @@ add_test(NAME qemu.mm COMMAND ${_qemu_test} --suite mm --module mmtest
     --expect "mmtest: malloc ok"
     --expect "mmtest: mmap ok"
     --expect "mmtest: segv ok"
+    --expect "mmtest: nx ok"
+    --expect "mmtest: ac ok"
     --expect "mmtest: copy ok"
     --expect "mmtest: brk ok"
     --expect "mmtest: stack ok"
@@ -185,6 +187,46 @@ add_test(NAME qemu.panic.fault COMMAND ${_qemu_test} --suite kpanic --name panic
     --expect "#0 +ffffffff[0-9a-f]+ panic_test_fault\\+0x"
     --expect "kmain\\+0x")
 
+# Hardening (M1-19): each broken protection ends in a panic that names the
+# function. W^X: a write to kernel code or .rodata and a call into .data fault.
+# SMAP and SMEP: a direct read of a user page and a call into one, from a
+# kernel function; they run on QEMU's "max" CPU (TCG), which has both, so the
+# result doesn't depend on the CI host's CPU.
+add_test(NAME qemu.hardening.text COMMAND ${_qemu_test} --suite kpanic --name hardening-text
+    --cmdline arc.panic=text --expect-panic --timeout 60
+    --expect "\\[SECURITY\\] NX on, .*; kernel W\\^X: [0-9]+ code pages r-x"
+    --expect "PANIC: Page Fault on CPU 0"
+    --expect "ERROR +0000000000000003"
+    --expect "#0 +ffffffff[0-9a-f]+ hardening_test_text\\+0x")
+add_test(NAME qemu.hardening.rodata COMMAND ${_qemu_test} --suite kpanic --name hardening-rodata
+    --cmdline arc.panic=rodata --expect-panic --timeout 60
+    --expect "PANIC: Page Fault on CPU 0"
+    --expect "ERROR +0000000000000003"
+    --expect "#0 +ffffffff[0-9a-f]+ hardening_test_rodata\\+0x")
+add_test(NAME qemu.hardening.nx COMMAND ${_qemu_test} --suite kpanic --name hardening-nx
+    --cmdline arc.panic=nx --expect-panic --timeout 60
+    --expect "W\\^X: calling .data at 0x(ffffffff[0-9a-f]+)"
+    --expect "PANIC: Page Fault on CPU 0"
+    --expect "ERROR +0000000000000011")
+add_test(NAME qemu.hardening.smap COMMAND ${_qemu_test} --suite kpanic --name hardening-smap --cpu max
+    --cmdline arc.panic=smap --expect-panic --timeout 60
+    --expect "\\[SECURITY\\] NX on, SMEP on, SMAP on"
+    --expect "\\[SECURITY\\] SMAP: kernel touched user memory: hardening_test_smap\\+0x[0-9a-f]+ .*at user address 400000"
+    --expect "PANIC: SMAP: kernel touched user memory on CPU 0")
+add_test(NAME qemu.hardening.smep COMMAND ${_qemu_test} --suite kpanic --name hardening-smep --cpu max
+    --cmdline arc.panic=smep --expect-panic --timeout 60
+    --expect "\\[SECURITY\\] SMEP: kernel ran user code: hardening_test_smep\\+0x[0-9a-f]+ \\(RIP 400000\\)"
+    --expect "PANIC: SMEP: kernel ran user code on CPU 0")
+
+# The x86-64-v3 floor (Haswell) has no SMAP: STAC and CLAC would raise #UD,
+# so the copy routine and the entry stubs skip them (M1-19). The mm suite
+# exercises every user-copy path on a CPU without SMAP or SMEP.
+add_test(NAME qemu.mm.nosmap COMMAND ${_qemu_test} --suite mm --name mm-nosmap --module mmtest
+    --cpu-flags=-smap,-smep
+    --expect "\\[SECURITY\\] NX on, SMEP off \\(CPU lacks it\\), SMAP off \\(CPU lacks it\\)"
+    --expect "mmtest: copy ok"
+    --expect "mmtest: 0 failures")
+
 # Bring-up diagnostics (M1-04): boot report, self-test and benchmark run in the
 # kernel instead of init and end the run themselves (ARC_TEST DONE)
 add_test(NAME qemu.diag COMMAND ${_qemu_test} --suite diag
@@ -193,16 +235,18 @@ add_test(NAME qemu.diag COMMAND ${_qemu_test} --suite diag
     --expect "\\[REPORT\\] CPUs +4 online; MADT lists 4"
     --expect "\\[REPORT\\] TSC +[0-9]+ kHz"
     --expect "\\[REPORT\\] Clock +.* timers \\(microcode 0x[0-9a-f]+\\); TSCs in step on 4 CPUs"
+    --expect "\\[REPORT\\] Protect +NX on, SMEP [a-z]+, SMAP [a-z]+; kernel W\\^X ok \\([0-9]+ code r-x"
     --expect "\\[REPORT\\] Memory +[0-9]+ MB RAM"
     --expect "\\[REPORT\\] ACPI +revision"
     --expect "\\[REPORT\\] PCI +[0-9]+ devices"
+    --expect "\\[REPORT\\] SELFTEST PASS protect +NX on, SMEP [a-z]+, SMAP [a-z]+; 4 CPUs, 0 differ; kernel W\\^X ok"
     --expect "\\[REPORT\\] SELFTEST PASS avx2 +4 CPUs"
     --expect "\\[REPORT\\] SELFTEST PASS sched +4 of 4 CPUs ran a pinned thread"
     --expect "\\[REPORT\\] SELFTEST PASS tlb +3 of 3 CPUs with the mm loaded answered; 3 read the new page, 0 a stale one"
     --expect "\\[REPORT\\] BENCH context switch"
     --expect "\\[REPORT\\] SELFTEST PASS tscsync +TSCs in step on 4 CPUs"
     --expect "\\[REPORT\\] SELFTEST PASS timer +.* timer due in 50 ms fired"
-    --expect "ARC_TEST DONE pass=8 fail=0")
+    --expect "ARC_TEST DONE pass=9 fail=0")
 
 # QR screens (M1-04c): arc.qr=1 draws the report as ARC1 QR pages. The harness
 # takes a QEMU screendump on each "ARC_QR shown" line and presses a key for the
@@ -406,7 +450,8 @@ set_tests_properties(qemu.writeback.verify PROPERTIES FIXTURES_REQUIRED "wb_disk
 
 set_tests_properties(qemu.smoke qemu.mem.buddy qemu.mem.cap qemu.userland qemu.abi qemu.musl qemu.fpu qemu.cpufloor
     qemu.smp.xapic qemu.smp.x2apic qemu.sched qemu.lockorder qemu.selftest.fail qemu.selftest.panic
-    qemu.panic.fault qemu.diag qemu.mm qemu.mm.oom qemu.vfs qemu.pagecache qemu.qr.report qemu.qr.log qemu.qr.panic
+    qemu.panic.fault qemu.hardening.text qemu.hardening.rodata qemu.hardening.nx qemu.hardening.smap
+    qemu.hardening.smep qemu.mm.nosmap qemu.diag qemu.mm qemu.mm.oom qemu.vfs qemu.pagecache qemu.qr.report qemu.qr.log qemu.qr.panic
     qemu.devices qemu.devices.intx qemu.ext2 qemu.ext2.named qemu.reclaim qemu.writeback qemu.writeback.verify
     qemu.time qemu.time.fallback qemu.time.deadline
     PROPERTIES LABELS qemu TIMEOUT 180 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"

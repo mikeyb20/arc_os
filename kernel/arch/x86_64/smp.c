@@ -26,6 +26,7 @@
 #include "arch/x86_64/syscall.h"
 #include "arch/x86_64/cpuid.h"
 #include "arch/x86_64/paging.h"
+#include "arch/x86_64/protect.h"
 #include "mm/vmm.h"
 #include "arch/x86_64/tsc.h"
 #include "proc/sched.h"
@@ -55,6 +56,7 @@ static void ap_entry(uint64_t arg) {
      * kernel-only mappings (the MMIO window). The bootloader's stack is in
      * the HHDM, which both page tables map alike. */
     paging_write_cr3(vmm_get_kernel_pml4());
+    protect_cpu_init();    /* NX, SMEP, SMAP like the BSP (M1-19) */
     percpu_load(cpu);      /* GDT + TSS (IST stacks), GS base */
     idt_load();            /* the shared IDT */
     syscall_cpu_init();    /* SYSCALL MSRs are per CPU */

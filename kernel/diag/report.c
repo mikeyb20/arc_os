@@ -22,6 +22,7 @@
 #include "drivers/keyboard.h"
 #include "mm/pmm.h"
 #include "mm/kmalloc.h"
+#include "mm/vmm.h"
 #include "time/clock.h"
 #include "time/timer.h"
 #include "lib/kprintf.h"
@@ -154,6 +155,18 @@ static void report_cpu(const BootInfo *info, const AcpiInfo *acpi) {
               ci->rtc_ok ? "; wall clock from the RTC" : "; RTC unreadable: wall clock at 1970");
 }
 
+/* NX, SMEP and SMAP on the boot CPU and the kernel's W^X state (M1-19);
+ * the self-test checks every CPU */
+static void report_protect(void) {
+    uint32_t f = hal_protect_flags();
+    VmmWxCheck wx;
+    int rc = vmm_kernel_wx_check(&wx);
+    diag_line("Protect    NX %s, SMEP %s, SMAP %s; kernel W^X %s (%lu code r-x, %lu ro, %lu data rw-)",
+              (f & HAL_PROTECT_NX) ? "on" : "OFF", (f & HAL_PROTECT_SMEP) ? "on" : "off",
+              (f & HAL_PROTECT_SMAP) ? "on" : "off", rc == 0 ? "ok" : "BROKEN", wx.text_pages, wx.ro_pages,
+              wx.data_pages);
+}
+
 static void report_memory(const BootInfo *info) {
     uint64_t usable = 0, acpi = 0, reserved = 0, other = 0, top = 0;
     for (uint64_t i = 0; i < info->memory_map_count; i++) {
@@ -274,6 +287,7 @@ void diag_report(const BootInfo *info) {
     diag_line("arc_os boot report, build %s", arc_build_commit);
     report_machine(info);
     report_cpu(info, acpi);
+    report_protect();
     report_memory(info);
     report_display(info);
     diag_line("Cmdline    %s", cmdline_raw());

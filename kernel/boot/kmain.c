@@ -424,6 +424,7 @@ void kmain(void) {
     pmm_init(info);
     serial_puts("[BOOT] stage: VMM\n");
     vmm_init(info);
+    hardening_protect_boot_cpu();   /* NX, SMEP, SMAP; kernel W^X checked (M1-19) */
     serial_puts("[BOOT] stage: heap\n");
     kmalloc_init();
     mm_init();   /* VMA and address-space caches (M1-07) */
@@ -485,9 +486,14 @@ void kmain(void) {
     devices_setup(info);
 
     /* Test mode self-check: suite "kpanic" proves a panic ends the run at once;
-     * with arc.panic=fault it is a real page fault instead (M1-04) */
+     * with arc.panic=fault it is a real page fault instead (M1-04), with
+     * arc.panic=text/rodata/nx/smap/smep a broken protection (M1-19) */
     if (testmode_active() && strcmp(testmode_suite(), "kpanic") == 0) {
-        if (cmdline_get(cmdline_raw(), "arc.panic", NULL, 0)) panic_test_fault();
+        char kind[16];
+        if (cmdline_get(cmdline_raw(), "arc.panic", kind, sizeof(kind))) {
+            hardening_test(kind);
+            panic_test_fault();
+        }
         kprintf("[TEST] kpanic suite: panicking on purpose\n");
         KERNEL_PANIC();
     }

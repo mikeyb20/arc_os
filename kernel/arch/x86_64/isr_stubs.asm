@@ -10,6 +10,13 @@
 ; where CS says kernel but GS base is still the user's, so they read
 ; MSR_GS_BASE (a kernel address has the sign bit set; user GS base is always a
 ; user address because user space cannot set it) and swap only if needed.
+;
+; RFLAGS.AC (M1-19): an interrupt or exception keeps the interrupted code's AC,
+; which user mode may set and the user-copy routine sets, so both handlers
+; clear it before any C runs (SMAP would otherwise be off in the handler and
+; in any thread it switches to). IRETQ restores the interrupted AC.
+
+%include "smap.inc"
 
 section .text
 bits 64
@@ -161,6 +168,7 @@ isr_common:
 .entry_kernel:
     PUSH_GPRS
     cld                         ; the interrupted code's DF must not reach C (M1-07)
+    SMAP_CLAC                   ; nor its AC (M1-19)
 
     ; Pass pointer to InterruptFrame (stack pointer) as first argument
     mov rdi, rsp
@@ -191,6 +199,7 @@ isr_common:
 isr_paranoid:
     PUSH_GPRS
     cld
+    SMAP_CLAC
     xor ebx, ebx
     mov ecx, MSR_GS_BASE
     rdmsr                       ; EDX = high half of GS base

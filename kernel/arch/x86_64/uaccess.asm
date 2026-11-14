@@ -6,8 +6,15 @@
 ; out of memory), the handler finds the faulting RIP in the exception table
 ; and resumes at the fixup, which returns RCX: what REP MOVSB had left.
 ;
+; SMAP (M1-19): this is the only kernel code that runs with RFLAGS.AC set
+; (STAC before the copy, CLAC on both ways out). A fault inside the copy
+; enters the kernel with AC set; the entry stub clears it for the handler
+; and IRETQ restores it for the retry, or the fixup clears it.
+;
 ; Exception table entries (section .ex_table, linker.ld): two quads each,
 ; the address that may fault and where to continue. isr.c looks them up.
+
+%include "smap.inc"
 
 section .text
 bits 64
@@ -16,13 +23,16 @@ global arch_copy_user
 
 arch_copy_user:
     mov rcx, rdx
+    SMAP_STAC
 .copy:
     rep movsb
     xor eax, eax
+.done:
+    SMAP_CLAC
     ret
 .fault:
     mov rax, rcx
-    ret
+    jmp .done
 
 section .ex_table alloc noexec nowrite progbits align=8
     dq arch_copy_user.copy, arch_copy_user.fault

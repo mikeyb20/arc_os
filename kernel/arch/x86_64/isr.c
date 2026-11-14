@@ -4,6 +4,7 @@
 #include "arch/x86_64/percpu.h"
 #include "arch/x86_64/irq_vector.h"
 #include "arch/x86_64/fpu.h"
+#include "arch/x86_64/protect.h"
 #include "arch/hal_lock.h"
 #include "mm/mm.h"
 #include "proc/signal.h"
@@ -11,6 +12,7 @@
 #include "uapi/sigcontext.h"
 #include "lib/kprintf.h"
 #include "lib/panic.h"
+#include "lib/ksyms.h"
 #include <stddef.h>
 
 static isr_handler_t handlers[ISR_COUNT];
@@ -137,11 +139,11 @@ void arch_panic_capture(PanicInfo *pi, void *frame_address) {
     pi->nframes = backtrace_from((uint64_t)(uintptr_t)frame_address, rsp, pi->frames, 0, PANIC_MAX_FRAMES);
 }
 
-/* Unhandled CPU exception: the panic report with the interrupted registers. */
-static void default_exception_handler(InterruptFrame *frame) {
+/* The panic report for frame with the interrupted registers, under reason. */
+static void exception_panic(InterruptFrame *frame, const char *reason) {
     if (!panic_begin()) panic_halt();
 
-    PanicInfo pi = {.reason = exception_names[frame->vector]};
+    PanicInfo pi = {.reason = reason};
     pi.cpu = percpu_current_index();
     panic_add_reg(&pi, "RIP", frame->rip);
     panic_add_reg(&pi, "RSP", frame->rsp);
@@ -173,6 +175,11 @@ static void default_exception_handler(InterruptFrame *frame) {
         pi.nframes = backtrace_from(frame->rbp, frame->rsp, pi.frames, pi.nframes, PANIC_MAX_FRAMES);
     }
     panic_report(&pi);
+}
+
+/* Unhandled CPU exception: the panic report with the interrupted registers. */
+static void default_exception_handler(InterruptFrame *frame) {
+    exception_panic(frame, exception_names[frame->vector]);
 }
 
 static void isr_handle(InterruptFrame *frame);
@@ -207,6 +214,49 @@ static uint64_t ex_table_fixup(uint64_t rip) {
     return 0;
 }
 
+/* A kernel-mode page fault on a user address (M1-19): what it is */
+enum {
+    KUSER_COPY,      /* the copy routine: resolve the page or take the fixup */
+    KUSER_MISSING,   /* elsewhere, on a missing page (a NULL pointer): an ordinary page fault */
+    KUSER_EXEC,      /* the kernel jumped into a user page: SMEP */
+    KUSER_DIRECT,    /* the kernel touched a user page outside the copy routine: SMAP */
+    KUSER_NO_STAC,   /* the copy routine ran without RFLAGS.AC under SMAP */
+};
+
+static const char *const kuser_reasons[] = {
+    [KUSER_EXEC] = "SMEP: kernel ran user code",
+    [KUSER_DIRECT] = "SMAP: kernel touched user memory",
+    [KUSER_NO_STAC] = "SMAP: user copy without STAC",
+};
+
+/* Sort a kernel-mode fault at a user address. in_copy: RIP is in the
+ * exception table. smap: SMAP is on. Present pages fault here only through
+ * a protection: SMEP for an instruction fetch; SMAP (or a write to a
+ * read-only page) for data. Without SMAP a direct read of a present user
+ * page doesn't fault at all, which is why SMAP is wanted. */
+static int kuser_fault_kind(uint64_t err, uint64_t rflags, int in_copy, int smap) {
+    if (in_copy && !(err & PF_INSN)) {
+        if (smap && !(rflags & RFLAGS_AC)) return KUSER_NO_STAC;   /* it would fault again forever */
+        return KUSER_COPY;
+    }
+    if (!(err & PF_PRESENT)) return KUSER_MISSING;
+    return (err & PF_INSN) ? KUSER_EXEC : KUSER_DIRECT;
+}
+
+/* Kernel bug: panic, naming the function that did it. For a jump into user
+ * memory RIP is the user address, so the function is the one whose call
+ * left its return address on top of the kernel stack. */
+static void kuser_fault_panic(InterruptFrame *frame, uint64_t addr, int kind) {
+    uint64_t at = frame->rip, off = 0;
+    if (kind == KUSER_EXEC && frame->rsp >= KERNEL_HALF_START && (frame->rsp & 7) == 0) {
+        at = *(const uint64_t *)frame->rsp;
+    }
+    const char *fn = ksym_lookup(at, &off);
+    kprintf("[SECURITY] %s: %s+0x%lx (RIP %lx) at user address %lx\n", kuser_reasons[kind], fn ? fn : "?", off,
+            frame->rip, addr);
+    exception_panic(frame, kuser_reasons[kind]);
+}
+
 /* Raise signo on the current process for a user exception. */
 static void user_fault_signal(int signo, int code, uint64_t addr) {
     kernel_lock();
@@ -227,10 +277,19 @@ static void page_fault(InterruptFrame *frame, uint64_t addr) {
     if (err & PF_PRESENT) access |= MM_ACCESS_PRESENT;
 
     if ((frame->cs & 3) == 0) {
+        if (addr >= USER_HALF_END) {   /* a kernel address: a write to .text lands here (W^X) */
+            default_exception_handler(frame);
+            return;
+        }
         /* The kernel may touch user memory only through the copy routine */
         uint64_t fixup = ex_table_fixup(frame->rip);
-        if (fixup == 0 || addr >= USER_HALF_END) {
-            default_exception_handler(frame);
+        int kind = kuser_fault_kind(err, frame->rflags, fixup != 0, protect_smap_on);
+        if (kind == KUSER_MISSING) {
+            default_exception_handler(frame);   /* "Page Fault"; the backtrace names the function */
+            return;
+        }
+        if (kind != KUSER_COPY) {
+            kuser_fault_panic(frame, addr, kind);
             return;
         }
         /* Resolving may sleep: not under a spinlock (the copy fails instead) */
@@ -374,7 +433,25 @@ static int vector_may_deliver(uint64_t vector) {
     return vector != EXCEPTION_NMI && vector != EXCEPTION_DOUBLE_FAULT && vector != EXCEPTION_MACHINE_CHECK;
 }
 
+/* Debug builds (M1-19): the entry stubs cleared RFLAGS.AC (smap.inc). With
+ * it still set SMAP would be off in this handler and in any thread it
+ * switches to; user mode can set AC, so a stub that forgot CLAC shows here
+ * on the first fault or interrupt from such a program (mmtest "ac"). */
+static void check_ac_clear(const InterruptFrame *frame) {
+#if defined(ARC_DEBUG) && ARC_DEBUG
+    uint64_t rflags;
+    __asm__ volatile("pushfq; pop %0" : "=r"(rflags));
+    if (protect_smap_on && (rflags & RFLAGS_AC)) {
+        kprintf("[SECURITY] RFLAGS.AC still set in the kernel after vector %lu\n", frame->vector);
+        exception_panic((InterruptFrame *)frame, "SMAP: AC leaked into the kernel");
+    }
+#else
+    (void)frame;
+#endif
+}
+
 void isr_dispatch(InterruptFrame *frame) {
+    check_ac_clear(frame);
     isr_handle(frame);
     if ((frame->cs & 3) != 0 && vector_may_deliver(frame->vector)) user_return_work(frame);
 }

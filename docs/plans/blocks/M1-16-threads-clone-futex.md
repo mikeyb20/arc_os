@@ -41,6 +41,8 @@
 - L block: a clean stopping point is after steps 1–3 with single-thread behaviour unchanged and tests passing.
 
 **Notes.**
+- From M1-19: `vmm_map_page` always adds NX (kernel W^X), so stacks mapped outside the HHDM with it are
+  non-executable without asking; `vmm_kernel_wx_check` covers only the kernel image and the HHDM.
 - From M1-03: user GS base is always 0 (no `ARCH_SET_GS`), so it is not context-switched. If a thread ever gets
   its own GS base, save and restore MSR_KERNEL_GS_BASE (the user's value while in the kernel) on every switch.
 - From M1-05: process and signal state are covered by the interim big kernel lock; the thread-group and
