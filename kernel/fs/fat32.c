@@ -347,16 +347,19 @@ static int fat32_iterate(File *file, DirContext *ctx) {
 
 /* --- File data: through the page cache (mm/filemap.h) --- */
 
-/* Fill one page of a file: each cluster piece it covers straight from the
- * device into the page, zeros past the end of the file (or of a short chain).
- * Clusters may be smaller or larger than a page; both are sector multiples.
- * io_lock held. 0 or -EIO. */
-static int fat32_fill_page(Inode *inode, struct page *pg) {
+/* Start filling one page of a file: one read piece per cluster piece it
+ * covers, straight from the device into the page (filemap_bdev_read), and
+ * zeros past the end of the file (or of a short chain). Clusters may be
+ * smaller or larger than a page; both are sector multiples. io_lock held;
+ * the read ends when its last piece does (filemap.h). */
+static void fat32_start_page(Inode *inode, struct page *pg) {
     Fat32Volume *vol = vol_of(inode);
     uint64_t base = (uint64_t)pg->index << PAGE_SHIFT;
     uint64_t size = (uint64_t)inode->size;
     uint32_t bpc = vol->bytes_per_cluster;
     size_t off = 0;
+    int err = 0;
+    filemap_io_begin(pg);
     while (off < PAGE_SIZE && base + off < size) {
         uint64_t at = base + off;
         uint32_t c = chain_cluster(vol, fi_of(inode), (uint32_t)(at / bpc));
@@ -365,22 +368,22 @@ static int fat32_fill_page(Inode *inode, struct page *pg) {
         size_t n = bpc - in_cluster;
         if (n > PAGE_SIZE - off) n = PAGE_SIZE - off;
         uint64_t sector = vol->data_start + (uint64_t)(c - 2) * vol->sectors_per_cluster + in_cluster / SECTOR_SIZE;
-        int err = filemap_bdev_io(vol->dev, 0, sector, (uint32_t)(n / SECTOR_SIZE), pg, off);
-        if (err != 0) return err;
+        err = filemap_bdev_read(vol->dev, sector, (uint32_t)(n / SECTOR_SIZE), pg, off);
+        if (err != 0) break;
         off += n;
     }
+    /* Past the end: zeros (the pieces in flight fill only [0, off)) */
     size_t valid = size > base ? (size - base < PAGE_SIZE ? (size_t)(size - base) : PAGE_SIZE) : 0;
     if (valid > off) valid = off;
-    memset((uint8_t *)page_to_virt(pg) + valid, 0, PAGE_SIZE - valid);   /* past the end: zeros */
-    return 0;
+    memset((uint8_t *)page_to_virt(pg) + valid, 0, PAGE_SIZE - valid);
+    filemap_io_end(pg, err);
 }
 
 static int fat32_readpage(AddressSpace *as, struct page *pg) {
     Fat32Volume *vol = vol_of(as->host);
     mutex_lock(&vol->io_lock);
-    int err = fat32_fill_page(as->host, pg);
+    fat32_start_page(as->host, pg);
     mutex_unlock(&vol->io_lock);
-    filemap_end_read(pg, err);
     return 0;
 }
 
@@ -388,11 +391,9 @@ static int fat32_readpage(AddressSpace *as, struct page *pg) {
  * walking forward page by page */
 static void fat32_readpages(AddressSpace *as, struct page **pages, uint32_t n) {
     Fat32Volume *vol = vol_of(as->host);
-    int err[FILEMAP_RA_BATCH];
     mutex_lock(&vol->io_lock);
-    for (uint32_t i = 0; i < n; i++) err[i] = fat32_fill_page(as->host, pages[i]);
+    for (uint32_t i = 0; i < n; i++) fat32_start_page(as->host, pages[i]);
     mutex_unlock(&vol->io_lock);
-    for (uint32_t i = 0; i < n; i++) filemap_end_read(pages[i], err[i]);
 }
 
 static const AddressSpaceOps fat32_aops = {

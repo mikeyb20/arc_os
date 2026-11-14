@@ -156,7 +156,10 @@ static void arena_init(void) {
     pmm_hhdm_offset = (uint64_t)(uintptr_t)arena;
 }
 
+void (*vfs_env_alloc_hook)(void);
+
 struct page *alloc_pages(unsigned order, uint32_t flags) {
+    if (vfs_env_alloc_hook != NULL) vfs_env_alloc_hook();
     arena_init();
     if (order != 0 || should_fail()) return NULL;
     for (uint32_t i = 0; i < ARENA_PAGES; i++) {

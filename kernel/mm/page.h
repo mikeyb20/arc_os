@@ -46,7 +46,12 @@
 #define PG_LOCKED     (1u << 13)   /* page lock (LOCK_LEVEL_PAGE): I/O, truncate, mapping */
 #define PG_ERROR      (1u << 14)   /* the last read failed */
 #define PG_LRU        (1u << 15)   /* on the evictable-page list (filemap.c) */
-/* Bits 16-31 are free for later blocks.
+/* Bits 16-23: pieces of a page-cache read still in flight, plus one for the
+ * reader while it is still adding pieces (filemap_io_begin / _end). */
+#define PG_IO_SHIFT   16
+#define PG_IO_ONE     (1u << PG_IO_SHIFT)
+#define PG_IO_MASK    (0xFFu << PG_IO_SHIFT)
+/* Bits 24-31 are free for later blocks.
  * free_pages() clears every flag of the head page; owners of a multi-page
  * block clear what they set on its other pages before freeing it. */
 

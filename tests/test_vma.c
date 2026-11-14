@@ -140,6 +140,35 @@ TEST(split_and_merge) {
     return 0;
 }
 
+/* A file VMA's split lists the upper half (ops->open) while the lower one
+ * still covers it: a truncate walking the file's VMAs never misses an entry
+ * (D3 review of #42) */
+static const Vma *split_lower;
+static uint64_t split_lower_end_at_open;
+static void split_open(Vma *v) {
+    (void)v;
+    split_lower_end_at_open = split_lower->end;
+}
+static const VmaOps split_ops = {.open = split_open};
+
+TEST(split_lists_upper_half_first) {
+    reset_set();
+    Vma *a = add(0x10000, 0x20000, VMA_READ);
+    static int file;
+    a->file = &file;
+    a->ops = &split_ops;
+    split_lower = a;
+    split_lower_end_at_open = 0;
+    Vma *hi = vma_split(&set, a, 0x18000);
+    ASSERT_TRUE(hi != NULL && set_valid());
+    ASSERT_EQ(split_lower_end_at_open, 0x20000);   /* opened before the lower half shrank */
+    ASSERT_EQ(a->end, 0x18000);
+    ASSERT_EQ(hi->pgoff, 8);
+    a->ops = hi->ops = NULL;
+    a->file = hi->file = NULL;
+    return 0;
+}
+
 TEST(split_out_of_memory_leaves_vma) {
     reset_set();
     Vma *a = add(0x10000, 0x20000, VMA_READ);
@@ -232,6 +261,7 @@ TestCase vma_tests[] = {
     TEST_ENTRY(insert_keeps_order),
     TEST_ENTRY(find_and_range_free),
     TEST_ENTRY(split_and_merge),
+    TEST_ENTRY(split_lists_upper_half_first),
     TEST_ENTRY(split_out_of_memory_leaves_vma),
     TEST_ENTRY(merge_needs_same_kind),
     TEST_ENTRY(remove_head_tail_middle),

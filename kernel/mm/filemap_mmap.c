@@ -155,32 +155,38 @@ static int cow_install(Mm *mm, Vma *v, uint64_t addr, const struct page *src, in
  * read-only, or a private write to a cache page */
 static int fault_present(Mm *mm, Vma *v, AddressSpace *as, uint64_t addr, uint64_t old, int write) {
     struct page *pg = pfn_to_page(old >> PAGE_SHIFT);
+    /* Without a reference the page may be freed (a truncate) and reused at
+     * any moment: only test it here; pte_rewrite rechecks the entry. M1-08
+     * (COW fork): an anonymous page here may then be shared with a child, and
+     * must go through the anonymous copy-on-write path instead. */
     if (!(pg->flags & PG_FILE)) return pte_rewrite(mm, addr, old, mm_prot_to_vmm(v->prot));   /* our own copy */
     if (!write) {   /* the entry allows reading already: a stale TLB entry */
         mm_flush_tlb_local(addr);
         return MM_FAULT_OK;
     }
-    if (!(v->flags & VMA_SHARED)) {
-        /* Hold the page while copying: a truncate may take the entry away */
-        uint64_t cur;
-        spin_lock(&mm->pt_lock);
-        int held = vmm_lookup_in(mm->pgd, addr, &cur) && cur == old;
-        if (held) page_ref_get(pg);
-        spin_unlock(&mm->pt_lock);
-        if (!held) return MM_FAULT_OK;
-        int r = cow_install(mm, v, addr, pg, 1, old);
-        page_put(pg);
-        return r;
-    }
-    /* Shared store: dirty and writable together under the page lock, which
-     * write-back holds while it write-protects and cleans the page */
-    page_lock(pg);
+    /* Take a reference while the entry still holds one (under the
+     * page-table lock, the entry unchanged): a truncate may take the entry,
+     * and with it the page, away as soon as the lock is dropped */
+    uint64_t cur;
+    spin_lock(&mm->pt_lock);
+    int held = vmm_lookup_in(mm->pgd, addr, &cur) && cur == old;
+    if (held) page_ref_get(pg);
+    spin_unlock(&mm->pt_lock);
+    if (!held) return MM_FAULT_OK;   /* the entry changed: fault again */
     int r = MM_FAULT_OK;
-    if (pg->mapping == as) {
-        filemap_set_dirty(pg);
-        r = pte_rewrite(mm, addr, old, mm_prot_to_vmm(v->prot));
+    if (!(v->flags & VMA_SHARED)) {
+        r = cow_install(mm, v, addr, pg, 1, old);
+    } else {
+        /* Shared store: dirty and writable together under the page lock,
+         * which write-back holds while it write-protects and cleans the page */
+        page_lock(pg);
+        if (pg->mapping == as) {
+            filemap_set_dirty(pg);
+            r = pte_rewrite(mm, addr, old, mm_prot_to_vmm(v->prot));
+        }
+        page_unlock(pg);
     }
-    page_unlock(pg);
+    page_put(pg);
     return r;
 }
 

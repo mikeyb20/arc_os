@@ -55,6 +55,8 @@ void vfs_env_fail_alloc_in(int n);
  * change state (write to a pipe, close an end) and return; with no hook the
  * test fails (it would block forever). */
 extern void (*vfs_env_sleep_hook)(void);
+/* Called at the start of alloc_pages while set (a test clears it inside to run once) */
+extern void (*vfs_env_alloc_hook)(void);
 extern int vfs_env_sleeps;   /* wq_sleep calls so far */
 
 /* Fake terminal: bytes written to it, and input that tty_read returns. */

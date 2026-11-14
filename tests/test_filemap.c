@@ -490,7 +490,88 @@ TEST(mapping_offset_and_eof) {
     return 0;
 }
 
+/* --- Truncate racing a fault (D3 review of #42) ---
+ * test_vfs_runner links with -Wl,--wrap=page_lock: calls from other files
+ * (filemap_mmap.c's fault path) come here first. */
+
+static File *race_file;
+static int race_armed;
+static uint32_t race_refcount;
+
+void __real_page_lock(struct page *pg);
+void __wrap_page_lock(struct page *pg) {
+    if (race_armed) {
+        race_armed = 0;
+        (void)vfs_ftruncate(race_file, 0);   /* just before the fault locks the page */
+        race_refcount = pg->refcount;
+    }
+    __real_page_lock(pg);
+}
+
+/* A store to a mapped clean page races a truncate: the fault holds its own
+ * reference, so it locks a live page, finds it gone from the file and maps
+ * nothing */
+TEST(store_fault_racing_truncate_holds_the_page) {
+    vfs_env_setup();
+    VfsEnvUsage u0, u1;
+    vfs_env_usage(&u0);
+    File *f = open_rw("/tmp/pc_race_store");
+    static char buf[4096];
+    memset(buf, 'r', sizeof(buf));
+    ASSERT_EQ(pwr(f, buf, sizeof(buf), 0), (int64_t)sizeof(buf));
+    Map m;
+    map_file(&m, f, 1, VMA_READ | VMA_WRITE, VMA_SHARED | VMA_MAYWRITE, 0);
+    ASSERT_EQ(fault(&m, 0, 0), MM_FAULT_OK);   /* mapped read-only */
+    ASSERT_TRUE(mapped(&m, 0, NULL) != NULL);
+    race_file = f;
+    race_refcount = 0;
+    race_armed = 1;
+    ASSERT_EQ(fault(&m, 0, 1), MM_FAULT_OK);
+    ASSERT_EQ(race_armed, 0);                   /* the truncate ran inside the fault */
+    ASSERT_TRUE(race_refcount >= 1);            /* on a page the fault still held */
+    ASSERT_TRUE(mapped(&m, 0, NULL) == NULL);   /* the truncate took the entry; nothing put back */
+    ASSERT_EQ(fault(&m, 0, 1), MM_FAULT_SIGBUS);
+    unmap_file(&m);
+    fput(f);
+    ASSERT_EQ(vfs_unlink("/tmp/pc_race_store"), 0);
+    vfs_env_usage(&u1);
+    ASSERT_TRUE(vfs_env_no_leak(&u0, &u1));
+    return 0;
+}
+
+static void truncate_in_alloc(void) {
+    vfs_env_alloc_hook = NULL;
+    (void)vfs_ftruncate(race_file, 0);
+}
+
+/* A fault reading a hole races a truncate that shrinks the file under it:
+ * the page it was adding is taken out again, not left past the end */
+TEST(fault_racing_truncate_leaves_no_page_past_the_end) {
+    vfs_env_setup();
+    VfsEnvUsage u0, u1;
+    vfs_env_usage(&u0);
+    File *f = open_rw("/tmp/pc_race_hole");
+    ASSERT_EQ(vfs_ftruncate(f, 2 * 4096), 0);   /* two pages of hole */
+    Map m;
+    map_file(&m, f, 2, VMA_READ, VMA_SHARED, 0);
+    race_file = f;
+    vfs_env_alloc_hook = truncate_in_alloc;   /* the new page's allocation: truncate to 0 first */
+    ASSERT_EQ(fault(&m, 1, 0), MM_FAULT_SIGBUS);
+    ASSERT_TRUE(vfs_env_alloc_hook == NULL);
+    ASSERT_TRUE(cached(f, 1) == NULL);
+    ASSERT_EQ(filemap_of(f->inode)->nrpages, 0);
+    ASSERT_TRUE(mapped(&m, 1, NULL) == NULL);
+    unmap_file(&m);
+    fput(f);
+    ASSERT_EQ(vfs_unlink("/tmp/pc_race_hole"), 0);
+    vfs_env_usage(&u1);
+    ASSERT_TRUE(vfs_env_no_leak(&u0, &u1));
+    return 0;
+}
+
 TestCase filemap_tests[] = {
+    TEST_ENTRY(store_fault_racing_truncate_holds_the_page),
+    TEST_ENTRY(fault_racing_truncate_leaves_no_page_past_the_end),
     TEST_ENTRY(radix_insert_lookup_delete),
     TEST_ENTRY(radix_lookup_cost),
     TEST_ENTRY(radix_out_of_memory),

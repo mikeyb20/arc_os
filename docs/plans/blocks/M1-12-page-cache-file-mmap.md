@@ -52,15 +52,19 @@ always the same bytes (ADR-0004, ADR-0016).
   `mmap` (step 5) works; if the block passes 1.5× its size, step 8 is the part to split off, never to drop.
 
 **Notes.**
-- 2026-11-14 (built, before M1-10: Michael chose "start now, sync disk reads" on 2026-11-14). Every disk read
-  and write of the page cache goes through one call, `filemap_bdev_io` (`kernel/mm/filemap.c`), which today
-  calls `dev->read` / `dev->write` and returns when the data is there. `readpage` ends each page with
-  `filemap_end_read`; `readpages` gets readahead windows in batches of up to 32 consecutive pages (128 KiB), and
-  FAT32's `readpages` takes its `io_lock` once per batch and still reads cluster by cluster. **For M1-10:** make
-  `filemap_bdev_io` submit a request whose completion calls `filemap_end_read` (nothing above it changes: page
-  waiters already sleep on `PG_LOCKED`), and turn a FAT32 batch into one request per run of contiguous clusters.
-  FAT32 metadata (boot sector, FAT, directory clusters) still uses `dev->read` directly (`fat32.c`
-  `fat32_read_cluster`, mount); those calls move with M1-10's swap too.
+- 2026-11-14 (built, before M1-10: Michael chose "start now, sync disk reads" on 2026-11-14). Page-cache disk
+  I/O goes through two calls in `kernel/mm/filemap.c`. Reads come in pieces: a `readpage` calls
+  `filemap_io_begin(pg)`, then `filemap_bdev_read` once per contiguous run of sectors (a FAT32 page can take
+  several: clusters smaller than a page, a fragmented chain), then `filemap_io_end(pg, err)`. The page counts the
+  pieces in flight in `flags` bits 16-23 (`PG_IO_MASK`, no allocation), and whichever finishes last, a piece or the
+  end call, ends the read with `filemap_end_read` (`PG_ERROR` if any piece failed). Writes use
+  `filemap_bdev_write`, which waits: `fsync`/`msync(MS_SYNC)` rely on that. **For M1-10:** make
+  `filemap_bdev_read` submit a request (`blk_submit_page`, priv = the page) whose `end_io` calls
+  `filemap_bdev_read_done(pg, status ? -EIO : 0)`, and return 0 once it is submitted. `filemap_end_read` is safe
+  in an interrupt (atomic flag bits, IRQ-safe wait-queue lock, no allocation). Put a `readpages` batch on one
+  plug so adjacent pieces reach the disk as one request. Make `filemap_bdev_write` submit and wait. FAT32
+  metadata (boot sector, FAT, directory clusters: `fat32_read_cluster`, mount) still calls `dev->read` directly
+  and moves to `blk_rw_sync`.
 - Layout. `kernel/mm/radix.c` (index, own slab cache, shrinks back), `filemap.c` (address spaces, page lock with
   hashed wait queues, page references, LRU of evictable pages, read/write through the cache, readahead,
   write-back, truncate, block-device mapping, counters), `filemap_mmap.c` (file VMA ops: fault, copy on write,
@@ -88,6 +92,13 @@ always the same bytes (ADR-0004, ADR-0016).
   write-back yet; dirty marking is generic (no filesystem op), which ext2 write-back may want later.
 - Measured (QEMU TCG, 4 CPUs, 4 GiB): `qemu.pagecache` runs in about 13 s; four processes mapping a 1 GiB ramfs
   file show Mapped 1048632 kB and MemFree down 8592 kB (their page tables). Kernel image 486931 -> 515584 bytes.
+- D3 review (#42) fixes: a shared-store fault takes its page reference under the page-table lock before
+  `page_lock` (a truncate could free the page first); `vma_split` lists the upper half with its file before the
+  lower half shrinks; a readahead or fault that inserts a page after a truncate's walk passed it takes it out
+  again (`read_window` rechecks the end after the insert); `MAP_POPULATE` read-faults shared mappings (as
+  Linux); a whole-page write past the end that copies nothing leaves no page; the page-wait buckets are set up
+  in `filemap_init`. Host regression tests run a truncate inside the fault (`-Wl,--wrap=page_lock`, an
+  `alloc_pages` hook).
 - Open, not in this block's scope: no `ETXTBSY` (writing to a running program's file changes its mapped text);
   `MAP_32BIT` is ignored for file mappings; boot modules are copied into ramfs and their module memory is kept
   (pre-existing, about twice the module size).

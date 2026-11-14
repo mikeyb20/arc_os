@@ -40,3 +40,8 @@
   (`page_to_virt`); the HHDM-wide flags question is left here. COW needs CR0.WP, which the kernel never sets
   (Limine leaves it on): set it per CPU so a kernel write to a read-only user PTE faults. `walk_pt` skips a user
   PDE with PS set, so range walks ignore 2 MiB pages until this block handles them.
+- From M1-12: file VMAs fault through `filemap_mmap.c`. Its `fault_present` treats a present non-cache page in
+  a file VMA as the process's own private copy and makes it writable with no copy (`pte_rewrite`). Once fork
+  shares anonymous pages copy-on-write, that branch must go through the anonymous COW path, or a parent and child
+  see each other's stores to a `MAP_PRIVATE` file mapping. Fork skips page-cache entries (`vmm_copy_range_in`'s
+  skip callback); the child faults them back in.

@@ -49,7 +49,10 @@ void filemap_stats(FilemapStats *out) {
 
 static struct kmem_cache *as_cache;
 
+static void page_waits_init(void);
+
 void filemap_init(void) {
+    page_waits_init();
     radix_cache_init();
     as_cache = kmem_cache_create("address_space", sizeof(AddressSpace), 8);
 }
@@ -96,16 +99,16 @@ typedef struct PageWait {
 } PageWait;
 
 static PageWait page_waits[PAGE_WAIT_BUCKETS];
-static int page_waits_ready;
+
+/* At boot (filemap_init), before any page lock is taken */
+static void page_waits_init(void) {
+    for (int i = 0; i < PAGE_WAIT_BUCKETS; i++) {
+        spin_lock_init(&page_waits[i].lock, LOCK_LEVEL_OBJECT, "page wait");
+        wq_init(&page_waits[i].wq);
+    }
+}
 
 static PageWait *wait_of(const struct page *pg) {
-    if (!page_waits_ready) {
-        for (int i = 0; i < PAGE_WAIT_BUCKETS; i++) {
-            spin_lock_init(&page_waits[i].lock, LOCK_LEVEL_OBJECT, "page wait");
-            wq_init(&page_waits[i].wq);
-        }
-        page_waits_ready = 1;   /* first use is at boot, before a second CPU or thread can get here */
-    }
     return &page_waits[(page_to_pfn(pg) * 0x9E3779B97F4A7C15ull) >> 58];
 }
 
@@ -252,6 +255,13 @@ static void remove_page(AddressSpace *as, struct page *pg) {
     page_put(pg);
 }
 
+/* Take a page this thread just added (locked, never read) out again */
+static void discard_new_page(AddressSpace *as, struct page *pg) {
+    remove_page(as, pg);
+    unlock_bit(pg);   /* a lookup may wait on it: it finds it gone and looks again */
+    page_put(pg);
+}
+
 void filemap_set_dirty(struct page *pg) {
     if (!page_test_and_set(pg, PG_DIRTY)) STAT_ADD(dirty, 1);
 }
@@ -323,6 +333,15 @@ static int64_t read_window(AddressSpace *as, uint64_t first, uint64_t count) {
             }
             if (read == 0 && i == first) return err;
             break;   /* out of memory: what was added is read below */
+        }
+        if (i >= filemap_end_index(as)) {
+            /* A truncate set a smaller size after `end` was read, and its
+             * walk may have passed i before the page went in: take it out
+             * again, or it stays past the end of the file (the size is
+             * stored before that walk takes the index lock, and the insert
+             * took the lock after it) */
+            discard_new_page(as, pg);
+            break;
         }
         batch[n++] = pg;
         read++;
@@ -588,6 +607,8 @@ int64_t filemap_write(File *file, const IoBuf *buf, loff_t *pos) {
             page_set(pg, PG_UPTODATE);
             filemap_set_dirty(pg);
             if ((loff_t)(at + got) > inode->size) __atomic_store_n(&inode->size, (loff_t)(at + got), __ATOMIC_RELEASE);
+        } else if (index >= size_pages(inode->size) && pg->mapping == as) {
+            remove_page(as, pg);   /* nothing written past the end: no page there */
         }
         page_unlock(pg);
         page_put(pg);
@@ -735,11 +756,38 @@ uint64_t filemap_drop_clean(void) {
 
 /* --- Block-device mappings --- */
 
-int filemap_bdev_io(struct BlockDevice *dev, int write, uint64_t sector, uint32_t count, struct page *pg,
-                    size_t byte_off) {
-    uint8_t *buf = (uint8_t *)page_to_virt(pg) + byte_off;
-    int r = write ? dev->write(dev, sector, count, buf) : dev->read(dev, sector, count, buf);
-    return r != 0 ? -EIO : 0;
+/* --- Reads in pieces --- */
+
+void filemap_io_begin(struct page *pg) {
+    page_clear(pg, PG_ERROR);
+    __atomic_add_fetch(&pg->flags, PG_IO_ONE, __ATOMIC_ACQ_REL);   /* the reader's own share */
+}
+
+/* Drop one share; the last one ends the read (any context) */
+static void io_put(struct page *pg, int err) {
+    if (err != 0) page_set(pg, PG_ERROR);
+    uint32_t old = __atomic_fetch_sub(&pg->flags, PG_IO_ONE, __ATOMIC_ACQ_REL);
+    if ((old & PG_IO_MASK) == PG_IO_ONE) filemap_end_read(pg, page_test(pg, PG_ERROR) ? -EIO : 0);
+}
+
+void filemap_io_end(struct page *pg, int err) {
+    io_put(pg, err);
+}
+
+void filemap_bdev_read_done(struct page *pg, int err) {
+    io_put(pg, err);
+}
+
+int filemap_bdev_read(struct BlockDevice *dev, uint64_t sector, uint32_t count, struct page *pg, size_t byte_off) {
+    __atomic_add_fetch(&pg->flags, PG_IO_ONE, __ATOMIC_ACQ_REL);
+    /* Synchronous until M1-10: the piece is done when the call returns */
+    int r = dev->read(dev, sector, count, (uint8_t *)page_to_virt(pg) + byte_off);
+    filemap_bdev_read_done(pg, r != 0 ? -EIO : 0);
+    return 0;
+}
+
+int filemap_bdev_write(struct BlockDevice *dev, uint64_t sector, uint32_t count, struct page *pg, size_t byte_off) {
+    return dev->write(dev, sector, count, (uint8_t *)page_to_virt(pg) + byte_off) != 0 ? -EIO : 0;
 }
 
 #define BDEV_SECTOR 512u
@@ -753,14 +801,15 @@ static uint32_t bdev_sectors(const AddressSpace *as, const struct page *pg) {
 
 static int bdev_readpage(AddressSpace *as, struct page *pg) {
     uint32_t count = bdev_sectors(as, pg);
-    memset(page_to_virt(pg), 0, PAGE_SIZE);
-    int err = filemap_bdev_io(as->bdev, 0, (uint64_t)pg->index * (PAGE_SIZE / BDEV_SECTOR), count, pg, 0);
-    filemap_end_read(pg, err);
+    memset(page_to_virt(pg), 0, PAGE_SIZE);   /* past a device end that is not page aligned */
+    filemap_io_begin(pg);
+    int err = filemap_bdev_read(as->bdev, (uint64_t)pg->index * (PAGE_SIZE / BDEV_SECTOR), count, pg, 0);
+    filemap_io_end(pg, err);
     return 0;
 }
 
 static int bdev_writepage(AddressSpace *as, struct page *pg) {
-    return filemap_bdev_io(as->bdev, 1, (uint64_t)pg->index * (PAGE_SIZE / BDEV_SECTOR), bdev_sectors(as, pg), pg, 0);
+    return filemap_bdev_write(as->bdev, (uint64_t)pg->index * (PAGE_SIZE / BDEV_SECTOR), bdev_sectors(as, pg), pg, 0);
 }
 
 static const AddressSpaceOps bdev_aops = {

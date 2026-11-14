@@ -16,11 +16,17 @@
  * use the offset so 2 MiB file pages can come later without a rewrite).
  *
  * Filling a page: the page is inserted locked and not up to date, and the
- * owner's readpage starts the read. readpage ends it with filemap_end_read,
- * which sets PG_UPTODATE (or PG_ERROR) and unlocks the page; waiters sleep
- * until then. Today every readpage finishes before it returns (synchronous
- * block reads); the async block layer (M1-10) calls filemap_end_read from its
- * completion instead, and nothing above changes.
+ * owner's readpage starts the read: filemap_io_begin, then any number of
+ * pieces (filemap_bdev_read: one per contiguous run of sectors, a FAT32
+ * cluster piece for example), then filemap_io_end. The page counts the
+ * pieces in flight in its flags (PG_IO_MASK); whichever finishes last, the
+ * reader's filemap_io_end or a piece's completion, ends the read with
+ * filemap_end_read: PG_UPTODATE (PG_ERROR if any piece failed), page
+ * unlocked, waiters woken. Today every piece finishes inside
+ * filemap_bdev_read (synchronous block reads); with the async block layer
+ * (M1-10) a piece's completion calls filemap_bdev_read_done from the
+ * interrupt instead, and nothing above changes. Writes are synchronous
+ * (filemap_bdev_write waits): write-back's callers rely on that.
  *
  * Locks, outermost first (docs/kernel/locking.md):
  *   inode lock (10)      held by read/write/truncate callers
@@ -50,14 +56,16 @@ struct Vma;
 
 /* Filesystem operations on a mapping. */
 typedef struct AddressSpaceOps {
-    /* Fill pg (locked, not up to date; its index set). Ends with
-     * filemap_end_read(pg, err), now or later from an I/O completion. A
-     * return value != 0 means the read never started: the caller ends it. */
+    /* Start filling pg (locked, not up to date; its index set): with
+     * filemap_io_begin, pieces, filemap_io_end (see above), or with
+     * filemap_end_read at once when no I/O is needed. A return value != 0
+     * means the read never started: the caller ends it. */
     int (*readpage)(AddressSpace *as, struct page *pg);
-    /* Fill n pages of consecutive indices (each locked, not up to date, in
-     * the tree) as one batch: readahead hands its windows over in batches of
-     * up to FILEMAP_RA_BATCH (128 KiB). Each page ends with filemap_end_read.
-     * NULL: readpage for each. */
+    /* Start filling n pages of consecutive indices (each locked, not up to
+     * date, in the tree) as one batch, each as readpage does: readahead hands
+     * its windows over in batches of up to FILEMAP_RA_BATCH (128 KiB), so
+     * adjacent pieces can reach the device as one request. NULL: readpage for
+     * each. */
     void (*readpages)(AddressSpace *as, struct page **pages, uint32_t n);
     /* Write pg (locked; PG_DIRTY already cleared) back and wait. 0 or
      * -errno (the page is dirtied again). NULL: nothing to write to (ramfs:
@@ -211,10 +219,27 @@ void filemap_unmap_from(AddressSpace *as, uint64_t first);
 void filemap_unmap_page(AddressSpace *as, struct page *pg);
 void filemap_mkclean(AddressSpace *as, struct page *pg);
 
-/* The one place page-cache I/O reaches a block device: count sectors from
- * sector into pg at byte_off (write: from it). Synchronous today; M1-10
- * makes it an async request whose completion ends the read. 0 or -EIO. */
-int filemap_bdev_io(struct BlockDevice *dev, int write, uint64_t sector, uint32_t count, struct page *pg,
-                    size_t byte_off);
+/* --- Page-cache I/O on a block device (the only two calls that reach one) --- */
+
+/* A read of pg in pieces: begin (pg locked, not up to date: no pieces yet,
+ * PG_ERROR cleared), any number of filemap_bdev_read, then end. err != 0
+ * makes the read fail (an error found without I/O). The read ends when the
+ * last of the pieces and the end call finishes. */
+void filemap_io_begin(struct page *pg);
+void filemap_io_end(struct page *pg, int err);
+
+/* One piece: count sectors from sector into pg at byte_off. Finishes now
+ * (synchronous today) or later from its completion (M1-10), which calls
+ * filemap_bdev_read_done. Returns 0 when the piece was started (its result
+ * arrives through the completion), -errno when it never was. */
+int filemap_bdev_read(struct BlockDevice *dev, uint64_t sector, uint32_t count, struct page *pg, size_t byte_off);
+
+/* A piece finished (any context, an interrupt included): err != 0 fails the
+ * read; the last piece ends it. */
+void filemap_bdev_read_done(struct page *pg, int err);
+
+/* Write count sectors at sector from pg at byte_off and wait for the device.
+ * 0 or -EIO. */
+int filemap_bdev_write(struct BlockDevice *dev, uint64_t sector, uint32_t count, struct page *pg, size_t byte_off);
 
 #endif /* ARCHOS_MM_FILEMAP_H */

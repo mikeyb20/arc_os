@@ -170,6 +170,8 @@ target_compile_options(arc_vfs_host PUBLIC -Wall -Wextra -std=c11 -DARC_HOST_TES
 add_executable(test_vfs_runner vfs_main.c test_harness.c
     test_vfs.c test_fd.c test_pipe.c test_devfs.c test_procfs.c test_fat32.c test_cred.c test_filemap.c)
 target_link_libraries(test_vfs_runner PRIVATE arc_vfs_host)
+# test_filemap's truncate-vs-fault tests run a truncate inside the fault's page_lock call
+target_link_options(test_vfs_runner PRIVATE -Wl,--wrap=page_lock)
 add_test(NAME vfs_tests COMMAND test_vfs_runner)
 foreach(_suite vfs fd pipe devfs procfs fat32 cred filemap)
     add_test(NAME test_${_suite} COMMAND test_vfs_runner --suite ${_suite})

@@ -508,7 +508,9 @@ static int64_t map_region(Mm *mm, uint64_t addr, uint64_t len, uint32_t prot, ui
     rwsem_up_write(&mm->lock);
 
     if (populate && (prot & VMA_PROT_MASK) != 0) {
-        uint32_t access = (prot & VMA_WRITE) ? MM_ACCESS_WRITE : 0;
+        /* As Linux: a write fault only breaks copy on write in a private
+         * mapping; a shared one is read in (a store marks pages dirty) */
+        uint32_t access = (prot & VMA_WRITE) && !(flags & VMA_SHARED) ? MM_ACCESS_WRITE : 0;
         for (uint64_t a = start; a < start + len; a += PAGE_SIZE) {
             if (mm_fault(mm, a, access) != MM_FAULT_OK) break;   /* MAP_POPULATE is best effort */
         }
