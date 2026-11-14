@@ -57,6 +57,7 @@ void vfs_env_fail_alloc_in(int n);
 extern void (*vfs_env_sleep_hook)(void);
 /* Called at the start of alloc_pages while set (a test clears it inside to run once) */
 extern void (*vfs_env_alloc_hook)(void);
+extern uint32_t vfs_env_last_gfp;   /* flags of the last alloc_pages call */
 extern int vfs_env_sleeps;   /* wq_sleep calls so far */
 
 /* Fake terminal: bytes written to it, and input that tty_read returns. */
@@ -81,6 +82,8 @@ extern uintptr_t vfs_env_fault_at;
  * page and VMA protection). 1 if there is one. */
 struct page;
 int vfs_env_pte(uint64_t pgd, uint64_t virt, struct page **pg, uint32_t *flags);
+/* Set an entry's accessed bit, as a CPU using it would */
+void vfs_env_pte_touch(uint64_t pgd, uint64_t virt);
 extern int vfs_env_tlb_flushes;   /* mm_flush_tlb_range and zap flushes so far */
 
 #endif /* ARCHOS_TESTS_VFS_ENV_H */

@@ -35,8 +35,10 @@
  *                        a page into a page table, write-back
  *   mapping lock (40)    AddressSpace.map_lock: the list of VMAs mapping it
  *   page-table lock (50) the mm's, to change entries mapping cache pages
- *   LRU lock (59)        the evictable-page list (spinlock)
+ *   LRU lock (59)        the inactive and active lists (mm/reclaim.c, spinlock)
  *   index lock (60)      AddressSpace.tree_lock: the radix tree (spinlock)
+ *   write-back lock (78) the list of mappings with dirty pages (mm/writeback.c;
+ *                        IRQ-safe, above every lock held with interrupts on)
  * Never take the mm lock while holding a page lock, and never fault on user
  * memory while holding one: copies into a locked page prefault the user
  * buffer, copy with faults disabled and retry on a short copy. */
@@ -90,6 +92,9 @@ struct AddressSpace {
     uint32_t flags;               /* AS_* */
     Mutex map_lock;               /* LOCK_LEVEL_MAPPING: vmas */
     struct Vma *vmas;             /* VMAs mapping this file (Vma.as_next), under map_lock */
+    AddressSpace *wb_next;        /* write-back list (mm/writeback.c), under its lock */
+    AddressSpace *wb_prev;
+    uint32_t wb_state;            /* WB_LISTED, WB_BUSY (mm/writeback.h) */
 };
 
 #define FILEMAP_RA_MIN_PAGES 32    /* 128 KiB: the first window */
@@ -108,7 +113,7 @@ typedef struct FilemapStats {
     uint64_t pgpgin;       /* pages read by readpage */
     uint64_t ra_pages;     /* pages read ahead of the one asked for */
     uint64_t ra_batches;   /* readahead batches started */
-    uint64_t dropped;      /* clean pages dropped (drop_caches, M1-14's reclaim) */
+    uint64_t dropped;      /* clean pages taken out by drop_caches and reclaim (M1-14) */
 } FilemapStats;
 
 /* Boot: the radix-node and address-space slab caches. */
@@ -183,9 +188,34 @@ int64_t filemap_write(File *file, const IoBuf *buf, loff_t *pos);
  * of the last page; growing zeroes the old last page's tail. */
 void filemap_truncate(Inode *inode, loff_t size);
 
-/* Write back the dirty pages with index in [first, last] and wait. 0 or the
- * first error. */
+/* Write back the dirty pages with index in [first, last] and wait, also for
+ * writes of them already under way (the flusher's, kswapd's). 0 or the first
+ * error. */
 int filemap_write_range(AddressSpace *as, uint64_t first, uint64_t last);
+
+/* --- For reclaim (mm/reclaim.c): pages it took with page_trylock --- */
+
+/* Write one dirty page now: write-protect it in every shared mapping, clear
+ * PG_DIRTY, writepage (it is dirty again if that fails). pg locked. 0 or
+ * -errno. */
+int filemap_writepage_locked(AddressSpace *as, struct page *pg);
+
+/* Take a locked page out of its tree if nothing but the tree and the
+ * caller holds a reference (no reader, no page-table entry, no waiter); it
+ * must be off the LRU lists and clean. Drops the tree's reference and
+ * returns 1 (the page stays locked, the caller's reference is the last), or
+ * returns 0 and changes nothing. */
+int filemap_remove_unused(AddressSpace *as, struct page *pg);
+
+/* Release a page lock taken with page_trylock (not known to the lock
+ * checker). */
+void page_unlock_trylocked(struct page *pg);
+
+/* How many page-table entries mapping pg were accessed since the last call:
+ * tests and clears their accessed bits, through the VMAs mapping as. pg
+ * locked. No TLB flush: a CPU still caching an entry may skip setting the
+ * bit again, which only makes the page look older (as Linux). */
+int filemap_page_young(AddressSpace *as, struct page *pg);
 
 /* fsync / fdatasync for files whose data lives in the cache. */
 int filemap_fsync(File *file);
@@ -198,9 +228,6 @@ extern const VmaOps filemap_vma_ops;
  * of a window). Pages already there are skipped. Returns pages read. */
 uint64_t filemap_readahead(AddressSpace *as, uint64_t first, uint64_t count);
 
-/* Drop every clean, unmapped, unlocked page of evictable mappings
- * (/proc/sys/vm/drop_caches 1). Returns pages freed. */
-uint64_t filemap_drop_clean(void);
 
 /* Counters. */
 void filemap_stats(FilemapStats *out);

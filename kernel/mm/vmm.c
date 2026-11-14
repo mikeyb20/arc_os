@@ -340,6 +340,13 @@ int vmm_get_flags_in(uint64_t pml4_phys, uint64_t virt) {
     return (int)pte_to_vmm_flags(*pte);
 }
 
+int vmm_test_clear_accessed_in(uint64_t pml4_phys, uint64_t virt, uint64_t phys) {
+    uint64_t *pte = walk_to_pt_entry(pml4_phys, virt);
+    if (pte == NULL || !(*pte & PTE_PRESENT) || (*pte & PTE_ADDR_MASK) != phys) return 0;
+    /* Atomic: the CPU sets the bit with a locked update of its own */
+    return (__atomic_fetch_and(pte, ~PTE_ACCESSED, __ATOMIC_RELAXED) & PTE_ACCESSED) != 0;
+}
+
 int vmm_lookup_in(uint64_t pml4_phys, uint64_t virt, uint64_t *phys) {
     uint64_t *pte = walk_to_pt_entry(pml4_phys, virt);
     if (pte == NULL || !pte_mapped(*pte)) return 0;

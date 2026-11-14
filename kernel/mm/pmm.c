@@ -49,6 +49,9 @@ static Spinlock pmm_lock = SPINLOCK_INIT(LOCK_LEVEL_BUDDY, "buddy");
 static FreeArea zones[NR_ZONES];
 static uint64_t total_pages;
 static uint64_t free_page_count;
+static uint64_t free_lowest = UINT64_MAX;   /* fewest free pages seen after an allocation (M1-14) */
+static PmmWatermarks wmark;                 /* all 0 until reclaim_init sets them */
+static pmm_pressure_fn pressure_hook;
 static uint64_t descriptor_bytes;
 static uint64_t descriptor_phys;
 static uint32_t last_steps;
@@ -150,12 +153,13 @@ static uint64_t alloc_block(unsigned order, uint32_t gfp) {
 
 /* --- Public allocator --- */
 
-struct page *alloc_pages(unsigned order, uint32_t flags) {
+struct page *pmm_alloc_block(unsigned order, uint32_t flags) {
     uint64_t irqf;
     if (order > PAGE_MAX_ORDER) return NULL;
 
     spin_lock_irqsave(&pmm_lock, &irqf);
     uint64_t pfn = alloc_block(order, flags);
+    if (free_page_count < free_lowest) free_lowest = free_page_count;
     spin_unlock_irqrestore(&pmm_lock, irqf);
 
     if (pfn == PFN_NONE) return NULL;
@@ -164,6 +168,35 @@ struct page *alloc_pages(unsigned order, uint32_t flags) {
         memset(page_to_virt(pg), 0, (size_t)PAGE_SIZE << order);
     }
     return pg;
+}
+
+struct page *alloc_pages(unsigned order, uint32_t flags) {
+    struct page *pg = pmm_alloc_block(order, flags);
+    /* One racy load on the fast path: the hook decides with its own reads */
+    pmm_pressure_fn hook = __atomic_load_n(&pressure_hook, __ATOMIC_ACQUIRE);
+    if (hook != NULL && (pg == NULL || __atomic_load_n(&free_page_count, __ATOMIC_RELAXED) < wmark.low))
+        pg = hook(pg, order, flags);
+    return pg;
+}
+
+void pmm_set_watermarks(const PmmWatermarks *w) {
+    wmark = *w;
+}
+
+void pmm_get_watermarks(PmmWatermarks *out) {
+    *out = wmark;
+}
+
+void pmm_set_pressure_hook(pmm_pressure_fn fn) {
+    __atomic_store_n(&pressure_hook, fn, __ATOMIC_RELEASE);
+}
+
+uint64_t pmm_free_lowest(void) {
+    uint64_t irqf;
+    spin_lock_irqsave(&pmm_lock, &irqf);
+    uint64_t v = free_lowest;
+    spin_unlock_irqrestore(&pmm_lock, irqf);
+    return v == UINT64_MAX ? free_page_count : v;
 }
 
 void free_pages(struct page *page, unsigned order) {
@@ -265,7 +298,7 @@ uint64_t pmm_get_total_pages(void) {
 }
 
 uint64_t pmm_get_free_pages(void) {
-    return free_page_count;
+    return __atomic_load_n(&free_page_count, __ATOMIC_RELAXED);
 }
 
 uint64_t pmm_get_descriptor_bytes(void) {

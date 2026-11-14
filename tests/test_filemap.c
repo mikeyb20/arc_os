@@ -11,6 +11,7 @@
 #include "drivers/blkdev.h"
 #include "fs/vfs_internal.h"
 #include "mm/filemap.h"
+#include "mm/reclaim.h"
 #include "mm/mm.h"
 #include "proc/lockdep.h"
 #include "uapi/errno.h"
@@ -100,7 +101,7 @@ static void dev_setup(void) {
         mem_dev.driver_data = dev_data;
     }
     blk_mem_fail = 0;
-    (void)filemap_drop_clean();   /* other suites' clean pages: the counts below are this test's */
+    (void)reclaim_drop_clean();   /* other suites' clean pages: the counts below are this test's */
     filemap_bdev_init(&dev_as, &mem_dev, (loff_t)DEV_PAGES * PAGE_SIZE);
 }
 
@@ -119,7 +120,7 @@ TEST(readahead_windows) {
     dev_setup();
     FilemapStats s0, s;
     filemap_stats(&s0);
-    FileRa ra = {0, 0};
+    FileRa ra = {0, 0, 0};
     ASSERT_EQ(get_check(0, &ra, 0), 0);   /* first miss: 32 pages (128 KiB) */
     filemap_stats(&s);
     ASSERT_EQ(s.pgpgin - s0.pgpgin, 32);
@@ -153,7 +154,7 @@ TEST(readahead_windows) {
     filemap_stats(&s);
     ASSERT_EQ(s.file_pages - s0.file_pages, DEV_PAGES);
     /* Clean and unused: drop_caches frees every one */
-    ASSERT_EQ(filemap_drop_clean(), DEV_PAGES);
+    ASSERT_EQ(reclaim_drop_clean(), DEV_PAGES);
     filemap_stats(&s);
     ASSERT_EQ(s.file_pages, s0.file_pages);
     ASSERT_EQ(s.dropped - s0.dropped, DEV_PAGES);
@@ -174,10 +175,10 @@ TEST(drop_keeps_used_and_dirty_pages) {
     ASSERT_TRUE(held != NULL && dirty != NULL);
     filemap_set_dirty(dirty);
     page_put(dirty);
-    ASSERT_EQ(filemap_drop_clean(), 2);   /* 0 and 3 */
+    ASSERT_EQ(reclaim_drop_clean(), 2);   /* 0 and 3 */
     ASSERT_EQ(dev_as.nrpages, 2);
     page_put(held);
-    ASSERT_EQ(filemap_drop_clean(), 1);   /* 1 now; 2 stays dirty */
+    ASSERT_EQ(reclaim_drop_clean(), 1);   /* 1 now; 2 stays dirty */
     filemap_bdev_release(&dev_as);        /* drops the dirty one too (no write-back here) */
     ASSERT_EQ(dev_as.nrpages, 0);
     vfs_env_usage(&u1);
@@ -232,7 +233,7 @@ TEST(ramfs_counters_and_fsync) {
     ASSERT_EQ(vfs_fsync(f), 0);   /* nowhere to write: clean now */
     filemap_stats(&s);
     ASSERT_EQ(s.dirty, s0.dirty);
-    ASSERT_EQ(filemap_drop_clean(), 0);   /* ramfs pages are never dropped */
+    ASSERT_EQ(reclaim_drop_clean(), 0);   /* ramfs pages are never dropped */
     /* A hole costs nothing and reads as zeros */
     ASSERT_EQ(pwr(f, "y", 1, 10 * 4096), 1);
     filemap_stats(&s);

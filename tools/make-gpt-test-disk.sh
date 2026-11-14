@@ -9,6 +9,9 @@
 #   make-gpt-test-disk.sh devices IMG   QEMU suite "devices": partition 1 = ESP
 #       holding the FAT32 test volume, partition 2 = "blktest", where every
 #       64-bit word of sector s (from the partition start) is s
+#   make-gpt-test-disk.sh writeback IMG   QEMU suites "writeback" (M1-14):
+#       partition 1 = "wbtest", 1 MiB of zeros the kernel's write-back test
+#       writes in its first boot and reads back from the disk in the second
 #
 # Type GUIDs and labels come from kernel/include/arc_disk.h (one home).
 set -e
@@ -77,8 +80,17 @@ EOF
     echo "Created GPT devices test disk: $img"
 }
 
+writeback() {
+    local img="$1"
+    rm -f "$img"
+    truncate -s 4M "$img"
+    sgdisk -o -U "$DISK" -n 1:2048:+1M -t 1:"$LINUX" -c 1:wbtest "$img" >/dev/null
+    echo "Created GPT write-back test disk: $img"
+}
+
 case "$1" in
 host) host "$2" ;;
 devices) devices "$2" ;;
-*) echo "usage: $0 host DIR | devices IMG" >&2; exit 2 ;;
+writeback) writeback "$2" ;;
+*) echo "usage: $0 host DIR | devices IMG | writeback IMG" >&2; exit 2 ;;
 esac

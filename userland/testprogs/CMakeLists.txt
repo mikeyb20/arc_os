@@ -1,4 +1,4 @@
-# arc_os — Test-only user programs (M0-02, M0-05, M0-10, M1-01, M1-05, M1-07, M1-11, M1-12). Shipped only on test ISOs.
+# arc_os — Test-only user programs (M0-02, M0-05, M0-10, M1-01, M1-05, M1-07, M1-11, M1-12, M1-14). Shipped only on test ISOs.
 
 foreach(prog testfail abi_check forkreap schedtest)
     arc_user_program(${prog} ${prog}.c)
@@ -58,6 +58,12 @@ if(EXISTS "${ARC_MUSL_PREFIX}gcc")
                 -o ${CMAKE_BINARY_DIR}/ext2test ${CMAKE_CURRENT_SOURCE_DIR}/ext2test.c
         DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/ext2test.c
         COMMENT "musl -static ext2test")
+    # M1-14: a 2 GiB ext2 file read and mapped on a 512 MiB machine (qemu.reclaim)
+    add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/reclaimtest
+        COMMAND ${MUSL_CC} -static -O2 -Wall -Wextra -Werror -std=gnu11
+                -o ${CMAKE_BINARY_DIR}/reclaimtest ${CMAKE_CURRENT_SOURCE_DIR}/reclaimtest.c
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/reclaimtest.c
+        COMMENT "musl -static reclaimtest")
     add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bigexec
         COMMAND ${MUSL_CC} -static -O2 -Wall -Wextra -Werror -std=gnu11
                 -o ${CMAKE_BINARY_DIR}/bigexec ${CMAKE_CURRENT_SOURCE_DIR}/bigexec.c
@@ -66,10 +72,10 @@ if(EXISTS "${ARC_MUSL_PREFIX}gcc")
         COMMENT "musl -static bigexec")
     list(APPEND _musl_outputs ${CMAKE_BINARY_DIR}/start_musl ${CMAKE_BINARY_DIR}/sig_fpu ${CMAKE_BINARY_DIR}/fpu_avx
          ${CMAKE_BINARY_DIR}/mmtest ${CMAKE_BINARY_DIR}/fstest ${CMAKE_BINARY_DIR}/pctest ${CMAKE_BINARY_DIR}/bigexec
-         ${CMAKE_BINARY_DIR}/ext2test)
+         ${CMAKE_BINARY_DIR}/ext2test ${CMAKE_BINARY_DIR}/reclaimtest)
 else()
     message(WARNING "musl toolchain not found at ${ARC_MUSL_PREFIX}gcc (tools/dev-setup.sh musl): "
-                    "qemu.musl, qemu.fpu, qemu.mm, qemu.vfs, qemu.pagecache and qemu.ext2 will fail")
+                    "qemu.musl, qemu.fpu, qemu.mm, qemu.vfs, qemu.pagecache, qemu.ext2 and qemu.reclaim will fail")
 endif()
 
 find_program(MUSL_GCC musl-gcc)

@@ -319,13 +319,65 @@ add_test(NAME qemu.pagecache COMMAND ${_qemu_test} --suite pagecache --module pc
     --expect "ARC_TEST budget pages_leaked 0"
     --expect "ARC_TEST budget heap_leaked_bytes 0")
 
+# Reclaim (M1-14): on a 512 MiB machine, /system/big.bin (a 2 GiB sparse ext2
+# file from make-arc-test-disks.sh make-big) read and then mapped in full,
+# every word checked. kswapd keeps up: free memory never below min, mapped
+# pages unmapped as they are freed. At boot nothing is dirty and the flusher's
+# timer is not armed.
+add_test(NAME qemu.reclaim.disk COMMAND bash ${_arc_disks_tool} make-big ${_arc_disks})
+set_tests_properties(qemu.reclaim.disk PROPERTIES LABELS qemu FIXTURES_SETUP big_disk RESOURCE_LOCK big_disk)
+add_test(NAME qemu.reclaim COMMAND ${_qemu_test} --suite reclaim --module reclaimtest --memory 512M --timeout 560
+    --qemu-arg=-drive --qemu-arg=file=${_arc_disks}/big-disk.img,if=none,id=big,format=raw,readonly=on
+    --qemu-arg=-device --qemu-arg=virtio-blk-pci,drive=big
+    --expect "\\[MM\\] watermarks: min 7[0-9][0-9], low 1[0-9]{3}, high 2[0-9]{3} pages"
+    --expect "\\[MOUNT\\] /system: vda1 \\(ext2, read-only\\)"
+    --expect "reclaimtest: idle ok"
+    --expect "reclaimtest: read 2147483648 bytes, 0 bad pages"
+    --expect "reclaimtest: read ok"
+    --expect "reclaimtest: mmap 2147483648 bytes, 0 bad pages"
+    --expect "reclaimtest: mmap ok"
+    --expect "reclaimtest: meminfo ok"
+    --expect "reclaimtest: 0 failures")
+set_tests_properties(qemu.reclaim PROPERTIES FIXTURES_REQUIRED big_disk RESOURCE_LOCK big_disk)
+
+# Write-back (M1-14): the kernel's write-back test (kernel/diag/wbtest.c) on
+# partition "wbtest" of a fresh writable disk, through a block-device mapping:
+# with nothing dirty no flusher timer is armed; dirtied pages wait, the
+# flusher writes them about 5 s later in one pass and its timer is gone; sync
+# and releasing the mapping write too. qemu.writeback.verify then boots a new
+# QEMU on the same image and reads the partition straight from the disk.
+set(_wb_disk ${CMAKE_BINARY_DIR}/wb-disk.img)
+add_test(NAME qemu.writeback.disk COMMAND bash ${CMAKE_SOURCE_DIR}/tools/make-gpt-test-disk.sh writeback ${_wb_disk})
+set_tests_properties(qemu.writeback.disk PROPERTIES LABELS qemu FIXTURES_SETUP wb_disk RESOURCE_LOCK wb_disk)
+set(_wb_qemu
+    --qemu-arg=-drive --qemu-arg=file=${_wb_disk},if=none,id=wb,format=raw
+    --qemu-arg=-device --qemu-arg=virtio-blk-pci,drive=wb)
+add_test(NAME qemu.writeback COMMAND ${_qemu_test} --suite writeback ${_wb_qemu} --timeout 120
+    --expect "\\[TEST\\] write-back test thread runs in place of init"
+    --expect "\\[WBTEST\\] clean: nothing listed for write-back, flusher timer not armed ok"
+    --expect "\\[WBTEST\\] idle 2 s: no flusher pass, no timer ok"
+    --expect "\\[WBTEST\\] flusher timer armed once for the dirty mapping ok"
+    --expect "\\[WBTEST\\] still dirty after 2 s \\(the flusher waits 5 s\\) ok"
+    --expect "\\[WBTEST\\] flusher wrote the 64 pages in one pass ok"
+    --expect "\\[WBTEST\\] after the flush: flusher timer not armed ok"
+    --expect "\\[WBTEST\\] sync wrote 32 pages, timer disarmed ok"
+    --expect "\\[WBTEST\\] release wrote 32 pages, timer disarmed ok"
+    --expect "ARC_TEST DONE pass=11 fail=0")
+set_tests_properties(qemu.writeback PROPERTIES FIXTURES_REQUIRED wb_disk FIXTURES_SETUP wb_written RESOURCE_LOCK wb_disk)
+add_test(NAME qemu.writeback.verify COMMAND ${_qemu_test} --suite writeback --name writeback-verify ${_wb_qemu}
+    --cmdline arc.wbtest=verify --timeout 60
+    --expect "\\[WBTEST\\] verify: 160 pages read from the disk, 0 wrong"
+    --expect "ARC_TEST DONE pass=1 fail=0")
+set_tests_properties(qemu.writeback.verify PROPERTIES FIXTURES_REQUIRED "wb_disk;wb_written" RESOURCE_LOCK wb_disk)
+
 set_tests_properties(qemu.smoke qemu.mem.buddy qemu.mem.cap qemu.userland qemu.abi qemu.musl qemu.fpu qemu.cpufloor
     qemu.smp.xapic qemu.smp.x2apic qemu.sched qemu.lockorder qemu.selftest.fail qemu.selftest.panic
     qemu.panic.fault qemu.diag qemu.mm qemu.mm.oom qemu.vfs qemu.pagecache qemu.qr.report qemu.qr.log qemu.qr.panic
-    qemu.devices qemu.devices.intx qemu.ext2 qemu.ext2.named
+    qemu.devices qemu.devices.intx qemu.ext2 qemu.ext2.named qemu.reclaim qemu.writeback qemu.writeback.verify
     PROPERTIES LABELS qemu TIMEOUT 180 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     FIXTURES_SETUP qemu_logs)
 set_tests_properties(qemu.mm.oom qemu.pagecache qemu.ext2 PROPERTIES TIMEOUT 320)
+set_tests_properties(qemu.reclaim PROPERTIES TIMEOUT 600)
 set_tests_properties(qemu.vfs qemu.pagecache PROPERTIES FIXTURES_REQUIRED fat32_image)
 
 # Budgets (ADR-0019, M0-08): sizes and counts from the build and from the

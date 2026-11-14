@@ -22,6 +22,8 @@
 #include "mm/slab.h"
 #include "mm/mm.h"
 #include "mm/filemap.h"
+#include "mm/reclaim.h"
+#include "mm/writeback.h"
 #include "mm/vmm.h"
 #include "arch/hal.h"
 #include "proc/process.h"
@@ -94,6 +96,16 @@ static int gen_meminfo(char *buf, int bufsz, void *ctx) {
     pos = procfs_append_u64(buf, pos, bufsz, fs.file_pages * (PAGE_SIZE / 1024));
     pos = procfs_append_str(buf, pos, bufsz, " kB\nDirty: ");
     pos = procfs_append_u64(buf, pos, bufsz, fs.dirty * (PAGE_SIZE / 1024));
+    WbStats wb;
+    wb_stats(&wb);
+    pos = procfs_append_str(buf, pos, bufsz, " kB\nWriteback: ");
+    pos = procfs_append_u64(buf, pos, bufsz, wb.writeback * (PAGE_SIZE / 1024));
+    ReclaimStats rs;
+    reclaim_stats(&rs);
+    pos = procfs_append_str(buf, pos, bufsz, " kB\nActive: ");
+    pos = procfs_append_u64(buf, pos, bufsz, rs.nr_active * (PAGE_SIZE / 1024));
+    pos = procfs_append_str(buf, pos, bufsz, " kB\nInactive: ");
+    pos = procfs_append_u64(buf, pos, bufsz, rs.nr_inactive * (PAGE_SIZE / 1024));
     pos = procfs_append_str(buf, pos, bufsz, " kB\nMapped: ");
     pos = procfs_append_u64(buf, pos, bufsz, fs.mapped * (PAGE_SIZE / 1024));
     pos = procfs_append_str(buf, pos, bufsz, " kB\nPageTables: ");
@@ -113,21 +125,54 @@ static int gen_meminfo(char *buf, int bufsz, void *ctx) {
     return pos;
 }
 
-/* Page-cache counters, Linux /proc/vmstat names where Linux has them
- * (nr_file_pages, nr_dirty, nr_mapped, pgpgin in pages here, not KiB);
- * the readahead and drop counters are arc_os's own. */
+/* Page-cache, reclaim and write-back counters, Linux /proc/vmstat names
+ * where Linux has them (nr_file_pages ... allocstall; pgpgin in pages here,
+ * not KiB); readahead, drop, watermark, lowest-free and write-back timer
+ * rows are arc_os's own. */
 static int gen_vmstat(char *buf, int bufsz, void *ctx) {
     (void)ctx;
     FilemapStats fs;
     filemap_stats(&fs);
+    ReclaimStats rs;
+    reclaim_stats(&rs);
+    WbStats wb;
+    wb_stats(&wb);
+    PmmWatermarks wm;
+    pmm_get_watermarks(&wm);
     const struct {
         const char *name;
         uint64_t v;
     } rows[] = {
-        {"nr_file_pages ", fs.file_pages}, {"nr_dirty ", fs.dirty},
-        {"nr_mapped ", fs.mapped},         {"pgpgin ", fs.pgpgin},
-        {"ra_pages ", fs.ra_pages},        {"ra_batches ", fs.ra_batches},
+        {"nr_free_pages ", pmm_get_free_pages()},
+        {"nr_file_pages ", fs.file_pages},
+        {"nr_dirty ", fs.dirty},
+        {"nr_writeback ", wb.writeback},
+        {"nr_mapped ", fs.mapped},
+        {"nr_active_file ", rs.nr_active},
+        {"nr_inactive_file ", rs.nr_inactive},
+        {"pgpgin ", fs.pgpgin},
+        {"pgscan_kswapd ", rs.scan_kswapd},
+        {"pgscan_direct ", rs.scan_direct},
+        {"pgsteal_kswapd ", rs.steal_kswapd},
+        {"pgsteal_direct ", rs.steal_direct},
+        {"pgactivate ", rs.activate},
+        {"pgdeactivate ", rs.deactivate},
+        {"allocstall ", rs.allocstall},
+        {"kswapd_wakeups ", rs.kswapd_wakeups},
+        {"reclaim_unmapped ", rs.unmapped},
+        {"reclaim_written ", rs.written},
+        {"ra_pages ", fs.ra_pages},
+        {"ra_batches ", fs.ra_batches},
         {"pages_dropped ", fs.dropped},
+        {"watermark_min ", wm.min},
+        {"watermark_low ", wm.low},
+        {"watermark_high ", wm.high},
+        {"free_lowest ", pmm_free_lowest()},
+        {"wb_timer_armed ", (uint64_t)wb_timer_armed()},
+        {"wb_timer_arms ", wb.timer_arms},
+        {"wb_flushes ", wb.flushes},
+        {"wb_written ", wb.written},
+        {"wb_listed ", wb.listed},
     };
     int pos = 0;
     for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
@@ -502,7 +547,7 @@ static int64_t procfs_drop_caches_write(File *file, const IoBuf *buf, loff_t *po
     uint32_t v;
     if (procfs_parse_uint(text, &v) != 0 || v < 1 || v > 4) return -EINVAL;   /* 4: Linux's "stay quiet" bit */
     if (v & 2) vfs_drop_caches();   /* first: inodes it frees take their pages along */
-    if (v & 1) (void)filemap_drop_clean();
+    if (v & 1) (void)reclaim_drop_clean();
     *pos += (loff_t)buf->len;
     return (int64_t)buf->len;
 }

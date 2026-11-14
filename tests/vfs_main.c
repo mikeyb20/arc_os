@@ -23,14 +23,22 @@ extern TestCase cred_tests[];
 extern int cred_test_count;
 extern TestCase filemap_tests[];
 extern int filemap_test_count;
+extern TestCase reclaim_tests[];
+extern int reclaim_test_count;
 
 int main(int argc, char **argv) {
     TestSuite suites[] = {
-        {"vfs", vfs_tests, &vfs_test_count},          {"fd", fd_tests, &fd_test_count},
-        {"pipe", pipe_tests, &pipe_test_count},       {"devfs", devfs_tests, &devfs_test_count},
-        {"procfs", procfs_tests, &procfs_test_count}, {"fat32", fat32_tests, &fat32_test_count},
-        {"ext2", ext2_tests, &ext2_test_count},       {"sysmount", sysmount_tests, &sysmount_test_count},
-        {"cred", cred_tests, &cred_test_count},       {"filemap", filemap_tests, &filemap_test_count},
+        {"vfs", vfs_tests, &vfs_test_count},
+        {"fd", fd_tests, &fd_test_count},
+        {"pipe", pipe_tests, &pipe_test_count},
+        {"devfs", devfs_tests, &devfs_test_count},
+        {"procfs", procfs_tests, &procfs_test_count},
+        {"fat32", fat32_tests, &fat32_test_count},
+        {"ext2", ext2_tests, &ext2_test_count},
+        {"sysmount", sysmount_tests, &sysmount_test_count},
+        {"cred", cred_tests, &cred_test_count},
+        {"filemap", filemap_tests, &filemap_test_count},
+        {"reclaim", reclaim_tests, &reclaim_test_count},
     };
     return test_harness_main(argc, argv, "arc_os VFS host tests", suites, (int)(sizeof(suites) / sizeof(suites[0])));
 }

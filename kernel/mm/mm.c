@@ -366,7 +366,7 @@ static int fault_in(Mm *mm, Vma *v, uint64_t page, uint32_t access) {
     }
     spin_unlock(&mm->pt_lock);
 
-    struct page *pg = alloc_pages(0, GFP_ZERO);
+    struct page *pg = alloc_pages(0, GFP_ZERO | GFP_RECLAIM);   /* mm lock held, no spinlock */
     if (pg == NULL) return MM_FAULT_OOM;
     uint64_t phys = page_to_phys(pg);
 

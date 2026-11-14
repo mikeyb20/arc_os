@@ -1,6 +1,8 @@
 /* arc_os — page-fault entry and the out-of-memory killer (mm.h, M1-07)
  *
- * Owns: the OOM policy. When a fault finds no free page, the process with
+ * Owns: the OOM policy. When a fault finds no free page (its allocation is
+ * GFP_RECLAIM, so reclaim already ran and found nothing to free: M1-14's
+ * page cache is the only memory it can take back), the process with
  * the largest resident set gets SIGKILL; if that is another process, its
  * anonymous memory is freed at once (as Linux's OOM reaper does) and the
  * fault is retried; if it is the faulting process, the fault ends and the

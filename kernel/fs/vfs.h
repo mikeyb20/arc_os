@@ -265,6 +265,7 @@ struct SuperBlock {
 typedef struct FileRa {
     uint32_t next;   /* page index a sequential reader asks for next */
     uint32_t size;   /* current window; 0 = none yet */
+    uint32_t prev;   /* 1 + the page index read() used last (0: none): small reads of one page are one use (M1-14) */
 } FileRa;
 
 struct File {

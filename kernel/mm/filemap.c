@@ -1,24 +1,28 @@
 /* arc_os — the page cache: file pages, reads and writes through them,
- * readahead, truncate, write-back, dropping clean pages (filemap.h, M1-12)
+ * readahead, truncate, write-back, taking unused pages out for reclaim
+ * (filemap.h, M1-12, M1-14)
  *
  * Owns: every AddressSpace and the pages in it; the page lock and its wait
- * buckets; the list of evictable pages (LRU, filled here, aged by M1-14's
- * reclaim); the page-cache counters.
+ * buckets; the page-cache counters. The LRU lists the pages sit on belong to
+ * mm/reclaim.c, the write-back list to mm/writeback.c.
  * Invariants: a page is in at most one tree, at its index, with PG_FILE,
  * mapping = its AddressSpace and one reference held by the tree; a page leaves
  * the tree only while locked, and then mapping becomes NULL; nrpages counts
- * the tree's pages; a page of an evictable mapping is on the LRU list (PG_LRU)
- * exactly while it is in the tree; PG_DIRTY pages are counted in `dirty`.
+ * the tree's pages; a page of an evictable mapping is on an LRU list (PG_LRU)
+ * while it is in the tree, except while reclaim holds it locked off the
+ * lists; PG_DIRTY pages are counted in `dirty`, and a dirty page of a mapping
+ * with a writepage keeps that mapping on the write-back list until a pass
+ * takes it. A mapping is freed only after wb_mapping_forget.
  * Locks: see filemap.h. The index lock (60) and the LRU lock (59) are never
- * held together except by filemap_drop_clean (LRU, then index); everything
- * else takes one, drops it, then the other.
+ * held together; everything takes one, drops it, then the other.
  * Cost: a lookup is one radix walk (<= 4 levels below 64 GiB) under the index
  * lock; a read or write copies each byte once between user memory and the
  * cache page (no bounce buffer); readahead issues windows of 128 KiB to 2 MiB;
- * truncate and write-back walk the pages they touch (the tree skips holes);
- * drop_caches walks the LRU list once. */
+ * truncate and write-back walk the pages they touch (the tree skips holes). */
 
 #include "mm/filemap.h"
+#include "mm/reclaim.h"
+#include "mm/writeback.h"
 #include "mm/pmm.h"
 #include "mm/slab.h"
 #include "proc/waitqueue.h"
@@ -27,6 +31,7 @@
 #include "arch/hal.h"
 #include "drivers/blkdev.h"
 #include "lib/mem.h"
+#include "lib/kprintf.h"
 #include "user_access.h"
 #include "uapi/errno.h"
 
@@ -67,6 +72,8 @@ static void as_init(AddressSpace *as, const AddressSpaceOps *ops, uint32_t flags
     as->ops = ops;
     as->flags = flags;
     as->vmas = NULL;
+    as->wb_next = as->wb_prev = NULL;
+    as->wb_state = 0;
 }
 
 int filemap_inode_init(Inode *inode, const AddressSpaceOps *ops, uint32_t flags) {
@@ -136,17 +143,35 @@ void page_wait_unlocked(struct page *pg) {
 
 /* Lock-order level of a page's lock. A block-device mapping's pages
  * (filesystem metadata: ext2's block map, M1-13) are read while a file page
- * is locked, so they rank below file pages. A block-device page keeps its
- * mapping while locked (only filemap_bdev_release, at unmount, takes its
- * pages out), so lock and unlock see the same level. */
+ * is locked, so they rank below file pages. A page can leave its mapping
+ * while locked (truncate, unmount, reclaim: mapping becomes NULL), so the
+ * level the holder recorded is kept in the page (PG_LOCK_META) and its
+ * record ends at that level, not at the one the mapping would give now. */
 static uint16_t page_level(const struct page *pg) {
     const AddressSpace *as = pg->mapping;
     return as != NULL && as->host == NULL ? LOCK_LEVEL_META_PAGE : LOCK_LEVEL_PAGE;
 }
 
+/* The holder of pg's lock recorded it at level (page lock held) */
+static void lock_note(struct page *pg, uint16_t level) {
+    if (level == LOCK_LEVEL_META_PAGE)
+        page_set(pg, PG_LOCK_META);
+    else if (page_test(pg, PG_LOCK_META))
+        page_clear(pg, PG_LOCK_META);
+}
+
+/* The level the holder recorded; the note goes (page lock held) */
+static uint16_t lock_noted(struct page *pg) {
+    if (!page_test(pg, PG_LOCK_META)) return LOCK_LEVEL_PAGE;
+    page_clear(pg, PG_LOCK_META);
+    return LOCK_LEVEL_META_PAGE;
+}
+
 void page_lock(struct page *pg) {
-    lockdep_sleep_acquire(page_level(pg), "page");
+    uint16_t level = page_level(pg);
+    lockdep_sleep_acquire(level, "page");
     while (page_test_and_set(pg, PG_LOCKED)) page_wait_unlocked(pg);
+    lock_note(pg, level);
 }
 
 int page_trylock(struct page *pg) {
@@ -164,7 +189,7 @@ static void unlock_bit(struct page *pg) {
 }
 
 void page_unlock(struct page *pg) {
-    uint16_t level = page_level(pg);
+    uint16_t level = lock_noted(pg);
     unlock_bit(pg);
     lockdep_sleep_release(level);
 }
@@ -187,24 +212,6 @@ void page_put(struct page *pg) {
         if (__atomic_compare_exchange_n(&pg->refcount, &c, c - 1, 0, __ATOMIC_RELEASE, __ATOMIC_RELAXED)) return;
     }
     free_pages(pg, page_order(pg));
-}
-
-/* --- The evictable-page list --- */
-
-static struct page_list lru = PAGE_LIST_INIT;
-static Spinlock lru_lock = SPINLOCK_INIT(LOCK_LEVEL_PAGE_LRU, "page LRU");
-
-static void lru_add(struct page *pg) {
-    spin_lock(&lru_lock);
-    page_list_push(&lru, pg);
-    page_set(pg, PG_LRU);
-    spin_unlock(&lru_lock);
-}
-
-static void lru_del(struct page *pg) {
-    spin_lock(&lru_lock);
-    if (page_test_and_clear(pg, PG_LRU)) page_list_remove(&lru, pg);
-    spin_unlock(&lru_lock);
 }
 
 /* --- The index --- */
@@ -231,7 +238,7 @@ static struct page *add_new_page(AddressSpace *as, uint64_t index, int *err) {
         *err = -EFBIG;
         return NULL;
     }
-    struct page *pg = alloc_pages(0, GFP_KERNEL);
+    struct page *pg = alloc_pages(0, GFP_RECLAIM);   /* low memory: reclaim other cache pages first */
     if (pg == NULL) {
         *err = -ENOMEM;
         return NULL;
@@ -255,7 +262,7 @@ static struct page *add_new_page(AddressSpace *as, uint64_t index, int *err) {
     }
     STAT_ADD(file_pages, 1);
     blocks_add(as, 1);
-    if (!(as->flags & AS_MEMBACKED)) lru_add(pg);
+    if (!(as->flags & AS_MEMBACKED)) lru_add_page(pg);
     return pg;
 }
 
@@ -267,7 +274,7 @@ static void remove_page(AddressSpace *as, struct page *pg) {
     if (was == pg) __atomic_sub_fetch(&as->nrpages, 1, __ATOMIC_RELAXED);
     spin_unlock(&as->tree_lock);
     if (was != pg) return;   /* not there: never happens while the caller holds the lock and mapping == as */
-    lru_del(pg);
+    lru_del_page(pg);
     if (page_test_and_clear(pg, PG_DIRTY)) STAT_SUB(dirty, 1);
     pg->mapping = NULL;
     STAT_SUB(file_pages, 1);
@@ -283,7 +290,11 @@ static void discard_new_page(AddressSpace *as, struct page *pg) {
 }
 
 void filemap_set_dirty(struct page *pg) {
-    if (!page_test_and_set(pg, PG_DIRTY)) STAT_ADD(dirty, 1);
+    if (page_test_and_set(pg, PG_DIRTY)) return;
+    STAT_ADD(dirty, 1);
+    /* Locked with mapping checked by every caller: as is alive */
+    const AddressSpace *as = pg->mapping;
+    if (as != NULL && as->ops != NULL && as->ops->writepage != NULL) wb_mapping_dirtied(pg->mapping);
 }
 
 void filemap_page_mapped(struct page *pg) {
@@ -411,7 +422,7 @@ static int read_on_miss(AddressSpace *as, uint64_t index, FileRa *ra, int seq_hi
 /* Read a locked page again after a failed or missing read; the caller's
  * lock-order record of the page lock ends here. */
 static void reread_locked(AddressSpace *as, struct page *pg) {
-    uint16_t level = page_level(pg);
+    uint16_t level = lock_noted(pg);
     page_clear(pg, PG_ERROR);
     start_read(as, pg);
     lockdep_sleep_release(level);
@@ -497,6 +508,10 @@ int64_t filemap_read(File *file, const IoBuf *buf, loff_t *pos) {
         }
         /* A reference keeps the page; the copy may fault (no page lock held) */
         err = iob_copy_out(buf, done, (uint8_t *)page_to_virt(pg) + ((size_t)off << PAGE_SHIFT) + in_page, n);
+        if (!(as->flags & AS_MEMBACKED) && (uint32_t)(index + 1) != file->ra.prev) {
+            mark_page_accessed(pg); /* reclaim's hint: used again, keep it longer */
+            file->ra.prev = (uint32_t)(index + 1);
+        }
         page_put(pg);
         if (err != 0) break;
         done += n;
@@ -536,7 +551,9 @@ static struct page *write_begin(AddressSpace *as, uint64_t index, size_t in_page
                 if (*err == -EEXIST) continue;
                 return NULL;
             }
-            lockdep_sleep_acquire(page_level(pg), "page"); /* this thread holds the new page's lock */
+            uint16_t level = page_level(pg);
+            lockdep_sleep_acquire(level, "page"); /* this thread holds the new page's lock */
+            lock_note(pg, level);
             if (!whole && ((as->flags & AS_MEMBACKED) || index >= size_pages(size))) {
                 memset(page_to_virt(pg), 0, PAGE_SIZE);   /* a hole, or past the end: zeros */
                 page_set(pg, PG_UPTODATE);
@@ -692,12 +709,31 @@ void filemap_truncate(Inode *inode, loff_t size) {
 void filemap_inode_evict(Inode *inode) {
     AddressSpace *as = filemap_of(inode);
     if (as == NULL) return;
+    /* A file still linked keeps its data: write it before the pages go */
+    if (inode->nlink != 0 && as->ops != NULL && as->ops->writepage != NULL) {
+        int e = filemap_write_range(as, 0, UINT64_MAX);
+        if (e != 0)
+            kprintf("[FILEMAP] inode %lu: write-back failed (%d) as it left memory; changes lost\n", inode->ino, e);
+    }
     drop_pages_from(as, 0);   /* no VMA maps it: each holds a File reference, so the inode */
+    wb_mapping_forget(as); /* off the write-back list, no pass still writing it */
     kmem_cache_free(as_cache, as);
     inode->mapping = NULL;
 }
 
 /* --- Write-back --- */
+
+int filemap_writepage_locked(AddressSpace *as, struct page *pg) {
+    /* Write-protect first, so a store after the copy faults and dirties it again */
+    if (as->vmas != NULL) filemap_mkclean(as, pg);
+    if (page_test_and_clear(pg, PG_DIRTY)) STAT_SUB(dirty, 1);
+    if (as->ops == NULL || as->ops->writepage == NULL) return 0; /* the pages are the storage */
+    wb_page_write_begin();
+    int e = as->ops->writepage(as, pg);
+    wb_page_write_end(e);
+    if (e != 0) filemap_set_dirty(pg);
+    return e;
+}
 
 int filemap_write_range(AddressSpace *as, uint64_t first, uint64_t last) {
     int ret = 0;
@@ -711,17 +747,14 @@ int filemap_write_range(AddressSpace *as, uint64_t first, uint64_t last) {
             pg = NULL;
         spin_unlock(&as->tree_lock);
         if (pg == NULL) break;
-        if (page_test(pg, PG_DIRTY)) {
+        /* A locked page may be under write-back by someone else (the
+         * flusher, kswapd: they clear PG_DIRTY before they write): wait for
+         * it, so the caller's data is on the disk when this returns */
+        if (page_test(pg, PG_DIRTY) || page_test(pg, PG_LOCKED)) {
             page_lock(pg);
             if (pg->mapping == as && page_test(pg, PG_DIRTY)) {
-                /* Write-protect first, so a store after the copy faults and dirties it again */
-                if (as->vmas != NULL) filemap_mkclean(as, pg);
-                if (page_test_and_clear(pg, PG_DIRTY)) STAT_SUB(dirty, 1);
-                int e = as->ops != NULL && as->ops->writepage != NULL ? as->ops->writepage(as, pg) : 0;
-                if (e != 0) {
-                    filemap_set_dirty(pg);
-                    if (ret == 0) ret = e;
-                }
+                int e = filemap_writepage_locked(as, pg);
+                if (e != 0 && ret == 0) ret = e;
             }
             page_unlock(pg);
         }
@@ -737,42 +770,30 @@ int filemap_fsync(File *file) {
     return as != NULL ? filemap_write_range(as, 0, UINT64_MAX) : 0;
 }
 
-/* --- Dropping clean pages --- */
+/* --- Taking unused pages out (reclaim, drop_caches) --- */
 
-uint64_t filemap_drop_clean(void) {
-    uint64_t freed = 0;
-    spin_lock(&lru_lock);
-    struct page *pg = page_list_first(&lru);
-    while (pg != NULL) {
-        struct page *next = pg->lru.next != PFN_NONE ? pfn_to_page(pg->lru.next) : NULL;
-        if (!page_test(pg, PG_DIRTY) && __atomic_load_n(&pg->mapcount, __ATOMIC_RELAXED) == 0 && page_trylock(pg)) {
-            /* On the list, so still in its tree and its mapping alive */
-            AddressSpace *as = pg->mapping;
-            int drop = 0;
-            spin_lock(&as->tree_lock);
-            /* Only the tree's reference: nobody is reading, mapping or waiting on it */
-            if (page_ref_count(pg) == 1 && !page_test(pg, PG_DIRTY) && radix_delete(&as->tree, pg->index) == pg) {
-                __atomic_sub_fetch(&as->nrpages, 1, __ATOMIC_RELAXED);
-                drop = 1;
-            }
-            spin_unlock(&as->tree_lock);
-            if (drop) {
-                page_clear(pg, PG_LRU);
-                page_list_remove(&lru, pg);
-                pg->mapping = NULL;
-                STAT_SUB(file_pages, 1);
-                STAT_ADD(dropped, 1);
-                page_clear(pg, PG_LOCKED);   /* no waiters: they would hold a reference */
-                page_put(pg);
-                freed++;
-            } else {
-                unlock_bit(pg);
-            }
-        }
-        pg = next;
+void page_unlock_trylocked(struct page *pg) {
+    unlock_bit(pg);
+}
+
+int filemap_remove_unused(AddressSpace *as, struct page *pg) {
+    int drop = 0;
+    spin_lock(&as->tree_lock);
+    /* Lookups take their reference under this lock: with only the tree's and
+     * the caller's, nobody is reading, mapping or waiting on it, and nobody
+     * can start once it is out */
+    if (page_ref_count(pg) == 2 && !page_test(pg, PG_DIRTY) && radix_delete(&as->tree, pg->index) == pg) {
+        __atomic_sub_fetch(&as->nrpages, 1, __ATOMIC_RELAXED);
+        drop = 1;
     }
-    spin_unlock(&lru_lock);
-    return freed;
+    spin_unlock(&as->tree_lock);
+    if (!drop) return 0;
+    pg->mapping = NULL;
+    page_clear(pg, PG_ACTIVE | PG_REFERENCED);
+    STAT_SUB(file_pages, 1);
+    STAT_ADD(dropped, 1);
+    page_put(pg); /* the tree's */
+    return 1;
 }
 
 /* --- Block-device mappings --- */
@@ -858,5 +879,8 @@ void filemap_bdev_init(AddressSpace *as, struct BlockDevice *dev, loff_t size) {
 }
 
 void filemap_bdev_release(AddressSpace *as) {
+    int e = filemap_write_range(as, 0, UINT64_MAX); /* unmount: the metadata reaches the disk */
+    if (e != 0) kprintf("[FILEMAP] %s: write-back at release failed (%d)\n", as->bdev->name, e);
     drop_pages_from(as, 0);
+    wb_mapping_forget(as);
 }
