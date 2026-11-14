@@ -156,7 +156,17 @@ static void paging_write_cr3(uint64_t cr3) {
 
 /* Linker symbols */
 static char _kernel_start[1];
+static char _text_start[1];
+static char _rodata_start[1];
+static char _data_start[1];
 static char _kernel_end[1];
+
+/* W^X check result (from vmm.h) */
+typedef struct VmmWxCheck {
+    uint64_t text_pages, ro_pages, data_pages, wx_pages, wrong_pages, first_wrong, stray_exec, first_stray;
+    int hhdm_ok;
+} VmmWxCheck;
+int vmm_kernel_wx_check(VmmWxCheck *out);
 
 /* Include the real vmm.c */
 #include "../kernel/mm/vmm.c"
@@ -272,7 +282,7 @@ TEST(flags_writable) {
     ASSERT_TRUE(pte & PTE_PRESENT);
     ASSERT_TRUE(pte & PTE_WRITABLE);
     ASSERT_FALSE(pte & PTE_USER);
-    ASSERT_FALSE(pte & PTE_NX);
+    ASSERT_TRUE(pte & PTE_NX);   /* W^X (M1-19): vmm_map_page never maps code */
     return 0;
 }
 
@@ -335,11 +345,11 @@ TEST(flags_none) {
     uint64_t *pt = (uint64_t *)phys_to_virt(pd[PD_INDEX(0x1000000ULL)] & PTE_ADDR_MASK);
     uint64_t pte = pt[PT_INDEX(0x1000000ULL)];
 
-    /* Only PTE_PRESENT, no other flags */
+    /* Present and NX only: a kernel mapping is never executable (M1-19) */
     ASSERT_TRUE(pte & PTE_PRESENT);
     ASSERT_FALSE(pte & PTE_WRITABLE);
     ASSERT_FALSE(pte & PTE_USER);
-    ASSERT_FALSE(pte & PTE_NX);
+    ASSERT_TRUE(pte & PTE_NX);
     return 0;
 }
 
@@ -736,6 +746,142 @@ TEST(test_clear_accessed_in) {
     return 0;
 }
 
+/* --- Kernel image W^X (M1-19) --- */
+
+/* A made-up image: 1 request page, 3 code pages, 2 read-only, 2 data */
+#define KI_START 0xFFFFFFFF80000000ULL
+static void wx_setup(void) {
+    reset_vmm_state();
+    kimage.start = KI_START;
+    kimage.text = KI_START + 0x1000;
+    kimage.rodata = KI_START + 0x4000;
+    kimage.data = KI_START + 0x6000;
+    kimage.end = KI_START + 0x8000;
+    map_kernel_image(&kimage, 0x200000);
+    /* The HHDM's first page (hhdm_offset is 0 here: tables are reached
+     * through it, so it can't move) */
+    kernel_map_page(hhdm_offset, 0, VMM_FLAG_WRITABLE | VMM_FLAG_NOEXEC);
+}
+
+static uint64_t *wx_pte(uint64_t va) {
+    return walk_to_pt_entry(kernel_pml4_phys, va);
+}
+
+TEST(kimage_flags_per_part) {
+    KernelImage k = {.start = 0x1000, .text = 0x2000, .rodata = 0x5000, .data = 0x7000, .end = 0x9000};
+    ASSERT_EQ(kimage_flags(&k, 0x1000), VMM_FLAG_NOEXEC); /* requests */
+    ASSERT_EQ(kimage_flags(&k, 0x2000), 0); /* first code page */
+    ASSERT_EQ(kimage_flags(&k, 0x4000), 0); /* last code page */
+    ASSERT_EQ(kimage_flags(&k, 0x5000), VMM_FLAG_NOEXEC); /* rodata */
+    ASSERT_EQ(kimage_flags(&k, 0x6000), VMM_FLAG_NOEXEC);
+    ASSERT_EQ(kimage_flags(&k, 0x7000), VMM_FLAG_WRITABLE | VMM_FLAG_NOEXEC); /* data */
+    ASSERT_EQ(kimage_flags(&k, 0x8000), VMM_FLAG_WRITABLE | VMM_FLAG_NOEXEC); /* bss */
+    return 0;
+}
+
+TEST(kernel_image_mapped_wx) {
+    wx_setup();
+    ASSERT_EQ(*wx_pte(KI_START) & (PTE_WRITABLE | PTE_NX), PTE_NX);
+    ASSERT_EQ(*wx_pte(KI_START + 0x1000) & (PTE_WRITABLE | PTE_NX), 0);
+    ASSERT_EQ(*wx_pte(KI_START + 0x3000) & (PTE_WRITABLE | PTE_NX), 0);
+    ASSERT_EQ(*wx_pte(KI_START + 0x4000) & (PTE_WRITABLE | PTE_NX), PTE_NX);
+    ASSERT_EQ(*wx_pte(KI_START + 0x7000) & (PTE_WRITABLE | PTE_NX), PTE_WRITABLE | PTE_NX);
+    ASSERT_EQ(*wx_pte(KI_START + 0x7000) & PTE_ADDR_MASK, 0x207000); /* physically contiguous */
+    ASSERT_TRUE(walk_to_pt_entry(kernel_pml4_phys, kimage.end) == NULL || *wx_pte(kimage.end) == 0);
+
+    VmmWxCheck wx;
+    ASSERT_EQ(vmm_kernel_wx_check(&wx), 0);
+    ASSERT_EQ(wx.text_pages, 3);
+    ASSERT_EQ(wx.ro_pages, 3);
+    ASSERT_EQ(wx.data_pages, 2);
+    ASSERT_EQ(wx.wx_pages, 0);
+    ASSERT_EQ(wx.wrong_pages, 0);
+    ASSERT_EQ(wx.stray_exec, 0); /* the code pages are the only executable ones */
+    ASSERT_TRUE(wx.hhdm_ok);
+    return 0;
+}
+
+/* The check must see every way a page can go wrong */
+TEST(kernel_wx_check_catches_bad_pages) {
+    VmmWxCheck wx;
+
+    wx_setup(); /* writable code */
+    *wx_pte(KI_START + 0x2000) |= PTE_WRITABLE;
+    ASSERT_EQ(vmm_kernel_wx_check(&wx), -1);
+    ASSERT_EQ(wx.wx_pages, 1);
+    ASSERT_EQ(wx.wrong_pages, 1);
+    ASSERT_EQ(wx.first_wrong, KI_START + 0x2000);
+
+    wx_setup(); /* executable data */
+    *wx_pte(KI_START + 0x6000) &= ~PTE_NX;
+    ASSERT_EQ(vmm_kernel_wx_check(&wx), -1);
+    ASSERT_EQ(wx.wx_pages, 1);
+    ASSERT_EQ(wx.stray_exec, 1);
+    ASSERT_EQ(wx.first_wrong, KI_START + 0x6000);
+
+    wx_setup(); /* writable read-only data: not W+X, still wrong */
+    *wx_pte(KI_START + 0x5000) |= PTE_WRITABLE;
+    ASSERT_EQ(vmm_kernel_wx_check(&wx), -1);
+    ASSERT_EQ(wx.wx_pages, 0);
+    ASSERT_EQ(wx.wrong_pages, 1);
+
+    wx_setup(); /* a missing page */
+    *wx_pte(KI_START + 0x7000) = 0;
+    ASSERT_EQ(vmm_kernel_wx_check(&wx), -1);
+    ASSERT_EQ(wx.first_wrong, KI_START + 0x7000);
+
+    wx_setup(); /* NX on an upper level makes code unrunnable: wrong too */
+    uint64_t *pml4 = (uint64_t *)phys_to_virt(kernel_pml4_phys);
+    uint64_t *pdpt = (uint64_t *)phys_to_virt(pml4[PML4_INDEX(KI_START)] & PTE_ADDR_MASK);
+    uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[PDPT_INDEX(KI_START)] & PTE_ADDR_MASK);
+    pd[PD_INDEX(KI_START)] |= PTE_NX;
+    ASSERT_EQ(vmm_kernel_wx_check(&wx), -1);
+    ASSERT_EQ(wx.wrong_pages, 3); /* the three code pages */
+    ASSERT_EQ(wx.first_wrong, KI_START + 0x1000);
+
+    wx_setup(); /* an executable page elsewhere in the kernel half */
+    kernel_map_page(0xFFFF900000003000ULL, 0x300000, 0);
+    ASSERT_EQ(vmm_kernel_wx_check(&wx), -1);
+    ASSERT_EQ(wx.wrong_pages, 0);
+    ASSERT_EQ(wx.stray_exec, 1);
+    ASSERT_EQ(wx.first_stray, 0xFFFF900000003000ULL);
+
+    wx_setup(); /* an executable 2 MiB page counts once; NX above a table hides it */
+    map_range_2mb(0xFFFFA00000000000ULL, 0, 0x200000, VMM_FLAG_WRITABLE);
+    ASSERT_EQ(vmm_kernel_wx_check(&wx), -1);
+    ASSERT_EQ(wx.stray_exec, 1);
+    ASSERT_EQ(wx.first_stray, 0xFFFFA00000000000ULL);
+    uint64_t *pml4x = (uint64_t *)phys_to_virt(kernel_pml4_phys);
+    pml4x[PML4_INDEX(0xFFFFA00000000000ULL)] |= PTE_NX;
+    ASSERT_EQ(vmm_kernel_wx_check(&wx), 0);
+    ASSERT_EQ(wx.stray_exec, 0);
+
+    wx_setup(); /* an HHDM that is executable */
+    kernel_map_page(hhdm_offset, 0, VMM_FLAG_WRITABLE);
+    ASSERT_EQ(vmm_kernel_wx_check(&wx), -1);
+    ASSERT_FALSE(wx.hhdm_ok);
+    ASSERT_EQ(wx.wrong_pages, 0);
+    return 0;
+}
+
+/* A 2 MiB HHDM page: the leaf is the PD entry; a read-only PDPT entry above
+ * it makes it read-only */
+TEST(kernel_effective_pte_huge_and_levels) {
+    reset_vmm_state();
+    map_range_2mb(0x40000000, 0, 0x200000, VMM_FLAG_WRITABLE | VMM_FLAG_NOEXEC);
+    uint64_t e = kernel_effective_pte(0x40001000);
+    ASSERT_TRUE(e & PTE_PRESENT);
+    ASSERT_TRUE(e & PTE_HUGE);
+    ASSERT_TRUE(e & PTE_WRITABLE);
+    ASSERT_TRUE(e & PTE_NX);
+    uint64_t *pml4 = (uint64_t *)phys_to_virt(kernel_pml4_phys);
+    uint64_t *pdpt = (uint64_t *)phys_to_virt(pml4[PML4_INDEX(0x40000000ULL)] & PTE_ADDR_MASK);
+    pdpt[PDPT_INDEX(0x40000000ULL)] &= ~PTE_WRITABLE;
+    ASSERT_FALSE(kernel_effective_pte(0x40001000) & PTE_WRITABLE);
+    ASSERT_EQ(kernel_effective_pte(0x80000000ULL), 0); /* not mapped */
+    return 0;
+}
+
 /* --- Test suite export --- */
 
 TestCase vmm_tests[] = {
@@ -778,6 +924,10 @@ TestCase vmm_tests[] = {
     TEST_ENTRY(remap_after_unmap),
     TEST_ENTRY(ensure_table_creates_on_first_use),
     TEST_ENTRY(test_clear_accessed_in),
+    TEST_ENTRY(kimage_flags_per_part),
+    TEST_ENTRY(kernel_image_mapped_wx),
+    TEST_ENTRY(kernel_wx_check_catches_bad_pages),
+    TEST_ENTRY(kernel_effective_pte_huge_and_levels),
 };
 
 int vmm_test_count = sizeof(vmm_tests) / sizeof(vmm_tests[0]);

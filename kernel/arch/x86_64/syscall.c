@@ -21,6 +21,7 @@
 #include "net/net_syscalls.h"
 #include "time/time_syscalls.h"
 #include "lib/kprintf.h"
+#include "arch/x86_64/protect.h"
 
 /* RFLAGS bits cleared by SFMASK on SYSCALL entry. TF too: a user who sets it
  * would otherwise take a debug trap on the first kernel instruction. */
@@ -28,7 +29,6 @@
 #define RFLAGS_IF  (1ULL << 9)   /* Interrupt Flag */
 #define RFLAGS_DF  (1ULL << 10)  /* Direction Flag */
 #define RFLAGS_NT           (1ULL << 14)  /* Nested Task */
-#define RFLAGS_AC           (1ULL << 18)  /* Alignment Check (SMAP override) */
 #define SYSCALL_RFLAGS_MASK (RFLAGS_TF | RFLAGS_IF | RFLAGS_DF | RFLAGS_NT | RFLAGS_AC)
 
 /* Syscall handler table, indexed by Linux number. 512 slots, 4 KiB. */
@@ -77,10 +77,20 @@ uint64_t syscall_user_rsp(void) {
 
 /* --- Dispatcher --- */
 
+/* SMAP (M1-19): SFMASK clears RFLAGS.AC on entry, and the copy routine clears
+ * it on both of its exits; debug builds check both ends (protect.h) */
+static void syscall_check_ac(const char *where) {
+    if (protect_ac_leaked()) {
+        kprintf("[SECURITY] RFLAGS.AC set in the kernel at syscall %s\n", where);
+        KERNEL_PANIC();
+    }
+}
+
 /* Syscalls run under the kernel lock (proc/kernel_lock.h, M1-05): taken here,
  * released by syscall_exit_work, or by proc_enter_user for execve. */
 int64_t syscall_dispatch(uint64_t num, uint64_t a0, uint64_t a1, uint64_t a2,
                          uint64_t a3, uint64_t a4, uint64_t a5) {
+    syscall_check_ac("entry");
     kernel_lock();
     if (num >= ARC_NR_SYSCALLS || syscall_table[num] == NULL) {
         return -ENOSYS;
@@ -89,6 +99,7 @@ int64_t syscall_dispatch(uint64_t num, uint64_t a0, uint64_t a1, uint64_t a2,
 }
 
 int64_t syscall_exit_work(SyscallFrame *frame, int64_t syscall_ret) {
+    syscall_check_ac("exit");
     int64_t ret = sig_maybe_deliver(frame, syscall_ret);
     kernel_unlock();
     return ret;

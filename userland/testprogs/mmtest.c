@@ -6,6 +6,9 @@
  *   mmap      errno for bad arguments, FIXED / FIXED_NOREPLACE, munmap that
  *             splits, mprotect, MADV_DONTNEED, mremap, MAP_32BIT, POPULATE;
  *   segv      SIGSEGV si_code SEGV_MAPERR / SEGV_ACCERR with si_addr;
+ *   nx        the stack, heap and non-PROT_EXEC pages don't run; PROT_EXEC
+ *             ones do; program code is read-only (M1-19);
+ *   ac        a page fault taken with RFLAGS.AC set by user code (M1-19);
  *   copy      read() into an untouched mmap buffer works, read()/write()
  *             on an unmapped address fail with EFAULT, nothing lost;
  *   brk       brk grows and shrinks a [heap] VMA;
@@ -222,6 +225,108 @@ static void test_segv(void) {
     printf("mmtest: segv ok\n");
 }
 
+/* --- No-execute (M1-19): only PROT_EXEC pages run --- */
+
+typedef void (*code_fn)(void);
+
+/* Call addr; returns the si_code of the SIGSEGV, or 0 if it ran (it must
+ * hold a RET) */
+static int probe_exec(void *addr) {
+    segv_code = 0;
+    segv_addr = 0;
+    if (sigsetjmp(segv_jmp, 0) == 0) {
+        ((code_fn)addr)();
+        return 0;
+    }
+    return segv_code;
+}
+
+static void test_nx(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_sigaction = on_segv;
+    sa.sa_flags = SA_SIGINFO | SA_NODEFER;
+    CHECK(sigaction(SIGSEGV, &sa, NULL) == 0);
+
+    /* The stack: PT_GNU_STACK says RW, so it is NX */
+    volatile unsigned char on_stack[16];
+    on_stack[0] = 0xC3;   /* RET */
+    CHECK(probe_exec((void *)on_stack) == SEGV_ACCERR);
+    CHECK(segv_addr == (uintptr_t)on_stack);
+
+    /* A heap page (brk) is NX */
+    unsigned char *heap = malloc(64);
+    CHECK(heap != NULL);
+    heap[0] = 0xC3;
+    CHECK(probe_exec(heap) == SEGV_ACCERR);
+    free(heap);
+
+    /* An mmap page: NX until PROT_EXEC, then it runs; W+X is allowed for
+     * user space (Linux does the same) */
+    unsigned char *p = map(NULL, PG, PROT_READ | PROT_WRITE, 0);
+    CHECK(p != MAP_FAILED);
+    p[0] = 0xC3;
+    CHECK(probe_exec(p) == SEGV_ACCERR);
+    CHECK(segv_addr == (uintptr_t)p);
+    CHECK(mprotect(p, PG, PROT_READ | PROT_EXEC) == 0);
+    CHECK(probe_exec(p) == 0);
+    CHECK(mprotect(p, PG, PROT_READ | PROT_WRITE | PROT_EXEC) == 0);
+    p[1] = 0xC3;
+    CHECK(probe_exec(p + 1) == 0);
+    CHECK(mprotect(p, PG, PROT_READ | PROT_WRITE) == 0);
+    CHECK(probe_exec(p) == SEGV_ACCERR);
+    munmap(p, PG);
+
+    /* Program code is not writable */
+    CHECK(probe((volatile char *)(uintptr_t)test_nx, 1) == SEGV_ACCERR);
+    signal(SIGSEGV, SIG_DFL);
+    printf("mmtest: nx ok\n");
+}
+
+/* --- RFLAGS.AC from user mode (M1-19) ---
+ * User code may set AC. A page fault taken with it set must not carry it
+ * into the kernel (the entry stubs clear it; a debug kernel panics if not)
+ * and must give it back on return. */
+static void test_ac(void) {
+    volatile uint64_t *p = map(NULL, PG, PROT_READ | PROT_WRITE, 0);   /* untouched: the store faults */
+    CHECK(p != MAP_FAILED);
+    uint64_t flags_after;
+    /* Below the red zone: set AC; store (faults); read RFLAGS back; clear AC */
+    __asm__ volatile("sub $128, %%rsp; pushfq; orq $0x40000, (%%rsp); popfq; movq $1, (%1);"
+                     "pushfq; pop %0; pushfq; andq $~0x40000, (%%rsp); popfq; add $128, %%rsp"
+                     : "=r"(flags_after)
+                     : "r"(p)
+                     : "memory", "cc");
+    CHECK(*p == 1);
+    CHECK(flags_after & 0x40000);   /* the fault's return gave AC back */
+    munmap((void *)p, PG);
+
+    /* A syscall made with AC set: SFMASK must clear it (debug kernels check
+     * at syscall entry and exit) */
+    __asm__ volatile("pushfq; orq $0x40000, (%%rsp); popfq" ::: "memory", "cc");
+    (void)getpid();
+    __asm__ volatile("pushfq; andq $~0x40000, (%%rsp); popfq" ::: "memory", "cc");
+
+    /* A #GP (a paranoid vector) taken with AC set: CLI at CPL 3. The stub must
+     * clear AC before C runs (debug kernels check in isr_dispatch). */
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_sigaction = on_segv;
+    sa.sa_flags = SA_SIGINFO | SA_NODEFER;
+    CHECK(sigaction(SIGSEGV, &sa, NULL) == 0);
+    segv_code = -1;
+    if (sigsetjmp(segv_jmp, 0) == 0) {
+        __asm__ volatile("sub $128, %%rsp; pushfq; orq $0x40000, (%%rsp); popfq;"
+                         "cli; add $128, %%rsp" ::
+                             : "memory", "cc");
+        CHECK(0 && "cli ran in user mode");
+    }
+    CHECK(segv_code != -1);   /* the handler ran */
+    __asm__ volatile("pushfq; andq $~0x40000, (%%rsp); popfq" ::: "memory", "cc");
+    signal(SIGSEGV, SIG_DFL);
+    printf("mmtest: ac ok\n");
+}
+
 /* --- Kernel copies to and from user memory --- */
 
 static void test_copy(void) {
@@ -408,6 +513,8 @@ int main(int argc, char **argv) {
         test_mmap_errors();
         test_mmap_regions();
         test_segv();
+        test_nx();
+        test_ac();
         test_copy();
         test_brk();
         test_stack();

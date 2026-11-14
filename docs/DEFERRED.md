@@ -61,7 +61,7 @@ Items intentionally postponed from their original phase. Each entry notes the or
 - ~~**Login authentication**~~ **DONE** — Login program (userland/login/) reads /etc/passwd, prompts for username/password, sets uid/gid, chdir to home, execs user shell. Init execs login as first program.
 - ~~**Setuid/setgid binaries**~~ **DONE** — sys_exec checks S_ISUID/S_ISGID bits on executable, updates euid/egid accordingly.
 - ~~**umask per-process**~~ **DONE** — Process.umask field (default 022), inherited on fork, applied in vfs_open (O_CREAT) and vfs_mkdir. SYS_UMASK syscall (34) implemented.
-- ~~**Kernel hardening (9.3)**~~ **DONE (partial)** — Stack canaries (`-fstack-protector-strong` + `__stack_chk_fail`), guard page infrastructure (`hardening_add_guard_page`), RDTSC-seeded canary value. Deferred: ASLR, KASLR, full W^X linker script enforcement, syscall sanitization.
+- ~~**Kernel hardening (9.3)**~~ **DONE (partial)** — Stack canaries (`-fstack-protector-strong` + `__stack_chk_fail`), RDTSC-seeded canary value. NX, SMEP, SMAP and kernel W^X from the linker script's program headers came with M1-19 (the unused `hardening_add_guard_page` went then; kernel stack guard pages are M1-16's). Deferred: ASLR, KASLR, syscall sanitization.
 
 ## Phase 10: Minimal libc + Standalone Coreutils
 

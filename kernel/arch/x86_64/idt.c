@@ -8,7 +8,7 @@ static IDTEntry idt[IDT_ENTRIES];
 static IDTPointer idtr;
 
 /* ISR stub table defined in isr_stubs.asm */
-extern uint64_t isr_stub_table[ISR_COUNT];
+extern const uint64_t isr_stub_table[ISR_COUNT];
 
 void idt_set_gate(int vector, uint64_t handler, uint16_t selector,
                   uint8_t type_attr, uint8_t ist) {

@@ -365,6 +365,11 @@ def main():
         return 0
 
     log(f"{head}: FAILED")
+    # Keep this run's log: the next run of the same test would overwrite it
+    kept = f"{serial_log}.fail-{os.getpid()}"
+    if os.path.exists(serial_log):
+        shutil.copyfile(serial_log, kept)
+        log(f"  serial log kept as {kept}")
     for p in problems:
         log(f"  {p}")
     if qemu_err:

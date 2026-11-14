@@ -5,9 +5,11 @@
  * and the user page-table walkers (map, look up, unmap a range, protect,
  * copy for fork, move for mremap, free a whole address space).
  * Invariants: the kernel half (PML4 entries 256-511) of every user PML4 is a
- * copy of the kernel's; user leaf entries are 4 KiB pages, present or
- * PROT_NONE (PTE_PROTNONE, not present, frame kept); intermediate user tables
- * are freed once an unmap leaves them empty.
+ * copy of the kernel's; W^X in the kernel (M1-19): only the image's .text is
+ * executable, and it is read-only; every other kernel mapping (the rest of
+ * the image, the HHDM, vmm_map_page) is NX; user leaf entries are 4 KiB
+ * pages, present or PROT_NONE (PTE_PROTNONE, not present, frame kept);
+ * intermediate user tables are freed once an unmap leaves them empty.
  * Locks: vmm_lock (LOCK_LEVEL_PAGE_TABLE) for kernel mappings. User tables
  * are changed under their mm's page-table lock, or before the mm is visible
  * to anyone (exec, fork); see mm.c.
@@ -38,8 +40,11 @@ static Spinlock vmm_lock = SPINLOCK_INIT(LOCK_LEVEL_PAGE_TABLE, "kernel page tab
 /* PML4 index where kernel mappings begin (upper half) */
 #define PML4_KERNEL_START   256
 
-/* Linker symbols */
+/* Linker symbols (linker.ld): the image's four parts, each page aligned */
 extern char _kernel_start[];
+extern char _text_start[];
+extern char _rodata_start[];
+extern char _data_start[];
 extern char _kernel_end[];
 
 static uint64_t kernel_pml4_phys;
@@ -127,7 +132,7 @@ static void kernel_map_page(uint64_t virt, uint64_t phys, uint32_t flags) {
 void vmm_map_page(uint64_t virt, uint64_t phys, uint32_t flags) {
     uint64_t irqf;
     spin_lock_irqsave(&vmm_lock, &irqf);
-    kernel_map_page(virt, phys, flags);
+    kernel_map_page(virt, phys, flags | VMM_FLAG_NOEXEC);   /* W^X: only .text runs (vmm_init) */
     spin_unlock_irqrestore(&vmm_lock, irqf);
 }
 
@@ -526,6 +531,111 @@ void vmm_free_user_pages(uint64_t pml4_phys) {
     free_user_table(pml4_phys);
 }
 
+/* --- The kernel image and W^X (M1-19) --- */
+
+/* The image's parts, virtual and page aligned: [start, text) Limine's
+ * requests, [text, rodata) code, [rodata, data) read-only data, [data, end)
+ * data and bss */
+typedef struct KernelImage {
+    uint64_t start, text, rodata, data, end;
+} KernelImage;
+
+static KernelImage kimage;
+
+static KernelImage kimage_from_linker(void) {
+    KernelImage k = {
+        .start = (uint64_t)_kernel_start,
+        .text = (uint64_t)_text_start,
+        .rodata = (uint64_t)_rodata_start,
+        .data = (uint64_t)_data_start,
+        .end = PAGE_ALIGN_UP((uint64_t)_kernel_end),
+    };
+    return k;
+}
+
+/* VMM_FLAG_* for the image page at va: code is read + execute, data read +
+ * write + NX, everything else (requests, read-only data) read-only + NX */
+static uint32_t kimage_flags(const KernelImage *k, uint64_t va) {
+    if (va >= k->text && va < k->rodata) return 0;
+    if (va >= k->data && va < k->end) return VMM_FLAG_WRITABLE | VMM_FLAG_NOEXEC;
+    return VMM_FLAG_NOEXEC;
+}
+
+/* Map the image 4 KiB at a time (it is small; parts change permission at
+ * page boundaries), virtually and physically contiguous from phys */
+static void map_kernel_image(const KernelImage *k, uint64_t phys) {
+    uint64_t irqf;
+    spin_lock_irqsave(&vmm_lock, &irqf);
+    for (uint64_t va = k->start; va < k->end; va += PAGE_SIZE) {
+        kernel_map_page(va, phys + (va - k->start), kimage_flags(k, va));
+    }
+    spin_unlock_irqrestore(&vmm_lock, irqf);
+}
+
+/* The leaf entry mapping kernel address virt (4 KiB, 2 MiB or 1 GiB) with
+ * the permissions of every level folded in (writable only if every level
+ * allows it, NX if any level sets it); 0 if not mapped */
+static uint64_t kernel_effective_pte(uint64_t virt) {
+    uint64_t *t = (uint64_t *)phys_to_virt(kernel_pml4_phys);
+    static const int shift[4] = {39, 30, 21, 12};
+    uint64_t w = PTE_WRITABLE, nx = 0;
+    for (int level = 0; level < 4; level++) {
+        uint64_t e = t[(virt >> shift[level]) & 0x1FF];
+        if (!(e & PTE_PRESENT)) return 0;
+        w &= e;
+        nx |= e & PTE_NX;
+        if (level == 3 || (level > 0 && (e & PTE_HUGE))) return (e & ~(PTE_WRITABLE | PTE_NX)) | w | nx;
+        t = (uint64_t *)phys_to_virt(e & PTE_ADDR_MASK);
+    }
+    return 0;
+}
+
+/* Count executable leaves under entry e (a table entry at level, 0 = PML4,
+ * mapping from va) that lie outside the code part. NX at any level covers
+ * everything below it, so those subtrees are skipped. */
+static void wx_walk_exec(uint64_t e, int level, uint64_t va, const KernelImage *k, VmmWxCheck *out) {
+    static const int shift[4] = {39, 30, 21, 12};
+    if (!(e & PTE_PRESENT) || (e & PTE_NX)) return;
+    if (level == 3 || (level > 0 && (e & PTE_HUGE))) {
+        uint64_t end = va + (1ULL << shift[level]);
+        if (va >= k->text && end <= k->rodata) return;
+        if (out->stray_exec++ == 0) out->first_stray = va;
+        return;
+    }
+    const uint64_t *t = (const uint64_t *)phys_to_virt(e & PTE_ADDR_MASK);
+    for (uint64_t i = 0; i < 512; i++) {
+        wx_walk_exec(t[i], level + 1, va | (i << shift[level + 1]), k, out);
+    }
+}
+
+int vmm_kernel_wx_check(VmmWxCheck *out) {
+    memset(out, 0, sizeof(*out));
+    const KernelImage *k = &kimage;
+    for (uint64_t va = k->start; va < k->end; va += PAGE_SIZE) {
+        uint64_t pte = kernel_effective_pte(va);
+        uint32_t want = kimage_flags(k, va);
+        int w = (pte & PTE_WRITABLE) != 0, x = (pte & PTE_PRESENT) && !(pte & PTE_NX);
+        if (va < k->text || (va >= k->rodata && va < k->data)) {
+            out->ro_pages++;
+        } else if (va < k->rodata) {
+            out->text_pages++;
+        } else {
+            out->data_pages++;
+        }
+        if (w && x) out->wx_pages++;
+        if (!(pte & PTE_PRESENT) || w != ((want & VMM_FLAG_WRITABLE) != 0) || x != !(want & VMM_FLAG_NOEXEC)) {
+            if (out->wrong_pages++ == 0) out->first_wrong = va;
+        }
+    }
+    uint64_t hhdm = kernel_effective_pte(hhdm_offset);   /* physical page 0 through the HHDM */
+    out->hhdm_ok = (hhdm & PTE_PRESENT) && (hhdm & PTE_WRITABLE) && (hhdm & PTE_NX);
+    const uint64_t *pml4 = (const uint64_t *)phys_to_virt(kernel_pml4_phys);
+    for (uint64_t i = 256; i < 512; i++) {   /* the kernel half: sign-extended addresses */
+        wx_walk_exec(pml4[i], 0, 0xFFFF000000000000ULL | (i << 39), k, out);
+    }
+    return (out->wx_pages == 0 && out->wrong_pages == 0 && out->stray_exec == 0 && out->hhdm_ok) ? 0 : -1;
+}
+
 /* --- Initialization --- */
 
 void vmm_init(const BootInfo *info) {
@@ -559,11 +669,8 @@ void vmm_init(const BootInfo *info) {
 
     kprintf("[VMM] Mapping kernel: 0x%lx -> phys 0x%lx (%lu KB)\n",
             kernel_virt, kernel_phys, kernel_size / 1024);
-    /* Map kernel 4K at a time (it's small, and text/rodata/data have different perms
-     * ideally, but for now we just map all writable) */
-    for (uint64_t off = 0; off < kernel_size; off += PAGE_SIZE) {
-        vmm_map_page(kernel_virt + off, kernel_phys + off, VMM_FLAG_WRITABLE);
-    }
+    kimage = kimage_from_linker();
+    map_kernel_image(&kimage, kernel_phys);
 
     /* 3. Map framebuffer if present */
     if (info->fb_present) {

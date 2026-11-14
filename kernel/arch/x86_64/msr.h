@@ -27,6 +27,7 @@
 
 /* EFER bits */
 #define EFER_SCE    (1ULL << 0) /* System Call Extensions enable */
+#define EFER_NXE    (1ULL << 11) /* No-execute page bit enable (M1-19) */
 
 /* IA32_APIC_BASE bits */
 #define APIC_BASE_BSP       (1ULL << 8)    /* this CPU is the bootstrap processor */

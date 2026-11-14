@@ -27,6 +27,7 @@
 #include "arch/x86_64/fpu.h"     /* fpu_*, arch_thread_switch, arch_set_fs_base */
 #include "arch/x86_64/cpuid.h"   /* cpu_hwcap, cpu_random_fill */
 #include "arch/x86_64/cpu.h"     /* CPU features, floor, core types */
+#include "arch/x86_64/protect.h" /* NX, SMEP, SMAP (M1-19) */
 #include "arch/x86_64/percpu.h"  /* this_cpu(), per-CPU kernel stacks */
 #include "arch/x86_64/smp.h"     /* APIC switch-over, AP start */
 #include "arch/x86_64/tsc.h"     /* TSC frequency (M1-04), clocksource (M1-06) */
@@ -129,6 +130,26 @@ static inline void hal_cpu_signature(uint32_t *family, uint32_t *model, uint32_t
 /* Notable features present, space separated. */
 static inline void hal_cpu_feature_names(char *buf, size_t size) {
     cpu_feature_names(buf, size);
+}
+
+/* ---- Memory protection (M1-19) ---- */
+
+/* hal_protect_flags() bits: no-execute pages; the kernel can't run user code;
+ * the kernel can't touch user memory outside the user-copy routine */
+#define HAL_PROTECT_NX   PROTECT_NX
+#define HAL_PROTECT_SMEP PROTECT_SMEP
+#define HAL_PROTECT_SMAP PROTECT_SMAP
+#define HAL_PROTECT_WP   PROTECT_WP   /* read-only pages bind the kernel (W^X needs it) */
+
+/* Turn on every protection this CPU has (HAL_PROTECT_*). The BSP calls it
+ * once the kernel's page tables are loaded; each AP does it in its entry. */
+static inline void hal_protect_cpu_init(void) {
+    protect_cpu_init();
+}
+
+/* HAL_PROTECT_* bits on in this CPU's control registers. */
+static inline uint32_t hal_protect_flags(void) {
+    return protect_cpu_flags();
 }
 
 /* APIC ID and core type name ("P", "E", "-") of online CPU index cpu.

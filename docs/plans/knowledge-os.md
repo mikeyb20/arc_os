@@ -209,7 +209,7 @@ starts with a planning block that writes its specs.
 - [ ] Threads: `clone`, `futex`, `arch_prctl`, `set_tid_address`, `exit_group`, `sched_setaffinity`, `rt_sigprocmask` (single-thread `arch_prctl`, `set_tid_address`, `exit_group` since M0-06)
 - [ ] Memory: COW fork, demand paging, `mmap`/`munmap`/`mprotect`/`madvise`, page cache shared with `read()`, clean-page eviction, 2 MiB pages; `exec` maps programs from the page cache instead of copying them (no size cap from the kernel heap)
 - [ ] Time: invariant TSC clocksource, TSC-deadline timer, `clock_gettime`, `nanosleep`, CMOS RTC
-- [ ] Hardening: SMEP, SMAP, NX enforced
+- [x] Hardening: SMEP, SMAP, NX enforced (M1-19; kernel W^X too)
 - [ ] Power base: tickless idle, MWAIT idle states, Intel HWP/EPP, RAPL energy counters (ADR-0017)
 - [ ] Block layer: async request queue with interrupts; virtio-blk moved onto it
 - [ ] VFS inode refactor with 64-bit offsets; GPT parsing; ext2 rev 1 read/write with large files; one data partition mounted as `/apps /models /packs /home /var`; system and data mounted from the disk Limine booted from (ADR-0018)

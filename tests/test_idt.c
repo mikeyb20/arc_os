@@ -20,7 +20,7 @@ static inline void kprintf(const char *fmt, ...) { (void)fmt; }
 #define EXCEPTION_MACHINE_CHECK 18
 
 /* Provide fake isr_stub_table (we never call idt_init) */
-static uint64_t isr_stub_table[256];
+static const uint64_t isr_stub_table[256];
 
 /* Include idt.c — it pulls in idt.h which defines IDTEntry/IDTPointer.
  * We only test idt_set_gate, never call idt_init. */

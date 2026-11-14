@@ -7,8 +7,17 @@
 /* Guard kernel headers that conflict or need stubbing */
 #define ARCHOS_LIB_KPRINTF_H
 
-/* Stub kprintf */
-static inline void kprintf(const char *fmt, ...) { (void)fmt; }
+/* Stub kprintf: keeps the reason of a [SECURITY] line (M1-19) */
+#include <stdarg.h>
+static const char *security_reason;
+static inline void kprintf(const char *fmt, ...) {
+    if (strncmp(fmt, "[SECURITY] %s", 13) == 0) {
+        va_list ap;
+        va_start(ap, fmt);
+        security_reason = va_arg(ap, const char *);
+        va_end(ap);
+    }
+}
 
 /* Test-controlled PIC stubs (static to avoid linker clash with test_pic.c) */
 static bool test_pic_spurious_result;
@@ -36,7 +45,16 @@ static void lapic_eoi(void) { test_lapic_eoi_called++; }
 /* Panic path stand-ins: no test raises an unhandled exception */
 #include <stdlib.h>
 #include "../kernel/lib/panic.h"
+/* A test that expects a panic arms panic_jmp: the panic ends there, before
+ * the register capture (CR2 and CR3 can't be read in user mode) */
+#include <setjmp.h>
+static jmp_buf panic_jmp;
+static int panic_armed;
 static int stub_panic_begin(void) {
+    if (panic_armed) {
+        panic_armed = 0;
+        longjmp(panic_jmp, 1);
+    }
     return 1;
 }
 static void stub_panic_report(const PanicInfo *pi) {
@@ -146,6 +164,15 @@ static uint8_t vector_seen;
 void isr_test_irq_vector_dispatch(uint8_t vector) {
     vector_dispatched++;
     vector_seen = vector;
+}
+
+#include "../kernel/arch/x86_64/protect.h"
+
+/* SMAP present (M1-19): the tests set it; the kernel's lives in protect.c */
+uint8_t protect_smap_on;
+static uint32_t stub_protect_flags = PROTECT_NX | PROTECT_SMEP | PROTECT_SMAP | PROTECT_WP;
+uint32_t protect_cpu_flags(void) {
+    return stub_protect_flags;
 }
 
 #include "../kernel/arch/x86_64/isr.c"
@@ -542,6 +569,79 @@ static int test_kernel_pf_fixup(void) {
     return 0;
 }
 
+/* M1-19: a kernel-mode fault on a user address outside the copy routine,
+ * or the copy routine without AC under SMAP, panics with its reason; a
+ * missing page outside the copy is an ordinary "Page Fault" panic */
+static const char *kernel_user_pf(uint64_t rip, uint64_t err, uint64_t rflags, uint64_t addr) {
+    InterruptFrame f = make_frame(EXCEPTION_PAGE_FAULT);
+    f.rip = rip;
+    f.error_code = err;
+    f.rflags = rflags;
+    security_reason = NULL;
+    panic_armed = 1;
+    if (setjmp(panic_jmp) == 0) {
+        page_fault(&f, addr);
+        panic_armed = 0;
+        return "no panic";
+    }
+    return security_reason != NULL ? security_reason : "Page Fault";   /* the default handler logs nothing first */
+}
+
+static int test_kernel_pf_smap_smep(void) {
+    reset_fault_stubs();
+    protect_smap_on = 1;
+    /* SMAP: a present user page read or written outside the copy routine */
+    ASSERT_STR_EQ(kernel_user_pf(0x3000, PF_PRESENT, 0, 0x500000), "SMAP: kernel touched user memory");
+    ASSERT_STR_EQ(kernel_user_pf(0x3000, PF_PRESENT | PF_WRITE, RFLAGS_AC, 0x500000),
+                  "SMAP: kernel touched user memory");   /* AC doesn't make it the copy routine */
+    /* SMEP: the kernel fetched an instruction from a present user page */
+    ASSERT_STR_EQ(kernel_user_pf(0x500000, PF_PRESENT | PF_INSN, 0, 0x500000), "SMEP: kernel ran user code");
+    /* The copy routine without AC: it would fault again forever */
+    ASSERT_STR_EQ(kernel_user_pf(0x1000, PF_PRESENT, 0, 0x500000), "SMAP: user copy without STAC");
+    /* A missing page outside the copy routine (a NULL pointer): plain */
+    ASSERT_STR_EQ(kernel_user_pf(0x3000, 0, 0, 0x10), "Page Fault");
+    ASSERT_STR_EQ(kernel_user_pf(0x10, PF_INSN, 0, 0x10), "Page Fault");
+    /* Without SMAP and SMEP the reason says which protection caught it */
+    protect_smap_on = 0;
+    stub_protect_flags = PROTECT_NX | PROTECT_WP;
+    ASSERT_STR_EQ(kernel_user_pf(0x3000, PF_PRESENT | PF_WRITE, 0, 0x500000), "WP: kernel wrote a read-only user page");
+    ASSERT_STR_EQ(kernel_user_pf(0x500000, PF_PRESENT | PF_INSN, 0, 0x500000), "NX: kernel ran user code");
+    stub_protect_flags = PROTECT_NX | PROTECT_SMEP | PROTECT_SMAP | PROTECT_WP;
+    protect_smap_on = 1;
+    /* A kernel address: plain too (a write to .text under W^X) */
+    ASSERT_STR_EQ(kernel_user_pf(0x3000, PF_PRESENT | PF_WRITE, 0, 0xFFFFFFFF80001000ULL), "Page Fault");
+    ASSERT_EQ(stub_fault_calls, 0);   /* none of them tried to resolve the page */
+
+    /* The copy routine with AC set resolves as before */
+    InterruptFrame f = make_frame(EXCEPTION_PAGE_FAULT);
+    f.rip = 0x1000;
+    f.rflags = RFLAGS_AC;
+    f.error_code = PF_PRESENT | PF_WRITE;   /* copy-on-write */
+    page_fault(&f, 0x500000);
+    ASSERT_EQ(stub_fault_calls, 1);
+    ASSERT_EQ(f.rip, 0x1000);
+    /* Without SMAP the CPU never sets AC: the copy runs without it */
+    protect_smap_on = 0;
+    f.rflags = 0;
+    page_fault(&f, 0x500000);
+    ASSERT_EQ(stub_fault_calls, 2);
+    ASSERT_EQ(f.rip, 0x1000);
+    return 0;
+}
+
+static int test_kuser_fault_kind(void) {
+    ASSERT_EQ(kuser_fault_kind(PF_PRESENT, RFLAGS_AC, 1, 1), KUSER_COPY);
+    ASSERT_EQ(kuser_fault_kind(0, RFLAGS_AC, 1, 1), KUSER_COPY);   /* demand paging */
+    ASSERT_EQ(kuser_fault_kind(0, 0, 1, 0), KUSER_COPY);
+    ASSERT_EQ(kuser_fault_kind(0, 0, 1, 1), KUSER_NO_STAC);
+    ASSERT_EQ(kuser_fault_kind(PF_PRESENT, 0, 0, 1), KUSER_DIRECT);
+    ASSERT_EQ(kuser_fault_kind(PF_PRESENT | PF_WRITE, 0, 0, 0), KUSER_RO_WRITE);   /* CR0.WP */
+    ASSERT_EQ(kuser_fault_kind(PF_PRESENT | PF_INSN, 0, 0, 1), KUSER_EXEC);
+    ASSERT_EQ(kuser_fault_kind(0, 0, 0, 1), KUSER_MISSING);
+    ASSERT_EQ(kuser_fault_kind(PF_INSN, 0, 0, 1), KUSER_MISSING);
+    return 0;
+}
+
 /* CPU exceptions in user mode map to Linux's signals and codes */
 static int test_user_exception_signals(void) {
     static const struct {
@@ -665,6 +765,8 @@ TestCase isr_tests[] = {
     {"user_pf_resolved", test_user_pf_resolved},
     {"user_pf_signals", test_user_pf_signals},
     {"kernel_pf_fixup", test_kernel_pf_fixup},
+    {"kernel_pf_smap_smep", test_kernel_pf_smap_smep},
+    {"kuser_fault_kind", test_kuser_fault_kind},
     {"user_exception_signals", test_user_exception_signals},
     {"fpu_exception_codes", test_fpu_exception_codes},
     {"user_return_delivers", test_user_return_delivers},

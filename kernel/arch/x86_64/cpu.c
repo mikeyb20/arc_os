@@ -89,6 +89,7 @@ static const FeatureBit floor_features[] = {
     { "BMI2",   W_L7_EBX,   8 },
     { "LAHF",   W_EXT1_ECX, 0 },
     { "LZCNT",  W_EXT1_ECX, 5 },
+    { "NX",     W_EXT1_EDX, 20 },   /* every page table uses the NX bit (M1-19) */
 };
 
 /* Features the boot report lists when present (M1-04) */

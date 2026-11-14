@@ -19,8 +19,34 @@ _Static_assert(__builtin_popcount(VMM_FLAGS_ALL_) == VMM_FLAG_COUNT_, "VMM_FLAG_
 /* Initialize VMM: create kernel page tables and switch CR3. */
 void vmm_init(const BootInfo *info);
 
-/* Map a single 4K page. virt and phys must be page-aligned. */
+/* Map a single 4K kernel page. virt and phys must be page-aligned. The page
+ * is never executable (W^X, M1-19): VMM_FLAG_NOEXEC is always added. */
 void vmm_map_page(uint64_t virt, uint64_t phys, uint32_t flags);
+
+/* The kernel's W^X state (vmm_kernel_wx_check, M1-19) */
+typedef struct VmmWxCheck {
+    uint64_t text_pages;    /* image pages that are code */
+    uint64_t ro_pages;      /* Limine requests and read-only data */
+    uint64_t data_pages;    /* .data and .bss */
+    uint64_t wx_pages;      /* image pages both writable and executable */
+    uint64_t wrong_pages;   /* image pages whose permissions differ from their part's */
+    uint64_t first_wrong;   /* the first of them */
+    uint64_t stray_exec;    /* executable kernel-half mappings outside the code part */
+    uint64_t first_stray;   /* the first of them */
+    int hhdm_ok;            /* the HHDM is read-write and NX */
+} VmmWxCheck;
+
+/* Walk the kernel's page tables over the whole image and the start of the
+ * HHDM: code read + execute, read-only data read-only + NX, data read-write +
+ * NX, no page writable and executable; then the whole kernel half (PML4
+ * entries 256-511): nothing outside the code part may be executable. Fills
+ * out; returns 0 if all hold, -1 if not. Reads the tables without vmm_lock:
+ * boot and self-test only, and the image and HHDM entries never change after
+ * vmm_init (a mapping added meanwhile is seen or not, never torn). Cost: one
+ * walk per image page (about 150) plus one visit per kernel page-table entry
+ * that isn't NX at a higher level (the HHDM's 2 MiB entries: about 2,000 at
+ * 4 GB, 16,000 at 32 GB). */
+int vmm_kernel_wx_check(VmmWxCheck *out);
 
 /* Unmap a single 4K page. */
 void vmm_unmap_page(uint64_t virt);
