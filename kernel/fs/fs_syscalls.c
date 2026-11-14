@@ -379,6 +379,11 @@ static int64_t sys_fsync(uint64_t fd, uint64_t a1, uint64_t a2, uint64_t a3, uin
     return r;
 }
 
+/* fdatasync(fd) — 75: fsync (the cache keeps no metadata apart from the data) */
+static int64_t sys_fdatasync(uint64_t fd, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    return sys_fsync(fd, a1, a2, a3, a4, a5);
+}
+
 /* ioctl(fd, request, arg) — 16: the file's own requests (terminal ones on
  * /dev/tty), -ENOTTY for anything else */
 static int64_t sys_ioctl(uint64_t fd, uint64_t request, uint64_t arg, uint64_t a3, uint64_t a4, uint64_t a5) {
@@ -630,6 +635,7 @@ void fs_syscalls_init(void) {
     syscall_register(__NR_dup2, sys_dup2);
     syscall_register(__NR_fcntl, sys_fcntl);
     syscall_register(__NR_fsync, sys_fsync);
+    syscall_register(__NR_fdatasync, sys_fdatasync);
     syscall_register(__NR_ftruncate, sys_ftruncate);
     syscall_register(__NR_getcwd, sys_getcwd);
     syscall_register(__NR_chdir, sys_chdir);

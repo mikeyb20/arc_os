@@ -43,6 +43,9 @@ set(KERNEL_C_SOURCES
     mm/pmm.c
     mm/vmm.c
     mm/uaccess.c
+    mm/radix.c
+    mm/filemap.c
+    mm/filemap_mmap.c
     mm/vma.c
     mm/mm.c
     mm/fault.c

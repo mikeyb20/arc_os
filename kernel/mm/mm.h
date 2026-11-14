@@ -54,6 +54,7 @@ typedef struct Mm {
 #define MM_FAULT_ACCERR 2   /* VMA forbids the access: SIGSEGV, SEGV_ACCERR */
 #define MM_FAULT_OOM    3   /* no page (or page table) could be had */
 #define MM_FAULT_KILLED 4   /* mm_handle_fault: SIGKILL is pending (OOM), nothing mapped */
+#define MM_FAULT_SIGBUS 5   /* a file page past the end of the file, or one that can't be read: SIGBUS */
 
 /* Access bits for mm_fault */
 #define MM_ACCESS_WRITE   (1u << 0)
@@ -97,6 +98,12 @@ void mm_switch(Mm *mm);
 int mm_setup_vma(Mm *mm, uint64_t start, uint64_t end, uint32_t prot, uint32_t flags);
 int mm_setup_page(Mm *mm, uint64_t virt, uint64_t phys, uint32_t vmm_flags);
 
+/* exec only: a VMA mapping an object (an ELF file, privately) whose pages
+ * come by fault: file (the caller's reference is not taken: ops->open takes
+ * the VMA's), pgoff its offset in pages. Returns 0, -EINVAL or -ENOMEM. */
+int mm_setup_object_vma(Mm *mm, uint64_t start, uint64_t end, uint32_t prot, void *file, uint64_t pgoff,
+                        const VmaOps *ops);
+
 /* exec/init: the stack VMA below USER_STACK_TOP, growing down to
  * MM_STACK_MAX; exec != 0 makes it executable (PT_GNU_STACK). Also sets the
  * heap start (page-aligned brk_start). Returns 0 or -ENOMEM. */
@@ -109,7 +116,7 @@ int mm_fault(Mm *mm, uint64_t addr, uint32_t access);
 /* The page-fault entry for the current process (arch fault handler, mm/fault.c):
  * mm_fault, and when memory runs out the OOM killer: the process with the
  * largest RSS gets SIGKILL and its pages are reaped at once, then the fault is
- * retried. Never panics. Returns MM_FAULT_OK, _MAPERR, _ACCERR, or _KILLED when
+ * retried. Never panics. Returns MM_FAULT_OK, _MAPERR, _ACCERR, _SIGBUS, or _KILLED when
  * the current process is the one killed (or was already dying). */
 int mm_handle_fault(uint64_t addr, uint32_t access);
 
@@ -118,6 +125,26 @@ int mm_handle_fault(uint64_t addr, uint32_t access);
  * now (MAP_POPULATE), below_2g: MAP_32BIT. Returns the address or -errno. */
 int64_t mm_map_anon(Mm *mm, uint64_t addr, uint64_t len, uint32_t prot, uint32_t flags, int how, int populate,
                     int below_2g);
+
+/* mmap of an object (a file, mm/filemap.h): like mm_map_anon, with the
+ * VMA's file, pgoff (in pages) and ops; flags may hold VMA_SHARED and
+ * VMA_MAYWRITE. ops->open takes the VMA's own references. Never merged
+ * with a neighbour. */
+int64_t mm_map_object(Mm *mm, uint64_t addr, uint64_t len, uint32_t prot, uint32_t flags, int how, int populate,
+                      void *file, uint64_t pgoff, const VmaOps *ops);
+
+/* madvise(NORMAL / SEQUENTIAL / RANDOM): set (0, VMA_SEQ_READ or
+ * VMA_RAND_READ) the readahead hint of every VMA in the range. -ENOMEM if
+ * part of the range is unmapped (nothing changes then). */
+int mm_advise_access(Mm *mm, uint64_t addr, uint64_t len, uint32_t hint);
+
+/* madvise(WILLNEED): read the file pages of the range in now. 0 or
+ * -ENOMEM (unmapped part). */
+int mm_willneed(Mm *mm, uint64_t addr, uint64_t len);
+
+/* msync: sync != 0 (MS_SYNC) writes the shared file pages of the range back
+ * and waits. 0, -ENOMEM (unmapped part) or the write-back's error. */
+int mm_msync(Mm *mm, uint64_t addr, uint64_t len, int sync);
 
 /* munmap of [addr, addr + len) (page aligned). Holes are fine. 0 or -ENOMEM
  * (a VMA could not be split). */
@@ -157,5 +184,26 @@ uint64_t mm_reap(Mm *mm);
 
 /* Flush [start, end) of mm from every CPU's TLB (tlb.h). */
 void mm_flush_tlb_range(Mm *mm, uint64_t start, uint64_t end);
+
+/* Drop this CPU's TLB entry for addr (after a fault widened its entry:
+ * other CPUs fault and walk again). */
+void mm_flush_tlb_local(uint64_t addr);
+
+/* --- For the page cache's mapping code (mm/filemap_mmap.c) --- */
+
+/* Page-table flags for a VMA protection (VMA_*). */
+uint32_t mm_prot_to_vmm(uint32_t prot);
+
+/* Add anonymous and page-cache pages mapped into mm (+) or taken out (-)
+ * to its RSS (anonymous ones also to the AnonPages total). */
+void mm_rss_account(Mm *mm, int64_t anon, int64_t file);
+
+/* Take every page of [start, end) out of mm's page tables, flush, then free
+ * them (anonymous) or drop their references (page cache). Needs no mm lock:
+ * the caller keeps the range's VMAs alive (the mm lock, or the file's mapping
+ * lock). Returns the entries removed. */
+#define MM_ZAP_FLUSH        0   /* flush if anything was taken out */
+#define MM_ZAP_FLUSH_ALWAYS 1   /* flush even if nothing was (stale entries) */
+uint64_t mm_zap_range(Mm *mm, uint64_t start, uint64_t end, int flush);
 
 #endif /* ARCHOS_MM_MM_H */

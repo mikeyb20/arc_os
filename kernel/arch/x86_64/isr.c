@@ -240,6 +240,10 @@ static void page_fault(InterruptFrame *frame, uint64_t addr) {
     }
     int r = mm_handle_fault(addr, access);
     if (r == MM_FAULT_OK || r == MM_FAULT_KILLED) return;   /* KILLED: SIGKILL goes out on return */
+    if (r == MM_FAULT_SIGBUS) {
+        user_fault_signal(SIGBUS, BUS_ADRERR, addr);   /* file mapping past the end of its file */
+        return;
+    }
     user_fault_signal(SIGSEGV, r == MM_FAULT_ACCERR ? SEGV_ACCERR : SEGV_MAPERR, addr);
 }
 

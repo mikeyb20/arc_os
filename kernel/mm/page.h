@@ -36,7 +36,22 @@
 #define PG_TAIL       (1u << 7)    /* compound page tail (reserved, see PG_HEAD) */
 #define PG_KMALLOC    (1u << 8)    /* head of a large kmalloc block (kfree checks it) */
 #define PG_SLAB       (1u << 9)    /* every page of a slab (mm/slab.c); slab_cache names the owner */
-/* Bits 10-31 are free for later blocks (page cache M1-12).
+/* Page cache (M1-12, mm/filemap.h). A file page keeps PG_FILE until it is
+ * freed, so code that unmaps it knows it is a cache page even after truncate
+ * took it out of its file (mapping is NULL from then on). The others change
+ * only with atomic or/and while the page holds a reference. */
+#define PG_FILE       (1u << 10)   /* came from a page cache (never an anonymous user page) */
+#define PG_UPTODATE   (1u << 11)   /* contents valid */
+#define PG_DIRTY      (1u << 12)   /* changed since the last write-back */
+#define PG_LOCKED     (1u << 13)   /* page lock (LOCK_LEVEL_PAGE): I/O, truncate, mapping */
+#define PG_ERROR      (1u << 14)   /* the last read failed */
+#define PG_LRU        (1u << 15)   /* on the evictable-page list (filemap.c) */
+/* Bits 16-23: pieces of a page-cache read still in flight, plus one for the
+ * reader while it is still adding pieces (filemap_io_begin / _end). */
+#define PG_IO_SHIFT   16
+#define PG_IO_ONE     (1u << PG_IO_SHIFT)
+#define PG_IO_MASK    (0xFFu << PG_IO_SHIFT)
+/* Bits 24-31 are free for later blocks.
  * free_pages() clears every flag of the head page; owners of a multi-page
  * block clear what they set on its other pages before freeing it. */
 
@@ -140,6 +155,40 @@ static inline void page_list_remove(struct page_list *l, struct page *pg) {
     if (pg->lru.next != PFN_NONE) pfn_to_page(pg->lru.next)->lru.prev = pg->lru.prev;
     pg->lru.next = PFN_NONE;
     pg->lru.prev = PFN_NONE;
+}
+
+/* --- References (atomic). A page's memory is freed when its count reaches
+ * 0 (free_pages drops one). Take a new reference only while holding one, or
+ * under a lock that keeps the page from being freed (the page-cache index
+ * lock for a page in a file). --- */
+
+/* Take another reference to a page the caller can already reach safely. */
+static inline void page_ref_get(struct page *pg) {
+    __atomic_add_fetch(&pg->refcount, 1, __ATOMIC_RELAXED);
+}
+
+/* Current reference count (a snapshot). */
+static inline uint32_t page_ref_count(const struct page *pg) {
+    return __atomic_load_n(&pg->refcount, __ATOMIC_ACQUIRE);
+}
+
+/* Atomic flag bits other than the order and PG_RESERVED/BUDDY/SLAB */
+static inline int page_test(const struct page *pg, uint32_t bit) {
+    return (__atomic_load_n(&pg->flags, __ATOMIC_ACQUIRE) & bit) != 0;
+}
+static inline void page_set(struct page *pg, uint32_t bit) {
+    __atomic_or_fetch(&pg->flags, bit, __ATOMIC_RELEASE);
+}
+static inline void page_clear(struct page *pg, uint32_t bit) {
+    __atomic_and_fetch(&pg->flags, ~bit, __ATOMIC_RELEASE);
+}
+/* Set bit; returns 1 if it was already set. */
+static inline int page_test_and_set(struct page *pg, uint32_t bit) {
+    return (__atomic_fetch_or(&pg->flags, bit, __ATOMIC_ACQUIRE) & bit) != 0;
+}
+/* Clear bit; returns 1 if it was set. */
+static inline int page_test_and_clear(struct page *pg, uint32_t bit) {
+    return (__atomic_fetch_and(&pg->flags, ~bit, __ATOMIC_ACQ_REL) & bit) != 0;
 }
 
 /* Order stored in a block head. */

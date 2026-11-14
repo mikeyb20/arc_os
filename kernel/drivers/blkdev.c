@@ -286,6 +286,17 @@ void blk_expire_all(uint64_t now) {
     for (uint32_t i = 0; i < n; i++) blk_expire(disks[i], now);
 }
 
+void blk_poll_all(void) {
+    if (__atomic_load_n(&inflight_total, __ATOMIC_RELAXED) == 0) return;
+    uint64_t now = hal_tsc_read();
+    uint32_t n = __atomic_load_n(&ndisks, __ATOMIC_ACQUIRE);
+    for (uint32_t i = 0; i < n; i++) {
+        if (__atomic_load_n(&disks[i]->queue->in_flight, __ATOMIC_RELAXED) == 0) continue;
+        blk_complete(disks[i]);
+        blk_expire(disks[i], now);
+    }
+}
+
 /* --- Requests --- */
 
 BlkRequest *blk_rq_alloc(BlockDevice *dev, int op, uint64_t sector, BlkEndIo end_io, void *priv) {
@@ -328,6 +339,7 @@ static int rq_prepare(BlkRequest *rq) {
         if (rq->bytes == 0 || rq->bytes % lbs != 0 || ((rq->sector << BLK_SECTOR_SHIFT) % lbs) != 0) return -EINVAL;
         if (rq->sector >= dev->nr_sectors || nsect > dev->nr_sectors - rq->sector) return -EINVAL;
         if (rq->op == BLK_OP_WRITE && (dev->flags & BLK_RDONLY)) return -EROFS;
+        if (rq->nsegs > disk->max_segments || rq->bytes > disk->max_transfer) return -EINVAL;
         for (uint32_t i = 0; i < rq->nsegs; i++) {
             if (rq->seg[i].len == 0 || ((rq->seg[i].offset | rq->seg[i].len) & 3) != 0) return -EINVAL;
         }
@@ -646,7 +658,7 @@ int blk_disk_register(BlockDevice *disk, const char *prefix, uint32_t depth) {
         rq_cache = &rq_cache_store;
     }
     if (disk->logical_block != 512 && disk->logical_block != 4096) return -EINVAL;
-    if (disk->max_segments == 0 || disk->max_transfer < disk->logical_block) return -EINVAL;
+    if (disk->max_segments == 0 || disk->max_transfer < PAGE_SIZE) return -EINVAL;   /* a page always fits */
     int rc = queue_init(disk, depth);
     if (rc != 0) return rc;
     disk->disk = disk;

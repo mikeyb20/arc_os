@@ -16,6 +16,7 @@
 #include "lib/klog.h"
 #include "mm/kmalloc.h"
 #include "mm/mm.h"
+#include "mm/filemap.h"
 #include "mm/page.h"
 #include "mm/pmm.h"
 #include "mm/slab.h"
@@ -155,7 +156,10 @@ static void arena_init(void) {
     pmm_hhdm_offset = (uint64_t)(uintptr_t)arena;
 }
 
+void (*vfs_env_alloc_hook)(void);
+
 struct page *alloc_pages(unsigned order, uint32_t flags) {
+    if (vfs_env_alloc_hook != NULL) vfs_env_alloc_hook();
     arena_init();
     if (order != 0 || should_fail()) return NULL;
     for (uint32_t i = 0; i < ARENA_PAGES; i++) {
@@ -176,8 +180,13 @@ void free_pages(struct page *page, unsigned order) {
         fprintf(stderr, "vfs_env: free_pages of a free page\n");
         abort();
     }
+    if (page->refcount == 0) {
+        fprintf(stderr, "vfs_env: free_pages of a page with no references\n");
+        abort();
+    }
+    if (--page->refcount != 0) return;   /* as the PMM's: the last reference frees */
+    page->flags = 0;
     page_used[pfn] = 0;
-    page->refcount = 0;
     live_pages--;
 }
 
@@ -244,6 +253,99 @@ int copy_to_user(void *dst, const void *src, size_t len) {
     if (uaddr_bad(dst, len)) return -EFAULT;
     memcpy(dst, src, len);
     return 0;
+}
+
+size_t copy_from_user_nofault(void *dst, const void *src, size_t len) {
+    return copy_from_user_partial(dst, src, len);
+}
+
+/* --- Page tables for the file-mapping tests (mm/filemap_mmap.c): one flat
+ * list of (address space, page) entries, flags = the VMA protection --- */
+#define ENV_PTES 256
+static struct {
+    uint64_t pgd, virt, phys;
+    uint32_t flags;
+    int used;
+} env_ptes[ENV_PTES];
+int vfs_env_tlb_flushes;
+
+static int env_pte_find(uint64_t pgd, uint64_t virt) {
+    for (int i = 0; i < ENV_PTES; i++) {
+        if (env_ptes[i].used && env_ptes[i].pgd == pgd && env_ptes[i].virt == virt) return i;
+    }
+    return -1;
+}
+
+int vmm_lookup_in(uint64_t pgd, uint64_t virt, uint64_t *phys) {
+    int i = env_pte_find(pgd, virt);
+    if (i < 0) return 0;
+    if (phys != NULL) *phys = env_ptes[i].phys;
+    return 1;
+}
+
+int vmm_map_page_in(uint64_t pgd, uint64_t virt, uint64_t phys, uint32_t flags) {
+    int i = env_pte_find(pgd, virt);
+    for (int j = 0; i < 0 && j < ENV_PTES; j++) {
+        if (!env_ptes[j].used) i = j;
+    }
+    if (i < 0) return -ENOMEM;
+    env_ptes[i].pgd = pgd;
+    env_ptes[i].virt = virt;
+    env_ptes[i].phys = phys;
+    env_ptes[i].flags = flags;
+    env_ptes[i].used = 1;
+    return 0;
+}
+
+int vfs_env_pte(uint64_t pgd, uint64_t virt, struct page **pg, uint32_t *flags) {
+    int i = env_pte_find(pgd, virt);
+    if (i < 0) return 0;
+    if (pg != NULL) *pg = pfn_to_page(env_ptes[i].phys >> PAGE_SHIFT);
+    if (flags != NULL) *flags = env_ptes[i].flags;
+    return 1;
+}
+
+uint32_t mm_prot_to_vmm(uint32_t prot) {
+    return prot;
+}
+
+void mm_flush_tlb_range(Mm *mm, uint64_t start, uint64_t end) {
+    (void)mm;
+    (void)start;
+    (void)end;
+    vfs_env_tlb_flushes++;
+}
+
+void mm_flush_tlb_local(uint64_t addr) {
+    (void)addr;
+}
+
+void mm_rss_account(Mm *mm, int64_t anon, int64_t file) {
+    mm->rss += (uint64_t)(anon + file);
+}
+
+/* As mm.c's: entries out, one flush, then the frames (cache pages: their
+ * entries' references) */
+uint64_t mm_zap_range(Mm *mm, uint64_t start, uint64_t end, int flush) {
+    struct page *gone[ENV_PTES];
+    uint64_t n = 0;
+    for (int i = 0; i < ENV_PTES; i++) {
+        if (!env_ptes[i].used || env_ptes[i].pgd != mm->pgd || env_ptes[i].virt < start || env_ptes[i].virt >= end)
+            continue;
+        env_ptes[i].used = 0;
+        gone[n++] = pfn_to_page(env_ptes[i].phys >> PAGE_SHIFT);
+    }
+    if (n != 0 || flush == MM_ZAP_FLUSH_ALWAYS) vfs_env_tlb_flushes++;
+    for (uint64_t i = 0; i < n; i++) {
+        if (gone[i]->flags & PG_FILE) {
+            filemap_page_unmapped(gone[i]);
+            mm_rss_account(mm, 0, -1);
+        } else {
+            free_pages(gone[i], 0);
+            mm_rss_account(mm, -1, 0);
+        }
+    }
+    return n;
 }
 
 /* --- Sleeping locks: single-threaded, so they only check pairing --- */
@@ -398,6 +500,11 @@ int mm_format_maps(Mm *mm, char *buf, int size) {
     return snprintf(buf, (size_t)size, "00400000-00401000 r-xp 00000000 00:00 0\n");
 }
 
+/* The host suites run as a scheduled thread: page waits take the sleeping path */
+int sched_can_block(void) {
+    return 1;
+}
+
 int sched_cpu_stats(uint32_t cpu, SchedCpuStats *out) {
     if (cpu > 0) return -1;
     memset(out, 0, sizeof(*out));
@@ -535,6 +642,7 @@ void vfs_env_setup(void) {
     if (done) return;
     done = 1;
     arena_init();
+    filemap_init();
     vfs_init();
     if (vfs_mount_root(ramfs_create_sb(), "ramfs") != 0) {
         fprintf(stderr, "vfs_env: no root\n");

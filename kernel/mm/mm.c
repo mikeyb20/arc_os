@@ -21,6 +21,7 @@
 #include "mm/pmm.h"
 #include "mm/slab.h"
 #include "mm/page.h"
+#include "mm/filemap.h"
 #include "arch/hal.h"
 #include "uapi/errno.h"
 #include "lib/kprintf.h"
@@ -44,6 +45,11 @@ static void rss_add(Mm *mm, int64_t pages) {
     __atomic_add_fetch(&anon_pages_total, (uint64_t)pages, __ATOMIC_RELAXED);
 }
 
+void mm_rss_account(Mm *mm, int64_t anon, int64_t file) {
+    if (anon != 0) rss_add(mm, anon);
+    if (file != 0) __atomic_add_fetch(&mm->rss, (uint64_t)file, __ATOMIC_RELAXED);
+}
+
 uint64_t mm_rss(const Mm *mm) {
     return __atomic_load_n(&mm->rss, __ATOMIC_RELAXED);
 }
@@ -52,8 +58,7 @@ uint64_t mm_anon_pages(void) {
     return __atomic_load_n(&anon_pages_total, __ATOMIC_RELAXED);
 }
 
-/* VMA protection -> page-table flags */
-static uint32_t prot_to_vmm(uint32_t prot) {
+uint32_t mm_prot_to_vmm(uint32_t prot) {
     if ((prot & VMA_PROT_MASK) == 0) return VMM_FLAG_PROTNONE;
     uint32_t f = VMM_FLAG_USER;
     if (prot & VMA_WRITE) f |= VMM_FLAG_WRITABLE;
@@ -65,16 +70,33 @@ void mm_flush_tlb_range(Mm *mm, uint64_t start, uint64_t end) {
     (void)hal_tlb_flush(&mm->cpus, mm->pgd, start, end);
 }
 
+void mm_flush_tlb_local(uint64_t addr) {
+    hal_invalidate_page(addr);
+}
+
 /* --- Frames waiting for the TLB flush --- */
 
+/* Page-cache pages taken out per round: each can be in several page tables
+ * (and twice in one range), so they can't go on a PFN-linked list; a full
+ * batch ends the round, and the next one starts after the flush */
+#define ZAP_FILE_BATCH 64
+
 typedef struct ZapList {
-    struct page_list pages;    /* user pages */
+    struct page_list pages;    /* anonymous user pages */
     struct page_list tables;   /* emptied page-table pages */
+    struct page *file[ZAP_FILE_BATCH];   /* page-cache pages: their entries' references */
+    uint32_t nfile;
 } ZapList;
 
-static void zap_defer(uint64_t phys, int table, void *ctx) {
+static int zap_defer(uint64_t phys, int table, void *ctx) {
     ZapList *z = ctx;
-    page_list_push(table ? &z->tables : &z->pages, pfn_to_page(phys >> PAGE_SHIFT));
+    struct page *pg = pfn_to_page(phys >> PAGE_SHIFT);
+    if (!table && (pg->flags & PG_FILE)) {
+        z->file[z->nfile++] = pg;
+        return z->nfile == ZAP_FILE_BATCH;
+    }
+    page_list_push(table ? &z->tables : &z->pages, pg);
+    return 0;
 }
 
 static void zap_free(ZapList *z) {
@@ -87,20 +109,34 @@ static void zap_free(ZapList *z) {
         page_list_remove(&z->tables, pg);
         vmm_release_table(page_to_phys(pg));
     }
+    for (uint32_t i = 0; i < z->nfile; i++) filemap_page_unmapped(z->file[i]);
 }
 
-/* Take every page of [start, end) out of the page tables, flush (always
- * with force, else only if something was taken out), free. Holds mm->lock
- * for writing. Returns pages freed. */
+uint64_t mm_zap_range(Mm *mm, uint64_t start, uint64_t end, int flush) {
+    uint64_t total = 0;
+    uint64_t a = start;
+    while (a < end) {
+        ZapList z = {PAGE_LIST_INIT, PAGE_LIST_INIT, {NULL}, 0};
+        uint64_t next = end;
+        spin_lock(&mm->pt_lock);
+        uint64_t n = vmm_unmap_range_in(mm->pgd, a, end, zap_defer, &z, &next);
+        spin_unlock(&mm->pt_lock);
+        if (n != 0) {
+            rss_add(mm, -(int64_t)(n - z.nfile));
+            mm_rss_account(mm, 0, -(int64_t)z.nfile);
+        }
+        if (flush == MM_ZAP_FLUSH_ALWAYS || (flush == MM_ZAP_FLUSH && (n != 0 || !page_list_empty(&z.tables))))
+            mm_flush_tlb_range(mm, a, next);
+        zap_free(&z);
+        total += n;
+        if (next <= a) break;
+        a = next;
+    }
+    return total;
+}
+
 static uint64_t zap_range(Mm *mm, uint64_t start, uint64_t end, int force) {
-    ZapList z = {PAGE_LIST_INIT, PAGE_LIST_INIT};
-    spin_lock(&mm->pt_lock);
-    uint64_t n = vmm_unmap_range_in(mm->pgd, start, end, zap_defer, &z);
-    spin_unlock(&mm->pt_lock);
-    if (n != 0) rss_add(mm, -(int64_t)n);
-    if (force || n != 0 || !page_list_empty(&z.tables)) mm_flush_tlb_range(mm, start, end);
-    zap_free(&z);
-    return n;
+    return mm_zap_range(mm, start, end, force ? MM_ZAP_FLUSH_ALWAYS : MM_ZAP_FLUSH);
 }
 
 /* --- Lifetime --- */
@@ -132,14 +168,21 @@ static void mm_destroy(Mm *mm) {
         }
     }
 #endif
-    vmm_free_user_pages(mm->pgd);
-    rss_add(mm, -(int64_t)mm_rss(mm));
+    /* Unmap through the VMAs first: page-cache pages leave their mappings'
+     * books, and a file's VMA list keeps finding this mm until its pages
+     * are gone. No CPU has it loaded, so each "flush" only checks the empty
+     * CPU set; it keeps the one rule (flush, then free) without exceptions. */
+    for (Vma *v = mm->vmas.head; v != NULL; v = v->next) mm_zap_range(mm, v->start, v->end, MM_ZAP_FLUSH);
+    /* Off the files' lists before the tables go: a truncate walking a list
+     * may still zap through a listed VMA's mm */
     Vma *v = mm->vmas.head;
     while (v != NULL) {
         Vma *next = v->next;
         vma_free(v);
         v = next;
     }
+    vmm_free_user_pages(mm->pgd);
+    rss_add(mm, -(int64_t)mm_rss(mm));
     kmem_cache_free(mm_cache, mm);
 }
 
@@ -168,6 +211,12 @@ void mm_switch(Mm *next) {
     irq_restore(flags);
 }
 
+/* vmm_copy_range_in's skip for file VMAs: page-cache pages are refaulted by
+ * the child; its private copies (anonymous) are copied */
+static int is_cache_page(uint64_t phys) {
+    return (pfn_to_page(phys >> PAGE_SHIFT)->flags & PG_FILE) != 0;
+}
+
 Mm *mm_fork(Mm *src) {
     Mm *dst = mm_create();
     if (dst == NULL) return NULL;
@@ -187,11 +236,14 @@ Mm *mm_fork(Mm *src) {
         nv->file = v->file;
         nv->pgoff = v->pgoff;
         nv->ops = v->ops;
+        nv->mm = dst;
         vma_insert(&dst->vmas, nv);
+        if (nv->ops != NULL && nv->ops->open != NULL) nv->ops->open(nv);
         /* dst is private to this thread; src's pt_lock keeps concurrent
-         * faults out of the tables being copied (copy-on-write: M1-08) */
+         * faults out of the tables being copied (copy-on-write: M1-08).
+         * Page-cache pages are not copied: the child faults them in. */
         spin_lock(&src->pt_lock);
-        err = vmm_copy_range_in(src->pgd, dst->pgd, v->start, v->end, &copied);
+        err = vmm_copy_range_in(src->pgd, dst->pgd, v->start, v->end, v->ops != NULL ? is_cache_page : NULL, &copied);
         spin_unlock(&src->pt_lock);
     }
     dst->brk_start = src->brk_start;
@@ -216,6 +268,7 @@ static int setup_insert(Mm *mm, uint64_t start, uint64_t end, uint32_t prot, uin
     v->end = end;
     v->prot = prot & VMA_PROT_MASK;
     v->flags = flags | VMA_ANON;
+    v->mm = mm;
     vma_insert(&mm->vmas, v);
     return 0;
 }
@@ -234,6 +287,23 @@ int mm_setup_vma(Mm *mm, uint64_t start, uint64_t end, uint32_t prot, uint32_t f
     Vma *shared = vma_find_containing(&mm->vmas, start);
     shared->prot |= prot & VMA_PROT_MASK;
     return end > start + PAGE_SIZE ? setup_insert(mm, start + PAGE_SIZE, end, prot, flags) : 0;
+}
+
+int mm_setup_object_vma(Mm *mm, uint64_t start, uint64_t end, uint32_t prot, void *file, uint64_t pgoff,
+                        const VmaOps *ops) {
+    if (start >= end || end > MM_USER_END || !vma_range_free(&mm->vmas, start, end)) return -EINVAL;
+    Vma *v = vma_alloc();
+    if (v == NULL) return -ENOMEM;
+    v->start = start;
+    v->end = end;
+    v->prot = prot & VMA_PROT_MASK;
+    v->file = file;
+    v->pgoff = pgoff;
+    v->ops = ops;
+    v->mm = mm;
+    vma_insert(&mm->vmas, v);
+    if (ops->open != NULL) ops->open(v);
+    return 0;
 }
 
 int mm_setup_page(Mm *mm, uint64_t virt, uint64_t phys, uint32_t vmm_flags) {
@@ -282,7 +352,8 @@ static int grow_stack(Mm *mm, uint64_t page) {
 
 /* Map the page at addr in v (read lock held). */
 static int fault_in(Mm *mm, Vma *v, uint64_t page, uint32_t access) {
-    uint32_t flags = prot_to_vmm(v->prot);
+    if (v->ops != NULL && v->ops->fault != NULL) return v->ops->fault(mm, v, page, access);
+    uint32_t flags = mm_prot_to_vmm(v->prot);
     spin_lock(&mm->pt_lock);
     uint64_t old;
     if (vmm_lookup_in(mm->pgd, page, &old)) {
@@ -295,14 +366,9 @@ static int fault_in(Mm *mm, Vma *v, uint64_t page, uint32_t access) {
     }
     spin_unlock(&mm->pt_lock);
 
-    uint64_t phys = 0;
-    if (v->ops != NULL && v->ops->fault != NULL) {
-        if (v->ops->fault(v, page, access, &phys) != 0) return MM_FAULT_OOM;
-    } else {
-        struct page *pg = alloc_pages(0, GFP_ZERO);
-        if (pg == NULL) return MM_FAULT_OOM;
-        phys = page_to_phys(pg);
-    }
+    struct page *pg = alloc_pages(0, GFP_ZERO);
+    if (pg == NULL) return MM_FAULT_OOM;
+    uint64_t phys = page_to_phys(pg);
 
     spin_lock(&mm->pt_lock);
     if (vmm_lookup_in(mm->pgd, page, NULL)) {
@@ -355,16 +421,16 @@ static int split_at(Mm *mm, uint64_t addr) {
 static int unmap_locked(Mm *mm, uint64_t start, uint64_t end) {
     if (split_at(mm, start) != 0 || split_at(mm, end) != 0) return -ENOMEM;
     Vma *v = vma_find(&mm->vmas, start);
-    int removed = 0;
+    if (v == NULL || v->start >= end) return 0;
+    /* Pages first, while the VMAs still list this mm with their files (a
+     * truncate meanwhile finds every entry through them) */
+    zap_range(mm, start, end, 0);
     while (v != NULL && v->start < end) {
         Vma *next = v->next;
         vma_remove(&mm->vmas, v);
         vma_free(v);
-        removed = 1;
         v = next;
     }
-    if (!removed) return 0;
-    zap_range(mm, start, end, 0);
     /* The free-area cache: the next search may use this space again */
     if (end > mm->mmap_hint) mm->mmap_hint = end < mm->mmap_base ? end : mm->mmap_base;
     return 0;
@@ -391,8 +457,10 @@ static uint64_t find_free(Mm *mm, uint64_t len, int below_2g) {
     return a;
 }
 
-int64_t mm_map_anon(Mm *mm, uint64_t addr, uint64_t len, uint32_t prot, uint32_t flags, int how, int populate,
-                    int below_2g) {
+/* mmap of anonymous memory, or of an object when proto->ops is set (its
+ * file, pgoff and ops are copied and ops->open called). */
+static int64_t map_region(Mm *mm, uint64_t addr, uint64_t len, uint32_t prot, uint32_t flags, int how, int populate,
+                          int below_2g, const Vma *proto) {
     if (len == 0 || len > MM_USER_END) return -ENOMEM;
     rwsem_down_write(&mm->lock);
     uint64_t start = 0;
@@ -424,18 +492,44 @@ int64_t mm_map_anon(Mm *mm, uint64_t addr, uint64_t len, uint32_t prot, uint32_t
     v->start = start;
     v->end = start + len;
     v->prot = prot & VMA_PROT_MASK;
-    v->flags = flags | VMA_ANON;
-    vma_insert(&mm->vmas, v);
-    (void)vma_merge_around(&mm->vmas, v);
+    v->mm = mm;
+    if (proto != NULL) {
+        v->flags = flags;
+        v->file = proto->file;
+        v->pgoff = proto->pgoff;
+        v->ops = proto->ops;
+        vma_insert(&mm->vmas, v);
+        if (v->ops->open != NULL) v->ops->open(v);
+    } else {
+        v->flags = flags | VMA_ANON;
+        vma_insert(&mm->vmas, v);
+        (void)vma_merge_around(&mm->vmas, v);
+    }
     rwsem_up_write(&mm->lock);
 
     if (populate && (prot & VMA_PROT_MASK) != 0) {
-        uint32_t access = (prot & VMA_WRITE) ? MM_ACCESS_WRITE : 0;
+        /* As Linux: a write fault only breaks copy on write in a private
+         * mapping; a shared one is read in (a store marks pages dirty) */
+        uint32_t access = (prot & VMA_WRITE) && !(flags & VMA_SHARED) ? MM_ACCESS_WRITE : 0;
         for (uint64_t a = start; a < start + len; a += PAGE_SIZE) {
             if (mm_fault(mm, a, access) != MM_FAULT_OK) break;   /* MAP_POPULATE is best effort */
         }
     }
     return (int64_t)start;
+}
+
+int64_t mm_map_anon(Mm *mm, uint64_t addr, uint64_t len, uint32_t prot, uint32_t flags, int how, int populate,
+                    int below_2g) {
+    return map_region(mm, addr, len, prot, flags, how, populate, below_2g, NULL);
+}
+
+int64_t mm_map_object(Mm *mm, uint64_t addr, uint64_t len, uint32_t prot, uint32_t flags, int how, int populate,
+                      void *file, uint64_t pgoff, const VmaOps *ops) {
+    Vma proto = {0};
+    proto.file = file;
+    proto.pgoff = pgoff;
+    proto.ops = ops;
+    return map_region(mm, addr, len, prot, flags & ~VMA_ANON, how, populate, 0, &proto);
 }
 
 int mm_unmap(Mm *mm, uint64_t addr, uint64_t len) {
@@ -452,13 +546,25 @@ int mm_protect(Mm *mm, uint64_t addr, uint64_t len, uint32_t prot) {
         rwsem_up_write(&mm->lock);
         return -ENOMEM;
     }
+    /* A shared mapping of a file opened read-only never becomes writable */
+    for (Vma *v = vma_find(&mm->vmas, addr); v != NULL && v->start < end; v = v->next) {
+        if ((prot & VMA_WRITE) && (v->flags & VMA_SHARED) && !(v->flags & VMA_MAYWRITE)) {
+            rwsem_up_write(&mm->lock);
+            return -EACCES;
+        }
+    }
     if (split_at(mm, addr) != 0 || split_at(mm, end) != 0) {
         rwsem_up_write(&mm->lock);
         return -ENOMEM;
     }
-    for (Vma *v = vma_find(&mm->vmas, addr); v != NULL && v->start < end; v = v->next) v->prot = prot & VMA_PROT_MASK;
     spin_lock(&mm->pt_lock);
-    vmm_protect_range_in(mm->pgd, addr, end, prot_to_vmm(prot));
+    for (Vma *v = vma_find(&mm->vmas, addr); v != NULL && v->start < end; v = v->next) {
+        v->prot = prot & VMA_PROT_MASK;
+        /* File pages stay read-only in the tables: a write faults, so a
+         * private page is copied and a shared one marked dirty first */
+        uint32_t pte_prot = v->ops != NULL ? v->prot & ~VMA_WRITE : v->prot;
+        vmm_protect_range_in(mm->pgd, v->start, v->end, mm_prot_to_vmm(pte_prot));
+    }
     spin_unlock(&mm->pt_lock);
     mm_flush_tlb_range(mm, addr, end);
     /* Merge what now matches; each step keeps the survivor */
@@ -478,6 +584,46 @@ int mm_dontneed(Mm *mm, uint64_t addr, uint64_t len) {
     zap_range(mm, addr, end, 0);   /* holes have no pages: zapping them is a no-op */
     rwsem_up_write(&mm->lock);
     return mapped ? 0 : -ENOMEM;
+}
+
+int mm_advise_access(Mm *mm, uint64_t addr, uint64_t len, uint32_t hint) {
+    uint64_t end = addr + len;
+    rwsem_down_write(&mm->lock);
+    int err = range_mapped_locked(mm, addr, end) ? 0 : -ENOMEM;
+    if (err == 0 && (split_at(mm, addr) != 0 || split_at(mm, end) != 0)) err = -ENOMEM;
+    if (err == 0) {
+        Vma *v = vma_find(&mm->vmas, addr);
+        while (v != NULL && v->start < end) {
+            v->flags = (v->flags & ~(VMA_SEQ_READ | VMA_RAND_READ)) | hint;
+            v = vma_merge_around(&mm->vmas, v)->next;
+        }
+    }
+    rwsem_up_write(&mm->lock);
+    return err;
+}
+
+int mm_willneed(Mm *mm, uint64_t addr, uint64_t len) {
+    uint64_t end = addr + len;
+    rwsem_down_read(&mm->lock);
+    int err = range_mapped_locked(mm, addr, end) ? 0 : -ENOMEM;
+    for (Vma *v = vma_find(&mm->vmas, addr); err == 0 && v != NULL && v->start < end; v = v->next) {
+        if (v->ops != NULL && v->ops->willneed != NULL)
+            v->ops->willneed(v, v->start > addr ? v->start : addr, v->end < end ? v->end : end);
+    }
+    rwsem_up_read(&mm->lock);
+    return err;
+}
+
+int mm_msync(Mm *mm, uint64_t addr, uint64_t len, int sync) {
+    uint64_t end = addr + len;
+    rwsem_down_read(&mm->lock);
+    int err = range_mapped_locked(mm, addr, end) ? 0 : -ENOMEM;
+    for (Vma *v = vma_find(&mm->vmas, addr); sync && err == 0 && v != NULL && v->start < end; v = v->next) {
+        if ((v->flags & VMA_SHARED) && v->ops != NULL && v->ops->sync != NULL)
+            err = v->ops->sync(v, v->start > addr ? v->start : addr, v->end < end ? v->end : end);
+    }
+    rwsem_up_read(&mm->lock);
+    return err;
 }
 
 int mm_range_mapped(Mm *mm, uint64_t addr, uint64_t len) {
@@ -500,6 +646,8 @@ static int64_t move_locked(Mm *mm, uint64_t old, uint64_t old_len, uint64_t new_
     nv->file = src->file;
     nv->pgoff = src->pgoff;
     nv->ops = src->ops;
+    nv->mm = mm;
+    if (nv->ops != NULL && nv->ops->open != NULL) nv->ops->open(nv);   /* listed with its file before entries move */
 
     spin_lock(&mm->pt_lock);
     int err = vmm_move_range_in(mm->pgd, old, dest, old_len);
@@ -592,6 +740,7 @@ uint64_t mm_brk(Mm *mm, uint64_t new_brk) {
             v->end = new_top;
             v->prot = VMA_READ | VMA_WRITE;
             v->flags = VMA_ANON | VMA_HEAP;
+            v->mm = mm;
             vma_insert(&mm->vmas, v);
             (void)vma_merge_around(&mm->vmas, v);
         }

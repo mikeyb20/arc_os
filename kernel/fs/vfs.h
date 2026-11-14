@@ -60,6 +60,7 @@ typedef int64_t loff_t;
 #define X_OK 1
 
 typedef struct Inode Inode;
+struct VmaOps;
 typedef struct SuperBlock SuperBlock;
 typedef struct File File;
 typedef struct DirContext DirContext;
@@ -189,8 +190,10 @@ typedef struct FileOps {
     loff_t (*llseek)(File *file, loff_t offset, int whence);
     /* NULL: -ENOTTY */
     int64_t (*ioctl)(File *file, uint64_t request, uint64_t arg);
-    /* Placeholders: file mmap (M1-12) and poll (M1-18). NULL today. */
-    int (*mmap)(File *file, void *vma);
+    /* mmap: the operations of a VMA mapping this file (mm/vma.h; page-cache
+     * files: filemap_vma_ops). NULL: mmap gives -ENODEV. */
+    const struct VmaOps *mmap_ops;
+    /* Placeholder: poll (M1-18). NULL today. */
     uint32_t (*poll)(File *file, void *table);
     /* NULL: nothing to write back, 0 */
     int (*fsync)(File *file);
@@ -230,7 +233,7 @@ struct Inode {
     SuperBlock *sb;
     const InodeOps *iop;
     const FileOps *fop;
-    void *mapping;    /* page-cache pages of this file (M1-12); NULL until then */
+    void *mapping;    /* regular files: the AddressSpace of its page-cache pages (mm/filemap.h) */
     void *priv;       /* filesystem's own data */
     uint32_t refcount;   /* atomic; hashed inodes drop to 0 only under the inode-cache lock */
     Inode *hash_next;    /* inode-cache chain */
@@ -251,6 +254,12 @@ struct SuperBlock {
     void *priv;           /* filesystem's own data */
 };
 
+/* Readahead state of an open file (mm/filemap.c). Windows in pages. */
+typedef struct FileRa {
+    uint32_t next;   /* page index a sequential reader asks for next */
+    uint32_t size;   /* current window; 0 = none yet */
+} FileRa;
+
 struct File {
     Inode *inode;         /* a reference */
     const FileOps *fop;
@@ -259,6 +268,7 @@ struct File {
     uint32_t refcount;    /* atomic: fd-table entries and callers in flight */
     char *path;           /* directories: the absolute path opened (openat bases) */
     void *priv;           /* the file's own data (socket index, ...) */
+    FileRa ra;            /* readahead (racy by design: a hint shared by the File's users) */
     Mutex pos_lock;       /* LOCK_LEVEL_FILE_POS */
 };
 

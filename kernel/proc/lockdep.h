@@ -29,6 +29,7 @@
 #define LOCK_LEVEL_MAPPING       40   /* sleeping: VMAs mapping a file (M1-12) */
 #define LOCK_LEVEL_FS_IO         45   /* sleeping: a filesystem's device reads (FAT32 volume; M1-11) */
 #define LOCK_LEVEL_PAGE_TABLE    50   /* spinlock, per mm; today the kernel page tables */
+#define LOCK_LEVEL_PAGE_LRU      59   /* spinlock: the evictable page-cache pages (M1-12) */
 #define LOCK_LEVEL_PAGE_CACHE    60   /* spinlock, per address space (M1-12) */
 #define LOCK_LEVEL_MOUNT         62   /* spinlock: adding to the mount table (M1-11) */
 #define LOCK_LEVEL_DCACHE        63   /* spinlock: the dentry cache (M1-11) */
@@ -53,8 +54,10 @@
 
 /* Spinlocks one CPU may hold at once (deepest nesting seen is about 5) */
 #define LOCKDEP_MAX_HELD       16
-/* Sleeping locks one thread may hold at once */
-#define LOCKDEP_MAX_SLEEP_HELD 4
+/* Sleeping locks one thread may hold at once. Deepest today: a write whose
+ * user buffer maps a file faults while holding the File position, inode, mm,
+ * page and filesystem-I/O locks (5; M1-12) */
+#define LOCKDEP_MAX_SLEEP_HELD 6
 
 struct Spinlock;
 

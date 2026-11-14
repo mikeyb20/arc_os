@@ -12,6 +12,19 @@ void proc_syscalls_init(void);
 #include "proc/exec_stack.h"
 
 struct Process;
+struct Mm;
+
+/* Mode and owner of the program file exec_load loaded (setuid/setgid). */
+typedef struct ExecFileInfo {
+    uint32_t mode, uid, gid;
+} ExecFileInfo;
+
+/* Load the static ELF program at path into mm (fresh, unreachable by anyone
+ * else) through the page cache: its whole pages of segment data are private
+ * file mappings, read on first touch (elf_load_from). info (may be NULL)
+ * gets the file's mode and owner. 0, -ENOENT/-EACCES (not a regular file with
+ * execute permission), -ENOEXEC, -ENOMEM or -EIO. execve and init. */
+int exec_load(const char *path, struct Mm *mm, ElfLoadResult *result, ExecFileInfo *info);
 
 /* Enter a freshly loaded program (execve, init): build the System V initial
  * stack from strings and the auxv values, copy it to the top of the user stack

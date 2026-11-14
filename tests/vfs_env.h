@@ -55,6 +55,8 @@ void vfs_env_fail_alloc_in(int n);
  * change state (write to a pipe, close an end) and return; with no hook the
  * test fails (it would block forever). */
 extern void (*vfs_env_sleep_hook)(void);
+/* Called at the start of alloc_pages while set (a test clears it inside to run once) */
+extern void (*vfs_env_alloc_hook)(void);
 extern int vfs_env_sleeps;   /* wq_sleep calls so far */
 
 /* Fake terminal: bytes written to it, and input that tty_read returns. */
@@ -74,5 +76,11 @@ int64_t vfs_env_read_file(const char *path, char *buf, size_t size);
 /* User copies also fault from this host address on (0: off), so a buffer can
  * fault half-way. */
 extern uintptr_t vfs_env_fault_at;
+
+/* File-mapping tests (M1-12): the entry an address space has at virt (its
+ * page and VMA protection). 1 if there is one. */
+struct page;
+int vfs_env_pte(uint64_t pgd, uint64_t virt, struct page **pg, uint32_t *flags);
+extern int vfs_env_tlb_flushes;   /* mm_flush_tlb_range and zap flushes so far */
 
 #endif /* ARCHOS_TESTS_VFS_ENV_H */

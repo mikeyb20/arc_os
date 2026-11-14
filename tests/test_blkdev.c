@@ -518,8 +518,11 @@ TEST(blk_submit_page_async) {
     page_status = 1;
     ASSERT_EQ(blk_submit_page(&fd->disk, BLK_OP_READ, 128, apage(5), 0, PAGE_SIZE, page_end, &page_status), 0);
     ASSERT_EQ(page_status, 1);   /* not before the interrupt */
-    blk_complete(&fd->disk);
+    /* Boot polling (a page wait before the scheduler) reaps it as the
+     * interrupt would; with nothing in flight it does nothing */
+    blk_poll_all();
     ASSERT_EQ(page_status, 0);
+    blk_poll_all();
     ASSERT_TRUE(words_are_sector(page_to_virt(apage(5)), 128, PAGE_SIZE));
     /* A refused request still ends, at once */
     ASSERT_EQ(blk_submit_page(&fd->disk, BLK_OP_READ, 1ull << 40, apage(5), 0, PAGE_SIZE, page_end, &page_status), 0);

@@ -82,8 +82,19 @@ GPT partitions, and every later storage driver plugs into the same queue (ADR-00
   1, sync read across pages, write + flush + read back, refusals, dropped interrupt completed by the timeout
   poll), and the suite reads `/disk/hello.txt` from a program, which sleeps until the disk interrupt (MSI-X,
   and INTx in `.intx`). `qemu.vfs` still mounts a whole-disk FAT32 image.
-- Measured: kernel image 508109 bytes (limit 511000, unchanged). M1-12 measured 515584 on its own branch, so
-  whichever of #42 and this block merges second raises the limit (measure, don't guess).
+- Measured: kernel image 508109 bytes on its own (limit 511000). Merged after M1-12 (#42), the combined tree is
+  538274 bytes; `kernel_image_bytes` set to 565000 (measured + 5%, as the budgets file does).
+- Second merger (M1-12 landed first): `filemap_bdev_read(plug, dev, ...)` is one block request whose `end_io`
+  calls `filemap_bdev_read_done` (priv = the page); the page's piece share is taken before the submit, since
+  `end_io` can run at once. `fat32_readpage`/`readpages` put their pieces on one plug, flushed under `io_lock`
+  (a sleeping lock: allowed). `filemap_bdev_write` and FAT32 metadata use `blk_rw_sync`. Two consequences of
+  async pieces, found with M1-13's thread: (1) a FAT32 piece that ran past EOF could land after the page tail
+  was zeroed, so pieces now stop at the last whole sector before EOF and a partial last sector is read at once
+  and copied up to EOF (`fat32_read_tail`); host test `page_tail_past_eof_stays_zero` defers the pieces and
+  fails on the old order. (2) A page wait before the scheduler can't sleep, so `page_wait_unlocked` polls
+  every disk (`blk_poll_all`) until `sched_can_block()`. Requests built by hand must fit `max_segments` and
+  `max_transfer` (else -EINVAL), and a disk must take at least a page per request. The VFS host suites run
+  over `tests/blk_mem.c`, the block-layer API over memory (synchronous, or deferred to test async ends).
 - Not done / for later: no `/dev` nodes for disks (spec changed above). FAT32 on a 4Kn disk refuses to mount
   (`fat32.c` assumes 512-byte sectors; ESPs on 4Kn disks use 4096-byte FAT sectors): fix when a 4Kn machine
   needs it. A virtio config-change interrupt (capacity change) is still ignored. The FAT is read with one

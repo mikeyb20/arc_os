@@ -159,7 +159,7 @@ TEST(root_listing_and_no_new_names) {
     Names n;
     ASSERT_EQ(list("/proc", &n), 0);
     ASSERT_STR_EQ(n.names,
-                  ". .. meminfo uptime cmdline cpuinfo slabinfo kmsg sched_debug mounts interrupts sys self 1");
+                  ". .. meminfo uptime cmdline cpuinfo slabinfo kmsg sched_debug mounts interrupts vmstat sys self 1");
     File *f;
     ASSERT_EQ(vfs_open("/proc/new", O_CREAT | O_WRONLY, 0644, &f), -EACCES);   /* no create op */
     ASSERT_EQ(vfs_mkdir("/proc/d", 0755), -EPERM);                            /* no mkdir op */

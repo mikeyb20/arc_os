@@ -8,6 +8,7 @@
 #include "mm/kmalloc.h"
 #include "mm/slab.h"
 #include "mm/mm.h"
+#include "mm/filemap.h"
 #include "boot/bootinfo.h"
 #include "proc/thread.h"
 #include "proc/sched.h"
@@ -424,6 +425,7 @@ void kmain(void) {
     serial_puts("[BOOT] stage: heap\n");
     kmalloc_init();
     mm_init();   /* VMA and address-space caches (M1-07) */
+    filemap_init();   /* page-cache radix nodes and mappings (M1-12) */
     klog_setup_buffer();
     heap_self_test();
     pmm_self_test();

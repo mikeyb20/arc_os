@@ -36,6 +36,15 @@ size_t copy_from_user_partial(void *dst, const void *src, size_t len) {
     return len - hal_copy_user(dst, src, len);
 }
 
+size_t copy_from_user_nofault(void *dst, const void *src, size_t len) {
+    /* The fault path resolves nothing while this CPU's lock depth is above
+     * zero (it may sleep), so the copy stops at the first missing page */
+    hal_lock_depth_inc();
+    size_t n = copy_from_user_partial(dst, src, len);
+    hal_lock_depth_dec();
+    return n;
+}
+
 int copy_to_user(void *dst, const void *src, size_t len) {
     if (len == 0) return 0;
     if (!user_ptr_valid(dst, len)) return -EFAULT;

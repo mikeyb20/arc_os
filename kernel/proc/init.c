@@ -18,9 +18,7 @@
 
 /* Argument passed to the init kernel thread */
 typedef struct {
-    const void *elf_data;
-    uint64_t    elf_size;
-    const char *path;      /* module path: init's argv[0] and AT_EXECFN */
+    const char *path;      /* module path (its copy in the root ramfs): argv[0], AT_EXECFN */
     Process    *proc;
 } InitArgs;
 
@@ -36,13 +34,14 @@ static void init_thread_entry(void *arg) {
     (void)irq_save();
     kernel_lock();
 
-    kprintf("[INIT] Loading init ELF (%lu bytes)\n", args->elf_size);
+    kprintf("[INIT] Loading init ELF '%s'\n", args->path);
 
-    /* Load ELF into the process's address space */
+    /* Load it like execve does: from the module's copy in the root ramfs,
+     * through the page cache (the boot module memory is not used) */
     ElfLoadResult result;
-    int err = elf_load(args->elf_data, args->elf_size, p->mm, &result);
+    int err = exec_load(args->path, p->mm, &result, NULL);
     if (err != 0) {
-        kprintf("[INIT] FATAL: elf_load failed (%d)\n", err);
+        kprintf("[INIT] FATAL: exec_load failed (%d)\n", err);
         return;
     }
 
@@ -130,8 +129,6 @@ int init_launch(const BootInfo *info) {
     }
 
     /* Create kernel thread that will load ELF and transition to user mode */
-    g_init_args.elf_data = init_mod->address;
-    g_init_args.elf_size = init_mod->size;
     g_init_args.path = init_mod->path;
     g_init_args.proc = p;
 

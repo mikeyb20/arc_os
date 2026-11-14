@@ -182,7 +182,8 @@ void free_pages(struct page *page, unsigned order) {
         bad = "page not allocated (double free?)";
     } else if (page_order(page) != order) {
         bad = "order mismatch";
-    } else if (--page->refcount == 0) {
+    } else if (__atomic_sub_fetch(&page->refcount, 1, __ATOMIC_ACQ_REL) == 0) {
+        /* Atomic: page_ref_get (page.h) adds references without this lock */
         page->flags = 0;
         free_page_count += 1ull << order;
         free_block(pfn, order);

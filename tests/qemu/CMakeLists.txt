@@ -260,14 +260,34 @@ add_test(NAME qemu.devices.intx COMMAND ${_qemu_test} --suite devices --name dev
     --expect "INTx +0000:00:[0-9a-f.]+ line [0-9]+  edu")
 set_tests_properties(qemu.devices qemu.devices.intx PROPERTIES FIXTURES_REQUIRED devices_disk)
 
+# Page cache (M1-12): write()/mmap coherence both ways, MAP_PRIVATE copies,
+# fork with file mappings, dirty counts and msync, SIGBUS past the end and
+# after truncate, the FAT32 disk read through the cache with readahead, a
+# 1 GiB ramfs file mapped by 4 processes at once, and a 9 MiB program exec'd
+# twice from the cache. The suite's leak check covers all of it.
+add_test(NAME qemu.pagecache COMMAND ${_qemu_test} --suite pagecache --module pctest --module bigexec
+    --disk tests/fat32_test.img --timeout 280
+    --expect "pctest: coherent ok"
+    --expect "pctest: private ok"
+    --expect "pctest: fork ok"
+    --expect "pctest: sync ok"
+    --expect "pctest: sigbus ok"
+    --expect "pctest: fat ok"
+    --expect "pctest: big ok"
+    --expect "pctest: 0 failures"
+    --expect "bigexec: 0 bad read-only pages, 0 bad writable pages, status 0"
+    --expect "ARC_TEST PASS bigexec2"
+    --expect "ARC_TEST budget pages_leaked 0"
+    --expect "ARC_TEST budget heap_leaked_bytes 0")
+
 set_tests_properties(qemu.smoke qemu.mem.buddy qemu.mem.cap qemu.userland qemu.abi qemu.musl qemu.fpu qemu.cpufloor
     qemu.smp.xapic qemu.smp.x2apic qemu.sched qemu.lockorder qemu.selftest.fail qemu.selftest.panic
-    qemu.panic.fault qemu.diag qemu.mm qemu.mm.oom qemu.vfs qemu.qr.report qemu.qr.log qemu.qr.panic
+    qemu.panic.fault qemu.diag qemu.mm qemu.mm.oom qemu.vfs qemu.pagecache qemu.qr.report qemu.qr.log qemu.qr.panic
     qemu.devices qemu.devices.intx
     PROPERTIES LABELS qemu TIMEOUT 180 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     FIXTURES_SETUP qemu_logs)
-set_tests_properties(qemu.mm.oom PROPERTIES TIMEOUT 320)
-set_tests_properties(qemu.vfs PROPERTIES FIXTURES_REQUIRED fat32_image)
+set_tests_properties(qemu.mm.oom qemu.pagecache PROPERTIES TIMEOUT 320)
+set_tests_properties(qemu.vfs qemu.pagecache PROPERTIES FIXTURES_REQUIRED fat32_image)
 
 # Budgets (ADR-0019, M0-08): sizes and counts from the build and from the
 # suites' `ARC_TEST budget` lines, against tests/budgets.txt. Runs after the

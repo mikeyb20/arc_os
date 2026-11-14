@@ -195,6 +195,12 @@ void blk_rq_done(BlkRequest *rq, int status);
 void blk_expire_all(uint64_t now);
 void blk_expire(BlockDevice *disk, uint64_t now);
 
+/* Boot, before the scheduler can sleep (sched_can_block() == 0): reap and
+ * time out what every disk has in flight, as blk_rw_sync's own wait does.
+ * Callers loop on their own condition (page_wait_unlocked). O(disks) while
+ * anything is in flight, O(1) otherwise. */
+void blk_poll_all(void);
+
 /* --- Users: filesystems, page cache --- */
 
 /* A request for op at 512-byte sector of dev (a disk or partition), no
@@ -205,7 +211,9 @@ BlkRequest *blk_rq_alloc(BlockDevice *dev, int op, uint64_t sector, BlkEndIo end
 void blk_rq_free(BlkRequest *rq);
 
 /* Add len bytes at offset in page pg. Returns 0, or -E2BIG when the request
- * is full (submit it and start another). */
+ * is full (submit it and start another). A request built this way must fit
+ * the disk's max_segments and max_transfer, or it fails with -EINVAL; one
+ * segment of up to a page always fits (blk_disk_register checks). */
 int blk_rq_add_page(BlkRequest *rq, struct page *pg, uint32_t offset, uint32_t len);
 
 /* Submit one request (O(1)). end_io always runs, with -EINVAL, -EIO or
@@ -214,7 +222,7 @@ void blk_submit(BlkRequest *rq);
 
 /* Plugging: collect requests, merging adjacent ones, then hand them all to
  * the device at once (one lock round, one doorbell). On the stack. */
-typedef struct {
+typedef struct BlkPlug {
     BlkRequest *head, *tail;
 } BlkPlug;
 
