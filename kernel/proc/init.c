@@ -39,7 +39,7 @@ static void init_thread_entry(void *arg) {
     /* Load it like execve does: from the module's copy in the root ramfs,
      * through the page cache (the boot module memory is not used) */
     ElfLoadResult result;
-    int err = exec_load(args->path, p->mm, &result, NULL);
+    int err = exec_load(NULL, args->path, p->mm, &result, NULL);
     if (err != 0) {
         kprintf("[INIT] FATAL: exec_load failed (%d)\n", err);
         return;

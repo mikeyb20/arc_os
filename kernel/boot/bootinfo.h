@@ -79,6 +79,13 @@ typedef struct {
     uint64_t smbios_entry32;   /* physical address of the SMBIOS 2.x entry point, 0 if none */
     uint64_t smbios_entry64;   /* physical address of the SMBIOS 3.x entry point, 0 if none */
     uint32_t firmware;         /* BOOT_FIRMWARE_* */
+    /* Where Limine loaded the kernel from (ADR-0018: arc_os mounts its
+     * partitions from that disk only): the disk's GPT GUID and the
+     * partition's, in GPT byte order (first three fields little-endian).
+     * boot_gpt false (an ISO, PXE, an MBR disk): both all zeros. */
+    uint8_t boot_disk_guid[16];
+    uint8_t boot_part_guid[16];
+    bool boot_gpt;
 } BootInfo;
 
 /* Parse bootloader data into a BootInfo struct.

@@ -18,6 +18,7 @@
 #define ARCHOS_PROC_PROC_SYSCALLS_H  /* proc_release_fds: stubbed below */
 #define ARCHOS_ARCH_X86_64_USERMODE_H
 #define ARCHOS_FS_PATH_H
+#define ARCHOS_FS_VFS_H          /* vfs_cwd_copy / vfs_cwd_release: stubbed below */
 #define ARCHOS_ARCH_HAL_H        /* hal.h: only fpu.h is used, stubbed below */
 #define ARCHOS_ARCH_X86_64_FPU_H  /* fpu.h: stubbed below */
 
@@ -137,7 +138,8 @@ typedef struct Process {
     Thread         *main_thread;
     struct Mm *mm;
     FdTable *fd_table;
-    char            cwd[PATH_MAX];
+    struct Inode *cwd;
+    struct Mount *cwd_mnt;
     uint32_t        uid;
     uint32_t        gid;
     uint32_t        euid;
@@ -201,6 +203,19 @@ static void proc_release_fds(Process *p) {
     FdTable *t = p->fd_table;
     p->fd_table = NULL;
     if (t != NULL && t->heap) kfree(t);
+}
+
+/* Working-directory stubs: a counter stands in for the inode references */
+static int cwd_refs;
+static void vfs_cwd_copy(Process *child, const Process *parent) {
+    child->cwd = parent->cwd;
+    child->cwd_mnt = parent->cwd_mnt;
+    if (child->cwd != NULL) cwd_refs++;
+}
+static void vfs_cwd_release(Process *p) {
+    if (p->cwd != NULL) cwd_refs--;
+    p->cwd = NULL;
+    p->cwd_mnt = NULL;
 }
 
 /* Arch stubs */
@@ -708,6 +723,8 @@ static int test_fork_failure_unlinks_and_frees(void) {
     Process *parent = make_parent();
     Process *head = proc_list;
     int live_before = kmalloc_call_count - kfree_call_count;
+    parent->cwd = (struct Inode *)parent;   /* any non-NULL directory */
+    int refs_before = cwd_refs;
     thread_create_force_fail = 1;
     ForkContext ctx;
     memset(&ctx, 0, sizeof(ctx));
@@ -715,6 +732,8 @@ static int test_fork_failure_unlinks_and_frees(void) {
     ASSERT_TRUE(proc_list == head && list_well_formed());
     ASSERT_EQ(mm_put_calls, 1);                   /* the copied address space too */
     ASSERT_EQ(release_fds_calls, 1);              /* pipe refs fd_table_dup took */
+    ASSERT_EQ(cwd_refs, refs_before);             /* the cwd reference the copy took */
+    parent->cwd = NULL;
     ASSERT_EQ(kmalloc_call_count - kfree_call_count, live_before);
     return 0;
 }

@@ -247,12 +247,21 @@ int blk_rw_sync(BlockDevice *dev, int op, uint64_t sector, void *buf, size_t byt
 
 /* The index-th registered device (disks and partitions, in order), or NULL. */
 BlockDevice *blk_get(unsigned index);
+/* The lookups below are in blk_lookup.c (they need only blk_get). */
 /* By name ("vda", "vda1"), or NULL. */
 BlockDevice *blk_find(const char *name);
-/* The first partition with this type GUID on the disk with this GPT GUID. */
-BlockDevice *blk_find_part(const Guid *disk_guid, const Guid *type);
-/* The first partition with this label. */
-BlockDevice *blk_find_label(const char *label);
+/* The whole disk with this GPT GUID, or NULL. When several disks share it (a
+ * cloned disk), the first registered, with a warning logged. */
+BlockDevice *blk_find_disk(const Guid *disk_guid);
+/* The first partition with this type GUID on this whole disk (never on
+ * another disk with the same GPT GUID). */
+BlockDevice *blk_find_part(const BlockDevice *disk, const Guid *type);
+/* The first partition with this label and, unless type is NULL, this type
+ * GUID. A label alone may name a foreign partition (ADR-0018): anything
+ * arc_os mounts passes its type. */
+BlockDevice *blk_find_label(const char *label, const Guid *type);
+/* The partition with this PARTUUID, or NULL. */
+BlockDevice *blk_find_partuuid(const Guid *part_guid);
 
 /* Statistics of dev's disk queue. */
 void blk_get_stats(BlockDevice *dev, BlkStats *out);

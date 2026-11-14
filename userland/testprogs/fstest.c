@@ -368,15 +368,47 @@ static void test_review(const char *self) {
     CHECK(syscall(SYS_getdents64, d, NULL, 0) == -1 && errno == EINVAL);
     close(d);
 
+    /* A dirfd follows its directory through a rename (M1-13: walks start
+     * from inodes), as does the cwd; getcwd finds the new name */
     CHECK(mkdir("/tmp/fst_r1", 0755) == 0);
     d = open("/tmp/fst_r1", O_RDONLY | O_DIRECTORY);
     CHECK(d >= 0 && rename("/tmp/fst_r1", "/tmp/fst_r2") == 0 && mkdir("/tmp/fst_r1", 0755) == 0);
-    errno = 0;
-    CHECK(openat(d, "x", O_WRONLY | O_CREAT, 0644) == -1 && errno == ENOENT);
+    int xfd = openat(d, "x", O_WRONLY | O_CREAT, 0644);
+    CHECK(xfd >= 0);
+    close(xfd);
     struct stat st;
-    CHECK(stat("/tmp/fst_r1/x", &st) == -1 && stat("/tmp/fst_r2/x", &st) == -1);
+    CHECK(stat("/tmp/fst_r1/x", &st) == -1 && stat("/tmp/fst_r2/x", &st) == 0);
     close(d);
-    CHECK(rmdir("/tmp/fst_r1") == 0 && rmdir("/tmp/fst_r2") == 0);
+    char cwd[256];
+    CHECK(chdir("/tmp/fst_r2") == 0 && rename("/tmp/fst_r2", "/tmp/fst_r3") == 0);
+    CHECK(getcwd(cwd, sizeof(cwd)) != NULL && strcmp(cwd, "/tmp/fst_r3") == 0);
+    CHECK(stat("x", &st) == 0 && stat("../fst_r3/x", &st) == 0 && stat("../fst_r1", &st) == 0);
+    CHECK(unlink("x") == 0 && chdir("..") == 0 && getcwd(cwd, sizeof(cwd)) != NULL && strcmp(cwd, "/tmp") == 0);
+    CHECK(chdir("/proc/sys/vm") == 0 && getcwd(cwd, sizeof(cwd)) != NULL && strcmp(cwd, "/proc/sys/vm") == 0);
+    CHECK(chdir("../../..") == 0 && getcwd(cwd, sizeof(cwd)) != NULL && strcmp(cwd, "/") == 0);
+    CHECK(chdir("/tmp/fst_r3") == 0 && rmdir("/tmp/fst_r3") == 0);
+    errno = 0;
+    CHECK(getcwd(cwd, sizeof(cwd)) == NULL && errno == ENOENT); /* Linux: the cwd was removed */
+    errno = 0;
+    CHECK(open("newfile", O_WRONLY | O_CREAT, 0644) == -1 && errno == ENOENT);
+    CHECK(chdir("/") == 0 && rmdir("/tmp/fst_r1") == 0);
+    /* Path text is walked, not normalized: a trailing '/' wants a directory,
+     * "." and ".." are refused where Linux refuses them */
+    fd = open("/tmp/fst_t", O_WRONLY | O_CREAT, 0644);
+    CHECK(fd >= 0);
+    close(fd);
+    errno = 0;
+    CHECK(open("/tmp/fst_t/", O_RDONLY) == -1 && errno == ENOTDIR);
+    errno = 0;
+    CHECK(unlink("/tmp/fst_t/") == -1 && errno == ENOTDIR);
+    errno = 0;
+    CHECK(open("/tmp", O_RDONLY | O_CREAT, 0644) == -1 && errno == EISDIR);
+    CHECK(mkdir("/tmp/fst_d", 0755) == 0);
+    errno = 0;
+    CHECK(rmdir("/tmp/fst_d/.") == -1 && errno == EINVAL);
+    errno = 0;
+    CHECK(mkdir("/tmp/fst_d/..", 0755) == -1 && errno == EEXIST);
+    CHECK(rmdir("/tmp/fst_d/") == 0 && unlink("/tmp/fst_t") == 0);
 
     /* Copy ourselves to a 0711 file; a non-root child runs it */
     int in = open(self, O_RDONLY), out = open("/tmp/fst_x711", O_WRONLY | O_CREAT | O_TRUNC, 0711);

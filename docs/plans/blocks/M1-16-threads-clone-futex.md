@@ -55,3 +55,5 @@
   set, so a second thread needs no new TLB code. The OOM killer and the `SIGKILL`-pending check in
   `mm_handle_fault` work per process; with threads, kill the whole group. Fault signals use
   `sig_force_fault` (per process today; per thread with you).
+- From M1-13: the cwd is an inode reference (`Process.cwd`, `cwd_mnt`; `vfs_cwd_get/set/copy/release`) touched
+  only by its own thread; `CLONE_FS` sharing needs a lock (or a shared fs struct) around it.

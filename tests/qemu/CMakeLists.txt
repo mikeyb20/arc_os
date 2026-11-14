@@ -260,6 +260,45 @@ add_test(NAME qemu.devices.intx COMMAND ${_qemu_test} --suite devices --name dev
     --expect "INTx +0000:00:[0-9a-f.]+ line [0-9]+  edu")
 set_tests_properties(qemu.devices qemu.devices.intx PROPERTIES FIXTURES_REQUIRED devices_disk)
 
+# ext2 (M1-13, ADR-0018): two disks from tools/make-arc-test-disks.sh. vda is
+# a foreign disk (Linux and Windows partitions labelled arc-system and
+# arc-data, attached writable: its bytes must not change); vdb is an arc_os
+# disk. Booted from an ISO, Limine reports the image's own GPT GUID, which is
+# no disk here, so the kernel finds the system partition by label and type: vdb1 at /system, vdb2's directories at
+# /apps ... /var. ext2test prints a CRC-32 per file, checked against the
+# host's; /system/bin/hello is exec'd from ext2. ext2.named names the foreign
+# Windows partition with arc.data=PARTUUID=: refused, no data mounts.
+set(_arc_disks ${CMAKE_BINARY_DIR}/arc-disks)
+set(_arc_disks_tool ${CMAKE_SOURCE_DIR}/tools/make-arc-test-disks.sh)
+add_test(NAME qemu.ext2.disks COMMAND bash ${_arc_disks_tool} make ${_arc_disks} ${ARC_CROSS_BUILD_DIR}/hello)
+set_tests_properties(qemu.ext2.disks PROPERTIES LABELS qemu FIXTURES_SETUP arc_disks)
+set(_ext2_qemu
+    --qemu-arg=-drive --qemu-arg=file=${_arc_disks}/foreign-disk.img,if=none,id=foreign,format=raw
+    --qemu-arg=-device --qemu-arg=virtio-blk-pci,drive=foreign
+    --qemu-arg=-drive --qemu-arg=file=${_arc_disks}/arc-disk.img,if=none,id=arc,format=raw,snapshot=on
+    --qemu-arg=-device --qemu-arg=virtio-blk-pci,drive=arc)
+add_test(NAME qemu.ext2 COMMAND ${_qemu_test} --suite ext2 --module ext2test ${_ext2_qemu} --timeout 280
+    --expect "\\[MOUNT\\] boot disk [0-9A-F-]+ not among the disks: by label"
+    --expect "\\[MOUNT\\] vdb by label \"arc-system\""
+    --expect "\\[EXT2\\] vdb1: [0-9]+ blocks of 4096 bytes"
+    --expect "\\[MOUNT\\] /system: vdb1 \\(ext2, read-only\\)"
+    --expect "\\[MOUNT\\] /var: vdb2 /var \\(ext2, read-only\\)"
+    --expect "ext2test: mounts ok"
+    --expect "ext2test: crc ok"
+    --expect "ext2test: tree ok"
+    --expect "Hello ext2!"
+    --expect "ext2test: exec ok"
+    --expect "ext2test: 0 failures"
+    --check "bash ${_arc_disks_tool} check ${_arc_disks}")
+add_test(NAME qemu.ext2.named COMMAND ${_qemu_test} --suite ext2named --module ext2test ${_ext2_qemu}
+    --cmdline arc.data=PARTUUID=22222222-3333-4444-8555-666666666662
+    --expect "\\[MOUNT\\] arc.data: vda2 is not an arc_os data partition; not mounted"
+    --expect "\\[MOUNT\\] /system: vdb1 \\(ext2, read-only\\)"
+    --expect "ext2test: named ok"
+    --expect "ext2test: 0 failures"
+    --check "bash ${_arc_disks_tool} check-foreign ${_arc_disks}")
+set_tests_properties(qemu.ext2 qemu.ext2.named PROPERTIES FIXTURES_REQUIRED arc_disks RESOURCE_LOCK arc_disks)
+
 # Page cache (M1-12): write()/mmap coherence both ways, MAP_PRIVATE copies,
 # fork with file mappings, dirty counts and msync, SIGBUS past the end and
 # after truncate, the FAT32 disk read through the cache with readahead, a
@@ -283,10 +322,10 @@ add_test(NAME qemu.pagecache COMMAND ${_qemu_test} --suite pagecache --module pc
 set_tests_properties(qemu.smoke qemu.mem.buddy qemu.mem.cap qemu.userland qemu.abi qemu.musl qemu.fpu qemu.cpufloor
     qemu.smp.xapic qemu.smp.x2apic qemu.sched qemu.lockorder qemu.selftest.fail qemu.selftest.panic
     qemu.panic.fault qemu.diag qemu.mm qemu.mm.oom qemu.vfs qemu.pagecache qemu.qr.report qemu.qr.log qemu.qr.panic
-    qemu.devices qemu.devices.intx
+    qemu.devices qemu.devices.intx qemu.ext2 qemu.ext2.named
     PROPERTIES LABELS qemu TIMEOUT 180 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     FIXTURES_SETUP qemu_logs)
-set_tests_properties(qemu.mm.oom qemu.pagecache PROPERTIES TIMEOUT 320)
+set_tests_properties(qemu.mm.oom qemu.pagecache qemu.ext2 PROPERTIES TIMEOUT 320)
 set_tests_properties(qemu.vfs qemu.pagecache PROPERTIES FIXTURES_REQUIRED fat32_image)
 
 # Budgets (ADR-0019, M0-08): sizes and counts from the build and from the

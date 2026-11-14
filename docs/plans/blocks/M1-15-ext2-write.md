@@ -35,4 +35,6 @@ finds the result clean (ADR-0008).
 - L block: a clean stopping point is after allocation + file writes + truncate pass their e2fsck scenarios.
 
 **Notes.**
--
+- From M1-13: clear `ind_cache` on any block-map change; never make an `ext2_ro_forced` volume writable;
+  clear `EXT2_INDEX_FL` on a `dir_index` directory you change (no htree upkeep); `ext2_start_page` copies a
+  file's EOF block from the metadata cache, so keep that copy coherent with writes (or drop it). See M1-13 Notes.

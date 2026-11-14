@@ -132,7 +132,7 @@ Start every block with `/os/implement-block <ID>`. These rules are what keep ses
 | M1-10 | Async block layer + GPT | M | D | KB | M1-09 | Many requests in flight; partitions found by label | review (#43) |
 | M1-11 | VFS rework: inodes, 64-bit offsets | L | D | KA | M0-06 | Files past 4 GiB; every filesystem converted | done |
 | M1-12 | Page cache + file mmap | L | D | KA | M1-07, M1-10, M1-11 | `read`/`write` and `mmap` always agree | done |
-| M1-13 | ext2 read + mount by label | M | R | KA | M1-10, M1-11, M1-12 | Reads `mke2fs` images incl. 5 GiB sparse files | todo |
+| M1-13 | ext2 read + mount by label | M | R | KA | M1-10, M1-11, M1-12 | Reads `mke2fs` images incl. 5 GiB sparse files | review (#44) |
 | M1-14 | Memory reclaim + writeback | M | D | KA | M1-12, M1-13 | 2 GiB file in 512 MB RAM; no flusher timer when clean | todo |
 | M1-15 | ext2 write | L | D | KA | M1-13, M1-14 | `e2fsck`-clean after every scenario | todo |
 | M1-16 | Threads I: clone, thread groups, futex | L | D | KB | M1-01, M1-05, M1-07 | musl pthread create, join and mutex | todo |
@@ -166,7 +166,7 @@ assistant and viewers lay out from the framebuffer size, never a fixed one.
 |---|---|---|---|---|---|---|---|
 | M3-00a | Plan the content lane | S | D | P | M3-02 | Specs for M3-01, M3-03 and M3-04 written: keyword-only packs first, vectors once M2-06 picks the embedder (says whether M3-04 splits); decides whether the pack steps after ZIM extraction are written in C on the lane libraries, so they could later run on arc_os | done (#30) |
 | M3-00 | Plan M3 | S | D | P | M2-06 | Specs for the other M3 blocks written (M3-04b included; M3-05 comes from M4-00); content-lane specs corrected from M2-06 | todo |
-| M3-01 | Content selection, licences, size budget | M | R | C | M3-00a, M0-07 | Source list per category and tier approved by Michael | review (#34) |
+| M3-01 | Content selection, licences, size budget | M | R | C | M3-00a, M0-07 | Source list per category and tier approved by Michael | done |
 | M3-02 | `libarcpack`: doc store, chunks, manifests | M | D | L | M2-00a, M2-02, M2-04, M0-07 | One library reads packs on Linux inside the syscall inventory (on arc_os from M3-07) | done |
 | M3-03 | ZIM → doc store + chunks (host) | L | R | C | M3-01, M3-02 | Medical pack built twice with identical chunk IDs | todo |
 | M3-04 | FTS5, tier selector, `.arcpkg` (host) | M | R | C | M3-03, M5-02 | 32 GB keyword-only pack set built and sized; `tiers.json` for each storage tier | todo |

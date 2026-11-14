@@ -2,6 +2,7 @@
 #include "proc/sched.h"
 #include "proc/fd.h"
 #include "proc/proc_syscalls.h"
+#include "fs/vfs.h"
 #include "mm/kmalloc.h"
 #include "mm/mm.h"
 #include "arch/hal.h"
@@ -31,7 +32,7 @@ static void proc_setup(Process *p) {
     p->pgid = p->pid;  /* Each process starts as its own group leader */
     p->state = PROC_ALIVE;
     p->umask = 022;     /* Default: owner full, group/other no write */
-    strncpy(p->cwd, "/", PATH_MAX);
+    p->cwd = NULL;   /* "/" */
     sig_init(&p->sig);
     wq_init(&p->child_exit_wq);
     p->prev = NULL;
@@ -154,7 +155,7 @@ Process *proc_fork(Process *parent, const ForkContext *user_ctx) {
     }
     proc_setup(child);
     child->mm = child_mm;
-    strncpy(child->cwd, parent->cwd, PATH_MAX);
+    vfs_cwd_copy(child, parent);
     child->uid  = parent->uid;
     child->gid  = parent->gid;
     child->euid = parent->euid;
@@ -181,6 +182,7 @@ Process *proc_fork(Process *parent, const ForkContext *user_ctx) {
          * File references fd_table_dup took, and the list entry */
         kfree(args);
         proc_release_fds(child);
+        vfs_cwd_release(child);
         mm_put(child_mm);
         proc_unlink(child);
         kfree(child);

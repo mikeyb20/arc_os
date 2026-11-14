@@ -31,11 +31,11 @@ same PR that changes a syscall (the `add-syscall` skill does this). Since M0-06 
 |---|---|---|---|---|
 | 0 | read | done | 4 | all; inventory: musl, C++, SQLite, llama.cpp |
 | 1 | write | done | 1 | all; inventory: musl, C++ |
-| 2 | open | partial (no symlinks yet: O_NOFOLLOW is a no-op until M1-13) | 3 | libarc; inventory: musl, C++, SQLite, zstd, llama.cpp (M0-05, M1-11) |
+| 2 | open | done (symlinks and O_NOFOLLOW since M1-13) | 3 | libarc; inventory: musl, C++, SQLite, zstd, llama.cpp (M0-05, M1-11) |
 | 3 | close | done | 5 | all; inventory: musl, C++, SQLite, zstd, llama.cpp |
 | 4 | stat | done | 8 | libarc; inventory: musl, C++, SQLite, zstd, llama.cpp (M0-05, M1-11) |
 | 5 | fstat | done | 12 | musl; inventory: musl, C++, SQLite, zstd (M0-05, M1-11) |
-| 6 | lstat | partial (= stat until symlinks exist; M1-13) | — | inventory: SQLite (M1-11) |
+| 6 | lstat | done | — | inventory: SQLite (M1-11, M1-13) |
 | 8 | lseek | done | 7 | all; inventory: musl, SQLite, llama.cpp |
 | 9 | mmap | partial (anonymous private: MAP_FIXED, MAP_FIXED_NOREPLACE, MAP_NORESERVE, MAP_POPULATE, MAP_32BIT, MAP_GROWSDOWN; files in the page cache (ramfs, FAT32), MAP_PRIVATE and MAP_SHARED, through one cache with read/write (M1-12): EACCES rules as Linux, -ENODEV for files without mmap (directories, devices until M1-15); MAP_32BIT ignored for files; MAP_SHARED anonymous -EINVAL until M1-08) | — | musl, llama.cpp; inventory: musl, musl threads, C++, SQLite, zstd, llama.cpp (M1-07, M1-12) |
 | 10 | mprotect | partial (a range with a hole fails whole with -ENOMEM; Linux changes the part before it; PROT_GROWSDOWN/UP -EINVAL) | — | musl; inventory: musl, musl threads, C++, zstd, llama.cpp (M1-07) |
@@ -78,12 +78,13 @@ same PR that changes a syscall (the `add-syscall` skill does this). Since M0-06 
 | 74 | fsync | partial (writes the file's dirty page-cache pages back (M1-12); ramfs and read-only FAT32 have nowhere to write; disk write-back M1-15) | — | inventory: musl, SQLite (M1-11, M1-12, M1-15) |
 | 75 | fdatasync | partial (same as fsync: no metadata is kept apart from the data) | — | SQLite (M1-12) |
 | 77 | ftruncate | done | — | inventory: musl (M1-11) |
-| 79 | getcwd | done | 24 | shell; inventory: musl, SQLite |
+| 79 | getcwd | done (from the cwd's inode since M1-13: follows renames) | 24 | shell; inventory: musl, SQLite |
 | 80 | chdir | done | 23 | shell; inventory: musl |
 | 82 | rename | done | — | inventory: musl, C++ (M1-11) |
 | 83 | mkdir | done | 9 | coreutils; inventory: musl, C++ |
 | 84 | rmdir | done | — | inventory: musl, C++ (M1-11) |
 | 87 | unlink | done | 11 | coreutils; inventory: musl, C++, SQLite |
+| 89 | readlink | done | — | symlinks (M1-13) |
 | 90 | chmod | done | 29 | coreutils; inventory: musl |
 | 91 | fchmod | missing | — | inventory: zstd (M1-20) |
 | 92 | chown | done | 30 | coreutils |
@@ -108,11 +109,12 @@ same PR that changes a syscall (the `add-syscall` skill does this). Since M0-06 
 | 221 | fadvise64 | missing | — | inventory: llama.cpp (M1-12) |
 | 228 | clock_gettime | missing | — | M1; inventory: zstd (M1-06) |
 | 231 | exit_group | partial (= exit while a process has one thread; M1-16) | — | musl; inventory: musl, musl threads, C++, SQLite, zstd, llama.cpp (M0-06) |
-| 257 | openat | partial (as open) | — | musl; inventory: C++ (M0-05, M1-11) |
+| 257 | openat | done (a dirfd is followed by inode since M1-13) | — | musl; inventory: C++ (M0-05, M1-11) |
 | 258 | mkdirat | done | — | musl (M1-11) |
-| 262 | newfstatat | partial (AT_SYMLINK_NOFOLLOW is a no-op until M1-13) | — | musl (M1-11) |
+| 262 | newfstatat | done | — | musl (M1-11, M1-13) |
 | 263 | unlinkat | done | — | inventory: C++ (M1-11) |
 | 264 | renameat | done | — | musl (M1-11) |
+| 267 | readlinkat | done | — | musl `readlink` (M1-13) |
 | 280 | utimensat | missing | — | inventory: zstd (M1-20) |
 | 288 | accept4 | missing | — | arc-llm: AF_UNIX, SOCK_CLOEXEC, EINTR without SA_RESTART (M1-18) |
 | 292 | dup3 | done | — | musl (M1-11) |
