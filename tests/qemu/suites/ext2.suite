@@ -1,0 +1,4 @@
+# qemu.ext2 (M1-13): arc_os's own ext2 partitions mounted at boot from the
+# arc_os disk (vdb), none from the foreign disk (vda); file checksums, the
+# tree, read-only, exec from ext2. Exit status = failed checks.
+ext2test /boot/ext2test

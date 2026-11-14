@@ -46,6 +46,9 @@ void devtest_register(void);
  * flush, a lost interrupt, refused requests); logs "[BLKTEST]" lines. */
 void blktest_run(void);
 
+/* Write-back test (M1-14, suite "writeback"): starts a kernel thread that
+ * runs in place of init and ends the run. Returns 1 if it started. */
+int wbtest_start(void);
 /* Command-line flag "key=1": any value but 0 counts, a bare key too. */
 int diag_flag_on(const char *key);
 

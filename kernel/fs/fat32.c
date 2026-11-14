@@ -49,6 +49,7 @@ typedef struct Fat32Volume {
 typedef struct Fat32Inode {
     uint32_t first_cluster;
     uint64_t parent_ino;     /* directories: ".." for getdents */
+    Inode *parent;           /* directories: ".." for the walk (a reference; NULL for the root) */
     /* Chain cursor: cluster number cur_cluster is the cur_index-th of the
      * chain (io_lock). Sequential reads walk the FAT once, not once per call. */
     uint32_t cur_index;
@@ -212,9 +213,10 @@ static uint32_t entry_mode(const Fat32DirEntry *e) {
     return mode;
 }
 
-/* The inode for an entry (from the cache, or new). NULL when out of memory. */
+/* The inode for an entry of directory parent (NULL for the root; from the
+ * cache, or new). NULL when out of memory. */
 static Inode *fat32_iget(Fat32Volume *vol, uint64_t ino, uint32_t mode, uint32_t first_cluster, loff_t size,
-                         uint64_t parent_ino) {
+                         Inode *parent) {
     Inode *inode = icache_get(&vol->sb, ino);
     if (inode != NULL) return inode;
     Fat32Inode *fi = kmalloc(sizeof(*fi), GFP_ZERO);
@@ -224,7 +226,10 @@ static Inode *fat32_iget(Fat32Volume *vol, uint64_t ino, uint32_t mode, uint32_t
         return NULL;
     }
     fi->first_cluster = first_cluster;
-    fi->parent_ino = parent_ino;
+    fi->parent_ino = parent != NULL ? parent->ino : ino;
+    /* A directory holds its parent (no cycle: a parent holds no reference
+     * to its children; only the dcache does, and it lets go) */
+    fi->parent = parent != NULL && S_ISDIR(mode) ? igrab(parent) : NULL;
     inode->priv = fi;
     inode->size = S_ISDIR(mode) ? 0 : size;
     inode->blocks = ((uint64_t)size + 511) / 512;
@@ -240,7 +245,9 @@ static Inode *fat32_iget(Fat32Volume *vol, uint64_t ino, uint32_t mode, uint32_t
 
 static void fat32_evict(Inode *inode) {
     filemap_inode_evict(inode);   /* a file's cached pages (no reads in flight: each held a reference) */
-    kfree(inode->priv);
+    Fat32Inode *fi = fi_of(inode);
+    if (fi != NULL && fi->parent != NULL) iput(fi->parent);   /* depth of the tree at most: short */
+    kfree(fi);
 }
 
 static const SuperOps fat32_sops = {
@@ -309,6 +316,11 @@ static int lookup_visitor(const Fat32DirEntry *e, uint32_t idx, void *arg) {
 }
 
 static int fat32_lookup(Inode *dir, const char *name, Inode **out) {
+    if (strcmp(name, "..") == 0) {
+        Inode *parent = fi_of(dir)->parent;
+        *out = igrab(parent != NULL ? parent : dir);
+        return 0;
+    }
     LookupCtx ctx = {.name = name};
     int rc = walk_dir(dir, 0, lookup_visitor, &ctx);
     if (rc < 0) return rc;
@@ -316,7 +328,7 @@ static int fat32_lookup(Inode *dir, const char *name, Inode **out) {
     Fat32Volume *vol = vol_of(dir);
     uint32_t mode = entry_mode(&ctx.found);
     *out = fat32_iget(vol, entry_ino(fi_of(dir)->first_cluster, ctx.idx), mode, fat32_entry_cluster(&ctx.found),
-                      ctx.found.file_size, dir->ino);
+                      ctx.found.file_size, dir);
     return *out != NULL ? 0 : -ENOMEM;
 }
 
@@ -513,7 +525,7 @@ SuperBlock *fat32_mount(BlockDevice *dev) {
     vol->sb.flags = SB_RDONLY;
     vol->sb.bdev = dev;
     mutex_init(&vol->io_lock, LOCK_LEVEL_FS_IO);
-    Inode *root = fat32_iget(vol, FAT32_ROOT_INO, S_IFDIR | 0755, vol->root_cluster, 0, FAT32_ROOT_INO);
+    Inode *root = fat32_iget(vol, FAT32_ROOT_INO, S_IFDIR | 0755, vol->root_cluster, 0, NULL);
     if (root == NULL) {
         kfree(vol->fat);
         kfree(vol);

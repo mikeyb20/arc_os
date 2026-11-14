@@ -63,6 +63,7 @@
 #define __NR_mkdir             83
 #define __NR_rmdir             84
 #define __NR_unlink            87
+#define __NR_readlink          89
 #define __NR_chmod             90
 #define __NR_fchmod            91
 #define __NR_chown             92
@@ -79,6 +80,7 @@
 #define __NR_getppid           110
 #define __NR_getpgid           121
 #define __NR_arch_prctl        158
+#define __NR_sync              162
 #define __NR_tkill             200
 #define __NR_time              201
 #define __NR_futex             202
@@ -96,6 +98,7 @@
 #define __NR_newfstatat        262
 #define __NR_unlinkat          263
 #define __NR_renameat          264
+#define __NR_readlinkat        267
 #define __NR_utimensat         280
 #define __NR_dup3              292
 #define __NR_pipe2             293

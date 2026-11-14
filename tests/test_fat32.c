@@ -10,6 +10,7 @@
 #include "drivers/blkdev.h"
 #include "fs/fat32.h"
 #include "mm/filemap.h"
+#include "mm/reclaim.h"
 #include "mm/pmm.h"
 #include "uapi/errno.h"
 #include "uapi/fcntl.h"
@@ -284,7 +285,7 @@ TEST(reads_through_the_page_cache) {
     for (int i = 1; i <= 3000; i++) len += (size_t)snprintf(expect + len, sizeof(expect) - len, "%d\n", i);
     File *f;
     ASSERT_EQ(vfs_open("/fat/big.txt", O_RDONLY, 0, &f), 0);
-    (void)filemap_drop_clean();
+    (void)reclaim_drop_clean();
     FilemapStats s0, s;
     filemap_stats(&s0);
     IoBuf b = iob_kernel(text, sizeof(text));
@@ -299,7 +300,7 @@ TEST(reads_through_the_page_cache) {
     ASSERT_EQ(vfs_pread(f, &b, 0), (int64_t)len);   /* cached: no disk read */
     filemap_stats(&s);
     ASSERT_EQ(s.pgpgin - s0.pgpgin, pages);
-    ASSERT_EQ(filemap_drop_clean(), pages);
+    ASSERT_EQ(reclaim_drop_clean(), pages);
     ASSERT_EQ(filemap_of(f->inode)->nrpages, 0);
     memset(text, 0, sizeof(text));
     b = iob_kernel(text, sizeof(text));

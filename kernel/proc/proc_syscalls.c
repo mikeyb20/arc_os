@@ -42,6 +42,7 @@ void proc_release_fds(Process *p) {
 void proc_exit(Process *p, int32_t exit_status, uint8_t term_signal) {
     /* Close all open file descriptors (critical for pipe EOF signaling) */
     proc_release_fds(p);
+    vfs_cwd_release(p);   /* a zombie holds no directory either */
 
     /* The address space goes now, not at reap: a zombie holds no memory.
      * Off this CPU first (no CPU may have it loaded when it is freed). */
@@ -170,9 +171,9 @@ static int exec_file_read(const ElfSource *src, uint64_t off, void *dst, size_t 
     return 0;
 }
 
-int exec_load(const char *path, Mm *mm, ElfLoadResult *result, ExecFileInfo *info) {
+int exec_load(const PathLoc *base, const char *path, Mm *mm, ElfLoadResult *result, ExecFileInfo *info) {
     File *file;
-    int err = vfs_open_exec(path, &file);   /* regular, executable (read permission not needed) */
+    int err = vfs_open_exec_at(base, path, &file);   /* regular, executable (read permission not needed) */
     if (err != 0) return err;
     Inode *inode = file->inode;
     if (inode->size <= 0) err = -ENOEXEC;
@@ -270,14 +271,11 @@ static int64_t sys_execve(uint64_t path_addr, uint64_t argv_addr, uint64_t envp_
     Process *p = proc_current();
     if (p == NULL) return -ENOSYS;
 
-    /* The path as given (AT_EXECFN) and resolved against the cwd */
+    /* The path as given (AT_EXECFN); the walk starts at the cwd */
     char raw[PATH_MAX];
     long rlen = strncpy_from_user(raw, (const char *)path_addr, sizeof(raw));
     if (rlen < 0) return rlen;
     if (rlen == 0) return -ENOENT;
-    char abs[PATH_MAX];
-    int perr = path_normalize(p->cwd, raw, abs, sizeof(abs));
-    if (perr != 0) return perr;
 
     /* 1. Copy argv and envp from the OLD address space before destroying it */
     ExecStrings *strings = kmalloc(sizeof(ExecStrings), 0);
@@ -303,7 +301,12 @@ static int64_t sys_execve(uint64_t path_addr, uint64_t argv_addr, uint64_t envp_
         new_mm = mm_create();
         if (new_mm == NULL) err = -ENOMEM;
     }
-    if (err == 0) err = exec_load(abs, new_mm, &result, &img);
+    if (err == 0) {
+        PathLoc cwd;
+        vfs_cwd_get(&cwd);
+        err = exec_load(&cwd, raw, new_mm, &result, &img);
+        loc_put(&cwd);
+    }
     if (err == 0) err = mm_setup_stack(new_mm, result.stack_exec, result.brk_start);
     if (err != 0) {
         mm_put(new_mm);
@@ -324,7 +327,7 @@ static int64_t sys_execve(uint64_t path_addr, uint64_t argv_addr, uint64_t envp_
     mm_switch(new_mm);
     mm_put(old_mm);
 
-    kdebug("[EXEC] pid=%u loaded '%s' argc=%u envc=%u entry=0x%lx\n", p->pid, abs, strings->argc, strings->envc,
+    kdebug("[EXEC] pid=%u loaded '%s' argc=%u envc=%u entry=0x%lx\n", p->pid, raw, strings->argc, strings->envc,
            result.entry_point);
 
     /* 6. Initial stack, clean CPU state, enter the program */

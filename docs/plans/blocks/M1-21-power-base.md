@@ -83,8 +83,8 @@ preference set by the power profile, and package energy can be read (ADR-0017).
   - Known RAPL limit (D3 review of #46, L1): a 32-bit counter wrap is lost when no CPU idles and nobody reads
     for one wrap (2^32 units = 262 kJ at 61 uJ: ~44 min at 100 W, ~17 min at 250 W), e.g. long all-core
     inference. A fix needs a wake source while every CPU is busy (a one-shot timer re-armed only while RAPL
-    exists, or sampling on context switch); a recurring timer touches ADR-0017's no-polling rule, so it is
-    Michael's call. M1-22 decides with real numbers.
+    exists, or sampling on context switch); a recurring timer touches ADR-0017's no-polling rule.
+    DECISION (Michael, 2026-11-14): leave it for now; M1-22 measures on real hardware first and decides.
   - M4-12: profiles add thread count, core choice and display timeout; the final file names replace
     `/proc/arc/power` (only procfs.c changes). Battery/AC switching of profiles belongs there too.
   - Not taken here (not in this spec): clock-event suspend/resume hooks (M1-06 note; no system suspend exists to

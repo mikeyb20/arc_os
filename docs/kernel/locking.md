@@ -14,17 +14,20 @@ of that level (a lock without a subkey counts as 0). Give every lock of a nestab
 |---|---|---|---|---|
 | 0 | `LOCK_LEVEL_KERNEL` | big kernel lock | `kernel_lock` (see below) | M1-05, interim |
 | 5 | `LOCK_LEVEL_DEVICE` | sleeping | device model: bus device and driver lists, binding, probe/remove/suspend/resume calls (`drivers/bus.c`) | M1-09 |
+| 6 | `LOCK_LEVEL_WRITEBACK` | sleeping | `wb_mutex` (`mm/writeback.c`): one write-back pass at a time (the flusher, `sync`), held while it writes each listed mapping | M1-14 |
 | 7 | `LOCK_LEVEL_FILE_POS` | sleeping | `File.pos_lock`: the position of a seekable open file (read, write, lseek, getdents) | M1-11 |
 | 8 | `LOCK_LEVEL_RENAME` | sleeping | `rename_mutex` (vfs.c): one rename at a time, held from before either path is resolved | M1-11 |
 | 10 | `LOCK_LEVEL_INODE` | sleeping, read-write | `Inode.lock` (`RwSem`): a directory's entries (lookup shared, changes exclusive), a regular file's data and size (read shared, write and truncate exclusive); a pipe's reader and writer mutexes | M1-11 |
 | 11 | `LOCK_LEVEL_INODE_2` | sleeping, read-write | rename's second directory | M1-11 |
-| 12 | `LOCK_LEVEL_INODE_CHILD` | sleeping, read-write | a directory being removed or replaced (rmdir, rename) | M1-11 |
+| 12 | `LOCK_LEVEL_INODE_CHILD` | sleeping, read-write | a directory being removed (rmdir) or moved (rename: its `..` changes) | M1-11, M1-13 |
+| 13 | `LOCK_LEVEL_INODE_CHILD_2` | sleeping, read-write | a directory a rename replaces (under the moved one) | M1-13 |
 | 20 | `LOCK_LEVEL_MM` | sleeping, read-write | `Mm.lock` (`RwSem`), per address space: VMA changes write, page faults and fork read | M1-07 |
 | 30 | `LOCK_LEVEL_PAGE` | sleeping, per page | page lock: the `PG_LOCKED` bit of a `struct page`, waiters on hashed wait queues (`mm/filemap.c`): read in, truncate, mapping a cache page into a page table, write-back | M1-12 |
+| 35 | `LOCK_LEVEL_META_PAGE` | sleeping, per page | page lock of a block-device mapping's page (filesystem metadata: ext2's superblock, group descriptors, inodes, indirect blocks, directories), taken while a file page is locked for its read | M1-13 |
 | 40 | `LOCK_LEVEL_MAPPING` | sleeping | `AddressSpace.map_lock`: the list of VMAs mapping a file (mmap, munmap, fork, truncate's unmap, write-back's write-protect) | M1-12 |
 | 45 | `LOCK_LEVEL_FS_IO` | sleeping | a filesystem's device reads: the FAT32 volume's `io_lock` (cluster buffer, chain cursors) | M1-11 |
 | 50 | `LOCK_LEVEL_PAGE_TABLE` | spinlock | `Mm.pt_lock`, per address space (inside `Mm.lock`); the kernel page tables (`vmm.c`) | M1-05, M1-07 |
-| 59 | `LOCK_LEVEL_PAGE_LRU` | spinlock | the list of evictable page-cache pages (`filemap_drop_clean`, adding and freeing cache pages) | M1-12 |
+| 59 | `LOCK_LEVEL_PAGE_LRU` | spinlock | `lru_lock` (`mm/reclaim.c`): the active and inactive lists of evictable page-cache pages (adding, removing, activating, isolating a batch for reclaim) | M1-12, M1-14 |
 | 60 | `LOCK_LEVEL_PAGE_CACHE` | spinlock | `AddressSpace.tree_lock`: the radix-tree index of one address space (lookup takes a page reference under it) | M1-12 |
 | 62 | `LOCK_LEVEL_MOUNT` | spinlock | adding to the mount table (readers take no lock: entries are published, never removed) | M1-11 |
 | 63 | `LOCK_LEVEL_DCACHE` | spinlock | the dentry cache: hash chains, LRU list, count | M1-11 |
@@ -34,6 +37,7 @@ of that level (a lock without a subkey counts as 0). Give every lock of a nestab
 | 70 | `LOCK_LEVEL_SIGNAL` | spinlock | thread-group and signal lock | M1-16 |
 | 75 | `LOCK_LEVEL_OBJECT` | spinlock | one object's state, the lock handed to `wq_sleep`: pipe, socket, tty, wait4, mutex and semaphore guards | M1-05 |
 | 76 | `LOCK_LEVEL_OBJECT_TABLE` | spinlock | a table looked up under an object lock: the socket table | M1-05 |
+| 78 | `LOCK_LEVEL_WB_LIST` | spinlock, IRQ-safe | `wb_lock` (`mm/writeback.c`): the list of mappings with dirty pages, their `WB_*` flags, the flusher's timer and wake-up, the write-back progress count and the throttled waiters' deadline; taken when a page becomes dirty and in the timer interrupt, so it sits above every lock a thread holds with interrupts on (75–76) | M1-14 |
 | 80 | `LOCK_LEVEL_WAITQUEUE` | spinlock | wait-queue locks | M1-05 |
 | 85 | `LOCK_LEVEL_BLK_QUEUE` | spinlock, IRQ-safe | one disk's request queue (`BlkQueue.lock`): pending and flight lists, tags, every `BlockOps` call; taken in the disk's interrupt and in its timeout timer | M1-10 |
 | 90 | `LOCK_LEVEL_RUNQUEUE` | spinlock, interrupts off | per-CPU run queues; two at once only in CPU-index order (subkey = index + 1) | M1-05 |
@@ -54,6 +58,19 @@ lock. Copies from user memory into a locked page (write) prefault the buffer, co
 locks up to 32 new pages at once for one batch read (`readpages`): they are inserted locked, so no one else
 can hold or wait for them first, and the checker does not record them. The FAT32 `io_lock` (45) sits inside
 the page lock: `readpage` is called with the page locked.
+
+M1-14 adds reclaim and write-back (6, 78; 59 now holds two lists). Reclaim takes pages off a list under
+`lru_lock` with `page_trylock` only (never a waiting lock under a spinlock): a page another thread has locked is
+moved to the list's head and skipped. A taken page is held off the lists, locked and with a reference, while
+reclaim works on it with no spinlock held: its accessed bits (the mapping lock 40, then each mm's `pt_lock`
+50), unmapping with the TLB shootdown, a write (kswapd only), and taking it out of its tree (60). Before its
+lock is released the page is back on a list or out of its tree. `page_trylock` is not recorded by the checker,
+so reclaim's own page locks are invisible to it; nothing reclaim does under one takes a lock below level 35.
+Direct reclaim runs inside `alloc_pages` only for `GFP_RECLAIM` callers holding no spinlock that may sleep
+(page faults, page-cache reads and writes); `GFP_KERNEL` never reclaims. Write-back: `wb_mutex` (6) is
+outermost apart from the kernel lock, so `sync` and the flusher take page locks (30, 35) and filesystem locks
+under it; `wb_lock` (78) is a leaf apart from wait-queue wake-ups (80, 90). A page lock records its level in the page
+(`PG_LOCK_META`), so unlocking a block-device page that left its mapping (unmount, reclaim) ends the right record.
 
 Levels 7, 8, 11, 12, 45 and 62–65 are M1-11's additions (see "VFS locks" below). Levels 75 and 76 are additions to §7's list: the pipe, socket and tty locks are the "condition" locks passed to
 `wq_sleep`, so they sit just above the signal lock and below the wait-queue locks; the socket table is looked up
@@ -128,7 +145,8 @@ the process list (the process row, M1-16); the tty line discipline (the TTY row)
 ## VFS locks (M1-11)
 
 - Order, outermost first: `File.pos_lock` (7) → `rename_mutex` (8) → directory or file `Inode.lock`
-  (10, then 11 and 12 in rename and rmdir) → `Mm.lock` (20, a page fault in a user copy) → FAT32 `io_lock` (45)
+  (10, then 11, 12 and 13 in rename and rmdir) → `Mm.lock` (20, a page fault in a user copy) → file page lock
+  (30) → metadata page lock (35, ext2) → FAT32 `io_lock` (45)
   → the VFS spinlocks (62–65), which are leaves apart from the slab allocator.
 - User memory may be touched under the sleeping VFS locks (a fault takes only mm locks, which come after them),
   never under the spinlocks. FAT32 copies to the user outside `io_lock` (it reads a cluster into a kernel buffer
@@ -136,11 +154,21 @@ the process list (the process row, M1-16); the tty line discipline (the TTY row)
 - Path lookup holds one directory lock at a time, shared; a component found in the dentry cache takes no
   directory lock at all. Directory changes take the parent exclusive and remove the affected dentry before the
   filesystem changes anything, so lookups never cache a name being removed.
-- Rename takes `rename_mutex` before it resolves either path. Only rename moves a directory, so the resolved
-  paths stay true while it is held, and their text gives the exact ancestry (one mount, no directory hard
-  links): the ancestor parent is locked first (10, then 11), then a replaced directory (12), and a directory
-  can't be moved into itself. Resolving first and locking after would let another rename change the tree in
-  between (a detached cycle, or an ABBA with rmdir that the level checks can't see).
+- Rename takes `rename_mutex` before it resolves either path. Only rename moves a directory, so the tree stays
+  as resolved while it is held. Since M1-13 the ancestry comes from the tree, not path text: each parent walks
+  `..` up (each filesystem's own `..` lookup, no directory lock held) to see whether the other is above it
+  (one mount, no directory hard links). The ancestor parent is locked first (10, then 11), then the moved
+  directory (12) and a replaced directory (13). A directory can't move into its own subtree (`-EINVAL`), and a
+  directory that holds the source can't be replaced (`-ENOTEMPTY`). Resolving first and locking after would let
+  another rename change the tree in between (a detached cycle, or an ABBA with rmdir that the level checks
+  can't see).
+- The path walk (M1-13) follows symlinks (at most 40 per walk) and `..` itself: one directory lock at a time,
+  shared, as before; a symlink's target is read with no lock held. A process's working directory is an inode
+  reference touched only by its own thread (under the process row of the kernel lock until M1-16, which adds a
+  lock for `CLONE_FS`).
+- ext2 (M1-13) has no volume lock: its metadata lives in a block-device page cache, and a file page's read
+  (file page locked, 30) locks the metadata pages it needs (35) one at a time. Block-device mappings are never
+  mapped into a process, so no mm lock is ever taken under a metadata page.
 - `iput` that frees an inode runs its filesystem's `evict_inode` with no lock held; `fput` never runs under a
   spinlock. Pipes: `rd_mutex` and `wr_mutex` (level 10) serialise readers and writers and are held across user
   copies but dropped while waiting; `pipe->lock` (75) guards head, tail and the counts and is the wait-queue
@@ -214,11 +242,12 @@ page faults run without it.
 ## Timer locks (M1-06)
 
 - Each CPU has one timer queue (`kernel/time/timer.c`) with its own lock (105, IRQ-safe). It is a leaf: nothing
-  but the log is taken under it. It is taken under the run-queue lock (the slice timer) and the block-queue lock
-  (request timeouts), and under no other lock today.
+  but the log is taken under it. It is taken under the run-queue lock (the slice timer), the block-queue lock
+  (request timeouts) and `wb_lock` (78: the flusher's timer and the throttled waiters' timer, M1-14).
 - Timer callbacks run in the timer interrupt with the queue lock dropped and interrupts off. They may take any
   IRQ-safe lock that ranks above what a thread holds with interrupts on (the slice timer takes the run-queue
-  lock, the disk timer the block-queue lock, a sleep's timer does a wakeup); they never sleep.
+  lock, the disk timer the block-queue lock, the write-back timers `wb_lock`, a sleep's timer does a wakeup);
+  they never sleep.
 - A timer has one owner, the lock it is armed under or the thread it belongs to. `timer_cancel_sync` waits for
   a callback running on another CPU, so it is never called with a lock that callback takes (a sleeping thread
   calls it with no lock held).

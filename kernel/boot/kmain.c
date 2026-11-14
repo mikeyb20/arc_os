@@ -6,7 +6,10 @@
 #include "mm/slab.h"
 #include "mm/mm.h"
 #include "mm/filemap.h"
+#include "mm/reclaim.h"
+#include "mm/writeback.h"
 #include "boot/bootinfo.h"
+#include "fs/sysmount.h"
 #include "proc/thread.h"
 #include "proc/sched.h"
 #include "proc/lockdep.h"
@@ -319,23 +322,28 @@ static void vfs_setup(const BootInfo *info) {
     boot_mount("/proc", procfs_init(), "proc");
 }
 
-/* FAT32 at /disk, read-only: the first disk's EFI system partition when it
- * has a GPT, else the whole disk (test images). M1-13 mounts the arc_os
- * partitions of the boot disk. */
-static void disk_mount(void) {
-    BlockDevice *dev = blk_find("vda");
-    if (!dev) {
-        kprintf("[BLK] No block device registered\n");
-        return;
-    }
-    if (dev->has_gpt) {
-        Guid esp;
-        gpt_guid_parse(ARC_PART_TYPE_ESP, &esp);
-        dev = blk_find_part(&dev->disk_guid, &esp);
-        if (!dev) {
-            kprintf("[BLK] vda: GPT without an EFI system partition\n");
+/* FAT32 at /disk, read-only: the EFI system partition of the arc_os disk
+ * sysmount chose (ADR-0018: never a partition of another disk). Only in test
+ * mode, with no arc_os disk, the first disk's ESP or the whole disk (the
+ * test images of qemu.vfs, qemu.pagecache and qemu.devices). */
+static void disk_mount(const SysmountPick *pick) {
+    Guid esp;
+    gpt_guid_parse(ARC_PART_TYPE_ESP, &esp);
+    BlockDevice *dev = pick->disk;
+    if (dev == NULL) {
+        dev = testmode_active() ? blk_find("vda") : NULL;
+        if (dev == NULL) {
+            kprintf("[BLK] No arc_os disk: nothing at /disk\n");
             return;
         }
+    }
+    if (dev->has_gpt) {
+        BlockDevice *part = blk_find_part(dev, &esp);
+        if (part == NULL) {
+            kprintf("[BLK] %s: GPT without an EFI system partition\n", dev->name);
+            return;
+        }
+        dev = part;
     }
 
     SuperBlock *fat = fat32_mount(dev);
@@ -350,7 +358,7 @@ static void disk_mount(void) {
  * as they register. After hal_smp_init: MSI needs the local APIC, and
  * interrupts are spread over every online CPU. Then mount the virtio disk and
  * bring up the network on what bound. */
-static void devices_setup(void) {
+static void devices_setup(const BootInfo *info) {
     irq_init();
     pci_bus_init();
     virtio_blk_register();
@@ -359,7 +367,9 @@ static void devices_setup(void) {
         devtest_register();
         blktest_run();
     }
-    disk_mount();
+    SysmountPick pick;
+    sysmount_boot(info->boot_gpt ? info->boot_disk_guid : NULL, cmdline_raw(), &pick);
+    disk_mount(&pick);
 }
 
 /* Stop on a CPU below x86-64-v3 (ADR-0003), saying why on serial and, when
@@ -419,6 +429,8 @@ void kmain(void) {
     kmalloc_init();
     mm_init();   /* VMA and address-space caches (M1-07) */
     filemap_init();   /* page-cache radix nodes and mappings (M1-12) */
+    wb_init();        /* write-back list and locks, before any page is dirty (M1-14) */
+    reclaim_init();   /* watermarks; low memory reclaims page-cache pages (M1-14) */
     klog_setup_buffer();
     heap_self_test();
     pmm_self_test();
@@ -444,6 +456,8 @@ void kmain(void) {
     /* Initialize threading — converts boot context to thread 0 */
     thread_init();
     sched_init();
+    reclaim_start();   /* kswapd (M1-14) */
+    wb_start();        /* the flusher (M1-14) */
     proc_init();
     syscall_init();
 
@@ -470,7 +484,7 @@ void kmain(void) {
     power_init();   /* idle states, HWP on every CPU, RAPL (M1-21) */
 
     serial_puts("[BOOT] stage: devices\n");
-    devices_setup();
+    devices_setup(info);
 
     /* Test mode self-check: suite "kpanic" proves a panic ends the run at once;
      * with arc.panic=fault it is a real page fault instead (M1-04) */
@@ -494,8 +508,11 @@ void kmain(void) {
         testmode_set_end_hook(report_end_budgets);
     }
 
-    /* Launch init process from boot module */
-    if (init_launch(info) != 0) {
+    /* Launch init process from boot module, unless a kernel test runs instead
+     * (suite "writeback", M1-14) */
+    if (wbtest_start()) {
+        kprintf("[TEST] write-back test thread runs in place of init\n");
+    } else if (init_launch(info) != 0) {
         kprintf("[BOOT] WARNING: init_launch failed, falling back to test threads\n");
         Process *pa = proc_create(test_thread_entry, (void *)"THREAD A");
         Process *pb = proc_create(test_thread_entry, (void *)"THREAD B");
