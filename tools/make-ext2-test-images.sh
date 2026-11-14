@@ -16,7 +16,7 @@ import os, sys
 root = sys.argv[1]
 def pat(off, n):
     # The byte at file offset i: test_ext2.c computes the same
-    return bytes(((i * 7) ^ (i >> 12)) & 0xFF for i in range(off, off + n))
+    return bytes(((i * 7) ^ (i >> 12) ^ (i >> 20) ^ (i >> 28)) & 0xFF for i in range(off, off + n))
 def w(path, data=b""):
     p = os.path.join(root, path)
     os.makedirs(os.path.dirname(p), exist_ok=True)

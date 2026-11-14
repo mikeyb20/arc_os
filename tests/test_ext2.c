@@ -112,7 +112,7 @@ static const char *P(const Volume *v, const char *rel) {
 
 /* The pattern make-ext2-test-images.sh writes: the byte at file offset i */
 static uint8_t pat(uint64_t i) {
-    return (uint8_t)((i * 7) ^ (i >> 12));
+    return (uint8_t)((i * 7) ^ (i >> 12) ^ (i >> 20) ^ (i >> 28));
 }
 
 static int pat_ok(const uint8_t *buf, uint64_t off, size_t n) {
