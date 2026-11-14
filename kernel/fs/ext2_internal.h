@@ -133,6 +133,15 @@ typedef struct __attribute__((packed)) {
 #define EXT2_DIRENT_HEAD 8
 
 /* Bytes an entry with a name of len bytes needs (Linux EXT2_DIR_REC_LEN) */
+/* Extended-attribute block header (Linux ext2_xattr_header): arc_os never
+ * writes attributes, but deleting a file gives its block back */
+#define EXT2_XATTR_MAGIC 0xEA020000u
+typedef struct __attribute__((packed)) {
+    uint32_t h_magic;
+    uint32_t h_refcount;   /* inodes sharing the block */
+    uint32_t h_blocks;     /* 1 */
+} Ext2XattrHead;
+
 static inline uint32_t ext2_rec_len(uint32_t len) {
     return (EXT2_DIRENT_HEAD + len + 3) & ~3u;
 }
@@ -192,6 +201,7 @@ typedef struct Ext2Inode {
     uint32_t on_disk;                /* has an inode-table slot and bitmap bit (not a failed create) */
     uint32_t generation;             /* i_generation */
     uint32_t dtime;                  /* i_dtime: set when the inode is freed */
+    uint32_t file_acl;               /* i_file_acl: an extended-attribute block (Linux-made), or 0 */
     /* Last-level indirect block used last: (first file block it maps << 32)
      * | its disk block, or 0. One atomic word. */
     uint64_t ind_cache;
@@ -328,8 +338,10 @@ int ext2_setattr(Inode *inode, const InodeAttr *attr);
 extern const InodeOps ext2_dir_iops;
 extern const FileOps ext2_dir_fops;
 
-/* Clear a changed directory's htree flag (dir_index: the index is not kept
- * up to date, so Linux and e2fsck must read it linearly from now on). */
+/* Clear a directory's htree flag before its entries change (dir_index: the
+ * index is not kept up to date, so Linux and e2fsck must read it linearly
+ * from now on). First, so the inode copy saying "indexed" is never newer
+ * than a changed block. */
 void ext2_dir_unindex(Inode *dir);
 
 #endif /* ARCHOS_FS_EXT2_INTERNAL_H */

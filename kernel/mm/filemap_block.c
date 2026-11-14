@@ -14,7 +14,10 @@
  * page, then the bytes past the end are zeroed, so an asynchronous piece
  * can't land after the zeroing (bytes past the end of a file always read as
  * zeros, even when the disk holds something else there). Writes send whole
- * blocks: the page's bytes past the end are zero.
+ * blocks, after zeroing the page's bytes past the end: a store through a
+ * shared mapping may have put something there (POSIX lets it), and it must
+ * not reach the disk, where growing the file later would show it (Linux's
+ * block_write_full_page does the same).
  *
  * Locks: none of its own. Called inside readpage / writepage (the page
  * locked); get_block takes what the filesystem needs.
@@ -87,6 +90,10 @@ int filemap_blocks_write(AddressSpace *as, struct page *pg, const FilemapBlocks 
     uint32_t sh = fb->blkbits;
     uint64_t base = (uint64_t)pg->index << PAGE_SHIFT;
     uint64_t size = (uint64_t)__atomic_load_n(&inode->size, __ATOMIC_ACQUIRE);
+    if (size > base && size - base < PAGE_SIZE) {   /* the page holding the end (see the top) */
+        uint32_t valid = (uint32_t)(size - base);
+        memset((uint8_t *)page_to_virt(pg) + valid, 0, PAGE_SIZE - valid);
+    }
     for (uint32_t off = 0; off < PAGE_SIZE;) {
         uint64_t at = base + off;
         if (at >= size) break;   /* past the end: nothing to write */

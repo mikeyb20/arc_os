@@ -188,6 +188,7 @@ static int inode_fill(Ext2Vol *v, Inode *inode, const Ext2DiskInode *d) {
     memcpy(ei->block, d->i_block, sizeof(ei->block));
     ei->flags = d->i_flags;
     ei->generation = d->i_generation;
+    ei->file_acl = d->i_file_acl;
     ei->on_disk = 1;
     inode->uid = d->i_uid | ((uint32_t)d->l_i_uid_high << 16);
     inode->gid = d->i_gid | ((uint32_t)d->l_i_gid_high << 16);
@@ -266,6 +267,7 @@ void ext2_write_inode(Inode *inode) {
     d->i_flags = ei->flags;
     for (int i = 0; i < EXT2_N_BLOCKS; i++) d->i_block[i] = __atomic_load_n(&ei->block[i], __ATOMIC_RELAXED);
     d->i_generation = ei->generation;
+    d->i_file_acl = ei->file_acl;
     ext2_meta_done(pg, 1);
     if (S_ISREG(inode->mode) && size > 0x7FFFFFFFu &&
         !(__atomic_fetch_or(&v->ro_compat, EXT2_FEATURE_RO_COMPAT_LARGE_FILE, __ATOMIC_RELAXED) &
@@ -316,9 +318,42 @@ int ext2_new_inode(Inode *dir, uint32_t mode, uint32_t uid, uint32_t gid, Inode 
     return 0;
 }
 
+/* A deleted inode's extended-attribute block: freed when this inode was its
+ * only user, else one user fewer (Linux ext2_xattr_delete_inode). A block
+ * that isn't one is left alone (a leak e2fsck reports, never a free of a
+ * block something else may own). alloc_lock held. */
+static void put_xattr_block(Inode *inode) {
+    Ext2Vol *v = ext2_vol(inode);
+    Ext2Inode *ei = ext2_ei(inode);
+    uint32_t blk = ei->file_acl;
+    ei->file_acl = 0;
+    if (blk < v->first_data_block || blk >= v->blocks_count) {
+        (void)ext2_corrupt(v, "attribute block", blk);
+        return;
+    }
+    struct page *pg;
+    int err;
+    Ext2XattrHead *h = (Ext2XattrHead *)ext2_meta_lock(v, ext2_block_at(v, blk), &pg, &err);
+    if (h == NULL) return;
+    if (h->h_magic != EXT2_XATTR_MAGIC || h->h_blocks != 1 || h->h_refcount == 0) {
+        ext2_meta_done(pg, 0);
+        (void)ext2_corrupt(v, "attribute block header", blk);
+        return;
+    }
+    int last = h->h_refcount == 1;
+    if (!last) h->h_refcount--;
+    ext2_meta_done(pg, !last);
+    if (last) ext2_free_blocks(v, blk, 1, 1);
+    uint64_t sectors = v->block_size >> 9;
+    uint64_t b = __atomic_load_n(&inode->blocks, __ATOMIC_RELAXED);
+    __atomic_store_n(&inode->blocks, b >= sectors ? b - sectors : 0, __ATOMIC_RELAXED);
+}
+
 /* The last reference went: a file with no name left gives back its blocks
  * and its number (blocks first, then the inode's dtime, then the bitmap:
- * the write order of ext2_alloc.c keeps a crash between them a leak) */
+ * the write order of ext2_alloc.c keeps a crash between them a leak). Only
+ * regular files, directories and slow symlinks have blocks in i_block: a
+ * device node keeps its device number there, a fast symlink its target. */
 static void ext2_evict(Inode *inode) {
     Ext2Vol *v = ext2_vol(inode);
     Ext2Inode *ei = ext2_ei(inode);
@@ -327,7 +362,9 @@ static void ext2_evict(Inode *inode) {
         struct timespec now;
         vfs_now(&now);
         mutex_lock(&v->alloc_lock);
-        if (!(S_ISLNK(inode->mode) && ei->fast_link)) ext2_truncate_blocks(inode, 0);
+        uint32_t type = inode->mode & S_IFMT;
+        if (type == S_IFREG || type == S_IFDIR || (type == S_IFLNK && !ei->fast_link)) ext2_truncate_blocks(inode, 0);
+        if (ei->file_acl != 0) put_xattr_block(inode);
         __atomic_store_n(&inode->size, 0, __ATOMIC_RELEASE);
         ei->dtime = (uint32_t)now.tv_sec;
         ext2_write_inode(inode);

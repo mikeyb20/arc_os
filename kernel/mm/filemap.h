@@ -160,8 +160,16 @@ static inline AddressSpace *filemap_of(const Inode *inode) {
     return (AddressSpace *)inode->mapping;
 }
 
+/* The last reference to inode is going (iput, the inode still in the
+ * cache): a file still linked gets its dirty pages written and waited for,
+ * so the disk holds its data before a lookup can miss the cache. A failed
+ * write is logged (the changes are lost, as when the pages leave memory).
+ * Sleeps. */
+void filemap_inode_flush(Inode *inode);
+
 /* The inode is going away (evict_inode, no references left): drop every
- * page and free the mapping. */
+ * page and free the mapping (a linked file's dirty pages are written first
+ * unless filemap_inode_flush already did, I_FLUSHED). */
 void filemap_inode_evict(Inode *inode);
 
 /* A block-device mapping (the raw device as one file of `size` bytes,

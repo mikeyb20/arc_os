@@ -64,8 +64,9 @@ finds the result clean (ADR-0008).
   runs it at boot, a dirty volume mounted read-write could hand such a block out twice (hence the warning).
   Residual, documented in `ext2_alloc.c`: (a) `fsync` of one file writes all of the volume's metadata, so
   another file's new block pointers can reach the disk before that file's data (stale bytes after a crash;
-  Linux ext2 has the same); (b) kswapd writing a single metadata page under memory pressure skips the round
-  order; (c) a freed block reused before the inode that freed it is on the disk.
+  Linux ext2 has the same); (b) kswapd writing pages under memory pressure skips the order (a single
+  metadata page, or file data still in flight when a pass writes the inode pointing at it); (c) a freed block reused before the inode that freed it is on the disk; (d) a free made while a pass
+  runs (after its round one started) can put the cleared bit on the disk before the cleared pointer (next pass).
 - **Superblock state.** A read-write mount writes `s_state` without VALID (and the mount count) and flushes
   before returning; `ext2_shutdown` writes back, flushes, then restores the state found at mount, alone and
   last. A volume found not clean is mounted read-write with a WARNING line (e2fsck at boot is M5-01) and stays
@@ -101,4 +102,24 @@ finds the result clean (ADR-0008).
 - **From #45's D3 review (write-back timer), for the cleanup PRs:** T1 (stale flusher callback) and T2 (the
   throttle tests must see the wake timer fire) are in `tests/test_reclaim.c`; N1's comment is fixed. Still
   open: T3, `kernel/diag/wbtest.c` bounds the 5 s flusher delay only as 2-20 s (suggested: check about 4-10 s).
-
+- **D3 review of #49 (fixed in the follow-up commit; all regression tests in suite `regress`):**
+  F1 unlinking a device node freed its device number as a block (now only regular files, directories and slow
+  symlinks free blocks); F2 the last iput unhashed a linked file before its write-back ended, so a lookup could
+  build a second Inode and read the unwritten disk (now `iput` writes a linked file's pages back and waits while
+  the inode is still cached, again if an `icache_get` came in meanwhile (`Inode.gets`), and a created file gets
+  a dentry, so its first close no longer evicts it and writes it all back); F3 stores through a mapping past
+  the end reached the disk (the EOF page's tail is zeroed before its write); F4 an extended-attribute block
+  (Linux-made volumes) leaked on delete (freed, or its refcount dropped); F5/F6 block leaks on -ENOMEM and a
+  block already mapped past a directory's end; F7 pages dirtied after `ext2_shutdown` were retried forever
+  (-EROFS is now given up like -ENOSPC; fsync of a shut-down volume reports it); F8 round one's flush now always
+  runs, and the header lists residual (d). `ext2_dir_unindex` now runs before an entry block changes.
+- **Write-order audit (host).** `tests/blk_mem.c` classes every write (file data, other metadata, inode tables,
+  allocation state, from the on-disk layout) and counts writes in flight and not yet flushed on a `BLK_CACHE`
+  disk; every ext2w scenario fails if an inode-table write starts while data isn't on the medium, or allocation
+  state while anything else isn't, or an inode table while allocation state isn't. It found one more gap: a
+  pass flushed the disks before metadata only if that pass wrote data, so data written earlier (kswapd, an inode
+  leaving memory) could still sit in the disk cache; now it flushes whenever anything was written since the
+  last flush. Mutations of the review (remove_page without the write wait, no round order, metadata without
+  the stable wait, fsync without the data flush) each fail at least one suite.
+- **Created files stay cached.** With the dentry on create, up to DCACHE_MAX (4096) recently created files keep
+  their inode and pages, like looked-up ones; the 10 000-file test bounds pages by that, not by 2000.

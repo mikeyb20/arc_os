@@ -113,12 +113,13 @@ int wb_write_result(AddressSpace *as, int err) {
             __atomic_store_n(&as->wb_fail_since, 0, __ATOMIC_RELAXED);
         return 0;
     }
-    if (err == -ENOSPC) {
-        /* No block for a page dirtied through a mapping (a hole, full disk):
-         * trying again would only wake the flusher forever. Dropped at once,
-         * as Linux does; the next fsync reports it. */
+    if (err == -ENOSPC || err == -EROFS) {
+        /* No block for a page dirtied through a mapping (a hole, full disk),
+         * or a page dirtied after its volume was shut down (read-only from
+         * then on): trying again would only wake the flusher forever.
+         * Dropped at once, as Linux does; the next fsync reports it. */
         if (__atomic_exchange_n(&as->wb_err, err, __ATOMIC_RELAXED) == 0)
-            kprintf("[WB] no space for a page of %s: dropped\n",
+            kprintf("[WB] %s for a page of %s: dropped\n", err == -ENOSPC ? "no space" : "read-only volume",
                     as->host == NULL && as->bdev != NULL ? as->bdev->name : "a file");
         STAT_ADD(dropped, 1);
         return 0;
@@ -282,6 +283,7 @@ static void done_with(AddressSpace *as) {
 }
 
 static void flush_disks(void);
+static uint64_t written_at_flush;   /* stats.written when flush_disks last ran (wb_mutex) */
 
 #define WB_BATCH 16   /* mappings whose writes are in flight together */
 
@@ -320,12 +322,14 @@ static void pass(void) {
     uint64_t n = wb_count[WB_DATA];
     timer_cancel_locked();   /* this pass takes all of them */
     spin_unlock_irqrestore(&wb_lock, f);
-    uint64_t written = __atomic_load_n(&stats.written, __ATOMIC_RELAXED);
     write_listed(WB_DATA, n);
     spin_lock_irqsave(&wb_lock, &f);
     uint64_t m = wb_count[WB_META];
     spin_unlock_irqrestore(&wb_lock, f);
-    if (m != 0 && __atomic_load_n(&stats.written, __ATOMIC_RELAXED) != written) flush_disks();
+    /* The data on the medium before the metadata pointing at it: whatever
+     * wrote it since the last flush (this pass, or kswapd, an inode leaving
+     * memory, earlier) */
+    if (m != 0 && __atomic_load_n(&stats.written, __ATOMIC_RELAXED) != written_at_flush) flush_disks();
     write_listed(WB_META, m);
     reclaim_note_cleaned();
 }
@@ -359,6 +363,7 @@ void wb_wake(void) {
  * flusher and kswapd wrote earlier may still sit there (sync's flush is
  * Linux's too). A flush changes no data. */
 static void flush_disks(void) {
+    written_at_flush = __atomic_load_n(&stats.written, __ATOMIC_RELAXED);   /* writes ended by now are covered */
     BlockDevice *d;
     for (unsigned i = 0; (d = blk_get(i)) != NULL; i++) {
         if (d->disk != d || (d->flags & (BLK_CACHE | BLK_RDONLY)) != BLK_CACHE) continue;

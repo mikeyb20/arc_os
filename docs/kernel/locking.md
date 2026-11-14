@@ -184,8 +184,9 @@ the process list (the process row, M1-16); the tty line discipline (the TTY row)
   so no mm lock is ever taken under a metadata page. Writing (M1-15) adds one volume lock, `alloc_lock` (32):
   allocation in `prepare_write` and `writepage` (file page locked), directory changes (inode locks held) and
   truncate take it, then lock metadata pages one at a time under it. Readers of the block map take neither.
-- `iput` that frees an inode runs its filesystem's `evict_inode` with no lock held; `fput` never runs under a
-  spinlock. Pipes: `rd_mutex` and `wr_mutex` (level 10) serialise readers and writers and are held across user
+- `iput` that frees an inode runs its filesystem's `evict_inode` with no lock held; for a linked file it first
+  writes the dirty pages back and waits (`filemap_inode_flush`, `icache_lock` dropped), so like evict it may
+  sleep and must not run under a spinlock or a page lock. `fput` never runs under a spinlock. Pipes: `rd_mutex` and `wr_mutex` (level 10) serialise readers and writers and are held across user
   copies but dropped while waiting; `pipe->lock` (75) guards head, tail and the counts and is the wait-queue
   condition lock. A release wakes the other side before dropping `pipe->lock` (after it, the other end's last
   release may free the pipe).

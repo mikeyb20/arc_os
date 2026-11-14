@@ -403,8 +403,9 @@ static int64_t ext2_file_write(File *file, const IoBuf *buf, loff_t *pos) {
 int ext2_fsync(File *file) {
     Inode *inode = file->inode;
     Ext2Vol *v = ext2_vol(inode);
-    if (!v->writable) return 0;
     AddressSpace *as = filemap_of(inode);
+    if (!v->writable)   /* read-only, or shut down: only a page given up since (-EROFS) to tell */
+        return as != NULL ? __atomic_exchange_n(&as->wb_err, 0, __ATOMIC_RELAXED) : 0;
     int e = as != NULL ? filemap_write_range(as, 0, UINT64_MAX) : 0;
     int f = filemap_flush_device(&v->meta);   /* the data on the medium before what points at it */
     int m = filemap_write_all(&v->meta);       /* the inode, the map, directories, then the bitmaps */

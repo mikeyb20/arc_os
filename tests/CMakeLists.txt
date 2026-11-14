@@ -230,7 +230,7 @@ set_tests_properties(test_ext2 vfs_tests PROPERTIES FIXTURES_REQUIRED ext2_image
 # unmounted and the VFS has 16 mount slots).
 add_executable(test_ext2w_runner test_ext2_write.c ext2_image.c test_harness.c)
 target_link_libraries(test_ext2w_runner PRIVATE arc_vfs_host)
-foreach(_suite files dirs space state)
+foreach(_suite files dirs space state regress)
     add_test(NAME test_ext2w_${_suite} COMMAND test_ext2w_runner --suite ${_suite})
 endforeach()
 

@@ -11,15 +11,29 @@
  * unhashes it, so icache_get never revives an inode being freed. I_STATIC
  * inodes are counted but never freed.
  *
+ * A file that is still linked leaves the cache only with its data on the
+ * disk: the last iput writes its dirty pages back and waits *before* it
+ * unhashes, still holding its reference, so a lookup meanwhile finds this
+ * inode and its pages (not a second Inode reading blocks whose write hasn't
+ * landed). Inode.gets counts icache_get hits: if one came in while the pages
+ * were written, its holder may have dirtied more, so the write runs again.
+ * Only icache_get can hand out a new reference then (nothing else points at
+ * an inode whose count is 1 but the caller), so an unchanged count means the
+ * pages are still clean (Linux reaches the same with I_FREEING and a wait in
+ * the lookup).
+ *
  * Locks: icache_lock (LOCK_LEVEL_ICACHE, spinlock) guards the hash chains and
  * I_HASHED; it is a leaf. evict_inode runs with no lock held.
  *
  * Cost: igrab is one atomic add; iput of an unhashed inode one atomic sub;
- * of a hashed one, the cache lock and the chain walk to unlink it. Lookups
- * hash to one of ICACHE_BUCKETS chains. */
+ * of a hashed one, the cache lock and the chain walk to unlink it, and for
+ * the last reference to a linked regular file one walk of its cached pages
+ * (filemap_inode_flush; evict_inode then skips its own write, I_FLUSHED).
+ * Lookups hash to one of ICACHE_BUCKETS chains. */
 
 #include "fs/vfs.h"
 #include "mm/kmalloc.h"
+#include "mm/filemap.h"
 #include "mm/slab.h"
 #include "lib/mem.h"
 #include "time/clock.h"
@@ -108,19 +122,41 @@ static void icache_unhash(Inode *inode) {
     __atomic_and_fetch(&inode->flags, ~(uint32_t)I_HASHED, __ATOMIC_RELAXED);
 }
 
+/* Drop a hashed inode's reference: 1 if it was the last (the inode is
+ * unhashed and must be evicted), 0 if others remain */
+static int iput_hashed(Inode *inode) {
+    int flushed = 0;
+    uint32_t gets = 0;
+    for (;;) {
+        uint64_t flags;
+        spin_lock_irqsave(&icache_lock, &flags);
+        uint32_t now = inode->gets;
+        int last = inode->refcount == 1;
+        if (!last || (flushed && now == gets) || inode->mapping == NULL || inode->nlink == 0) {
+            /* The last reference must leave the cache in the same step, or
+             * icache_get could hand out an inode that is being freed */
+            if (__atomic_sub_fetch(&inode->refcount, 1, __ATOMIC_ACQ_REL) != 0) {
+                spin_unlock_irqrestore(&icache_lock, flags);
+                return 0;
+            }
+            icache_unhash(inode);
+            if (flushed) __atomic_or_fetch(&inode->flags, I_FLUSHED, __ATOMIC_RELAXED);
+            spin_unlock_irqrestore(&icache_lock, flags);
+            return 1;
+        }
+        spin_unlock_irqrestore(&icache_lock, flags);
+        /* Last reference to a linked file with a page cache: its data goes
+         * to the disk while lookups can still find it (see the top) */
+        gets = now;
+        flushed = 1;
+        filemap_inode_flush(inode);
+    }
+}
+
 void iput(Inode *inode) {
     if (inode == NULL) return;
     if (__atomic_load_n(&inode->flags, __ATOMIC_RELAXED) & I_HASHED) {
-        /* The last reference must leave the cache in the same step, or
-         * icache_get could hand out an inode that is being freed */
-        uint64_t flags;
-        spin_lock_irqsave(&icache_lock, &flags);
-        if (__atomic_sub_fetch(&inode->refcount, 1, __ATOMIC_ACQ_REL) != 0) {
-            spin_unlock_irqrestore(&icache_lock, flags);
-            return;
-        }
-        icache_unhash(inode);
-        spin_unlock_irqrestore(&icache_lock, flags);
+        if (!iput_hashed(inode)) return;
     } else if (__atomic_sub_fetch(&inode->refcount, 1, __ATOMIC_ACQ_REL) != 0) {
         return;
     }
@@ -136,7 +172,10 @@ Inode *icache_get(SuperBlock *sb, uint64_t ino) {
     spin_lock_irqsave(&icache_lock, &flags);
     Inode *inode = icache[icache_hash(sb, ino)];
     while (inode != NULL && !(inode->sb == sb && inode->ino == ino)) inode = inode->hash_next;
-    if (inode != NULL) igrab(inode);   /* hashed: its count can't reach 0 while we hold the lock */
+    if (inode != NULL) {
+        igrab(inode);   /* hashed: its count can't reach 0 while we hold the lock */
+        inode->gets++;  /* a last iput writing the pages back writes again (see the top) */
+    }
     spin_unlock_irqrestore(&icache_lock, flags);
     return inode;
 }
@@ -149,6 +188,7 @@ Inode *icache_add(Inode *inode) {
     while (old != NULL && !(old->sb == inode->sb && old->ino == inode->ino)) old = old->hash_next;
     if (old != NULL) {
         igrab(old);
+        old->gets++;   /* as icache_get */
         spin_unlock_irqrestore(&icache_lock, flags);
         iput(inode);   /* not hashed: freed outside the lock */
         return old;

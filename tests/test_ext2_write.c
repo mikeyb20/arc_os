@@ -21,6 +21,7 @@
 
 #include "drivers/blkdev.h"
 #include "fs/ext2.h"
+#include "fs/ext2_internal.h"
 #include "fs/path.h"
 #include "fs/vfs_internal.h"
 #include "mm/filemap.h"
@@ -63,11 +64,23 @@ static void env(void) {
     vfs_env_sleep_hook = ew_sleep;
 }
 
+/* The disks, registered (blk_get) so sync's cache flush reaches them */
+static BlockDevice *disks[32];
+static unsigned ndisks;
+
+/* A disk with a volatile write cache (the order audit counts what isn't
+ * flushed yet) over im */
 static void disk_on(BlockDevice *dev, const HostImage *im, uint32_t flags) {
     memset(dev, 0, sizeof(*dev));
     dev->driver_data = im->data;
     dev->nr_sectors = im->size / 512;
-    dev->flags = flags;
+    dev->flags = flags | BLK_CACHE;
+    dev->disk = dev;
+    snprintf(dev->name, sizeof(dev->name), "mem%u", ndisks);
+    unsigned i = 0;
+    while (i < ndisks && disks[i] != dev) i++;
+    if (i == ndisks && ndisks < sizeof(disks) / sizeof(disks[0])) disks[ndisks++] = dev;
+    blk_mem_devices(disks, ndisks);
 }
 
 /* Mount im at mnt (made here) on a fresh disk. 0, or the error */
@@ -90,21 +103,79 @@ static int vol_new(Vol *v, const char *mnt, uint64_t mib, const char *opts, cons
     return ext2_writable(v->sb) ? 0 : -EROFS;
 }
 
-/* Shut the volume down, then e2fsck: 0 if both are clean */
+/* --- The write order (blk_mem.h audit) ---
+ *
+ * Every write to an ext2 image is classed from the layout on that disk (read
+ * here, independently of the kernel's copy): file data, other metadata
+ * (directories, indirect and symlink blocks), inode tables, and allocation
+ * state (superblock, group descriptors, bitmaps). The rule ext2_alloc.c
+ * promises: an inode-table write never starts while file data is in flight
+ * or not flushed (an inode never points at data a crash could lose), and an
+ * allocation-state write never starts while anything else is (round two
+ * after round one, after the data); nor an inode-table write while
+ * allocation state is (the rounds never overlap, so a bit freed in round two
+ * never reaches the disk before the pointer cleared in round one). Writes ext2 makes on purpose outside a
+ * pass (a new indirect or directory block, before anything points at it)
+ * are "other metadata", which no rule constrains. */
+
+enum { CLASS_OTHER = 1, CLASS_ITABLE, CLASS_ALLOC };
+
+static uint32_t le32(const uint8_t *p) {
+    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
+}
+
+static int ext2_class(const BlockDevice *dev, uint64_t sector, int file_page) {
+    if (file_page) return BLK_MEM_DATA;
+    const uint8_t *img = dev->driver_data, *sb = img + 1024;
+    if (dev->nr_sectors < 8 || (sb[56] | sb[57] << 8) != 0xEF53) return -1;
+    uint32_t bs = 1024u << le32(sb + 24), first = le32(sb + 20), per_group = le32(sb + 32);
+    uint32_t ipg = le32(sb + 40), isize = sb[88] | sb[89] << 8, nblocks = le32(sb + 4);
+    uint32_t groups = (nblocks - first + per_group - 1) / per_group;
+    uint64_t b = sector * 512 / bs;
+    uint32_t gdt_end = first + 1 + (groups * 32 + bs - 1) / bs;   /* the descriptor blocks end here */
+    if (b == 0 || (b > first && b < gdt_end)) return CLASS_ALLOC;
+    const uint8_t *gd = img + (uint64_t)(first + 1) * bs;
+    for (uint32_t g = 0; g < groups; g++, gd += 32) {
+        uint64_t table = le32(gd + 8);
+        if (b == le32(gd) || b == le32(gd + 4)) return CLASS_ALLOC;
+        if (b >= table && b < table + (uint64_t)ipg * isize / bs) return CLASS_ITABLE;
+    }
+    return CLASS_OTHER;
+}
+
+static void order_audit_on(void) {
+    blk_mem_classify = ext2_class;
+    blk_mem_before[CLASS_ITABLE] = 1u << BLK_MEM_DATA | 1u << CLASS_ALLOC;
+    blk_mem_before[CLASS_ALLOC] = 1u << BLK_MEM_DATA | 1u << CLASS_OTHER | 1u << CLASS_ITABLE;
+    blk_mem_audit = 1;
+}
+
+/* 0 if every write so far kept the order, else the first that didn't (once) */
+static int order_kept(void) {
+    if (blk_mem_order_errors == 0) return 0;
+    printf("  write order broken %d times; first: %s\n", blk_mem_order_errors, blk_mem_order_error);
+    blk_mem_order_errors = 0;
+    return -1;
+}
+
+/* Shut the volume down, then e2fsck: 0 if both are clean and every write
+ * kept the order */
 static int vol_finish(Vol *v) {
     int err = ext2_shutdown(v->sb);
     if (err != 0) {
         printf("  ext2_shutdown: %d\n", err);
         return err;
     }
-    return himg_fsck(&v->im);
+    int fsck = himg_fsck(&v->im);
+    return fsck != 0 ? fsck : order_kept();
 }
 
 /* A sync while mounted, then e2fsck on the disk as it is: what a crash right
- * now would leave (0 = clean) */
+ * now would leave (0 = clean, and every write kept the order) */
 static int synced_disk_clean(Vol *v) {
     wb_sync_all();
-    return himg_fsck(&v->im);
+    int fsck = himg_fsck(&v->im);
+    return fsck != 0 ? fsck : order_kept();
 }
 
 static char paths[8][512];
@@ -242,7 +313,10 @@ TEST(ten_thousand_files) {
     ASSERT_EQ(entries(at(&v, "big")), 10000);
     VfsEnvUsage u;
     vfs_env_usage(&u);
-    ASSERT_TRUE(u.pages < 2000);   /* a closed file's pages left with its inode (written first) */
+    /* Bounded by the dentry cache, not the file count: a created file stays
+     * cached like a looked-up one (its inode and page) until its entry is
+     * the least recently used of DCACHE_MAX, then leaves (written first) */
+    ASSERT_TRUE(u.pages < DCACHE_MAX + 1024);
     char buf[64];
     ASSERT_EQ(vfs_env_read_file(at(&v, "big/f04711"), buf, sizeof(buf)), 10);
     ASSERT_STR_EQ(buf, "file 4711\n");
@@ -1033,23 +1107,245 @@ TestCase ext2w_state_tests[] = {
     TEST_ENTRY(write_back_completes_asynchronously),
 };
 
+/* ========================================================================
+ * Suite "regress": the PR #49 review's findings (each failed before its fix)
+ * and writes racing changes (completions deferred until a thread waits)
+ * ===================================================================== */
+
+/* A device node's i_block holds its device number, not blocks: unlinking it
+ * must not free "block" rdev (made to be another file's data block) */
+TEST(unlinked_device_node_frees_no_blocks) {
+    static Vol v;
+    /* 4 << 8 | 13 = 1037: the first data block mkfs gives, keep's */
+    ASSERT_EQ(vol_new(&v, "/rg1", 64, NULL, "mknod node c 4 13 && echo hi > keep"), 0);
+    char out[4096];
+    ASSERT_TRUE(himg_debugfs(&v.im, "icheck 1037", out, sizeof(out)) > 0);
+    ASSERT_TRUE(strstr(out, "1037\t12") != NULL || strstr(out, "1037 12") != NULL);   /* keep (inode 12) owns it */
+    ASSERT_EQ(vfs_unlink(at(&v, "node")), 0);
+    static uint8_t nn[4096];
+    memset(nn, 'N', sizeof(nn));
+    ASSERT_EQ(vfs_write_file(at(&v, "new"), nn, sizeof(nn), 0644), 0);
+    ASSERT_EQ(synced_disk_clean(&v), 0);   /* no block claimed twice */
+    drop_all();
+    char buf[8];
+    ASSERT_EQ(vfs_env_read_file(at(&v, "keep"), buf, sizeof(buf)), 3);
+    ASSERT_TRUE(memcmp(buf, "hi\n", 3) == 0);
+    ASSERT_EQ(vol_finish(&v), 0);
+    return 0;
+}
+
+/* A store through a mapping past the end, in the last page, must not reach
+ * the disk: after the page leaves memory, growing the file shows zeros */
+TEST(stores_past_the_end_never_reach_the_disk) {
+    static Vol v;
+    ASSERT_EQ(vol_new(&v, "/rg2", 64, NULL, NULL), 0);
+    const char *path = at(&v, "tail");
+    File *f = open_rw(path);
+    ASSERT_TRUE(f != NULL);
+    static uint8_t head[100];
+    memset(head, 'A', sizeof(head));
+    ASSERT_EQ(pwr(f, head, sizeof(head), 0), 100);
+    EwMap m;
+    ew_map(&m, f, 1);
+    ASSERT_EQ(ew_store(&m, 200, 0x5A), MM_FAULT_OK);   /* past the end, inside the last page (POSIX allows it) */
+    ASSERT_EQ(filemap_vma_ops.sync(&m.vma, m.vma.start, m.vma.end), 0);
+    ew_unmap(&m);
+    fput(f);
+    drop_all();   /* the page leaves memory */
+    f = open_rw(path);
+    ASSERT_TRUE(f != NULL);
+    ASSERT_EQ(vfs_ftruncate(f, 4096), 0);
+    uint8_t got[4096];
+    ASSERT_EQ(prd(f, got, sizeof(got), 0), 4096);
+    fput(f);
+    ASSERT_EQ(got[200], 0);
+    ASSERT_TRUE(memcmp(got, head, sizeof(head)) == 0);
+    ASSERT_EQ(vol_finish(&v), 0);
+    return 0;
+}
+
+/* A linked inode leaving memory writes its dirty pages back while still in
+ * the inode cache: a lookup meanwhile (here: while that write waits) finds
+ * it and its pages, not a second Inode reading the unwritten disk */
+static const char *evict_path;
+static uint8_t evict_got[64];
+static int evict_ran;
+static void evict_hook(void) {
+    if (evict_path != NULL && !evict_ran) {
+        evict_ran = 1;
+        File *f;
+        if (vfs_open(evict_path, O_RDONLY, 0, &f) == 0) {
+            (void)prd(f, evict_got, sizeof(evict_got), 0);
+            fput(f);
+        } else {
+            evict_ran = -1;
+        }
+    }
+    ew_sleep();
+}
+
+TEST(lookup_while_leaving_memory_finds_the_pages) {
+    static Vol v;
+    ASSERT_EQ(vol_new(&v, "/rg3", 64, NULL, NULL), 0);
+    const char *path = at(&v, "evicted");
+    File *f = open_rw(path);
+    ASSERT_TRUE(f != NULL);
+    static uint8_t data[64];
+    memset(data, 'D', sizeof(data));
+    ASSERT_EQ(pwr(f, data, sizeof(data), 0), 64);
+    static char keep[64];
+    snprintf(keep, sizeof(keep), "%s", path);
+    evict_path = keep;
+    vfs_env_sleep_hook = evict_hook;
+    blk_mem_defer = 1;
+    fput(f);
+    vfs_drop_caches();   /* the last reference (the dentry's): the dirty page is written back */
+    blk_mem_defer = 0;
+    vfs_env_sleep_hook = ew_sleep;
+    evict_path = NULL;
+    ASSERT_EQ(evict_ran, 1);
+    ASSERT_TRUE(memcmp(evict_got, data, sizeof(data)) == 0);
+    ASSERT_EQ(vol_finish(&v), 0);
+    ASSERT_TRUE(on_disk_as(&v, "/evicted", data, sizeof(data)));
+    return 0;
+}
+
+/* A file with an extended-attribute block (a Linux-made volume) unlinked:
+ * the block goes back to the bitmap (e2fsck: no bitmap difference) */
+TEST(unlink_gives_back_the_attribute_block) {
+    static Vol v;
+    env();
+    ASSERT_EQ(himg_make(&v.im, 64, NULL, "echo hi > x && echo hi > y"), 0);
+    static char cmd[4096];
+    char val[1601];
+    memset(val, 'v', 1600);
+    val[1600] = 0;
+    /* Too big for the inode's own space: an external block (y has none) */
+    snprintf(cmd, sizeof(cmd), "debugfs -w -R 'ea_set /x user.big %s' '%s' >/dev/null 2>&1", val, v.im.path);
+    ASSERT_EQ(system(cmd), 0);
+    char out[4096];
+    ASSERT_TRUE(himg_debugfs(&v.im, "stat /x", out, sizeof(out)) > 0);
+    const char *fa = strstr(out, "File ACL: ");
+    ASSERT_TRUE(fa != NULL && atoi(fa + 10) > 0);
+    ASSERT_EQ(vol_mount(&v, "/rg4", 0, EXT2_MOUNT_RW), 0);
+    ASSERT_EQ(vfs_unlink(at(&v, "x")), 0);
+    ASSERT_EQ(vfs_unlink(at(&v, "y")), 0);   /* no attribute block: nothing to do */
+    ASSERT_EQ(vol_finish(&v), 0);
+    return 0;
+}
+
+/* ftruncate while the truncated pages' writes are in flight: it waits for
+ * them, so a file that gets the freed blocks next is never overwritten by
+ * the old write landing late */
+TEST(truncate_waits_for_writes_in_flight) {
+    static Vol v;
+    ASSERT_EQ(vol_new(&v, "/rg5", 64, NULL, NULL), 0);
+    static uint8_t a[8192], b[8192];
+    memset(a, 'A', sizeof(a));
+    memset(b, 'B', sizeof(b));
+    File *f = open_rw(at(&v, "a"));
+    ASSERT_TRUE(f != NULL);
+    ASSERT_EQ(pwr(f, a, sizeof(a), 0), (int64_t)sizeof(a));   /* blocks given at write() */
+    int64_t old_block = ext2_bmap(f->inode, 0);
+    ASSERT_TRUE(old_block > 0);
+    blk_mem_defer = 1;   /* the writes stay in flight until a thread waits */
+    ASSERT_EQ(filemap_start_range_if(filemap_of(f->inode), 0, UINT64_MAX, NULL, NULL), 0);
+    ASSERT_EQ(vfs_ftruncate(f, 0), 0);   /* frees the blocks */
+    File *g = open_rw(at(&v, "b"));
+    ASSERT_TRUE(g != NULL);
+    ASSERT_EQ(pwr(g, b, sizeof(b), 0), (int64_t)sizeof(b));
+    ASSERT_EQ(ext2_bmap(g->inode, 0), old_block);   /* the race needs b on a's old block */
+    ASSERT_EQ(vfs_fsync(g), 0);
+    blk_mem_defer = 0;
+    blk_mem_run();   /* anything still deferred lands now: last */
+    fput(f);
+    fput(g);
+    ASSERT_EQ(vol_finish(&v), 0);
+    ASSERT_TRUE(on_disk_as(&v, "/b", b, sizeof(b)));
+    return 0;
+}
+
+/* A directory changed while its block's write is in flight: the change
+ * waits for the write (stable metadata), so the disk gets the block as it
+ * was when the write started, never a half-changed one */
+TEST(directory_block_holds_still_while_written) {
+    static Vol v;
+    ASSERT_EQ(vol_new(&v, "/rg6", 64, NULL, NULL), 0);
+    ASSERT_EQ(vfs_mkdir(at(&v, "d"), 0755), 0);
+    ASSERT_EQ(write_text(at(&v, "d/x"), "x\n"), 0);
+    wb_sync_all();
+    ASSERT_EQ(write_text(at(&v, "d/z"), "z\n"), 0);   /* d's block dirty, with z */
+    blk_mem_audit = 0;   /* metadata written in no particular order on purpose */
+    blk_mem_defer = 1;
+    Ext2Vol *ev = (Ext2Vol *)v.sb;
+    ASSERT_EQ(filemap_start_range_if(&ev->meta, 0, UINT64_MAX, NULL, NULL), 0);
+    ASSERT_EQ(vfs_unlink(at(&v, "d/z")), 0);   /* waits for the block's write first */
+    blk_mem_defer = 0;
+    blk_mem_run();
+    blk_mem_audit = 1;
+    char out[4096];
+    ASSERT_TRUE(himg_debugfs(&v.im, "ls /d", out, sizeof(out)) > 0);
+    ASSERT_TRUE(strstr(out, ") z") != NULL);   /* the block as its write started: z still there */
+    ASSERT_EQ(vol_finish(&v), 0);
+    ASSERT_TRUE(himg_debugfs(&v.im, "ls /d", out, sizeof(out)) > 0);
+    ASSERT_TRUE(strstr(out, ") x") != NULL && strstr(out, ") z") == NULL);   /* the unlink, once written */
+    return 0;
+}
+
+/* A page dirtied through a mapping after the volume was shut down (read-only
+ * from then on) is given up at its first failed write, the error kept for
+ * fsync, instead of being tried again by every pass */
+TEST(page_dirtied_after_shutdown_is_dropped) {
+    static Vol v;
+    ASSERT_EQ(vol_new(&v, "/rg7", 64, NULL, NULL), 0);
+    File *f = open_rw(at(&v, "late"));
+    ASSERT_TRUE(f != NULL);
+    static uint8_t page[4096];
+    memset(page, 'a', sizeof(page));
+    ASSERT_EQ(pwr(f, page, sizeof(page), 0), 4096);
+    EwMap m;
+    ew_map(&m, f, 1);
+    ASSERT_EQ(ew_store(&m, 0, 'a'), MM_FAULT_OK);   /* mapped writable while the volume is */
+    ASSERT_EQ(ext2_shutdown(v.sb), 0);
+    ASSERT_EQ(ew_store(&m, 1, 'z'), MM_FAULT_OK);   /* dirty again, after the final write-back */
+    ASSERT_EQ(filemap_vma_ops.sync(&m.vma, m.vma.start, m.vma.end), -EROFS);
+    int requests = blk_mem_requests;
+    wb_sync_all();   /* nothing left to try again */
+    ASSERT_EQ(blk_mem_requests, requests);
+    ASSERT_EQ(vfs_fsync(f), -EROFS);   /* the kept error, once */
+    ASSERT_EQ(vfs_fsync(f), 0);
+    ew_unmap(&m);
+    fput(f);
+    ASSERT_EQ(himg_fsck(&v.im), 0);
+    ASSERT_EQ(order_kept(), 0);
+    ASSERT_TRUE(on_disk_as(&v, "/late", page, sizeof(page)));   /* as shut down */
+    return 0;
+}
+
+TestCase ext2w_regress_tests[] = {
+    TEST_ENTRY(unlinked_device_node_frees_no_blocks),        TEST_ENTRY(stores_past_the_end_never_reach_the_disk),
+    TEST_ENTRY(lookup_while_leaving_memory_finds_the_pages), TEST_ENTRY(unlink_gives_back_the_attribute_block),
+    TEST_ENTRY(truncate_waits_for_writes_in_flight),         TEST_ENTRY(directory_block_holds_still_while_written),
+    TEST_ENTRY(page_dirtied_after_shutdown_is_dropped),
+};
+
 int main(int argc, char **argv) {
     vfs_env_arena_size(ARENA_PAGES);
+    order_audit_on();
     wb_init();
     reclaim_init();   /* the pressure hook: allocations reclaim clean pages */
     int nf = sizeof(ext2w_files_tests) / sizeof(TestCase), nd = sizeof(ext2w_dirs_tests) / sizeof(TestCase);
     int ns = sizeof(ext2w_space_tests) / sizeof(TestCase), nt = sizeof(ext2w_state_tests) / sizeof(TestCase);
+    int nr = sizeof(ext2w_regress_tests) / sizeof(TestCase);
     TestSuite suites[] = {
-        {"files", ext2w_files_tests, &nf},
-        {"dirs", ext2w_dirs_tests, &nd},
-        {"space", ext2w_space_tests, &ns},
-        {"state", ext2w_state_tests, &nt},
+        {"files", ext2w_files_tests, &nf}, {"dirs", ext2w_dirs_tests, &nd},       {"space", ext2w_space_tests, &ns},
+        {"state", ext2w_state_tests, &nt}, {"regress", ext2w_regress_tests, &nr},
     };
     int filtered = 0;
     for (int i = 1; i < argc; i++) filtered |= strcmp(argv[i], "--suite") == 0;
     if (!filtered) {
-        printf("test_ext2w_runner: run one suite per process (--suite files|dirs|space|state)\n");
+        printf("test_ext2w_runner: run one suite per process (--suite files|dirs|space|state|regress)\n");
         return 2;
     }
-    return test_harness_main(argc, argv, "arc_os ext2 write host tests", suites, 4);
+    return test_harness_main(argc, argv, "arc_os ext2 write host tests", suites, 5);
 }

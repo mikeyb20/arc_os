@@ -195,6 +195,7 @@ TEST(sync_and_release_flush_the_disk_cache) {
     mem_dev.disk = &mem_dev;
     mem_dev.flags = BLK_CACHE;
     blk_mem_devices(devs, 1);
+    wb_sync_all();   /* writes earlier tests made: flushed now (a pass would flush them before metadata) */
     unsigned off;
     int err = 0;
     struct page *pg = filemap_get_page(&dev_as, 3, NULL, 0, &off, &err);

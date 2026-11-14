@@ -9,8 +9,8 @@
  * entry exists. Entries are only positive (no "name doesn't exist" entries).
  * Changes to a directory remove the affected names first (dcache_remove under
  * the directory's exclusive lock); additions come from lookups under the
- * directory's shared lock, so an entry is never added for a name that is
- * being removed. At most DCACHE_MAX entries: adding past that frees the least
+ * directory's shared lock and from creates under its exclusive lock, so an
+ * entry is never added for a name that is being removed. At most DCACHE_MAX entries: adding past that frees the least
  * recently used one, which bounds the inodes a disk filesystem keeps in memory.
  * Names of DNAME_INLINE bytes or more are not cached (rare; the filesystem
  * looks them up), so an entry is one slab object and nothing else.

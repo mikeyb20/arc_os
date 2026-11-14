@@ -19,17 +19,23 @@
  * the write-back pass writes every file's data and waits, flushes the disk,
  * then calls ext2_meta_writepages, which commits the counts and writes the
  * metadata in two rounds: first everything but the allocation state (inode
- * tables, indirect blocks, directories) and waits, flushes, then the
+ * tables, indirect blocks, directories) and waits, flushes (always: the wait
+ * may cover writes others started), then the
  * allocation state (block and inode bitmaps, group descriptors, superblock).
  * A crash between rounds leaves blocks or inodes in use that the bitmaps
  * call free (e2fsck fixes the bitmaps; nothing points at garbage). Freeing
- * runs the other way round in effect: pointers are cleared (round one)
- * before the bits (round two), so a crash between leaks blocks, never hands
- * a used one out twice. New indirect and directory blocks are written
- * before any pointer to them exists (ext2_meta_new_done). Not covered: a
- * metadata page kswapd writes alone to free memory (any order), and a freed
- * block reused before the inode that freed it reaches the disk; e2fsck
- * (M5-01) repairs both. fsync writes the whole volume's metadata after its
+ * made before a pass starts runs the other way round in effect: pointers are
+ * cleared (round one) before the bits (round two), so a crash between leaks
+ * blocks. New indirect and directory blocks are written before any pointer
+ * to them exists (ext2_meta_new_done). Not covered, all repaired by e2fsck
+ * (M5-01): a free made while a pass runs (another thread's truncate or
+ * unlink after round one started), whose cleared bits round two writes
+ * before the cleared pointers (the next pass), so a crash between leaves an
+ * inode pointing at a block its bitmap calls free; kswapd writing pages
+ * alone to free memory (a metadata page in any order, or file data still in
+ * flight when a pass writes the inode that points at it: stale bytes after
+ * a crash); and a freed block reused before
+ * the inode that freed it reaches the disk. fsync writes the whole volume's metadata after its
  * own file's data only, so another file's new block pointers may reach the
  * disk before that file's data: after a crash it can show stale bytes
  * (Linux ext2 alike; ordered data is a journal's job).
@@ -297,19 +303,6 @@ static int alloc_state(void *ctx, uint64_t index) {
     return g < v->groups && (v->grp[g].block_bitmap == b || v->grp[g].inode_bitmap == b);
 }
 
-typedef struct {
-    Ext2Vol *v;
-    uint32_t seen;   /* dirty pages offered to the first round */
-} RoundOne;
-
-/* Round one's pages: start_range offers it dirty (or locked) pages only */
-static int round_one_start(void *ctx, uint64_t index) {
-    RoundOne *r = ctx;
-    if (alloc_state(r->v, index)) return 0;
-    r->seen++;
-    return 1;
-}
-
 static int round_one(void *ctx, uint64_t index) {
     return !alloc_state(ctx, index);
 }
@@ -320,14 +313,14 @@ int ext2_meta_writepages(AddressSpace *as) {
     mutex_lock(&v->alloc_lock);
     ext2_commit(v);
     mutex_unlock(&v->alloc_lock);
-    RoundOne r = {v, 0};
-    int err = filemap_start_range_if(as, 0, UINT64_MAX, round_one_start, &r);
+    int err = filemap_start_range_if(as, 0, UINT64_MAX, round_one, v);
     int w = filemap_wait_range_if(as, 0, UINT64_MAX, round_one, v);
     if (err == 0) err = w;
-    if (r.seen != 0) {
-        int f = filemap_flush_device(as);   /* round one on the medium before round two */
-        if (err == 0) err = f;
-    }
+    /* Round one on the medium before round two: always, since the wait may
+     * have been for writes someone else started (kswapd, fsync) even when
+     * this round started none */
+    int f = filemap_flush_device(as);
+    if (err == 0) err = f;
     int e2 = filemap_start_range_if(as, 0, UINT64_MAX, alloc_state, v);
     return err != 0 ? err : e2;
 }

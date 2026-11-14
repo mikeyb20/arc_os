@@ -595,8 +595,12 @@ int vfs_create_locked(Inode *dir, const char *name, uint32_t mode, Inode **out) 
     if (dir->iop == NULL || dir->iop->create == NULL) return -EACCES;   /* Linux: no create op is EACCES */
     Cred c = current_cred();
     err = dir->iop->create(dir, name, S_IFREG | (mode & 07777 & ~c.umask), c.uid, c.gid, out);
-    if (err == 0) touch_dir(dir);
-    return err;
+    if (err != 0) return err;
+    touch_dir(dir);
+    /* Cached like a lookup's result, so closing the new file doesn't evict
+     * it (and write it all back in close) just to read it in again */
+    if (!(dir->sb->flags & SB_NO_DCACHE)) dcache_add(dir, name, *out);
+    return 0;
 }
 
 /* One try of open(O_CREAT) in dir: the existing entry, or a new file. */

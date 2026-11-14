@@ -229,6 +229,7 @@ typedef struct SuperOps {
 #define I_HASHED     0x2   /* in the inode cache */
 #define I_MOUNTPOINT 0x4   /* a mount covers this directory */
 #define I_DEAD       0x8   /* removed directory: no new entries */
+#define I_FLUSHED    0x10  /* its last iput wrote its pages back: evict needn't (inode.c) */
 
 struct Inode {
     uint64_t ino;
@@ -249,6 +250,7 @@ struct Inode {
     void *mapping;    /* regular files: the AddressSpace of its page-cache pages (mm/filemap.h) */
     void *priv;       /* filesystem's own data */
     uint32_t refcount;   /* atomic; hashed inodes drop to 0 only under the inode-cache lock */
+    uint32_t gets;       /* icache_get hits, under the inode-cache lock (inode.c) */
     Inode *hash_next;    /* inode-cache chain */
     RwSem lock;          /* LOCK_LEVEL_INODE */
 };
@@ -314,7 +316,9 @@ void inode_init_static(Inode *inode, SuperBlock *sb, uint64_t ino, uint32_t mode
 Inode *igrab(Inode *inode);
 
 /* Drop a reference. The last one unhashes the inode, calls the filesystem's
- * evict_inode and frees it (not I_STATIC ones). Never under a spinlock. */
+ * evict_inode and frees it (not I_STATIC ones); for a file still linked it
+ * first writes the dirty pages back and waits, while the inode is still in
+ * the cache. Never under a spinlock. */
 void iput(Inode *inode);
 
 /* Inode cache, one per kernel, keyed by (sb, ino): filesystems whose inodes

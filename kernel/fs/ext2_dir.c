@@ -250,6 +250,7 @@ static int remove_entry(Inode *dir, const char *name) {
     DirSlot s;
     int err = find_entry(dir, name, &s);
     if (err != 0) return err;
+    ext2_dir_unindex(dir);   /* before the block changes (see ext2_dir_unindex) */
     uint8_t *b;
     struct page *pg;
     Ext2DirEntry *e = slot_lock(v, &s, &b, &pg, &err);
@@ -259,7 +260,6 @@ static int remove_entry(Inode *dir, const char *name) {
     else
         e->inode = 0;   /* the first of its block: unused */
     ext2_meta_done(pg, 1);
-    ext2_dir_unindex(dir);
     return 0;
 }
 
@@ -270,6 +270,7 @@ static int set_entry(Inode *dir, const char *name, uint32_t ino, uint8_t ft) {
     DirSlot s;
     int err = find_entry(dir, name, &s);
     if (err != 0) return err;
+    ext2_dir_unindex(dir);   /* before the block changes (see ext2_dir_unindex) */
     uint8_t *b;
     struct page *pg;
     Ext2DirEntry *e = slot_lock(v, &s, &b, &pg, &err);
@@ -277,7 +278,6 @@ static int set_entry(Inode *dir, const char *name, uint32_t ino, uint8_t ft) {
     e->inode = ino;
     if (v->filetype) e->file_type = ft;
     ext2_meta_done(pg, 1);
-    ext2_dir_unindex(dir);
     return 0;
 }
 
@@ -327,6 +327,7 @@ static int add_block(Inode *dir, uint32_t lblk, const char *name, size_t len, ui
     uint32_t blk;
     mutex_lock(&v->alloc_lock);
     int err = ext2_alloc_block(v, goal, &blk);
+    int have = err == 0;   /* ours to free if anything below fails */
     struct page *pg;
     uint8_t *b = err == 0 ? ext2_meta_new(v, blk, &pg, &err) : NULL;
     if (b != NULL) {
@@ -347,8 +348,10 @@ static int add_block(Inode *dir, uint32_t lblk, const char *name, size_t len, ui
         int fresh;
         int64_t got = ext2_map_alloc(dir, lblk, blk, &fresh);
         if (got < 0) err = (int)got;
+        /* A block already mapped past the directory's size (a damaged volume) */
+        if (got > 0 && got != (int64_t)blk) err = ext2_corrupt(v, "directory block past its end", dir->ino);
     }
-    if (err != 0 && b != NULL) ext2_free_blocks(v, blk, 1, 1);
+    if (err != 0 && have) ext2_free_blocks(v, blk, 1, 1);
     mutex_unlock(&v->alloc_lock);
     if (err != 0) return err;
     __atomic_store_n(&dir->size, (loff_t)((uint64_t)(lblk + 1) << v->block_shift), __ATOMIC_RELEASE);
@@ -361,6 +364,7 @@ static int add_entry(Inode *dir, const char *name, uint32_t ino, uint8_t ft) {
     Ext2Vol *v = ext2_vol(dir);
     size_t len = strlen(name);
     if (len == 0 || len > 255) return -ENAMETOOLONG;
+    ext2_dir_unindex(dir);   /* before any block changes (see ext2_dir_unindex) */
     uint64_t nblocks = (uint64_t)dir->size >> v->block_shift;
     for (uint64_t lblk = 0; lblk < nblocks; lblk++) {
         int64_t pblk = ext2_bmap(dir, (uint32_t)lblk);
@@ -368,15 +372,10 @@ static int add_entry(Inode *dir, const char *name, uint32_t ino, uint8_t ft) {
         if (pblk == 0) continue;
         int rc = add_in_block(dir, (uint32_t)pblk, name, len, ino, ft);
         if (rc < 0) return rc;
-        if (rc == 1) {
-            ext2_dir_unindex(dir);
-            return 0;
-        }
+        if (rc == 1) return 0;
     }
     if (((nblocks + 1) << v->block_shift) > EXT2_DIR_MAX_BYTES) return -EFBIG;
-    int err = add_block(dir, (uint32_t)nblocks, name, len, ino, ft, 0);
-    if (err == 0) ext2_dir_unindex(dir);
-    return err;
+    return add_block(dir, (uint32_t)nblocks, name, len, ino, ft, 0);
 }
 
 /* --- Namespace operations --- */
@@ -494,6 +493,7 @@ static int ext2_symlink(Inode *dir, const char *name, const char *target, uint32
         uint32_t blk;
         mutex_lock(&v->alloc_lock);
         err = ext2_alloc_block(v, v->first_data_block, &blk);
+        int have = err == 0;   /* ours to free if anything below fails */
         struct page *pg;
         uint8_t *b = err == 0 ? ext2_meta_new(v, blk, &pg, &err) : NULL;
         if (b != NULL) {
@@ -502,8 +502,9 @@ static int ext2_symlink(Inode *dir, const char *name, const char *target, uint32
             int fresh;
             int64_t got = err == 0 ? ext2_map_alloc(inode, 0, blk, &fresh) : 0;
             if (got < 0) err = (int)got;
-            if (err != 0) ext2_free_blocks(v, blk, 1, 1);
+            if (got > 0 && got != (int64_t)blk) err = ext2_corrupt(v, "new symlink already mapped", inode->ino);
         }
+        if (err != 0 && have) ext2_free_blocks(v, blk, 1, 1);
         mutex_unlock(&v->alloc_lock);
     }
     if (err == 0) {

@@ -764,15 +764,25 @@ void filemap_truncate(Inode *inode, loff_t size) {
     zero_tail(as, size);
 }
 
+/* Write a linked file's dirty pages back and wait: 0, or the error (logged) */
+static int write_out(Inode *inode, AddressSpace *as) {
+    int e = filemap_write_range(as, 0, UINT64_MAX);
+    if (e != 0) kprintf("[FILEMAP] inode %lu: write-back failed (%d) as it left memory; changes lost\n", inode->ino, e);
+    return e;
+}
+
+void filemap_inode_flush(Inode *inode) {
+    AddressSpace *as = filemap_of(inode);
+    if (as != NULL && inode->nlink != 0 && as->ops != NULL && as->ops->writepage != NULL) (void)write_out(inode, as);
+}
+
 void filemap_inode_evict(Inode *inode) {
     AddressSpace *as = filemap_of(inode);
     if (as == NULL) return;
-    /* A file still linked keeps its data: write it before the pages go */
-    if (inode->nlink != 0 && as->ops != NULL && as->ops->writepage != NULL) {
-        int e = filemap_write_range(as, 0, UINT64_MAX);
-        if (e != 0)
-            kprintf("[FILEMAP] inode %lu: write-back failed (%d) as it left memory; changes lost\n", inode->ino, e);
-    }
+    /* A file still linked keeps its data: iput wrote it before unhashing
+     * (filemap_inode_flush); again here for an inode never hashed */
+    if (inode->nlink != 0 && as->ops != NULL && as->ops->writepage != NULL && !(inode->flags & I_FLUSHED))
+        (void)write_out(inode, as);
     drop_pages_from(as, 0);   /* no VMA maps it: each holds a File reference, so the inode */
     wb_mapping_forget(as); /* off the write-back list, no pass still writing it */
     kmem_cache_free(as_cache, as);
@@ -874,11 +884,14 @@ int filemap_wait_range_if(AddressSpace *as, uint64_t first, uint64_t last, int (
             filemap_wait_writeback(pg);
             /* PG_ERROR on an up-to-date page: its last write failed (it is
              * dirty again, or given up and kept in wb_err). Told once; -ENOSPC
-             * when the file system had no block for it (wb_err says so,
-             * and stays for fsync), else -EIO. */
+             * when the file system had no block for it, -EROFS when its
+             * volume was shut down (wb_err says so, and stays for fsync),
+             * else -EIO. */
             if (page_test(pg, PG_UPTODATE) && !page_test(pg, PG_WRITEBACK) && page_test_and_clear(pg, PG_ERROR) &&
-                ret == 0)
-                ret = __atomic_load_n(&as->wb_err, __ATOMIC_RELAXED) == -ENOSPC ? -ENOSPC : -EIO;
+                ret == 0) {
+                int we = __atomic_load_n(&as->wb_err, __ATOMIC_RELAXED);
+                ret = we == -ENOSPC || we == -EROFS ? we : -EIO;
+            }
         }
         page_put(pg);
         if (idx == UINT64_MAX) break;
