@@ -402,6 +402,10 @@ static uint32_t pid_of(const Inode *dir) {
 }
 
 static int procfs_pid_lookup(Inode *dir, const char *name, Inode **out) {
+    if (strcmp(name, "..") == 0) {
+        *out = igrab(&proc_root);
+        return 0;
+    }
     uint32_t i = 0;
     while (i < PID_FILE_COUNT && strcmp(name, pid_files[i].name) != 0) i++;
     if (i == PID_FILE_COUNT) return -ENOENT;
@@ -462,15 +466,19 @@ typedef struct {
     const char *name;
     Inode *child;
     uint8_t type;   /* DT_ */
-    uint64_t parent_ino;
+    Inode *parent;
 } ProcSubdir;
 
 static Inode proc_sys, proc_sys_vm, proc_drop_caches;
-static const ProcSubdir sys_entry = {"vm", &proc_sys_vm, DT_DIR, PROC_INO_ROOT};
-static const ProcSubdir vm_entry = {"drop_caches", &proc_drop_caches, DT_REG, PROC_INO_SYS};
+static const ProcSubdir sys_entry = {"vm", &proc_sys_vm, DT_DIR, &proc_root};
+static const ProcSubdir vm_entry = {"drop_caches", &proc_drop_caches, DT_REG, &proc_sys};
 
 static int procfs_subdir_lookup(Inode *dir, const char *name, Inode **out) {
     const ProcSubdir *s = (const ProcSubdir *)dir->priv;
+    if (strcmp(name, "..") == 0) {
+        *out = igrab(s->parent);
+        return 0;
+    }
     if (strcmp(name, s->name) != 0) return -ENOENT;
     *out = igrab(s->child);
     return 0;
@@ -479,7 +487,7 @@ static int procfs_subdir_lookup(Inode *dir, const char *name, Inode **out) {
 static int procfs_subdir_iterate(File *file, DirContext *ctx) {
     Inode *dir = file->inode;
     const ProcSubdir *s = (const ProcSubdir *)dir->priv;
-    if (!dir_emit_dots(ctx, dir->ino, s->parent_ino)) return 0;
+    if (!dir_emit_dots(ctx, dir->ino, s->parent->ino)) return 0;
     if (ctx->pos == PROC_COOKIE0) dir_emit(ctx, s->name, strlen(s->name), s->child->ino, s->type, PROC_COOKIE0 + 1);
     return 0;
 }
@@ -513,6 +521,10 @@ static void procfs_subdir_init(Inode *dir, uint64_t ino, const ProcSubdir *entry
 
 static int procfs_root_lookup(Inode *dir, const char *name, Inode **out) {
     (void)dir;
+    if (strcmp(name, "..") == 0) {   /* never asked: the VFS stops ".." at a mount root */
+        *out = igrab(&proc_root);
+        return 0;
+    }
     if (strcmp(name, "sys") == 0) {
         *out = igrab(&proc_sys);
         return 0;

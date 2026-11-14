@@ -36,4 +36,6 @@ reach the disk without periodic polling (ADR-0004, ADR-0016, ADR-0017).
 - Reclaim may unmap pages of a process running on another CPU; it must use the shootdown, not a local flush.
 
 **Notes.**
--
+- From M1-13: ext2 metadata lives in block-device mappings (`AddressSpace.host == NULL`, page locks at
+  `LOCK_LEVEL_META_PAGE`); reclaim treats them like file pages. `ind_cache` holds a disk block number, not a
+  page, so dropping metadata pages never leaves it dangling.

@@ -23,9 +23,11 @@
 #define LOCK_LEVEL_RENAME        8   /* sleeping: one rename per filesystem (M1-11) */
 #define LOCK_LEVEL_INODE         10   /* sleeping: write, truncate, rename, directories (M1-11) */
 #define LOCK_LEVEL_INODE_2       11   /* sleeping: rename's second directory (M1-11) */
-#define LOCK_LEVEL_INODE_CHILD   12   /* sleeping: a directory being removed or replaced (M1-11) */
+#define LOCK_LEVEL_INODE_CHILD   12   /* sleeping: a directory being removed (M1-11) or moved (M1-13) */
+#define LOCK_LEVEL_INODE_CHILD_2 13   /* sleeping: a directory a rename replaces (M1-13) */
 #define LOCK_LEVEL_MM            20   /* sleeping read-write: mmap, munmap, faults (M1-07) */
 #define LOCK_LEVEL_PAGE          30   /* sleeping, per page (M1-12) */
+#define LOCK_LEVEL_META_PAGE     35   /* sleeping: a block-device mapping's page (filesystem metadata, M1-13) */
 #define LOCK_LEVEL_MAPPING       40   /* sleeping: VMAs mapping a file (M1-12) */
 #define LOCK_LEVEL_FS_IO         45   /* sleeping: a filesystem's device reads (FAT32 volume; M1-11) */
 #define LOCK_LEVEL_PAGE_TABLE    50   /* spinlock, per mm; today the kernel page tables */

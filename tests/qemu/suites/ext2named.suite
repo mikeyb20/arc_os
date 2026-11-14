@@ -1,0 +1,3 @@
+# qemu.ext2.named (M1-13): arc.data=PARTUUID= names a foreign partition:
+# refused, /system still mounted, no data mounts.
+ext2test /boot/ext2test named

@@ -13,6 +13,7 @@
 #include "fs/vfs_internal.h"
 #include "drivers/irq.h"
 #include "drivers/tty.h"
+#include "lib/cmdline.h"
 #include "lib/klog.h"
 #include "mm/kmalloc.h"
 #include "mm/mm.h"
@@ -530,10 +531,6 @@ int cpu_describe(uint32_t cpu, uint32_t *apic_id, uint8_t *core_type) {
     return 0;
 }
 
-const char *cmdline_raw(void) {
-    return "arc.test=vfs";
-}
-
 static const char klog_text[] = "<6>[BOOT] host\n";
 
 uint64_t klog_tail(void) {
@@ -636,11 +633,12 @@ void vfs_env_setup(void) {
     vfs_env_proc.pgid = 1;
     vfs_env_as(0, 0);
     vfs_env_proc.umask = done ? 022 : 0;   /* boot runs with umask 0, as kmain does */
-    strcpy(vfs_env_proc.cwd, "/");
+    vfs_cwd_release(&vfs_env_proc);   /* back to "/" */
     vfs_env_sleep_hook = NULL;
     fail_in = 0;
     if (done) return;
     done = 1;
+    cmdline_set("arc.test=vfs");   /* what /proc/cmdline shows */
     arena_init();
     filemap_init();
     vfs_init();

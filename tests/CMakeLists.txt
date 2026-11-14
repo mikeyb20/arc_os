@@ -39,7 +39,6 @@ add_executable(test_runner
     test_shell.c
     test_signal.c
     test_waitqueue.c
-    test_path.c
     test_exec_argv.c
     test_net_util.c
     test_ethernet.c
@@ -124,7 +123,6 @@ add_test(NAME test_keyboard     COMMAND test_runner --suite keyboard)
 add_test(NAME test_shell        COMMAND test_runner --suite shell)
 add_test(NAME test_signal       COMMAND test_runner --suite signal)
 add_test(NAME test_waitqueue    COMMAND test_runner --suite waitqueue)
-add_test(NAME test_path         COMMAND test_runner --suite path)
 add_test(NAME test_exec_argv   COMMAND test_runner --suite exec_argv)
 add_test(NAME test_net_util    COMMAND test_runner --suite net_util)
 add_test(NAME test_ethernet    COMMAND test_runner --suite ethernet)
@@ -160,7 +158,12 @@ add_library(arc_vfs_host STATIC
     ${CMAKE_SOURCE_DIR}/kernel/fs/devfs.c
     ${CMAKE_SOURCE_DIR}/kernel/fs/procfs.c
     ${CMAKE_SOURCE_DIR}/kernel/fs/fat32.c
-    ${CMAKE_SOURCE_DIR}/kernel/fs/path.c
+    ${CMAKE_SOURCE_DIR}/kernel/fs/ext2.c
+    ${CMAKE_SOURCE_DIR}/kernel/fs/sysmount.c
+    ${CMAKE_SOURCE_DIR}/kernel/drivers/gpt.c
+    ${CMAKE_SOURCE_DIR}/kernel/drivers/blk_lookup.c
+    ${CMAKE_SOURCE_DIR}/kernel/lib/crc32.c
+    ${CMAKE_SOURCE_DIR}/kernel/lib/cmdline.c
     ${CMAKE_SOURCE_DIR}/kernel/proc/fd.c
     ${CMAKE_SOURCE_DIR}/kernel/lib/rbtree.c
     ${CMAKE_SOURCE_DIR}/kernel/mm/radix.c
@@ -173,15 +176,15 @@ target_include_directories(arc_vfs_host PUBLIC ${CMAKE_SOURCE_DIR}/kernel ${CMAK
 target_compile_options(arc_vfs_host PUBLIC -Wall -Wextra -std=c11 -DARC_HOST_TEST
     -idirafter ${CMAKE_SOURCE_DIR}/kernel/include)
 add_executable(test_vfs_runner vfs_main.c test_harness.c
-    test_vfs.c test_fd.c test_pipe.c test_devfs.c test_procfs.c test_fat32.c test_cred.c test_filemap.c)
+    test_vfs.c test_fd.c test_pipe.c test_devfs.c test_procfs.c test_fat32.c test_ext2.c test_sysmount.c test_cred.c test_filemap.c)
 target_link_libraries(test_vfs_runner PRIVATE arc_vfs_host)
 # test_filemap's truncate-vs-fault tests run a truncate inside the fault's page_lock call
 target_link_options(test_vfs_runner PRIVATE -Wl,--wrap=page_lock)
 add_test(NAME vfs_tests COMMAND test_vfs_runner)
-foreach(_suite vfs fd pipe devfs procfs fat32 cred filemap)
+foreach(_suite vfs fd pipe devfs procfs fat32 ext2 sysmount cred filemap)
     add_test(NAME test_${_suite} COMMAND test_vfs_runner --suite ${_suite})
 endforeach()
-set_tests_properties(vfs_tests test_fat32 PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+set_tests_properties(vfs_tests test_fat32 test_ext2 PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 
 # The FAT32 suite reads tests/fat32_test.img (gitignored); build it first.
 # Needs mkfs.fat (dosfstools) and mtools, both installed by tools/dev-setup.sh.
@@ -199,6 +202,15 @@ set_tests_properties(gpt_test_images PROPERTIES
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     FIXTURES_SETUP gpt_images)
 set_tests_properties(arc_os_tests test_gpt test_blkdev PROPERTIES FIXTURES_REQUIRED "fat32_image;gpt_images")
+
+# The ext2 suite reads tests/ext2_{4k,2k,1k}.img (gitignored), made by
+# mkfs.ext2 from e2fsprogs (tools/dev-setup.sh) with no root needed.
+add_test(NAME ext2_test_images
+    COMMAND bash ${CMAKE_SOURCE_DIR}/tools/make-ext2-test-images.sh tests)
+set_tests_properties(ext2_test_images PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    FIXTURES_SETUP ext2_images)
+set_tests_properties(test_ext2 vfs_tests PROPERTIES FIXTURES_REQUIRED ext2_images)
 
 # M0-05: kernel/include/uapi against the host's Linux headers (sizes, offsets,
 # syscall numbers, errno and flag values). Its own program: the two header sets

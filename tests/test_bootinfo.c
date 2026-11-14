@@ -321,6 +321,37 @@ TEST(cmdline_copied) {
     return 0;
 }
 
+/* M1-13: the boot disk's and partition's GPT GUIDs, in GPT byte order */
+TEST(boot_disk_guids) {
+    reset_bootinfo_state();
+    setup_mmap_entries(0);
+    static struct limine_file kfile;
+    static struct limine_kernel_file_response kresp;
+    memset(&kfile, 0, sizeof(kfile));
+    kresp.kernel_file = &kfile;
+    kernel_file_request.response = &kresp;
+    const BootInfo *info = bootinfo_init();
+    ASSERT_TRUE(info != NULL);
+    ASSERT_FALSE(info->boot_gpt);   /* zeros: not a GPT disk (ISO) */
+    /* 01234567-89AB-CDEF-0011-223344556677 */
+    kfile.gpt_disk_uuid.a = 0x01234567;
+    kfile.gpt_disk_uuid.b = 0x89AB;
+    kfile.gpt_disk_uuid.c = 0xCDEF;
+    for (int i = 0; i < 8; i++) kfile.gpt_disk_uuid.d[i] = (uint8_t)(0x11 * i);
+    kfile.gpt_part_uuid.a = 0xA0;
+    info = bootinfo_init();
+    ASSERT_TRUE(info->boot_gpt);
+    static const uint8_t want[16] = {0x67, 0x45, 0x23, 0x01, 0xAB, 0x89, 0xEF, 0xCD,
+                                     0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77};
+    ASSERT_MEM_EQ(info->boot_disk_guid, want, 16);
+    ASSERT_EQ(info->boot_part_guid[0], 0xA0);
+    ASSERT_EQ(info->boot_part_guid[1], 0);
+    kernel_file_request.response = NULL;
+    info = bootinfo_init();
+    ASSERT_FALSE(info->boot_gpt);
+    return 0;
+}
+
 /* --- Test suite export --- */
 
 TestCase bootinfo_tests[] = {
@@ -338,6 +369,7 @@ TestCase bootinfo_tests[] = {
     TEST_ENTRY(smbios_and_firmware),
     TEST_ENTRY(hhdm_offset_propagated),
     TEST_ENTRY(memmap_single_entry),
+    TEST_ENTRY(boot_disk_guids),
     TEST_ENTRY(cmdline_absent_is_empty),
     TEST_ENTRY(cmdline_copied),
 };

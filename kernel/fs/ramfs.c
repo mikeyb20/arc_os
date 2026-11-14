@@ -47,7 +47,8 @@ typedef struct RamfsInfo {
     RbRoot b;             /* directory: entries by sequence */
     uint64_t next_seq;    /* directory */
     uint32_t count;       /* directory: entries */
-    uint64_t parent_ino;  /* directory: ".." */
+    Inode *parent;        /* directory: ".." (no reference: a linked directory's parent can't go
+                           * away; changed by rename and rmdir under this directory's lock) */
 } RamfsInfo;
 
 typedef struct RamfsSb {
@@ -160,6 +161,12 @@ static Inode *ramfs_new_inode(SuperBlock *sb, uint32_t mode, uint32_t uid, uint3
 }
 
 static int ramfs_lookup(Inode *dir, const char *name, Inode **out) {
+    if (name[0] == '.' && name[1] == '.' && name[2] == '\0') {
+        Inode *parent = info(dir)->parent;
+        if (parent == NULL) return -ENOENT;   /* removed */
+        *out = igrab(parent);
+        return 0;
+    }
     RamfsDirent *d = dirent_find(info(dir), name);
     if (d == NULL) return -ENOENT;
     *out = igrab(d->inode);
@@ -181,7 +188,7 @@ static int ramfs_create(Inode *dir, const char *name, uint32_t mode, uint32_t ui
 static int ramfs_mkdir(Inode *dir, const char *name, uint32_t mode, uint32_t uid, uint32_t gid) {
     Inode *inode = ramfs_new_inode(dir->sb, mode, uid, gid);
     if (inode == NULL) return -ENOMEM;
-    info(inode)->parent_ino = dir->ino;
+    info(inode)->parent = dir;
     int err = dirent_add(dir, name, inode);
     if (err != 0) {
         iput(inode);
@@ -204,6 +211,7 @@ static int ramfs_rmdir(Inode *dir, const char *name, Inode *victim) {
     if (d == NULL || d->inode != victim) return -ENOENT;
     if (info(victim)->count != 0) return -ENOTEMPTY;
     victim->nlink = 0;
+    info(victim)->parent = NULL;   /* the VFS holds victim's lock */
     dir->nlink--;
     iput(dirent_del(dir, d));
     return 0;
@@ -227,6 +235,7 @@ static int ramfs_rename(Inode *odir, const char *oname, Inode *src, Inode *ndir,
     if (v != NULL) {
         if (S_ISDIR(victim->mode)) {
             victim->nlink = 0;
+            info(victim)->parent = NULL;
             ndir->nlink--;
         } else {
             victim->nlink--;
@@ -237,7 +246,7 @@ static int ramfs_rename(Inode *odir, const char *oname, Inode *src, Inode *ndir,
     if (S_ISDIR(src->mode) && odir != ndir) {
         odir->nlink--;
         ndir->nlink++;
-        info(src)->parent_ino = ndir->ino;
+        info(src)->parent = ndir;   /* the VFS holds src's lock (a moved directory) */
     }
     return 0;
 }
@@ -245,7 +254,7 @@ static int ramfs_rename(Inode *odir, const char *oname, Inode *src, Inode *ndir,
 static int ramfs_iterate(File *file, DirContext *ctx) {
     Inode *dir = file->inode;
     RamfsInfo *ri = info(dir);
-    if (!dir_emit_dots(ctx, dir->ino, ri->parent_ino != 0 ? ri->parent_ino : dir->ino)) return 0;
+    if (!dir_emit_dots(ctx, dir->ino, ri->parent != NULL ? ri->parent->ino : dir->ino)) return 0;
     uint64_t from = ctx->pos >= RAMFS_COOKIE0 ? (uint64_t)ctx->pos - RAMFS_COOKIE0 : 0;
     RbNode *n = ri->b.node;
     RamfsDirent *d = NULL;
@@ -316,6 +325,7 @@ SuperBlock *ramfs_create_sb(void) {
         kfree(rs);
         return NULL;
     }
+    info(root)->parent = root;   /* never asked: the VFS stops ".." at a mount root */
     rs->sb.root = root;   /* the superblock's reference, never dropped */
     return &rs->sb;
 }

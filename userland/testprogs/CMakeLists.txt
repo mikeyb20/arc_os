@@ -52,6 +52,12 @@ if(EXISTS "${ARC_MUSL_PREFIX}gcc")
                 -o ${CMAKE_BINARY_DIR}/pctest ${CMAKE_CURRENT_SOURCE_DIR}/pctest.c
         DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/pctest.c
         COMMENT "musl -static pctest")
+    # M1-13: arc_os's ext2 partitions mounted at boot, read with checksums (qemu.ext2)
+    add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/ext2test
+        COMMAND ${MUSL_CC} -static -O2 -Wall -Wextra -Werror -std=gnu11
+                -o ${CMAKE_BINARY_DIR}/ext2test ${CMAKE_CURRENT_SOURCE_DIR}/ext2test.c
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/ext2test.c
+        COMMENT "musl -static ext2test")
     add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bigexec
         COMMAND ${MUSL_CC} -static -O2 -Wall -Wextra -Werror -std=gnu11
                 -o ${CMAKE_BINARY_DIR}/bigexec ${CMAKE_CURRENT_SOURCE_DIR}/bigexec.c
@@ -59,10 +65,11 @@ if(EXISTS "${ARC_MUSL_PREFIX}gcc")
         DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/bigexec.c ${CMAKE_CURRENT_SOURCE_DIR}/bigexec_data.S
         COMMENT "musl -static bigexec")
     list(APPEND _musl_outputs ${CMAKE_BINARY_DIR}/start_musl ${CMAKE_BINARY_DIR}/sig_fpu ${CMAKE_BINARY_DIR}/fpu_avx
-         ${CMAKE_BINARY_DIR}/mmtest ${CMAKE_BINARY_DIR}/fstest ${CMAKE_BINARY_DIR}/pctest ${CMAKE_BINARY_DIR}/bigexec)
+         ${CMAKE_BINARY_DIR}/mmtest ${CMAKE_BINARY_DIR}/fstest ${CMAKE_BINARY_DIR}/pctest ${CMAKE_BINARY_DIR}/bigexec
+         ${CMAKE_BINARY_DIR}/ext2test)
 else()
     message(WARNING "musl toolchain not found at ${ARC_MUSL_PREFIX}gcc (tools/dev-setup.sh musl): "
-                    "qemu.musl, qemu.fpu, qemu.mm, qemu.vfs and qemu.pagecache will fail")
+                    "qemu.musl, qemu.fpu, qemu.mm, qemu.vfs, qemu.pagecache and qemu.ext2 will fail")
 endif()
 
 find_program(MUSL_GCC musl-gcc)

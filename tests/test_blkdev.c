@@ -140,6 +140,7 @@ static void kprintf(const char *fmt, ...) {
 int ksnprintf(char *buf, size_t size, const char *fmt, ...);   /* the real one (test_kprintf.c) */
 
 #include "../kernel/drivers/blkdev.c"
+#include "../kernel/drivers/blk_lookup.c"
 #include "arc_disk.h"
 
 /* --- The fake disk --- */
@@ -268,7 +269,7 @@ static int words_are_sector(const void *buf, uint64_t sector, size_t bytes) {
 
 TEST(blk_register_scans_gpt) {
     FakeDisk *fd = fake_disk(512, 32, 16, "tests/gpt/gpt512.img");
-    BlockDevice *sys = blk_find_label("arc-system");
+    BlockDevice *sys = blk_find_label("arc-system", NULL);
     ASSERT_TRUE(fd->disk.has_gpt);
     ASSERT_TRUE(sys != NULL);
     ASSERT_TRUE(sys->disk == &fd->disk);
@@ -282,17 +283,25 @@ TEST(blk_register_scans_gpt) {
     ASSERT_STR_EQ(data->label, "arc-data");
     Guid t;
     gpt_guid_parse(ARC_PART_TYPE_DATA, &t);
-    ASSERT_TRUE(blk_find_part(&fd->disk.disk_guid, &t) == data);
+    ASSERT_TRUE(blk_find_part(&fd->disk, &t) == data);
     Guid other = fd->disk.disk_guid;
     other.b[0] ^= 1;
-    ASSERT_TRUE(blk_find_part(&other, &t) == NULL);
-    ASSERT_TRUE(blk_find_label("no-such-label") == NULL);
+    ASSERT_TRUE(blk_find_part(data, &t) == NULL); /* a partition is no disk */
+    ASSERT_TRUE(blk_find_label("no-such-label", NULL) == NULL);
+    /* M1-13's lookups: the disk by GUID, a label that must also have the
+     * type, a PARTUUID */
+    ASSERT_TRUE(blk_find_disk(&fd->disk.disk_guid) == &fd->disk);
+    ASSERT_TRUE(blk_find_disk(&other) == NULL);
+    ASSERT_TRUE(blk_find_label("arc-data", &t) == data);
+    ASSERT_TRUE(blk_find_label("arc-system", &t) == NULL);
+    ASSERT_TRUE(blk_find_partuuid(&data->part_guid) == data);
+    ASSERT_TRUE(blk_find_partuuid(&fd->disk.disk_guid) == NULL);
     ASSERT_EQ(rq_live, 0);
     return 0;
 }
 
 TEST(blk_partition_offset_and_bounds) {
-    BlockDevice *data = blk_find_label("arc-data");   /* on the previous test's disk */
+    BlockDevice *data = blk_find_label("arc-data", NULL); /* on the previous test's disk */
     ASSERT_TRUE(data != NULL);
     FakeDisk *fd = data->disk->driver_data;
     memset(fd->store + data->start * 512, 0xAB, 512);

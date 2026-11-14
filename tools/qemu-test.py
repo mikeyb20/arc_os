@@ -29,7 +29,8 @@ serial line matches REGEX, saves the screen as <name>.shot-<k>.ppm, then
 presses a key (--after-shot key, the default) or ends QEMU (--after-shot
 quit). --check CMD then runs CMD with the serial log and the screendumps as
 arguments; the suite fails if it exits non-zero (tools/qr-check.py decodes
-the QR codes on them).
+the QR codes on them). Without --screendump it gets the serial log alone
+(M1-13: tools/make-arc-test-disks.sh check compares checksums with the host's).
 
 Exit status of this script: 0 = suite passed, 1 = failed, 2 = harness error.
 Python 3 standard library only.
@@ -309,9 +310,9 @@ def main():
 
     head = f"suite {args.suite} ({accel}, {elapsed:.1f}s)"
     problems = []
-    # --check: the screendumps against the serial log, whatever ended the run
+    # --check: the serial log (and the screendumps, with --screendump), whatever ended the run
     if args.check:
-        if not shots:
+        if args.screendump and not shots:
             problems.append(f"no screendump taken (no serial line matched /{args.screendump}/)")
         else:
             res = subprocess.run(shlex.split(args.check) + [serial_log] + shots, cwd=ROOT,
