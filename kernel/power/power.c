@@ -89,7 +89,8 @@ void power_status(PowerStatus *st) {
     spin_lock_irqsave(&status_lock, &flags);
     st->profile = profile;
     st->epp = profile_epp[profile];
-    st->interval_ns = last_ns != 0 ? now - last_ns : 0;
+    /* A racing reader may have stored a later time: never go negative */
+    st->interval_ns = last_ns != 0 && now > last_ns ? now - last_ns : 0;
     for (uint32_t d = 0; d < POWER_DOMAINS; d++) {
         st->energy_uj[d] = uj[d];
         /* A reader racing this one may have stored a later sample: never go negative */

@@ -655,6 +655,12 @@ TEST(power_status_average_watts) {
     fake_now_ns += 1000000000; /* nothing used: 0 W */
     power_status(&st);
     ASSERT_EQ(st.avg_mw[0], 0);
+    /* A reader that took its time before a racer stored a later one: an
+     * empty interval, not an underflow */
+    fake_now_ns -= 1000;
+    power_status(&st);
+    ASSERT_EQ(st.interval_ns, 0);
+    ASSERT_EQ(st.avg_mw[0], 0);
     return 0;
 }
 

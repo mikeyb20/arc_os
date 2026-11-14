@@ -8,8 +8,9 @@
  *    newline); an unknown or over-long name gives EINVAL and changes nothing.
  *  - chunks: a reader taking 7 bytes per read() gets one whole, consistent
  *    text (the snapshot stays with the open file until it reads offset 0).
- *  - idle: over a 1 s sleep the CPUs' idle residency grows by at least 1 s
- *    in total and their idle entries grow (the HLT/MWAIT path counts).
+ *  - idle: over a 1 s sleep the CPUs' idle residency grows by at least 0.9 s
+ *    in total (one CPU runs this program for part of it) and their idle
+ *    entries grow (the HLT/MWAIT path counts).
  * Prints one FAIL line per failed check; exit status = failures. */
 
 #define _GNU_SOURCE
@@ -174,7 +175,8 @@ static void check_idle_residency(void) {
     nanosleep(&ts, NULL);
     CHECK(read_power(after, 4096) > 0, "read after");
     sum_idle(after, &ns1, &n1);
-    CHECK(ns1 >= ns0 + 1000000000ULL, "idle residency grew only %llu ns over a 1 s sleep", ns1 - ns0);
+    /* At least 0.9 s: with one CPU, this program runs for part of the second */
+    CHECK(ns1 >= ns0 + 900000000ULL, "idle residency grew only %llu ns over a 1 s sleep", ns1 - ns0);
     CHECK(n1 > n0, "idle entries did not grow (%llu -> %llu)", n0, n1);
     printf("powertest: idle residency +%llu ms, entries +%llu over 1 s on %d CPUs\n", (ns1 - ns0) / 1000000, n1 - n0,
            online_cpus());

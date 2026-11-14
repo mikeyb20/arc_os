@@ -49,7 +49,14 @@ static void ipi_call_handler(InterruptFrame *frame) {
 }
 
 static uint32_t ipi_call(void (*fn)(void *arg), void *arg, uint64_t max_cycles, int self) {
-    if (cpu_count <= 1) return 0;
+    if (cpu_count <= 1) {
+        if (self) {   /* no other CPU, but this one still runs it (ipi_call_all) */
+            uint64_t flags = irq_save();
+            fn(arg);
+            irq_restore(flags);
+        }
+        return 0;
+    }
     call_arg = arg;
     __atomic_store_n(&call_done, 0, __ATOMIC_SEQ_CST);
     __atomic_store_n(&call_fn, fn, __ATOMIC_RELEASE);   /* publishes call_arg */

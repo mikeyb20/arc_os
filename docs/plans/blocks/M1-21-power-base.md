@@ -78,11 +78,17 @@ preference set by the power profile, and package energy can be read (ADR-0017).
 - **For later blocks.**
   - M1-22: read `/proc/arc/power` and the report's `Power` line on both machines (idle method and C6 accepted, HWP
     CPUs, RAPL domains); record idle watts per profile. If C6 misbehaves, `arc.idle=c1` is the fallback. The
-    deep-state values are Linux's, not measured.
+    deep-state values are Linux's, not measured. Also read `IA32_HWP_REQUEST` (0x774) back on each machine:
+    bit 42 (package control) is kept from the firmware.
+  - Known RAPL limit (D3 review of #46, L1): a 32-bit counter wrap is lost when no CPU idles and nobody reads
+    for one wrap (2^32 units = 262 kJ at 61 uJ: ~44 min at 100 W, ~17 min at 250 W), e.g. long all-core
+    inference. A fix needs a wake source while every CPU is busy (a one-shot timer re-armed only while RAPL
+    exists, or sampling on context switch); a recurring timer touches ADR-0017's no-polling rule, so it is
+    Michael's call. M1-22 decides with real numbers.
   - M4-12: profiles add thread count, core choice and display timeout; the final file names replace
     `/proc/arc/power` (only procfs.c changes). Battery/AC switching of profiles belongs there too.
   - Not taken here (not in this spec): clock-event suspend/resume hooks (M1-06 note; no system suspend exists to
-    call them), the BKL on time syscalls, `qemu.fpu` tick counting, the 100 ms wake latency under load.
+    call them; they have no owner row in work-blocks.md yet: the first block with a suspend path takes them), the BKL on time syscalls, `qemu.fpu` tick counting, the 100 ms wake latency under load.
   - Other low-tier CPUs (6th-10th gen: Skylake 0x4E/0x5E, Comet Lake 0xA5/0xA6) get MWAIT C1 only until someone
     adds a measured row to `idle_models`.
 
