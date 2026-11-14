@@ -397,7 +397,7 @@ add_test(NAME qemu.writeback COMMAND ${_qemu_test} --suite writeback ${_wb_qemu}
     --expect "\\[WBTEST\\] sync wrote 32 pages and flushed the disk cache, timer disarmed ok"
     --expect "\\[WBTEST\\] release wrote 32 pages and flushed the disk cache, timer disarmed ok"
     --expect "ARC_TEST DONE pass=15 fail=0")
-set_tests_properties(qemu.writeback PROPERTIES FIXTURES_REQUIRED wb_disk FIXTURES_SETUP wb_written RESOURCE_LOCK wb_disk)
+set_tests_properties(qemu.writeback PROPERTIES FIXTURES_REQUIRED wb_disk RESOURCE_LOCK wb_disk)
 add_test(NAME qemu.writeback.verify COMMAND ${_qemu_test} --suite writeback --name writeback-verify ${_wb_qemu}
     --cmdline arc.wbtest=verify --timeout 60
     --expect "\\[WBTEST\\] verify: 160 pages read from the disk, 0 wrong"
@@ -427,8 +427,7 @@ add_test(NAME qemu.ext2w COMMAND ${_qemu_test} --suite ext2w --module ext2wtest 
     --expect "ext2wtest: 0 failures"
     --expect "\\[EXT2\\] vda2: written back, clean, read-only"
     --check "bash ${_arc_disks_tool} check-write ${_arc_disks} first")
-set_tests_properties(qemu.ext2w PROPERTIES FIXTURES_REQUIRED write_disk FIXTURES_SETUP write_written
-    RESOURCE_LOCK write_disk)
+set_tests_properties(qemu.ext2w PROPERTIES FIXTURES_REQUIRED write_disk RESOURCE_LOCK write_disk)
 add_test(NAME qemu.ext2w.verify COMMAND ${_qemu_test} --suite ext2wverify --module ext2wtest ${_write_disk_args}
     --timeout 400
     --expect "\\[MOUNT\\] /var: vda2 /var \\(ext2, read-write\\)"
@@ -449,6 +448,11 @@ set_tests_properties(qemu.smoke qemu.mem.buddy qemu.mem.cap qemu.userland qemu.a
     PROPERTIES LABELS qemu TIMEOUT 180 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     FIXTURES_SETUP qemu_logs)
 set_tests_properties(qemu.mm.oom qemu.pagecache qemu.ext2 PROPERTIES TIMEOUT 320)
+# The write-then-verify pairs: the list above sets FIXTURES_SETUP, which
+# replaces the earlier value, so the writer's own fixture is set again here
+# (else ctest may boot the verify run first)
+set_tests_properties(qemu.writeback PROPERTIES FIXTURES_SETUP "wb_written;qemu_logs")
+set_tests_properties(qemu.ext2w PROPERTIES FIXTURES_SETUP "write_written;qemu_logs")
 set_tests_properties(qemu.reclaim qemu.ext2w PROPERTIES TIMEOUT 600)
 set_tests_properties(qemu.ext2w.verify PROPERTIES TIMEOUT 440)
 set_tests_properties(qemu.vfs qemu.pagecache PROPERTIES FIXTURES_REQUIRED fat32_image)
