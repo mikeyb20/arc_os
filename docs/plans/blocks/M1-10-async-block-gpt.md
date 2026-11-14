@@ -38,4 +38,9 @@ GPT partitions, and every later storage driver plugs into the same queue (ADR-00
 - Requests carry pages, because the page cache (M1-12) hands pages straight to the block layer.
 
 **Notes.**
--
+- From M1-12 (built first, Michael's choice 2026-11-14): the page cache does every disk read and write through
+  `filemap_bdev_io` (`kernel/mm/filemap.c`), which calls `dev->read` / `dev->write` synchronously, and
+  `readpage` / `readpages` end each page with `filemap_end_read`. Swap that one call for a request whose
+  completion calls `filemap_end_read`; page waiters already sleep on `PG_LOCKED`. FAT32's `readpages` gets
+  batches of up to 32 consecutive pages: make each run of contiguous clusters one request. FAT32 metadata
+  (`fat32_read_cluster`, mount) still calls `dev->read`. See M1-12's Notes.

@@ -32,8 +32,12 @@
 # edu driver (.text +23167, .rodata +2427, .data +542), their backtrace names
 # (.ksyms +4668), and .bss +12660, mostly the 64-entry PCI table growing to 200 B
 # per function (the embedded Device, subsystem IDs, BAR sizes, name).
+# 486931 -> 515584 after M1-12 (+28653): the page cache (radix index, page lock,
+# readahead, read/write through the cache, write-back, truncate, block-device
+# mapping), file mmap (fault, copy on write, msync, madvise), exec from any ELF
+# source, and their backtrace names.
 # Limit = measured + 5%)
-kernel_image_bytes     511000      max  bytes  M0-08  build
+kernel_image_bytes     541000      max  bytes  M0-08  build
 
 # Free memory when init starts, booted with -m 4G (qemu.smoke; measured 4251873280)
 boot_free_bytes        3830000000  min  bytes  M0-08  smoke

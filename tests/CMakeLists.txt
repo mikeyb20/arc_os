@@ -159,16 +159,19 @@ add_library(arc_vfs_host STATIC
     ${CMAKE_SOURCE_DIR}/kernel/fs/path.c
     ${CMAKE_SOURCE_DIR}/kernel/proc/fd.c
     ${CMAKE_SOURCE_DIR}/kernel/lib/rbtree.c
+    ${CMAKE_SOURCE_DIR}/kernel/mm/radix.c
+    ${CMAKE_SOURCE_DIR}/kernel/mm/filemap.c
+    ${CMAKE_SOURCE_DIR}/kernel/mm/filemap_mmap.c
     vfs_env.c
 )
 target_include_directories(arc_vfs_host PUBLIC ${CMAKE_SOURCE_DIR}/kernel ${CMAKE_SOURCE_DIR}/tests)
 target_compile_options(arc_vfs_host PUBLIC -Wall -Wextra -std=c11 -DARC_HOST_TEST
     -idirafter ${CMAKE_SOURCE_DIR}/kernel/include)
 add_executable(test_vfs_runner vfs_main.c test_harness.c
-    test_vfs.c test_fd.c test_pipe.c test_devfs.c test_procfs.c test_fat32.c test_cred.c)
+    test_vfs.c test_fd.c test_pipe.c test_devfs.c test_procfs.c test_fat32.c test_cred.c test_filemap.c)
 target_link_libraries(test_vfs_runner PRIVATE arc_vfs_host)
 add_test(NAME vfs_tests COMMAND test_vfs_runner)
-foreach(_suite vfs fd pipe devfs procfs fat32 cred)
+foreach(_suite vfs fd pipe devfs procfs fat32 cred filemap)
     add_test(NAME test_${_suite} COMMAND test_vfs_runner --suite ${_suite})
 endforeach()
 set_tests_properties(vfs_tests test_fat32 PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")

@@ -13,20 +13,21 @@
 struct kmem_cache {
     int allocs;
     int frees;
+    size_t size;
 };
 static struct kmem_cache vma_test_cache;
 static int vma_test_alloc_fail;
 static struct kmem_cache *vma_test_cache_create(const char *name, size_t size, size_t align) {
     (void)name;
-    (void)size;
     (void)align;
+    vma_test_cache.size = size;   /* sizeof(Vma), whatever it grows to */
     return &vma_test_cache;
 }
 static void *vma_test_cache_alloc(struct kmem_cache *c, uint32_t flags) {
     (void)flags;
     if (vma_test_alloc_fail) return NULL;
     c->allocs++;
-    return calloc(1, 96);
+    return calloc(1, c->size);
 }
 static void vma_test_cache_free(struct kmem_cache *c, void *obj) {
     c->frees++;

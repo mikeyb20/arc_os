@@ -2,6 +2,7 @@
 #include "mm/mm.h"
 #include "mm/vmm.h"
 #include "mm/pmm.h"
+#include "mm/kmalloc.h"
 #include "lib/mem.h"
 #include "lib/kprintf.h"
 #include "fs/vfs.h"  /* For error codes */
@@ -9,7 +10,7 @@
 /* Maximum user-space virtual address (canonical lower half) */
 #define USER_VADDR_MAX 0x0000800000000000ULL
 
-static int elf_validate_header(const Elf64_Ehdr *ehdr, size_t size) {
+static int elf_validate_header(const Elf64_Ehdr *ehdr, uint64_t size) {
     if (ehdr->e_ident[EI_MAG0] != ELF_MAGIC0 ||
         ehdr->e_ident[EI_MAG1] != ELF_MAGIC1 ||
         ehdr->e_ident[EI_MAG2] != ELF_MAGIC2 ||
@@ -38,6 +39,10 @@ static int elf_validate_header(const Elf64_Ehdr *ehdr, size_t size) {
         kprintf("[ELF] No usable program headers\n");
         return -ENOEXEC;
     }
+    if ((uint64_t)ehdr->e_phnum * sizeof(Elf64_Phdr) > ELF_MAX_PHDR_BYTES) {
+        kprintf("[ELF] Too many program headers\n");
+        return -ENOEXEC;
+    }
     if (ehdr->e_phoff > size ||
         (uint64_t)ehdr->e_phnum * sizeof(Elf64_Phdr) > size - ehdr->e_phoff) {
         kprintf("[ELF] Program headers extend past file\n");
@@ -46,38 +51,46 @@ static int elf_validate_header(const Elf64_Ehdr *ehdr, size_t size) {
     return 0;
 }
 
-static const Elf64_Phdr *elf_phdr(const void *data, const Elf64_Ehdr *ehdr, uint16_t i) {
-    return (const Elf64_Phdr *)((const uint8_t *)data + ehdr->e_phoff +
-                                (uint64_t)i * sizeof(Elf64_Phdr));
+/* --- Sources --- */
+
+static int mem_read(const ElfSource *src, uint64_t off, void *dst, size_t len) {
+    memcpy(dst, (const uint8_t *)src->data + off, len);
+    return 0;
 }
 
-/* Copy file data that overlaps with a single mapped page. */
-static void elf_copy_page_data(void *page_virt, uint64_t vaddr,
-                               const Elf64_Phdr *phdr, uint64_t bias, const void *data) {
-    if (phdr->p_filesz == 0) return;
+void elf_source_mem(ElfSource *src, const void *data, uint64_t size) {
+    memset(src, 0, sizeof(*src));
+    src->size = size;
+    src->data = data;
+    src->read = mem_read;
+}
 
+/* Fill the bytes of page_virt (mapped at vaddr) that the segment's file data
+ * covers. 0 or the source's error. */
+static int elf_fill_page(const ElfSource *src, void *page_virt, uint64_t vaddr, const Elf64_Phdr *phdr, uint64_t bias) {
+    if (phdr->p_filesz == 0) return 0;
     uint64_t file_start = phdr->p_vaddr + bias;
-    uint64_t file_end   = file_start + phdr->p_filesz;
-    uint64_t page_start = vaddr;
-    uint64_t page_end   = vaddr + PAGE_SIZE;
-
-    uint64_t copy_start = (file_start > page_start) ? file_start : page_start;
-    uint64_t copy_end   = (file_end < page_end) ? file_end : page_end;
-
-    if (copy_start < copy_end) {
-        uint64_t file_offset = phdr->p_offset + (copy_start - file_start);
-        uint64_t page_offset = copy_start - page_start;
-        memcpy((uint8_t *)page_virt + page_offset,
-               (const uint8_t *)data + file_offset,
-               copy_end - copy_start);
-    }
+    uint64_t file_end = file_start + phdr->p_filesz;
+    uint64_t copy_start = file_start > vaddr ? file_start : vaddr;
+    uint64_t copy_end = file_end < vaddr + PAGE_SIZE ? file_end : vaddr + PAGE_SIZE;
+    if (copy_start >= copy_end) return 0;
+    return src->read(src, phdr->p_offset + (copy_start - file_start), (uint8_t *)page_virt + (copy_start - vaddr),
+                     (size_t)(copy_end - copy_start));
 }
 
-/* Load a single PT_LOAD segment: validate bounds, add its VMA, map and fill
- * the pages that hold file data. Pages past the file data (.bss) are left to
- * demand paging: the VMA is anonymous, so they read as zero (M1-07). */
-static int elf_load_segment(const Elf64_Phdr *phdr, uint64_t bias, const void *data, size_t file_size, Mm *mm,
-                            uint64_t hhdm, uint64_t *highest_addr) {
+/* Load a single PT_LOAD segment: validate bounds, add its VMAs, fill the
+ * pages that must be copied.
+ *
+ * From a source with mapping ops (a file in the page cache, M1-12) the whole
+ * pages of file data become a private file VMA, read on first touch and
+ * shared with every other process running the program (a write copies the
+ * page). Copied now into anonymous pages: a first page that the previous
+ * segment also covers (the end of .text and the start of .data), and the
+ * last, partly-file page (its tail is .bss, zero). From a memory source every
+ * page with file data is copied. Pages past the file data (.bss) are
+ * anonymous and read as zero on first touch. */
+static int elf_load_segment(const ElfSource *src, const Elf64_Phdr *phdr, uint64_t bias, Mm *mm, uint64_t hhdm,
+                            uint64_t prev_end, uint64_t *highest_addr) {
     uint64_t start = phdr->p_vaddr + bias;
 
     /* Verify segment is in user space (and the sums do not wrap) */
@@ -92,8 +105,7 @@ static int elf_load_segment(const Elf64_Phdr *phdr, uint64_t bias, const void *d
     }
 
     /* Verify file data bounds */
-    if (phdr->p_filesz > 0 &&
-        (phdr->p_offset > file_size || phdr->p_filesz > file_size - phdr->p_offset)) {
+    if (phdr->p_filesz > 0 && (phdr->p_offset > src->size || phdr->p_filesz > src->size - phdr->p_offset)) {
         kprintf("[ELF] Segment file data extends past file\n");
         return -ENOEXEC;
     }
@@ -107,15 +119,35 @@ static int elf_load_segment(const Elf64_Phdr *phdr, uint64_t bias, const void *d
     uint64_t seg_end = PAGE_ALIGN_UP(start + phdr->p_memsz);
     uint32_t prot = ((phdr->p_flags & PF_R) ? VMA_READ : 0) | ((phdr->p_flags & PF_W) ? VMA_WRITE : 0) |
                     ((phdr->p_flags & PF_X) ? VMA_EXEC : 0);
-    int err = mm_setup_vma(mm, seg_start, seg_end, prot, 0);
+
+    /* [map_start, map_end): whole pages of file data mapped from the file */
+    uint64_t map_start = prev_end > seg_start ? seg_start + PAGE_SIZE : seg_start;
+    uint64_t map_end = PAGE_ALIGN_DOWN(start + phdr->p_filesz);
+    if (src->ops == NULL || (phdr->p_offset - start) % PAGE_SIZE != 0 || map_end <= map_start)
+        map_end = map_start;   /* nothing mapped: copy (a file whose offsets and addresses disagree too) */
+
+    int err = 0;
+    if (map_end > map_start) {
+        if (map_start > seg_start) err = mm_setup_vma(mm, seg_start, map_start, prot, 0);
+        if (err == 0)
+            err = mm_setup_object_vma(mm, map_start, map_end, prot, src->file,
+                                      (phdr->p_offset + (map_start - start)) / PAGE_SIZE, src->ops);
+        if (err == 0 && seg_end > map_end) err = mm_setup_vma(mm, map_end, seg_end, prot, 0);
+    } else {
+        err = mm_setup_vma(mm, seg_start, seg_end, prot, 0);
+    }
     if (err != 0) {
         kprintf("[ELF] Segment at 0x%lx overlaps another\n", start);
         return err == -ENOMEM ? -ENOMEM : -ENOEXEC;
     }
 
-    /* Pages with file bytes now; the rest on first touch */
+    /* Pages with file bytes outside the mapped range now; the rest on first touch */
     uint64_t data_end = PAGE_ALIGN_UP(start + phdr->p_filesz);
     for (uint64_t vaddr = seg_start; vaddr < seg_end; vaddr += PAGE_SIZE) {
+        if (vaddr == map_start && map_end > map_start) {
+            vaddr = map_end - PAGE_SIZE;
+            continue;
+        }
         uint64_t phys;
         uint32_t flags = vmm_flags;
         int old = vmm_get_flags_in(mm->pgd, vaddr);
@@ -125,7 +157,8 @@ static int elf_load_segment(const Elf64_Phdr *phdr, uint64_t bias, const void *d
             phys = PAGE_ALIGN_DOWN(vmm_get_phys_in(mm->pgd, vaddr));
             flags |= (uint32_t)old & VMM_FLAG_WRITABLE;
             if (!((uint32_t)old & VMM_FLAG_NOEXEC)) flags &= ~(uint32_t)VMM_FLAG_NOEXEC;
-            elf_copy_page_data((void *)(phys + hhdm), vaddr, phdr, bias, data);
+            err = elf_fill_page(src, (void *)(phys + hhdm), vaddr, phdr, bias);
+            if (err != 0) return err;
             if (vmm_map_page_in(mm->pgd, vaddr, phys, flags) != 0) return -ENOMEM;
             continue;
         }
@@ -136,10 +169,11 @@ static int elf_load_segment(const Elf64_Phdr *phdr, uint64_t bias, const void *d
             return -ENOMEM;
         }
         memset((void *)(phys + hhdm), 0, PAGE_SIZE);
-        elf_copy_page_data((void *)(phys + hhdm), vaddr, phdr, bias, data);
-        if (mm_setup_page(mm, vaddr, phys, flags) != 0) {
+        err = elf_fill_page(src, (void *)(phys + hhdm), vaddr, phdr, bias);
+        if (err == 0 && mm_setup_page(mm, vaddr, phys, flags) != 0) err = -ENOMEM;
+        if (err != 0) {
             pmm_free_page(phys);
-            return -ENOMEM;
+            return err;
         }
     }
 
@@ -149,51 +183,51 @@ static int elf_load_segment(const Elf64_Phdr *phdr, uint64_t bias, const void *d
         *highest_addr = seg_top;
     }
 
-    kdebug("[ELF] Loaded segment: vaddr=0x%lx memsz=0x%lx filesz=0x%lx flags=%s%s%s\n", start, phdr->p_memsz,
-           phdr->p_filesz, (phdr->p_flags & PF_R) ? "r" : "-", (phdr->p_flags & PF_W) ? "w" : "-",
-           (phdr->p_flags & PF_X) ? "x" : "-");
+    kdebug("[ELF] Loaded segment: vaddr=0x%lx memsz=0x%lx filesz=0x%lx flags=%s%s%s mapped=%lu pages\n", start,
+           phdr->p_memsz, phdr->p_filesz, (phdr->p_flags & PF_R) ? "r" : "-", (phdr->p_flags & PF_W) ? "w" : "-",
+           (phdr->p_flags & PF_X) ? "x" : "-", (map_end - map_start) / PAGE_SIZE);
     return 0;
 }
 
-int elf_load(const void *data, size_t size, Mm *mm, ElfLoadResult *result) {
-    if (data == NULL || result == NULL || size < sizeof(Elf64_Ehdr)) {
-        return -ENOEXEC;
-    }
-
-    const Elf64_Ehdr *ehdr = (const Elf64_Ehdr *)data;
-    int err = elf_validate_header(ehdr, size);
-    if (err != 0) return err;
-
-    /* Pass 1: refuse dynamic programs, find the lowest vaddr, PT_PHDR and
-     * PT_GNU_STACK. Linux defaults to an executable stack without PT_GNU_STACK. */
-    uint64_t lowest = UINT64_MAX;
-    uint64_t phdr_vaddr = 0;
-    int have_phdr = 0;
-    int stack_exec = 1;
-    for (uint16_t i = 0; i < ehdr->e_phnum; i++) {
-        const Elf64_Phdr *phdr = elf_phdr(data, ehdr, i);
-        switch (phdr->p_type) {
+/* Pass 1: refuse dynamic programs, find the lowest vaddr, PT_PHDR and
+ * PT_GNU_STACK. Linux defaults to an executable stack without PT_GNU_STACK. */
+static int elf_scan(const Elf64_Phdr *ph, uint16_t phnum, uint64_t *lowest, uint64_t *phdr_vaddr, int *have_phdr,
+                    int *stack_exec) {
+    *lowest = UINT64_MAX;
+    *have_phdr = 0;
+    *stack_exec = 1;
+    for (uint16_t i = 0; i < phnum; i++) {
+        switch (ph[i].p_type) {
         case PT_INTERP:
             kprintf("[ELF] Dynamically linked (PT_INTERP): only static programs run (ADR-0002)\n");
             return -ENOEXEC;
         case PT_LOAD:
-            if (phdr->p_memsz != 0 && phdr->p_vaddr < lowest) lowest = phdr->p_vaddr;
+            if (ph[i].p_memsz != 0 && ph[i].p_vaddr < *lowest) *lowest = ph[i].p_vaddr;
             break;
         case PT_PHDR:
-            phdr_vaddr = phdr->p_vaddr;
-            have_phdr = 1;
+            *phdr_vaddr = ph[i].p_vaddr;
+            *have_phdr = 1;
             break;
         case PT_GNU_STACK:
-            stack_exec = (phdr->p_flags & PF_X) != 0;
+            *stack_exec = (ph[i].p_flags & PF_X) != 0;
             break;
         default:
             break;
         }
     }
-    if (lowest == UINT64_MAX) {
+    if (*lowest == UINT64_MAX) {
         kprintf("[ELF] No loadable segments\n");
         return -ENOEXEC;
     }
+    return 0;
+}
+
+static int elf_load_phdrs(const ElfSource *src, const Elf64_Ehdr *ehdr, const Elf64_Phdr *ph, Mm *mm,
+                          ElfLoadResult *result) {
+    uint64_t lowest, phdr_vaddr = 0;
+    int have_phdr, stack_exec;
+    int err = elf_scan(ph, ehdr->e_phnum, &lowest, &phdr_vaddr, &have_phdr, &stack_exec);
+    if (err != 0) return err;
 
     uint64_t bias = 0;
     if (ehdr->e_type == ET_DYN) {
@@ -203,13 +237,15 @@ int elf_load(const void *data, size_t size, Mm *mm, ElfLoadResult *result) {
 
     uint64_t highest_addr = 0;
     uint64_t hhdm = vmm_get_hhdm_offset();
+    uint64_t prev_end = 0;   /* end (page aligned) of the segment loaded last */
 
     /* Pass 2: map every PT_LOAD segment */
     for (uint16_t i = 0; i < ehdr->e_phnum; i++) {
-        const Elf64_Phdr *phdr = elf_phdr(data, ehdr, i);
+        const Elf64_Phdr *phdr = &ph[i];
         if (phdr->p_type != PT_LOAD || phdr->p_memsz == 0) continue;
-        err = elf_load_segment(phdr, bias, data, size, mm, hhdm, &highest_addr);
+        err = elf_load_segment(src, phdr, bias, mm, hhdm, prev_end, &highest_addr);
         if (err != 0) return err;
+        prev_end = PAGE_ALIGN_UP(phdr->p_vaddr + bias + phdr->p_memsz);
 
         /* No PT_PHDR: the headers are wherever the segment holding e_phoff put them */
         uint64_t ph_bytes = (uint64_t)ehdr->e_phnum * sizeof(Elf64_Phdr);
@@ -237,4 +273,27 @@ int elf_load(const void *data, size_t size, Mm *mm, ElfLoadResult *result) {
     kdebug("[ELF] Loaded: %s entry=0x%lx brk_start=0x%lx\n", ehdr->e_type == ET_DYN ? "static-PIE" : "static", entry,
            result->brk_start);
     return 0;
+}
+
+int elf_load_from(const ElfSource *src, Mm *mm, ElfLoadResult *result) {
+    if (src == NULL || result == NULL || src->size < sizeof(Elf64_Ehdr)) return -ENOEXEC;
+    Elf64_Ehdr ehdr;
+    int err = src->read(src, 0, &ehdr, sizeof(ehdr));
+    if (err != 0) return err;
+    err = elf_validate_header(&ehdr, src->size);
+    if (err != 0) return err;
+    size_t ph_bytes = (size_t)ehdr.e_phnum * sizeof(Elf64_Phdr);   /* <= ELF_MAX_PHDR_BYTES */
+    Elf64_Phdr *ph = kmalloc(ph_bytes, 0);
+    if (ph == NULL) return -ENOMEM;
+    err = src->read(src, ehdr.e_phoff, ph, ph_bytes);
+    if (err == 0) err = elf_load_phdrs(src, &ehdr, ph, mm, result);
+    kfree(ph);
+    return err;
+}
+
+int elf_load(const void *data, size_t size, Mm *mm, ElfLoadResult *result) {
+    if (data == NULL) return -ENOEXEC;
+    ElfSource src;
+    elf_source_mem(&src, data, size);
+    return elf_load_from(&src, mm, result);
 }

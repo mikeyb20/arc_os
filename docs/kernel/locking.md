@@ -20,11 +20,12 @@ of that level (a lock without a subkey counts as 0). Give every lock of a nestab
 | 11 | `LOCK_LEVEL_INODE_2` | sleeping, read-write | rename's second directory | M1-11 |
 | 12 | `LOCK_LEVEL_INODE_CHILD` | sleeping, read-write | a directory being removed or replaced (rmdir, rename) | M1-11 |
 | 20 | `LOCK_LEVEL_MM` | sleeping, read-write | `Mm.lock` (`RwSem`), per address space: VMA changes write, page faults and fork read | M1-07 |
-| 30 | `LOCK_LEVEL_PAGE` | sleeping, per page | page lock | M1-12 |
-| 40 | `LOCK_LEVEL_MAPPING` | sleeping | mapping-tree lock (VMAs mapping a file; reclaim, truncate) | M1-12 |
+| 30 | `LOCK_LEVEL_PAGE` | sleeping, per page | page lock: the `PG_LOCKED` bit of a `struct page`, waiters on hashed wait queues (`mm/filemap.c`): read in, truncate, mapping a cache page into a page table, write-back | M1-12 |
+| 40 | `LOCK_LEVEL_MAPPING` | sleeping | `AddressSpace.map_lock`: the list of VMAs mapping a file (mmap, munmap, fork, truncate's unmap, write-back's write-protect) | M1-12 |
 | 45 | `LOCK_LEVEL_FS_IO` | sleeping | a filesystem's device reads: the FAT32 volume's `io_lock` (cluster buffer, chain cursors) | M1-11 |
 | 50 | `LOCK_LEVEL_PAGE_TABLE` | spinlock | `Mm.pt_lock`, per address space (inside `Mm.lock`); the kernel page tables (`vmm.c`) | M1-05, M1-07 |
-| 60 | `LOCK_LEVEL_PAGE_CACHE` | spinlock | page-cache index lock, per address space | M1-12 |
+| 59 | `LOCK_LEVEL_PAGE_LRU` | spinlock | the list of evictable page-cache pages (`filemap_drop_clean`, adding and freeing cache pages) | M1-12 |
+| 60 | `LOCK_LEVEL_PAGE_CACHE` | spinlock | `AddressSpace.tree_lock`: the radix-tree index of one address space (lookup takes a page reference under it) | M1-12 |
 | 62 | `LOCK_LEVEL_MOUNT` | spinlock | adding to the mount table (readers take no lock: entries are published, never removed) | M1-11 |
 | 63 | `LOCK_LEVEL_DCACHE` | spinlock | the dentry cache: hash chains, LRU list, count | M1-11 |
 | 64 | `LOCK_LEVEL_ICACHE` | spinlock | the inode cache: hash chains; a hashed inode's count goes 1 → 0 only under it | M1-11 |
@@ -41,6 +42,14 @@ of that level (a lock without a subkey counts as 0). Give every lock of a nestab
 | 100 | `LOCK_LEVEL_SLAB` | spinlock | one slab cache | M1-02b |
 | 101 | `LOCK_LEVEL_BUDDY` | spinlock | buddy allocator (the only lock taken under a slab lock) | M1-02 |
 | 109 | `LOCK_LEVEL_LOG` | spinlock | kernel log ring: `kprintf` works under any lock | M1-04 |
+
+M1-12 adds the page-cache levels (30, 40, 59, 60; `kernel/mm/filemap.h`). A page fault holds the mm lock
+(20), then a page lock (30), then the page-table lock (50); nothing may take the mm lock while holding a page
+lock. Copies from user memory into a locked page (write) prefault the buffer, copy with
+`copy_from_user_nofault` and retry on a short copy, so a page lock is never held across a fault. Readahead
+locks up to 32 new pages at once for one batch read (`readpages`): they are inserted locked, so no one else
+can hold or wait for them first, and the checker does not record them. The FAT32 `io_lock` (45) sits inside
+the page lock: `readpage` is called with the page locked.
 
 Levels 7, 8, 11, 12, 45 and 62–65 are M1-11's additions (see "VFS locks" below). Levels 75 and 76 are additions to §7's list: the pipe, socket and tty locks are the "condition" locks passed to
 `wq_sleep`, so they sit just above the signal lock and below the wait-queue locks; the socket table is looked up

@@ -1,7 +1,7 @@
 #ifndef ARCHOS_UAPI_MMAN_H
 #define ARCHOS_UAPI_MMAN_H
 
-/* mmap, mprotect, madvise and mremap values, Linux x86_64 (asm-generic/mman-common.h,
+/* mmap, mprotect, madvise, msync and mremap values, Linux x86_64 (asm-generic/mman-common.h,
  * asm-generic/mman.h, asm/mman.h, linux/mman.h). Checked by test_abi_layout. */
 
 #define PROT_NONE      0x0
@@ -38,6 +38,10 @@
 #define MADV_FREE       8
 #define MADV_HUGEPAGE   14
 #define MADV_NOHUGEPAGE 15
+
+#define MS_ASYNC      1
+#define MS_INVALIDATE 2
+#define MS_SYNC       4
 
 #define MREMAP_MAYMOVE   1
 #define MREMAP_FIXED     2

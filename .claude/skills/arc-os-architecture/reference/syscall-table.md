@@ -37,7 +37,7 @@ same PR that changes a syscall (the `add-syscall` skill does this). Since M0-06 
 | 5 | fstat | done | 12 | musl; inventory: musl, C++, SQLite, zstd (M0-05, M1-11) |
 | 6 | lstat | partial (= stat until symlinks exist; M1-13) | — | inventory: SQLite (M1-11) |
 | 8 | lseek | done | 7 | all; inventory: musl, SQLite, llama.cpp |
-| 9 | mmap | partial (anonymous private only: MAP_FIXED, MAP_FIXED_NOREPLACE, MAP_NORESERVE, MAP_POPULATE, MAP_32BIT, MAP_GROWSDOWN; file mappings -ENODEV until M1-12, MAP_SHARED anonymous -EINVAL until M1-08) | — | musl, llama.cpp; inventory: musl, musl threads, C++, SQLite, zstd, llama.cpp (M1-07) |
+| 9 | mmap | partial (anonymous private: MAP_FIXED, MAP_FIXED_NOREPLACE, MAP_NORESERVE, MAP_POPULATE, MAP_32BIT, MAP_GROWSDOWN; files in the page cache (ramfs, FAT32), MAP_PRIVATE and MAP_SHARED, through one cache with read/write (M1-12): EACCES rules as Linux, -ENODEV for files without mmap (directories, devices until M1-15); MAP_32BIT ignored for files; MAP_SHARED anonymous -EINVAL until M1-08) | — | musl, llama.cpp; inventory: musl, musl threads, C++, SQLite, zstd, llama.cpp (M1-07, M1-12) |
 | 10 | mprotect | partial (a range with a hole fails whole with -ENOMEM; Linux changes the part before it; PROT_GROWSDOWN/UP -EINVAL) | — | musl; inventory: musl, musl threads, C++, zstd, llama.cpp (M1-07) |
 | 11 | munmap | done (splits VMAs, frees pages and emptied page tables after the TLB flush, M1-07) | — | musl; inventory: musl, musl threads, C++, SQLite, zstd, llama.cpp (M1-07) |
 | 12 | brk | done (a [heap] VMA, pages on first touch; one free page kept above, M1-07) | 6 | musl; inventory: musl, C++, SQLite, zstd, llama.cpp (M1-07) |
@@ -52,7 +52,8 @@ same PR that changes a syscall (the `add-syscall` skill does this). Since M0-06 
 | 21 | access | missing | — | inventory: musl, SQLite (M1-20) |
 | 22 | pipe | done | 19 | shell; inventory: musl |
 | 25 | mremap | partial (MREMAP_MAYMOVE, MREMAP_FIXED; MREMAP_DONTUNMAP and old_len 0 -EINVAL) | — | musl realloc; inventory: musl (M1-07) |
-| 28 | madvise | partial (MADV_DONTNEED and MADV_FREE drop the pages now; NORMAL, RANDOM, SEQUENTIAL, WILLNEED, HUGEPAGE, NOHUGEPAGE accepted, no effect yet) | — | llama.cpp; inventory: llama.cpp (M1-07) |
+| 26 | msync | done (MS_SYNC writes the range's shared file pages back and waits; MS_ASYNC starts nothing, as on Linux; MS_INVALIDATE has nothing to drop) | — | SQLite, llama.cpp (M1-12) |
+| 28 | madvise | partial (MADV_DONTNEED and MADV_FREE drop the pages now; NORMAL, RANDOM, SEQUENTIAL set file readahead, WILLNEED reads file pages in now (M1-12); HUGEPAGE, NOHUGEPAGE accepted, no effect yet) | — | llama.cpp; inventory: llama.cpp (M1-07, M1-12) |
 | 32 | dup | done | 13 | shell; inventory: musl |
 | 33 | dup2 | done | 14 | shell |
 | 35 | nanosleep | missing | — | M1; inventory: musl, C++ (M1-06) |
@@ -74,7 +75,8 @@ same PR that changes a syscall (the `add-syscall` skill does this). Since M0-06 
 | 61 | wait4 | partial (rusage zero-filled; WCONTINUED never reported) | 18 | shell; inventory: musl (M0-05) |
 | 62 | kill | partial (pid -1 and signal 0 not supported) | 21 | shell |
 | 72 | fcntl | partial (F_DUPFD, F_DUPFD_CLOEXEC, F_GETFD/SETFD, F_GETFL/SETFL; record locks M1-20) | — | inventory: musl, C++, SQLite (M1-11, M1-20) |
-| 74 | fsync | partial (ramfs and read-only FAT32 have nothing to write back; disk write-back M1-15) | — | inventory: musl, SQLite (M1-11, M1-15) |
+| 74 | fsync | partial (writes the file's dirty page-cache pages back (M1-12); ramfs and read-only FAT32 have nowhere to write; disk write-back M1-15) | — | inventory: musl, SQLite (M1-11, M1-12, M1-15) |
+| 75 | fdatasync | partial (same as fsync: no metadata is kept apart from the data) | — | SQLite (M1-12) |
 | 77 | ftruncate | done | — | inventory: musl (M1-11) |
 | 79 | getcwd | done | 24 | shell; inventory: musl, SQLite |
 | 80 | chdir | done | 23 | shell; inventory: musl |

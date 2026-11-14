@@ -45,7 +45,7 @@ static inline void kprintf(const char *fmt, ...) { (void)fmt; }
 #define VMM_FLAG_NOEXEC    (1 << 2)
 #define VMM_FLAG_PROTNONE  (1 << 3)
 #define VMM_FLAG_UNCACHED  (1 << 4)
-typedef void (*vmm_defer_free_t)(uint64_t phys, int table, void *ctx);
+typedef int (*vmm_defer_free_t)(uint64_t phys, int table, void *ctx);
 
 /* User-space constants (from vmm.h) */
 #define USER_STACK_TOP 0x00007FFFFFFFE000ULL
@@ -96,10 +96,12 @@ void vmm_unmap_page_in(uint64_t pml4, uint64_t virt);
 uint64_t vmm_get_phys_in(uint64_t pml4, uint64_t virt);
 int vmm_get_flags_in(uint64_t pml4, uint64_t virt);
 int vmm_lookup_in(uint64_t pml4, uint64_t virt, uint64_t *phys);
-uint64_t vmm_unmap_range_in(uint64_t pml4, uint64_t start, uint64_t end, vmm_defer_free_t defer, void *ctx);
+uint64_t vmm_unmap_range_in(uint64_t pml4, uint64_t start, uint64_t end, vmm_defer_free_t defer, void *ctx,
+                            uint64_t *next);
 void vmm_release_table(uint64_t phys);
 void vmm_protect_range_in(uint64_t pml4, uint64_t start, uint64_t end, uint32_t flags);
-int vmm_copy_range_in(uint64_t src, uint64_t dst, uint64_t start, uint64_t end, uint64_t *copied);
+int vmm_copy_range_in(uint64_t src, uint64_t dst, uint64_t start, uint64_t end, int (*skip)(uint64_t phys),
+                      uint64_t *copied);
 int vmm_move_range_in(uint64_t pml4, uint64_t from, uint64_t to, uint64_t len);
 uint64_t vmm_create_user_pml4(void);
 void vmm_free_user_pages(uint64_t pml4);
@@ -457,9 +459,10 @@ TEST(init_sets_pml4) {
 typedef struct {
     int pages, tables;
     uint64_t last_page;
+    int stop_after;   /* defer stops the walk after this many pages (0: never) */
 } Deferred;
 
-static void defer_cb(uint64_t phys, int table, void *ctx) {
+static int defer_cb(uint64_t phys, int table, void *ctx) {
     Deferred *d = ctx;
     if (table) {
         d->tables++;
@@ -467,6 +470,7 @@ static void defer_cb(uint64_t phys, int table, void *ctx) {
         d->pages++;
         d->last_page = phys;
     }
+    return d->stop_after != 0 && !table && d->pages == d->stop_after;   /* M1-12: batches */
 }
 
 /* A fresh user PML4 (vmm_create_user_pml4 needs the kernel PML4 to copy) */
@@ -482,16 +486,16 @@ TEST(unmap_range_frees_emptied_tables) {
     ASSERT_EQ(vmm_map_page_in(pml4, 0x400000, 0xA000, VMM_FLAG_USER), 0);
     ASSERT_EQ(vmm_map_page_in(pml4, 0x401000, 0xB000, VMM_FLAG_USER), 0);
     ASSERT_EQ(vmm_user_table_pages(), 4);   /* + PDPT, PD, PT */
-    Deferred d = {0, 0, 0};
+    Deferred d = {0, 0, 0, 0};
     /* Half the range: the PT still holds a page, nothing is freed */
-    ASSERT_EQ(vmm_unmap_range_in(pml4, 0x400000, 0x401000, defer_cb, &d), 1);
+    ASSERT_EQ(vmm_unmap_range_in(pml4, 0x400000, 0x401000, defer_cb, &d, NULL), 1);
     ASSERT_EQ(d.pages, 1);
     ASSERT_EQ(d.last_page, 0xA000);
     ASSERT_EQ(d.tables, 0);
     ASSERT_EQ(vmm_lookup_in(pml4, 0x400000, NULL), 0);
     ASSERT_EQ(vmm_lookup_in(pml4, 0x401000, NULL), 1);
     /* The rest: PT, PD and PDPT are all empty now */
-    ASSERT_EQ(vmm_unmap_range_in(pml4, 0x400000, 0x800000, defer_cb, &d), 1);
+    ASSERT_EQ(vmm_unmap_range_in(pml4, 0x400000, 0x800000, defer_cb, &d, NULL), 1);
     ASSERT_EQ(d.tables, 3);
     for (int i = 0; i < 3; i++) vmm_release_table(0);
     ASSERT_EQ(vmm_user_table_pages(), 1);
@@ -504,9 +508,9 @@ TEST(unmap_range_skips_missing_tables) {
     reset_vmm_state();
     uint64_t pml4 = new_user_pml4();
     ASSERT_EQ(vmm_map_page_in(pml4, 0x7FFF00000000ULL, 0xA000, VMM_FLAG_USER), 0);
-    Deferred d = {0, 0, 0};
+    Deferred d = {0, 0, 0, 0};
     /* 128 TiB walk with one page in it: one step per missing table span */
-    ASSERT_EQ(vmm_unmap_range_in(pml4, 0x10000, 0x7FFFFFFFF000ULL, defer_cb, &d), 1);
+    ASSERT_EQ(vmm_unmap_range_in(pml4, 0x10000, 0x7FFFFFFFF000ULL, defer_cb, &d, NULL), 1);
     ASSERT_EQ(d.pages, 1);
     ASSERT_EQ(d.tables, 3);
     return 0;
@@ -535,8 +539,8 @@ TEST(protnone_page_is_unmapped_and_freed) {
     reset_vmm_state();
     uint64_t pml4 = new_user_pml4();
     ASSERT_EQ(vmm_map_page_in(pml4, 0x400000, 0xA000, VMM_FLAG_PROTNONE), 0);
-    Deferred d = {0, 0, 0};
-    ASSERT_EQ(vmm_unmap_range_in(pml4, 0x400000, 0x401000, defer_cb, &d), 1);
+    Deferred d = {0, 0, 0, 0};
+    ASSERT_EQ(vmm_unmap_range_in(pml4, 0x400000, 0x401000, defer_cb, &d, NULL), 1);
     ASSERT_EQ(d.last_page, 0xA000);
     return 0;
 }
@@ -550,7 +554,7 @@ TEST(copy_range_copies_contents_and_flags) {
     ASSERT_EQ(vmm_map_page_in(src, 0x400000, page, VMM_FLAG_USER | VMM_FLAG_WRITABLE), 0);
     ASSERT_EQ(vmm_map_page_in(src, 0x402000, page, VMM_FLAG_PROTNONE), 0);
     uint64_t copied = 0;
-    ASSERT_EQ(vmm_copy_range_in(src, dst, 0x400000, 0x403000, &copied), 0);
+    ASSERT_EQ(vmm_copy_range_in(src, dst, 0x400000, 0x403000, NULL, &copied), 0);
     ASSERT_EQ(copied, 2);
     uint64_t cp = vmm_get_phys_in(dst, 0x400000);
     ASSERT_NEQ(cp, 0);
@@ -569,8 +573,50 @@ TEST(copy_range_reports_oom) {
     ASSERT_EQ(vmm_map_page_in(src, 0x400000, 0xA000, VMM_FLAG_USER), 0);
     arena_limit = arena_next;   /* no page for the copy */
     uint64_t copied = 0;
-    ASSERT_EQ(vmm_copy_range_in(src, dst, 0x400000, 0x401000, &copied), -ENOMEM);
+    ASSERT_EQ(vmm_copy_range_in(src, dst, 0x400000, 0x401000, NULL, &copied), -ENOMEM);
     ASSERT_EQ(copied, 0);
+    return 0;
+}
+
+/* M1-12: the zap batches stop the walk when their list is full and resume */
+TEST(unmap_range_stops_when_defer_asks) {
+    reset_vmm_state();
+    uint64_t pml4 = new_user_pml4();
+    for (int i = 0; i < 4; i++)
+        ASSERT_EQ(vmm_map_page_in(pml4, 0x400000 + i * 0x1000, 0xA000 + i * 0x1000, VMM_FLAG_USER), 0);
+    Deferred d = {0, 0, 0, 2};
+    uint64_t next = 0;
+    ASSERT_EQ(vmm_unmap_range_in(pml4, 0x400000, 0x800000, defer_cb, &d, &next), 2);
+    ASSERT_EQ(next, 0x402000);   /* resume after the second page */
+    ASSERT_EQ(d.tables, 0);      /* the PT still holds two pages */
+    ASSERT_EQ(vmm_lookup_in(pml4, 0x402000, NULL), 1);
+    d.stop_after = 0;
+    ASSERT_EQ(vmm_unmap_range_in(pml4, next, 0x800000, defer_cb, &d, &next), 2);
+    ASSERT_EQ(next, 0x800000);
+    ASSERT_EQ(d.tables, 3);      /* now empty: PT, PD, PDPT */
+    for (int i = 0; i < 3; i++) vmm_release_table(0);
+    return 0;
+}
+
+/* Fork leaves the frames skip names (page-cache pages) for the child to fault in */
+static uint64_t skip_frame;
+static int skip_one(uint64_t phys) {
+    return phys == skip_frame;
+}
+
+TEST(copy_range_skips_frames) {
+    reset_vmm_state();
+    uint64_t src = new_user_pml4();
+    uint64_t dst = new_user_pml4();
+    uint64_t a = pmm_alloc_page(), b = pmm_alloc_page();
+    ASSERT_EQ(vmm_map_page_in(src, 0x400000, a, VMM_FLAG_USER), 0);
+    ASSERT_EQ(vmm_map_page_in(src, 0x401000, b, VMM_FLAG_USER), 0);
+    skip_frame = b;
+    uint64_t copied = 0;
+    ASSERT_EQ(vmm_copy_range_in(src, dst, 0x400000, 0x402000, skip_one, &copied), 0);
+    ASSERT_EQ(copied, 1);
+    ASSERT_EQ(vmm_lookup_in(dst, 0x400000, NULL), 1);
+    ASSERT_EQ(vmm_lookup_in(dst, 0x401000, NULL), 0);
     return 0;
 }
 
@@ -696,6 +742,8 @@ TestCase vmm_tests[] = {
     TEST_ENTRY(protnone_page_is_unmapped_and_freed),
     TEST_ENTRY(copy_range_copies_contents_and_flags),
     TEST_ENTRY(copy_range_reports_oom),
+    TEST_ENTRY(unmap_range_stops_when_defer_asks),
+    TEST_ENTRY(copy_range_skips_frames),
     TEST_ENTRY(move_range_moves_entries),
     TEST_ENTRY(move_range_oom_leaves_source),
     TEST_ENTRY(map_page_in_reports_oom),

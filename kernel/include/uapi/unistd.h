@@ -34,6 +34,7 @@
 #define __NR_access            21
 #define __NR_pipe              22
 #define __NR_mremap            25
+#define __NR_msync             26
 #define __NR_madvise           28
 #define __NR_dup               32
 #define __NR_dup2              33
@@ -54,6 +55,7 @@
 #define __NR_kill              62
 #define __NR_fcntl             72
 #define __NR_fsync             74
+#define __NR_fdatasync         75
 #define __NR_ftruncate         77
 #define __NR_getcwd            79
 #define __NR_chdir             80

@@ -1,4 +1,4 @@
-# arc_os — Test-only user programs (M0-02, M0-05, M0-10, M1-01, M1-05, M1-07, M1-11). Shipped only on test ISOs.
+# arc_os — Test-only user programs (M0-02, M0-05, M0-10, M1-01, M1-05, M1-07, M1-11, M1-12). Shipped only on test ISOs.
 
 foreach(prog testfail abi_check forkreap schedtest)
     arc_user_program(${prog} ${prog}.c)
@@ -45,11 +45,24 @@ if(EXISTS "${ARC_MUSL_PREFIX}gcc")
                 -o ${CMAKE_BINARY_DIR}/fstest ${CMAKE_CURRENT_SOURCE_DIR}/fstest.c
         DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/fstest.c
         COMMENT "musl -static fstest")
+    # M1-12: the page cache and file mmap (qemu.pagecache), and a 9 MiB
+    # program exec maps from the cache
+    add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/pctest
+        COMMAND ${MUSL_CC} -static -O2 -Wall -Wextra -Werror -std=gnu11
+                -o ${CMAKE_BINARY_DIR}/pctest ${CMAKE_CURRENT_SOURCE_DIR}/pctest.c
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/pctest.c
+        COMMENT "musl -static pctest")
+    add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bigexec
+        COMMAND ${MUSL_CC} -static -O2 -Wall -Wextra -Werror -std=gnu11
+                -o ${CMAKE_BINARY_DIR}/bigexec ${CMAKE_CURRENT_SOURCE_DIR}/bigexec.c
+                ${CMAKE_CURRENT_SOURCE_DIR}/bigexec_data.S
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/bigexec.c ${CMAKE_CURRENT_SOURCE_DIR}/bigexec_data.S
+        COMMENT "musl -static bigexec")
     list(APPEND _musl_outputs ${CMAKE_BINARY_DIR}/start_musl ${CMAKE_BINARY_DIR}/sig_fpu ${CMAKE_BINARY_DIR}/fpu_avx
-         ${CMAKE_BINARY_DIR}/mmtest ${CMAKE_BINARY_DIR}/fstest)
+         ${CMAKE_BINARY_DIR}/mmtest ${CMAKE_BINARY_DIR}/fstest ${CMAKE_BINARY_DIR}/pctest ${CMAKE_BINARY_DIR}/bigexec)
 else()
     message(WARNING "musl toolchain not found at ${ARC_MUSL_PREFIX}gcc (tools/dev-setup.sh musl): "
-                    "qemu.musl, qemu.fpu, qemu.mm and qemu.vfs will fail")
+                    "qemu.musl, qemu.fpu, qemu.mm, qemu.vfs and qemu.pagecache will fail")
 endif()
 
 find_program(MUSL_GCC musl-gcc)

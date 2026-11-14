@@ -12,6 +12,7 @@
 #define ARCHOS_LIB_MEM_H
 #define ARCHOS_LIB_KPRINTF_H
 #define ARCHOS_FS_VFS_H
+#define ARCHOS_MM_KMALLOC_H
 
 #include "../kernel/proc/elf.h"
 
@@ -28,6 +29,16 @@
 #define EINVAL 22
 #define ENOMEM 12
 #define ENOEXEC 8
+
+/* kmalloc over malloc (the program header table) */
+#include <stdlib.h>
+static void *kmalloc(size_t size, uint32_t flags) {
+    (void)flags;
+    return malloc(size);
+}
+static void kfree(void *p) {
+    free(p);
+}
 
 /* Stub kprintf */
 static inline void kprintf(const char *fmt, ...) { (void)fmt; }
@@ -136,6 +147,33 @@ static int mm_setup_vma(Mm *mm, uint64_t start, uint64_t end, uint32_t prot, uin
     vma_count++;
     return 0;
 }
+/* M1-12: file VMAs of a source with mapping ops */
+typedef struct VmaOps {
+    int unused;
+} VmaOps;
+#define MAX_OBJ_VMAS 4
+static struct {
+    uint64_t start, end, pgoff;
+    uint32_t prot;
+    void *file;
+} obj_vmas[MAX_OBJ_VMAS];
+static int obj_vma_count;
+static int mm_setup_object_vma(Mm *mm, uint64_t start, uint64_t end, uint32_t prot, void *file, uint64_t pgoff,
+                               const VmaOps *ops) {
+    (void)mm;
+    (void)ops;
+    for (int i = 0; i < vma_count; i++) {
+        if (start < vmas[i].end && vmas[i].start < end) return -EINVAL;
+    }
+    if (obj_vma_count >= MAX_OBJ_VMAS) return -ENOMEM;
+    obj_vmas[obj_vma_count].start = start;
+    obj_vmas[obj_vma_count].end = end;
+    obj_vmas[obj_vma_count].pgoff = pgoff;
+    obj_vmas[obj_vma_count].prot = prot;
+    obj_vmas[obj_vma_count].file = file;
+    obj_vma_count++;
+    return 0;
+}
 static int mm_setup_page(Mm *mm, uint64_t virt, uint64_t phys, uint32_t vmm_flags) {
     if (setup_page_fail) return -ENOMEM;
     return vmm_map_page_in(mm->pgd, virt, phys, vmm_flags);
@@ -157,6 +195,7 @@ static void reset_stubs(void) {
     allocated_page_count = 0;
     freed_page_count = 0;
     vma_count = 0;
+    obj_vma_count = 0;
     setup_page_fail = 0;
 }
 
@@ -512,6 +551,126 @@ TEST(bss_only_segment_is_demand_zero) {
 
 /* --- Suite --- */
 
+/* --- M1-12: a file source maps whole pages of segment data --- */
+
+static int src_reads;
+static int src_read(const ElfSource *src, uint64_t off, void *dst, size_t len) {
+    src_reads++;
+    memcpy(dst, (const uint8_t *)src->data + off, len);
+    return 0;
+}
+static const VmaOps test_file_ops;
+static int test_file;
+
+static void file_source(ElfSource *src, const uint8_t *buf, size_t size) {
+    memset(src, 0, sizeof(*src));
+    src->size = size;
+    src->read = src_read;
+    src->data = buf;
+    src->file = &test_file;
+    src->ops = &test_file_ops;
+}
+
+/* text r-x: file 0..0x1800 at 0x400000; data rw-: file 0x1800..0x3800 at
+ * 0x401800 (shares page 0x401000 with text), bss to 0x404800 */
+static void build_file_elf(uint8_t *buf, size_t size) {
+    build_minimal_elf(buf, size, 0x400000, 0x400000, PF_R | PF_X, 0, 0);
+    Elf64_Ehdr *ehdr = (Elf64_Ehdr *)buf;
+    ehdr->e_phnum = 0;
+    Elf64_Phdr *text = add_phdr(buf, PT_LOAD, PF_R | PF_X);
+    text->p_offset = 0;
+    text->p_vaddr = 0x400000;
+    text->p_filesz = 0x1800;
+    text->p_memsz = 0x1800;
+    Elf64_Phdr *data = add_phdr(buf, PT_LOAD, PF_R | PF_W);
+    data->p_offset = 0x1800;
+    data->p_vaddr = 0x401800;
+    data->p_filesz = 0x2000;
+    data->p_memsz = 0x3000;
+    memset(buf + 0x1000, 0xAA, 0x800);    /* text's last page */
+    memset(buf + 0x1800, 0xBB, 0x2000);   /* data */
+}
+
+TEST(file_source_maps_whole_pages) {
+    reset_stubs();
+    static uint8_t buf[0x3800];
+    build_file_elf(buf, sizeof(buf));
+    ElfSource src;
+    file_source(&src, buf, sizeof(buf));
+    ElfLoadResult result;
+    ASSERT_EQ(elf_load_from(&src, TEST_MM, &result), 0);
+    /* text: page 0 from the file; data: page 0x402000 (file offset 0x2000) */
+    ASSERT_EQ(obj_vma_count, 2);
+    ASSERT_EQ(obj_vmas[0].start, 0x400000);
+    ASSERT_EQ(obj_vmas[0].end, 0x401000);
+    ASSERT_EQ(obj_vmas[0].pgoff, 0);
+    ASSERT_EQ(obj_vmas[0].prot, VMA_READ | VMA_EXEC);
+    ASSERT_TRUE(obj_vmas[0].file == &test_file);
+    ASSERT_EQ(obj_vmas[1].start, 0x402000);
+    ASSERT_EQ(obj_vmas[1].end, 0x403000);
+    ASSERT_EQ(obj_vmas[1].pgoff, 2);
+    ASSERT_EQ(obj_vmas[1].prot, VMA_READ | VMA_WRITE);
+    /* Copied: the shared page 0x401000 (text tail + data head) and data's
+     * partly-file last page 0x403000; .bss at 0x404000 on first touch */
+    ASSERT_EQ(mapping_count, 2);
+    int shared = mapping_find(0x401000), last = mapping_find(0x403000);
+    ASSERT_TRUE(shared >= 0 && last >= 0);
+    uint8_t *p = (uint8_t *)(uintptr_t)mappings[shared].phys;
+    ASSERT_EQ(p[0], 0xAA);
+    ASSERT_EQ(p[0x7FF], 0xAA);
+    ASSERT_EQ(p[0x800], 0xBB);
+    ASSERT_EQ(mappings[shared].flags, VMM_FLAG_USER | VMM_FLAG_WRITABLE);   /* both segments' rights */
+    p = (uint8_t *)(uintptr_t)mappings[last].phys;
+    ASSERT_EQ(p[0], 0xBB);
+    ASSERT_EQ(p[0x7FF], 0xBB);
+    ASSERT_EQ(p[0x800], 0);   /* .bss */
+    ASSERT_TRUE(mapping_find(0x402000) < 0);
+    ASSERT_TRUE(mapping_find(0x404000) < 0);
+    /* Anonymous VMAs: text's tail page, then data's .bss part */
+    ASSERT_EQ(vma_count, 3);
+    ASSERT_EQ(vmas[0].start, 0x401000);
+    ASSERT_EQ(vmas[0].end, 0x402000);
+    ASSERT_EQ(vmas[2].start, 0x403000);
+    ASSERT_EQ(vmas[2].end, 0x405000);
+    ASSERT_EQ(result.brk_start, 0x405000);
+    return 0;
+}
+
+/* Offsets that disagree with addresses mod a page: copied like a memory source */
+TEST(file_source_misaligned_offset_copies) {
+    reset_stubs();
+    static uint8_t buf[0x3800];
+    build_file_elf(buf, sizeof(buf));
+    Elf64_Phdr *data = (Elf64_Phdr *)(buf + ((Elf64_Ehdr *)buf)->e_phoff) + 1;
+    data->p_offset = 0x1700;
+    ElfSource src;
+    file_source(&src, buf, sizeof(buf));
+    ElfLoadResult result;
+    ASSERT_EQ(elf_load_from(&src, TEST_MM, &result), 0);
+    ASSERT_EQ(obj_vma_count, 1);   /* text only */
+    ASSERT_TRUE(mapping_find(0x402000) >= 0);
+    ASSERT_EQ(((uint8_t *)(uintptr_t)mappings[mapping_find(0x402000)].phys)[0], 0xBB);
+    return 0;
+}
+
+/* A read error from the source fails the load */
+static int failing_read(const ElfSource *src, uint64_t off, void *dst, size_t len) {
+    if (off >= 0x1800) return -5;   /* -EIO */
+    return src_read(src, off, dst, len);
+}
+
+TEST(file_source_read_error) {
+    reset_stubs();
+    static uint8_t buf[0x3800];
+    build_file_elf(buf, sizeof(buf));
+    ElfSource src;
+    file_source(&src, buf, sizeof(buf));
+    src.read = failing_read;
+    ElfLoadResult result;
+    ASSERT_EQ(elf_load_from(&src, TEST_MM, &result), -5);
+    return 0;
+}
+
 TestCase elf_tests[] = {
     TEST_ENTRY(overlapping_segments_rejected),
     TEST_ENTRY(map_failure_frees_page),
@@ -532,5 +691,8 @@ TestCase elf_tests[] = {
     TEST_ENTRY(phdr_from_pt_phdr_or_first_segment),
     TEST_ENTRY(gnu_stack_flag),
     TEST_ENTRY(malformed_headers_rejected),
+    TEST_ENTRY(file_source_maps_whole_pages),
+    TEST_ENTRY(file_source_misaligned_offset_copies),
+    TEST_ENTRY(file_source_read_error),
 };
 int elf_test_count = sizeof(elf_tests) / sizeof(elf_tests[0]);

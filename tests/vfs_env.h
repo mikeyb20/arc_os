@@ -75,4 +75,10 @@ int64_t vfs_env_read_file(const char *path, char *buf, size_t size);
  * fault half-way. */
 extern uintptr_t vfs_env_fault_at;
 
+/* File-mapping tests (M1-12): the entry an address space has at virt (its
+ * page and VMA protection). 1 if there is one. */
+struct page;
+int vfs_env_pte(uint64_t pgd, uint64_t virt, struct page **pg, uint32_t *flags);
+extern int vfs_env_tlb_flushes;   /* mm_flush_tlb_range and zap flushes so far */
+
 #endif /* ARCHOS_TESTS_VFS_ENV_H */

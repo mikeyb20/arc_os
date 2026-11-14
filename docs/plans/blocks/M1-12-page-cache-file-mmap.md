@@ -52,4 +52,42 @@ always the same bytes (ADR-0004, ADR-0016).
   `mmap` (step 5) works; if the block passes 1.5× its size, step 8 is the part to split off, never to drop.
 
 **Notes.**
--
+- 2026-11-14 (built, before M1-10: Michael chose "start now, sync disk reads" on 2026-11-14). Every disk read
+  and write of the page cache goes through one call, `filemap_bdev_io` (`kernel/mm/filemap.c`), which today
+  calls `dev->read` / `dev->write` and returns when the data is there. `readpage` ends each page with
+  `filemap_end_read`; `readpages` gets readahead windows in batches of up to 32 consecutive pages (128 KiB), and
+  FAT32's `readpages` takes its `io_lock` once per batch and still reads cluster by cluster. **For M1-10:** make
+  `filemap_bdev_io` submit a request whose completion calls `filemap_end_read` (nothing above it changes: page
+  waiters already sleep on `PG_LOCKED`), and turn a FAT32 batch into one request per run of contiguous clusters.
+  FAT32 metadata (boot sector, FAT, directory clusters) still uses `dev->read` directly (`fat32.c`
+  `fat32_read_cluster`, mount); those calls move with M1-10's swap too.
+- Layout. `kernel/mm/radix.c` (index, own slab cache, shrinks back), `filemap.c` (address spaces, page lock with
+  hashed wait queues, page references, LRU of evictable pages, read/write through the cache, readahead,
+  write-back, truncate, block-device mapping, counters), `filemap_mmap.c` (file VMA ops: fault, copy on write,
+  the mapping's VMA list, unmap on truncate, write-protect on write-back). ramfs pages are the storage
+  (`AS_MEMBACKED`: never on the LRU, a missing page is a hole of zeros); FAT32 files are cached and evictable.
+  `filemap_bdev_init` exists for M1-13's ext2 metadata; only host tests use it so far.
+- Page references: the tree holds one, every PTE one more plus `mapcount`; `PG_FILE` stays set until the page is
+  freed. Fork skips page-cache PTEs (`vmm_copy_range_in`'s skip callback): the child faults them back in, so
+  `mapcount` is right without copying. A private store copies the page into an anonymous one (`cow_install`).
+- Faults: a file page past EOF gives `MM_FAULT_SIGBUS` (SIGBUS, `BUS_ADRERR`). Mapped cache pages start
+  read-only; a shared store marks the page dirty and makes the entry writable under the page lock, and write-back
+  write-protects every mapping first (`filemap_mkclean`), so a later store dirties it again.
+- exec: `exec_load` reads the ELF header and program headers (at most 64 KiB) through an `ElfSource`; whole
+  file pages of each `PT_LOAD` become a private file VMA (`mm_setup_object_vma`); the page shared with the
+  previous segment and the last partial page are copied, bss is anonymous. A segment with `(p_offset - p_vaddr)
+  % 4096 != 0` falls back to copying. `MAX_ELF_SIZE` is gone. init uses `exec_load` too.
+- Syscalls: `msync` (26) and `fdatasync` (75) added; `mmap` of files (EACCES/ENODEV/EBADF as Linux), `madvise`
+  NORMAL/SEQUENTIAL/RANDOM/WILLNEED. `/proc/vmstat` is new (nr_file_pages, nr_dirty, nr_mapped, pgpgin in pages,
+  ra_pages, ra_batches, pages_dropped); `/proc/meminfo` has Cached, Dirty, Mapped; `drop_caches` 1 drops clean
+  unmapped cache pages and init's leak check writes 3.
+- `Vma` grew from 96 to 120 bytes (file, pgoff, ops, mapping-list link); the size assert in `vma.h` says why.
+- **For M1-14:** `filemap_drop_clean` walks the whole LRU under the LRU lock (fine for `drop_caches`, not for
+  reclaim: needs a bounded scan with the lock dropped between batches). Mapped pages are skipped, never
+  unmapped. ramfs and FAT32 have no `writepage` that reaches a disk (ramfs's only cleans), so nothing tests real
+  write-back yet; dirty marking is generic (no filesystem op), which ext2 write-back may want later.
+- Measured (QEMU TCG, 4 CPUs, 4 GiB): `qemu.pagecache` runs in about 13 s; four processes mapping a 1 GiB ramfs
+  file show Mapped 1048632 kB and MemFree down 8592 kB (their page tables). Kernel image 486931 -> 515584 bytes.
+- Open, not in this block's scope: no `ETXTBSY` (writing to a running program's file changes its mapped text);
+  `MAP_32BIT` is ignored for file mappings; boot modules are copied into ramfs and their module memory is kept
+  (pre-existing, about twice the module size).
