@@ -500,7 +500,7 @@ TEST(unmap_range_frees_emptied_tables) {
     for (int i = 0; i < 3; i++) vmm_release_table(0);
     ASSERT_EQ(vmm_user_table_pages(), 1);
     uint64_t *top = (uint64_t *)pml4;
-    ASSERT_EQ(top[PML4_INDEX(0x400000)], 0);
+    ASSERT_EQ(top[PML4_INDEX(0x400000ULL)], 0);
     return 0;
 }
 
