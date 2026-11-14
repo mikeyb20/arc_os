@@ -35,7 +35,7 @@ through the page cache (ADR-0008, ADR-0009, ADR-0018).
    bytes are unchanged after the run.
 
 **Done when.**
-- [ ] Host and QEMU tests pass.
+- [x] Host and QEMU tests pass.
 
 **Watch out.**
 - For regular files, `i_size_high` (old name `i_dir_acl`) holds the top 32 bits of the size.
@@ -56,7 +56,7 @@ through the page cache (ADR-0008, ADR-0009, ADR-0018).
   foreign-partition second disk needs only another `-drive`/`-device` pair. Metadata reads: `blk_rw_sync` (or
   the M1-12 block-device mapping); file data: requests from `readpages`. `kmain.c`'s `disk_mount` mounts the
   first disk's ESP (or a whole-disk FAT32) at `/disk`; boot-disk mounting goes beside it.
-- 2026-11-14 (built, PR stacked on #42; the boot mount waits for #43, Michael's card). **Path walk**
+- 2026-11-14 (built, PR #44; started on #42 before #43 merged, Michael's card; boot mount added after #43). **Path walk**
   (`fs/vfs.c`): from "/" or a start `PathLoc` (cwd, dirfd), one component at a time; `..` asks the filesystem's
   own `..` lookup (every filesystem answers it now: ramfs/fat32 keep a parent pointer, devfs/procfs return their
   root) and steps back over mount points through `Mount.parent`; symlinks are followed up to 40 per walk (2 x
@@ -78,19 +78,23 @@ through the page cache (ADR-0008, ADR-0009, ADR-0018).
   tail that a piece in flight also covers would race the DMA. Device/FIFO/socket inodes stat fine, open gives
   -ENXIO (no device-number registry yet). A corrupt entry (rec_len, block or inode number out of range, a size
   no block map reaches) is -EIO and logged, never a read past a block.
-- **Boot mount** (`fs/sysmount.c`, lands after #43): system read-only at `/system`, the data partition's `apps`,
+- **Boot mount** (`fs/sysmount.c`): system read-only at `/system`, the data partition's `apps`,
   `models`, `packs`, `home`, `var` with `vfs_mount_subdir`. Partitions are picked by type GUID only. The boot
   disk is the one Limine names (`BootInfo.boot_disk_guid`, new) **if** a driver serves it and it holds an arc_os
   partition; otherwise labels pick the disk and the type must still match. An ISO boot reports the image's own
   GPT GUID (seen in QEMU), and so does the bring-up ISO written to a stick, so the label path is the normal one
   until the installer writes real arc_os disks (ADR-0018 "when it can't"). `arc.data=PARTUUID=` must name a
-  partition of the data type, else no data is mounted (no silent fallback). Before the scheduler runs, page
-  waits poll the disks (`blk_poll_all`, as `blk_rw_sync` does).
+  partition of the data type, else no data is mounted (no silent fallback). The lookups live in
+  `drivers/blk_lookup.c` (moved out of blkdev.c so host suites link them; new `blk_find_disk`,
+  `blk_find_partuuid`; `blk_find_label` takes a type GUID, NULL = any, so a label alone never picks a partition
+  arc_os mounts). The boot-time page waits poll the disks (#43's `blk_poll_all` in `page_wait_unlocked`).
+- File pages after #43: `readpages` puts every page's pieces on one plug; the EOF block still comes from the
+  metadata cache, so the EOF page is complete before any interrupt (host test with deferred requests).
 - Tests: `test_ext2` (mkfs.ext2 images at 4/2/1 KiB blocks: 5 GiB sparse file read at every block-map level to
   triple indirect, holes, fast/slow symlinks, a 400-entry `dir_index` directory listed whole and in resumed
   batches, refused features, corrupt entries, failed mounts and OOM leak-free); a ramfs walk test (`..`, a renamed
-  base, getcwd, rename ancestry, dot-name errnos); `boot_disk_guids` (bootinfo); after #43 `test_sysmount` (pick
-  rules) and `qemu.ext2` / `qemu.ext2.named` (two disks: a foreign one with arc_os *labels* on Linux and Windows
+  base, getcwd, rename ancestry, dot-name errnos); `boot_disk_guids` (bootinfo); `test_sysmount` (pick rules over
+  `blk_mem_devices`, the host registry stand-in in `tests/blk_mem.c`) and `qemu.ext2` / `qemu.ext2.named` (two disks: a foreign one with arc_os *labels* on Linux and Windows
   partition types, attached writable, and an arc_os one; CRC-32 of every file checked against the host's, exec
   from ext2, foreign disk SHA-256 unchanged; a foreign PARTUUID refused). Cost: lookups scan a directory
   linearly (O(entries), htree ignored); a block map walk is O(depth), O(1) on the cached indirect block; mount
@@ -99,10 +103,10 @@ through the page cache (ADR-0008, ADR-0009, ADR-0018).
   volumes read-only, clear `EXT2_INDEX_FL` on a `dir_index` directory it changes (it doesn't maintain the htree;
   my read, verify against e2fsprogs), and keep the EOF block's metadata-cache copy coherent with the file page
   (or read that block another way), since `ext2_start_page` copies it from there. M1-16 (`CLONE_FS`) adds the
-  cwd's lock; today only the process's own thread touches it. No `ETXTBSY` yet. The FAT32 page read zeroes the
-  tail after starting its pieces (`fat32_start_page`): once pieces are async, a cluster piece that runs past EOF
-  races that memset (stale disk bytes past EOF in a mapped page); fix it in the #42/#43 swap. kmain still mounts
+  cwd's lock; today only the process's own thread touches it. No `ETXTBSY` yet. kmain still mounts
   vda's ESP at `/disk` even when vda isn't the boot disk (FAT32 read-only, from M1-10): ADR-0018 wants only the
   boot disk's; the bring-up block that next touches `disk_mount` should pick the ESP by the boot disk too. With a
   data partition, `/home` is its `home` directory, so the installer must create `home/user` (the ramfs one is
-  hidden).
+  hidden). Kernel image 558053 bytes (+19779 over #43's 538274), limit 586000. Two disks with the same GPT GUID
+  (a cloned stick plugged in beside the original) are ambiguous: the first registered wins (my read: the
+  installer should write fresh GUIDs).

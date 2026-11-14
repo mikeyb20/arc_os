@@ -10,6 +10,7 @@
 #include "mm/mm.h"
 #include "mm/filemap.h"
 #include "boot/bootinfo.h"
+#include "fs/sysmount.h"
 #include "proc/thread.h"
 #include "proc/sched.h"
 #include "proc/lockdep.h"
@@ -357,7 +358,7 @@ static void blk_tick(void) {
  * as they register. After hal_smp_init: MSI needs the local APIC, and
  * interrupts are spread over every online CPU. Then mount the virtio disk and
  * bring up the network on what bound. */
-static void devices_setup(void) {
+static void devices_setup(const BootInfo *info) {
     irq_init();
     pci_bus_init();
     virtio_blk_register();
@@ -367,6 +368,7 @@ static void devices_setup(void) {
         blktest_run();
     }
     disk_mount();
+    sysmount_boot(info->boot_gpt ? info->boot_disk_guid : NULL, cmdline_raw());
 }
 
 /* Stop on a CPU below x86-64-v3 (ADR-0003), saying why on serial and, when
@@ -471,7 +473,7 @@ void kmain(void) {
     }
 
     serial_puts("[BOOT] stage: devices\n");
-    devices_setup();
+    devices_setup(info);
 
     /* Test mode self-check: suite "kpanic" proves a panic ends the run at once;
      * with arc.panic=fault it is a real page fault instead (M1-04) */

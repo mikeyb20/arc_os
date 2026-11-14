@@ -595,10 +595,10 @@ TEST(corrupt_directory_entry_is_eio) {
         uint64_t at = root_dir_block_offset(vols[i].data, &bs);
         ASSERT_EQ(vols[i].data[at + 8], '.');   /* found the root's "." */
         uint16_t lens[NVOLS] = {0, 13, (uint16_t)(bs + 4)};
-        disk_init(&devs[i], patched(vols[i].data, vols[i].size, at + 4, &lens[i], 2), vols[i].size);   /* "."'s rec_len */
+        disk_init(&devs[i], patched(vols[i].data, vols[i].size, at + 4, &lens[i], 2), vols[i].size); /* "."'s rec_len */
         int err;
         SuperBlock *sb = ext2_mount(&devs[i], vols[i].size, "bad", &err);
-        ASSERT_TRUE(sb != NULL);   /* the root inode is fine; its entries aren't */
+        ASSERT_TRUE(sb != NULL); /* the root inode is fine; its entries aren't */
         ASSERT_EQ(vfs_mkdir(mnts[i], 0755), 0);
         ASSERT_EQ(vfs_mount(mnts[i], sb, "bad"), 0);
         Listing l;
@@ -624,19 +624,19 @@ TEST(reads_through_the_page_cache) {
     ASSERT_EQ(vfs_pread(f, &b, 0), (int64_t)sizeof(buf));
     ASSERT_TRUE(pat_ok(buf, 0, sizeof(buf)));
     filemap_stats(&s);
-    ASSERT_TRUE(s.pgpgin - s0.pgpgin >= 16);   /* the 16 pages asked for, plus readahead */
+    ASSERT_TRUE(s.pgpgin - s0.pgpgin >= 16); /* the 16 pages asked for, plus readahead */
     uint64_t cached = filemap_of(f->inode)->nrpages;
     ASSERT_TRUE(cached >= 16);
     b = iob_kernel(buf, sizeof(buf));
     uint64_t in = s.pgpgin;
-    ASSERT_EQ(vfs_pread(f, &b, 0), (int64_t)sizeof(buf));   /* cached: no read */
+    ASSERT_EQ(vfs_pread(f, &b, 0), (int64_t)sizeof(buf)); /* cached: no read */
     filemap_stats(&s);
     ASSERT_EQ(s.pgpgin, in);
     ASSERT_TRUE(filemap_drop_clean() >= cached);
     ASSERT_EQ(filemap_of(f->inode)->nrpages, 0);
     memset(buf, 0, sizeof(buf));
     b = iob_kernel(buf, sizeof(buf));
-    ASSERT_EQ(vfs_pread(f, &b, 0), (int64_t)sizeof(buf));   /* metadata re-read too */
+    ASSERT_EQ(vfs_pread(f, &b, 0), (int64_t)sizeof(buf)); /* metadata re-read too */
     ASSERT_TRUE(pat_ok(buf, 0, sizeof(buf)));
     fput(f);
     return 0;
@@ -653,7 +653,7 @@ TEST(readahead_pieces_land_late_eof_page_does_not_wait) {
     AddressSpace *as = f->inode->mapping;
     uint64_t last = (300000 - 1) / PAGE_SIZE;
     size_t eof = 300000 - last * PAGE_SIZE;
-    ASSERT_TRUE(eof < 1024);   /* EOF in the page's first block: no piece */
+    ASSERT_TRUE(eof < 1024); /* EOF in the page's first block: no piece */
     struct page *pg[2];
     for (int i = 0; i < 2; i++) {
         pg[i] = alloc_pages(0, 0);
@@ -665,14 +665,14 @@ TEST(readahead_pieces_land_late_eof_page_does_not_wait) {
     ASSERT_EQ(as->ops->readpage(as, pg[1]), 0);
     ASSERT_TRUE(!page_test(pg[1], PG_LOCKED) && page_test(pg[1], PG_UPTODATE));
     page_clear(pg[1], PG_UPTODATE);
-    for (int i = 0; i < 2; i++) page_set(pg[i], PG_LOCKED);   /* as readahead hands them over */
+    for (int i = 0; i < 2; i++) page_set(pg[i], PG_LOCKED); /* as readahead hands them over */
     int before = blk_mem_requests;
     blk_mem_defer = 1;
     as->ops->readpages(as, pg, 2);
     blk_mem_defer = 0;
-    ASSERT_TRUE(page_test(pg[0], PG_LOCKED));   /* its pieces are still in flight */
+    ASSERT_TRUE(page_test(pg[0], PG_LOCKED)); /* its pieces are still in flight */
     ASSERT_TRUE(!page_test(pg[1], PG_LOCKED) && page_test(pg[1], PG_UPTODATE));
-    ASSERT_TRUE(blk_mem_requests == before);    /* nothing reached the disk yet */
+    ASSERT_TRUE(blk_mem_requests == before); /* nothing reached the disk yet */
     blk_mem_run();
     ASSERT_TRUE(blk_mem_requests > before);
     ASSERT_TRUE(!page_test(pg[0], PG_LOCKED) && page_test(pg[0], PG_UPTODATE));

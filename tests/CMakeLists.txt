@@ -159,6 +159,11 @@ add_library(arc_vfs_host STATIC
     ${CMAKE_SOURCE_DIR}/kernel/fs/procfs.c
     ${CMAKE_SOURCE_DIR}/kernel/fs/fat32.c
     ${CMAKE_SOURCE_DIR}/kernel/fs/ext2.c
+    ${CMAKE_SOURCE_DIR}/kernel/fs/sysmount.c
+    ${CMAKE_SOURCE_DIR}/kernel/drivers/gpt.c
+    ${CMAKE_SOURCE_DIR}/kernel/drivers/blk_lookup.c
+    ${CMAKE_SOURCE_DIR}/kernel/lib/crc32.c
+    ${CMAKE_SOURCE_DIR}/kernel/lib/cmdline.c
     ${CMAKE_SOURCE_DIR}/kernel/proc/fd.c
     ${CMAKE_SOURCE_DIR}/kernel/lib/rbtree.c
     ${CMAKE_SOURCE_DIR}/kernel/mm/radix.c
@@ -171,12 +176,12 @@ target_include_directories(arc_vfs_host PUBLIC ${CMAKE_SOURCE_DIR}/kernel ${CMAK
 target_compile_options(arc_vfs_host PUBLIC -Wall -Wextra -std=c11 -DARC_HOST_TEST
     -idirafter ${CMAKE_SOURCE_DIR}/kernel/include)
 add_executable(test_vfs_runner vfs_main.c test_harness.c
-    test_vfs.c test_fd.c test_pipe.c test_devfs.c test_procfs.c test_fat32.c test_ext2.c test_cred.c test_filemap.c)
+    test_vfs.c test_fd.c test_pipe.c test_devfs.c test_procfs.c test_fat32.c test_ext2.c test_sysmount.c test_cred.c test_filemap.c)
 target_link_libraries(test_vfs_runner PRIVATE arc_vfs_host)
 # test_filemap's truncate-vs-fault tests run a truncate inside the fault's page_lock call
 target_link_options(test_vfs_runner PRIVATE -Wl,--wrap=page_lock)
 add_test(NAME vfs_tests COMMAND test_vfs_runner)
-foreach(_suite vfs fd pipe devfs procfs fat32 ext2 cred filemap)
+foreach(_suite vfs fd pipe devfs procfs fat32 ext2 sysmount cred filemap)
     add_test(NAME test_${_suite} COMMAND test_vfs_runner --suite ${_suite})
 endforeach()
 set_tests_properties(vfs_tests test_fat32 test_ext2 PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
