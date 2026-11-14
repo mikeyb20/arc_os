@@ -131,7 +131,7 @@ Start every block with `/os/implement-block <ID>`. These rules are what keep ses
 | M1-09 | Driver model, MSI-X, DMA helpers | M | D | KB | M1-05 | virtio on the bus model with MSI-X | done |
 | M1-10 | Async block layer + GPT | M | D | KB | M1-09 | Many requests in flight; partitions found by label | todo |
 | M1-11 | VFS rework: inodes, 64-bit offsets | L | D | KA | M0-06 | Files past 4 GiB; every filesystem converted | done |
-| M1-12 | Page cache + file mmap | L | D | KA | M1-07, M1-10, M1-11 | `read`/`write` and `mmap` always agree | review |
+| M1-12 | Page cache + file mmap | L | D | KA | M1-07, M1-10, M1-11 | `read`/`write` and `mmap` always agree | review (#42) |
 | M1-13 | ext2 read + mount by label | M | R | KA | M1-10, M1-11, M1-12 | Reads `mke2fs` images incl. 5 GiB sparse files | todo |
 | M1-14 | Memory reclaim + writeback | M | D | KA | M1-12, M1-13 | 2 GiB file in 512 MB RAM; no flusher timer when clean | todo |
 | M1-15 | ext2 write | L | D | KA | M1-13, M1-14 | `e2fsck`-clean after every scenario | todo |
