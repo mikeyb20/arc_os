@@ -1,6 +1,4 @@
 #include "security/hardening.h"
-#include "mm/vmm.h"
-#include "arch/x86_64/paging.h"
 #include "lib/kprintf.h"
 
 /* Stack canary value — initialized to a semi-random value at boot.
@@ -29,15 +27,4 @@ void hardening_init(void) {
     __stack_chk_guard &= ~0xFFULL;
 
     kprintf("[SECURITY] Stack canaries enabled (guard=0x%lx)\n", __stack_chk_guard);
-}
-
-void hardening_add_guard_page(uint64_t stack_base_virt) {
-    /* Unmap the page just below the stack to catch overflow.
-     * If code writes below the stack, it hits an unmapped page → page fault. */
-    uint64_t guard_addr = stack_base_virt - 0x1000;
-    paging_invlpg(guard_addr);
-    /* The page is already unmapped (heap allocations don't map contiguous pages),
-     * but we ensure the TLB entry is flushed so any stale mapping is gone. */
-    kprintf("[SECURITY] Guard page at 0x%lx (below stack 0x%lx)\n",
-            guard_addr, stack_base_virt);
 }
