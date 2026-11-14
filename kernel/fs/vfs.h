@@ -168,8 +168,9 @@ typedef struct InodeOps {
      * nname doesn't exist; an empty directory is locked). Both directories
      * are on this filesystem and locked; the VFS has checked the types. */
     int (*rename)(Inode *odir, const char *oname, Inode *src, Inode *ndir, const char *nname, Inode *victim);
-    /* NULL: -EPERM (no filesystem creates symlinks yet: ext2 write is M1-15) */
-    int (*symlink)(Inode *dir, const char *name, const char *target);
+    /* New symlink to target (1 to PATH_MAX - 1 bytes, not checked by the
+     * filesystem), mode S_IFLNK | 0777, owned by uid/gid. NULL: -EPERM. */
+    int (*symlink)(Inode *dir, const char *name, const char *target, uint32_t uid, uint32_t gid);
     /* A symlink's target: up to size bytes into buf (kernel memory, no NUL).
      * Returns the target's full length (may exceed size: the caller sees it
      * was cut) or -errno. Called with no lock held. */
@@ -212,6 +213,11 @@ typedef struct SuperOps {
     /* The last reference to inode went away: free the filesystem's data for
      * it (inode->priv). The VFS frees the Inode afterwards. NULL: nothing. */
     void (*evict_inode)(Inode *inode);
+    /* The VFS changed inode's attributes (times, size after a write, mode,
+     * owner): store them (ext2 copies them into its inode table, M1-15).
+     * Called with the inode's lock, or its directory's, held. NULL: nothing
+     * to store (the inode is the only copy). */
+    void (*write_inode)(Inode *inode);
 } SuperOps;
 
 /* ---------------------------------------------------------------------------
@@ -223,6 +229,7 @@ typedef struct SuperOps {
 #define I_HASHED     0x2   /* in the inode cache */
 #define I_MOUNTPOINT 0x4   /* a mount covers this directory */
 #define I_DEAD       0x8   /* removed directory: no new entries */
+#define I_FLUSHED    0x10  /* its last iput wrote its pages back: evict needn't (inode.c) */
 
 struct Inode {
     uint64_t ino;
@@ -243,6 +250,7 @@ struct Inode {
     void *mapping;    /* regular files: the AddressSpace of its page-cache pages (mm/filemap.h) */
     void *priv;       /* filesystem's own data */
     uint32_t refcount;   /* atomic; hashed inodes drop to 0 only under the inode-cache lock */
+    uint32_t gets;       /* icache_get hits, under the inode-cache lock (inode.c) */
     Inode *hash_next;    /* inode-cache chain */
     RwSem lock;          /* LOCK_LEVEL_INODE */
 };
@@ -308,7 +316,9 @@ void inode_init_static(Inode *inode, SuperBlock *sb, uint64_t ino, uint32_t mode
 Inode *igrab(Inode *inode);
 
 /* Drop a reference. The last one unhashes the inode, calls the filesystem's
- * evict_inode and frees it (not I_STATIC ones). Never under a spinlock. */
+ * evict_inode and frees it (not I_STATIC ones); for a file still linked it
+ * first writes the dirty pages back and waits, while the inode is still in
+ * the cache. Never under a spinlock. */
 void iput(Inode *inode);
 
 /* Inode cache, one per kernel, keyed by (sb, ino): filesystems whose inodes
@@ -322,6 +332,10 @@ Inode *icache_add(Inode *inode);
 
 /* Current time for inode times: the wall clock (CLOCK_REALTIME). */
 void vfs_now(struct timespec *ts);
+
+/* The VFS changed inode's attributes: its filesystem's write_inode stores
+ * them (Linux's mark_inode_dirty). */
+void vfs_inode_dirty(Inode *inode);
 
 /* Permission check for uid/gid (0 = root passes). 0 or -EACCES. */
 int vfs_check_perm(const Inode *inode, uint32_t uid, uint32_t gid, int want);
@@ -403,6 +417,10 @@ int vfs_mkdir_at(const PathLoc *base, const char *path, uint32_t mode);
 int vfs_unlink_at(const PathLoc *base, const char *path);
 int vfs_rmdir_at(const PathLoc *base, const char *path);
 int vfs_rename_at(const PathLoc *obase, const char *oldpath, const PathLoc *nbase, const char *newpath);
+/* A symlink at path pointing to target (not resolved): -EEXIST, -ENOENT for
+ * an empty target, -ENAMETOOLONG, -EPERM where the filesystem has none. No
+ * syscall reaches it yet (symlink(2) is not in the syscall inventory). */
+int vfs_symlink_at(const PathLoc *base, const char *path, const char *target);
 int vfs_stat_at(const PathLoc *base, const char *path, uint32_t flags, struct stat *st);
 /* readlink(2): the target of the symlink at path (not followed), up to
  * size bytes. Bytes copied, -EINVAL if not a symlink. */

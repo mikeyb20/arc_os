@@ -165,6 +165,9 @@ add_library(arc_vfs_host STATIC
     ${CMAKE_SOURCE_DIR}/kernel/fs/procfs.c
     ${CMAKE_SOURCE_DIR}/kernel/fs/fat32.c
     ${CMAKE_SOURCE_DIR}/kernel/fs/ext2.c
+    ${CMAKE_SOURCE_DIR}/kernel/fs/ext2_alloc.c
+    ${CMAKE_SOURCE_DIR}/kernel/fs/ext2_map.c
+    ${CMAKE_SOURCE_DIR}/kernel/fs/ext2_dir.c
     ${CMAKE_SOURCE_DIR}/kernel/fs/sysmount.c
     ${CMAKE_SOURCE_DIR}/kernel/drivers/gpt.c
     ${CMAKE_SOURCE_DIR}/kernel/drivers/blk_lookup.c
@@ -174,6 +177,7 @@ add_library(arc_vfs_host STATIC
     ${CMAKE_SOURCE_DIR}/kernel/lib/rbtree.c
     ${CMAKE_SOURCE_DIR}/kernel/mm/radix.c
     ${CMAKE_SOURCE_DIR}/kernel/mm/filemap.c
+    ${CMAKE_SOURCE_DIR}/kernel/mm/filemap_block.c
     ${CMAKE_SOURCE_DIR}/kernel/mm/filemap_mmap.c
     ${CMAKE_SOURCE_DIR}/kernel/mm/reclaim.c
     ${CMAKE_SOURCE_DIR}/kernel/mm/writeback.c
@@ -219,6 +223,16 @@ set_tests_properties(ext2_test_images PROPERTIES
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     FIXTURES_SETUP ext2_images)
 set_tests_properties(test_ext2 vfs_tests PROPERTIES FIXTURES_REQUIRED ext2_images)
+
+# M1-15: ext2 writing, over images mkfs.ext2 makes in temporary files,
+# each scenario checked with e2fsck -fn and debugfs (e2fsprogs). Its own
+# program: a larger page arena, and one suite per process (volumes are never
+# unmounted and the VFS has 16 mount slots).
+add_executable(test_ext2w_runner test_ext2_write.c ext2_image.c test_harness.c)
+target_link_libraries(test_ext2w_runner PRIVATE arc_vfs_host)
+foreach(_suite files dirs space state regress)
+    add_test(NAME test_ext2w_${_suite} COMMAND test_ext2w_runner --suite ${_suite})
+endforeach()
 
 # M0-05: kernel/include/uapi against the host's Linux headers (sizes, offsets,
 # syscall numbers, errno and flag values). Its own program: the two header sets

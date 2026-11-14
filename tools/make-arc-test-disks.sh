@@ -19,6 +19,15 @@
 #                             sparse file: in each 8 MiB stretch b, the first
 #                             64 KiB are data (64-bit word j is b << 32 | j),
 #                             the rest a hole (reclaimtest checks both)
+#   make-arc-test-disks.sh make-write DIR
+#       DIR/write-disk.img    an arc_os disk for qemu.ext2w (M1-15): a small
+#                             system partition and a 1300 MiB data partition
+#                             (PARTUUID $WRITE_DATA, named with arc.data=) with
+#                             empty apps, models, packs, home/user and var
+#   make-arc-test-disks.sh check-write DIR first|second SERIAL_LOG
+#       After a qemu.ext2w boot: the data partition is e2fsck-clean and marked
+#       clean; after the first, /var/big.bin is 1 GiB; after the second, it is
+#       gone and every block but the 103 the remaining files hold is free.
 #   make-arc-test-disks.sh check DIR SERIAL_LOG
 #       After the run: ext2test's crc lines match arc-sums.txt, and the foreign
 #       disk is byte for byte what it was (it is attached writable).
@@ -35,6 +44,8 @@ ARC_DISK=5A6B7C8D-1E2F-4A3B-8C4D-5E6F7A8B9C0D
 FOREIGN_DISK=6B7C8D9E-2F3A-4B4C-9D5E-6F7A8B9C0D1E
 # The foreign Windows partition: qemu.ext2.named names it with arc.data=PARTUUID=
 FOREIGN_P2=22222222-3333-4444-8555-666666666662
+# The write disk's data partition: qemu.ext2w names it with arc.data=PARTUUID=
+WRITE_DATA=33333333-4444-4555-8666-777777777772
 
 make_disks() {
     local dir="$1" hello="$2" tmp
@@ -144,11 +155,74 @@ PY
     echo "Created the reclaim test disk $img"
 }
 
+make_write() {
+    local dir="$1" tmp
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' EXIT
+    mkdir -p "$dir" "$tmp/system" "$tmp/data"/{apps,models,packs,home/user,var}
+    echo "system" >"$tmp/system/hello.txt"
+    mkfs.ext2 -q -F -t ext2 -b 4096 -I 256 -O large_file -d "$tmp/system" "$tmp/system.img" 24M
+    mkfs.ext2 -q -F -t ext2 -b 4096 -I 256 -O large_file -d "$tmp/data" "$tmp/data.img" 1300M
+    local img="$dir/write-disk.img"
+    rm -f "$img"
+    truncate -s 1340M "$img"
+    sgdisk -o -U "$ARC_DISK" \
+        -n 1:2048:+24M -t 1:"$(def ARC_PART_TYPE_SYSTEM)" -c 1:"$(def ARC_PART_LABEL_SYSTEM)" \
+        -n 2:0:+1300M -t 2:"$(def ARC_PART_TYPE_DATA)" -u 2:"$WRITE_DATA" -c 2:"$(def ARC_PART_LABEL_DATA)" \
+        "$img" >/dev/null
+    place "$img" 1 "$tmp/system.img"
+    place "$img" 2 "$tmp/data.img"
+    dumpe2fs -h "$tmp/data.img" 2>/dev/null | sed -n 's/^Free blocks: *//p' >"$dir/write-free.txt"
+    echo "Created the ext2 write test disk $img"
+}
+
+check_write() {
+    local dir="$1" which="$2" tmp first count bad=0 out
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' EXIT
+    first=$(sgdisk -i 2 "$dir/write-disk.img" | sed -n 's/^First sector: \([0-9]*\).*/\1/p')
+    count=$(( 1300 << 20 ))
+    dd if="$dir/write-disk.img" of="$tmp/data.img" bs=1M iflag=skip_bytes,count_bytes skip=$(( first * 512 )) \
+        count="$count" conv=sparse 2>/dev/null
+    if ! out=$(e2fsck -fn "$tmp/data.img" 2>&1); then
+        echo "$out" | head -40
+        echo "check: e2fsck found errors on the data partition"
+        bad=1
+    fi
+    if ! dumpe2fs -h "$tmp/data.img" 2>/dev/null | grep -q "^Filesystem state: *clean$"; then
+        echo "check: the data partition is not marked clean"
+        bad=1
+    fi
+    local size
+    size=$(debugfs -R "stat /var/big.bin" "$tmp/data.img" 2>/dev/null | sed -n 's/.*Size: \([0-9]*\).*/\1/p' | head -1)
+    if [ "$which" = first ] && [ "$size" != 1073741824 ]; then
+        echo "check: /var/big.bin is '$size' bytes, not 1 GiB"
+        bad=1
+    fi
+    if [ "$which" = second ]; then
+        if [ -n "$size" ]; then
+            echo "check: /var/big.bin still there"
+            bad=1
+        fi
+        local free now
+        free=$(cat "$dir/write-free.txt")
+        now=$(dumpe2fs -h "$tmp/data.img" 2>/dev/null | sed -n 's/^Free blocks: *//p')
+        # The gigabyte and its indirect blocks are back; what is left is the
+        # 100 notes, the docs and sub directories and /var/state (a block each)
+        if [ $(( free - now )) -ne 103 ]; then
+            echo "check: free blocks $now, $free at the start: $(( free - now )) in use, not 103"
+            bad=1
+        fi
+    fi
+    [ $bad = 0 ] && echo "check: data partition e2fsck-clean and marked clean ($which boot)"
+    return $bad
+}
+
 # Copy a volume image into partition n of a disk image
 place() {
     local first
     first=$(sgdisk -i "$2" "$1" | sed -n 's/^First sector: \([0-9]*\).*/\1/p')
-    dd if="$3" of="$1" bs=512 seek="$first" conv=notrunc 2>/dev/null
+    dd if="$3" of="$1" bs=512 seek="$first" conv=notrunc,sparse 2>/dev/null   # the disk is new: zeros stay holes
 }
 
 check() {
@@ -171,7 +245,10 @@ check() {
 case "$1" in
 make) make_disks "$2" "$3" ;;
 make-big) make_big "$2" ;;
+make-write) make_write "$2" ;;
+check-write) check_write "$2" "$3" ;;
 check) check "$2" "$3" 1 ;;
 check-foreign) check "$2" "$3" 0 ;;
-*) echo "usage: $0 make DIR [HELLO] | make-big DIR | check DIR SERIAL_LOG | check-foreign DIR SERIAL_LOG" >&2; exit 2 ;;
+*) echo "usage: $0 make DIR [HELLO] | make-big DIR | make-write DIR | check DIR SERIAL_LOG |" \
+        "check-foreign DIR SERIAL_LOG | check-write DIR first|second SERIAL_LOG" >&2; exit 2 ;;
 esac
