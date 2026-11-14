@@ -79,6 +79,10 @@ void _exit(int status) {
     for (;;) __asm__ volatile ("ud2");
 }
 
+void sync(void) {
+    (void)syscall0(__NR_sync);
+}
+
 pid_t getpid(void) {
     return (pid_t)syscall0(__NR_getpid);
 }

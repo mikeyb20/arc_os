@@ -51,7 +51,12 @@
 #define PG_IO_SHIFT   16
 #define PG_IO_ONE     (1u << PG_IO_SHIFT)
 #define PG_IO_MASK    (0xFFu << PG_IO_SHIFT)
-/* Bits 24-31 are free for later blocks.
+/* Reclaim (M1-14, mm/reclaim.c): which LRU list a cache page is on, and
+ * whether read() found it in the cache since reclaim last looked */
+#define PG_ACTIVE     (1u << 24)   /* on the active list (else the inactive one), while PG_LRU */
+#define PG_REFERENCED (1u << 25)   /* used again since the last scan (read hits; PTE accessed bits are separate) */
+#define PG_LOCK_META  (1u << 26)   /* page lock held at the block-device page level (filemap.c's lock-order record) */
+/* Bits 27-31 are free for later blocks.
  * free_pages() clears every flag of the head page; owners of a multi-page
  * block clear what they set on its other pages before freeing it. */
 
@@ -76,7 +81,7 @@ struct page {
     struct {
         uint32_t next;  /* PFN of the next page, or PFN_NONE */
         uint32_t prev;  /* PFN of the previous page, or PFN_NONE */
-    } lru;              /* buddy free lists, slab lists (M1-02b), LRU lists later (M1-14) */
+    } lru;              /* buddy free lists, slab lists (M1-02b), the page-cache LRU lists (M1-14) */
 };
 
 _Static_assert(sizeof(struct page) == 32, "struct page must be exactly 32 bytes (ADR-0019)");
@@ -118,13 +123,15 @@ static inline struct page *virt_to_page(const void *virt) {
 }
 
 /* A doubly linked list of block heads through their lru PFN links. Every
- * operation is O(1). A page is on at most one such list at a time. */
+ * operation is O(1). A page is on at most one such list at a time. The tail
+ * is the oldest page (the LRU lists take from it, M1-14). */
 struct page_list {
     uint32_t head;   /* PFN of the first page, or PFN_NONE */
+    uint32_t tail;   /* PFN of the last page, or PFN_NONE */
 };
 
 #define PAGE_LIST_INIT \
-    { PFN_NONE }
+    { PFN_NONE, PFN_NONE }
 
 /* True if the list has no pages. */
 static inline int page_list_empty(const struct page_list *l) {
@@ -136,12 +143,20 @@ static inline struct page *page_list_first(const struct page_list *l) {
     return l->head == PFN_NONE ? NULL : pfn_to_page(l->head);
 }
 
+/* Last (oldest) page of the list, or NULL. */
+static inline struct page *page_list_last(const struct page_list *l) {
+    return l->tail == PFN_NONE ? NULL : pfn_to_page(l->tail);
+}
+
 /* Put `pg` at the front of the list. */
 static inline void page_list_push(struct page_list *l, struct page *pg) {
     uint32_t pfn = (uint32_t)page_to_pfn(pg);
     pg->lru.prev = PFN_NONE;
     pg->lru.next = l->head;
-    if (l->head != PFN_NONE) pfn_to_page(l->head)->lru.prev = pfn;
+    if (l->head != PFN_NONE)
+        pfn_to_page(l->head)->lru.prev = pfn;
+    else
+        l->tail = pfn;
     l->head = pfn;
 }
 
@@ -152,7 +167,10 @@ static inline void page_list_remove(struct page_list *l, struct page *pg) {
     } else {
         l->head = pg->lru.next;
     }
-    if (pg->lru.next != PFN_NONE) pfn_to_page(pg->lru.next)->lru.prev = pg->lru.prev;
+    if (pg->lru.next != PFN_NONE)
+        pfn_to_page(pg->lru.next)->lru.prev = pg->lru.prev;
+    else
+        l->tail = pg->lru.prev;
     pg->lru.next = PFN_NONE;
     pg->lru.prev = PFN_NONE;
 }

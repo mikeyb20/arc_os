@@ -11,6 +11,8 @@
 #include "drivers/blkdev.h"
 #include "fs/vfs_internal.h"
 #include "mm/filemap.h"
+#include "mm/reclaim.h"
+#include "mm/writeback.h"
 #include "mm/mm.h"
 #include "proc/lockdep.h"
 #include "uapi/errno.h"
@@ -100,7 +102,7 @@ static void dev_setup(void) {
         mem_dev.driver_data = dev_data;
     }
     blk_mem_fail = 0;
-    (void)filemap_drop_clean();   /* other suites' clean pages: the counts below are this test's */
+    (void)reclaim_drop_clean();   /* other suites' clean pages: the counts below are this test's */
     filemap_bdev_init(&dev_as, &mem_dev, (loff_t)DEV_PAGES * PAGE_SIZE);
 }
 
@@ -119,7 +121,7 @@ TEST(readahead_windows) {
     dev_setup();
     FilemapStats s0, s;
     filemap_stats(&s0);
-    FileRa ra = {0, 0};
+    FileRa ra = {0, 0, 0};
     ASSERT_EQ(get_check(0, &ra, 0), 0);   /* first miss: 32 pages (128 KiB) */
     filemap_stats(&s);
     ASSERT_EQ(s.pgpgin - s0.pgpgin, 32);
@@ -153,7 +155,7 @@ TEST(readahead_windows) {
     filemap_stats(&s);
     ASSERT_EQ(s.file_pages - s0.file_pages, DEV_PAGES);
     /* Clean and unused: drop_caches frees every one */
-    ASSERT_EQ(filemap_drop_clean(), DEV_PAGES);
+    ASSERT_EQ(reclaim_drop_clean(), DEV_PAGES);
     filemap_stats(&s);
     ASSERT_EQ(s.file_pages, s0.file_pages);
     ASSERT_EQ(s.dropped - s0.dropped, DEV_PAGES);
@@ -174,14 +176,52 @@ TEST(drop_keeps_used_and_dirty_pages) {
     ASSERT_TRUE(held != NULL && dirty != NULL);
     filemap_set_dirty(dirty);
     page_put(dirty);
-    ASSERT_EQ(filemap_drop_clean(), 2);   /* 0 and 3 */
+    ASSERT_EQ(reclaim_drop_clean(), 2);   /* 0 and 3 */
     ASSERT_EQ(dev_as.nrpages, 2);
     page_put(held);
-    ASSERT_EQ(filemap_drop_clean(), 1);   /* 1 now; 2 stays dirty */
+    ASSERT_EQ(reclaim_drop_clean(), 1);   /* 1 now; 2 stays dirty */
     filemap_bdev_release(&dev_as);        /* drops the dirty one too (no write-back here) */
     ASSERT_EQ(dev_as.nrpages, 0);
     vfs_env_usage(&u1);
     ASSERT_TRUE(vfs_env_no_leak(&u0, &u1));
+    return 0;
+}
+
+/* sync flushes every writable disk with a write cache; release (unmount)
+ * flushes its own (review of #47) */
+TEST(sync_and_release_flush_the_disk_cache) {
+    dev_setup();
+    BlockDevice *devs[1] = {&mem_dev};
+    mem_dev.disk = &mem_dev;
+    mem_dev.flags = BLK_CACHE;
+    blk_mem_devices(devs, 1);
+    unsigned off;
+    int err = 0;
+    struct page *pg = filemap_get_page(&dev_as, 3, NULL, 0, &off, &err);
+    ASSERT_TRUE(pg != NULL);
+    page_lock(pg);
+    memset(page_to_virt(pg), 0x5C, PAGE_SIZE);
+    filemap_set_dirty(pg);
+    page_unlock(pg);
+    page_put(pg);
+    int f0 = blk_mem_flushes;
+    wb_sync_all();
+    ASSERT_EQ(blk_mem_flushes - f0, 1);   /* written, then the cache flushed */
+    ASSERT_EQ(dev_data[3 * PAGE_SIZE], 0x5C);
+    wb_sync_all();
+    ASSERT_EQ(blk_mem_flushes - f0, 2);   /* nothing dirty: still flushed (earlier writes) */
+    mem_dev.flags = BLK_CACHE | BLK_RDONLY;
+    wb_sync_all();
+    mem_dev.flags = 0;
+    wb_sync_all();
+    ASSERT_EQ(blk_mem_flushes - f0, 2);   /* read-only, or no cache: none */
+    mem_dev.flags = BLK_CACHE;
+    filemap_bdev_release(&dev_as);
+    ASSERT_EQ(blk_mem_flushes - f0, 3);
+    blk_mem_devices(NULL, 0);
+    mem_dev.flags = 0;
+    mem_dev.disk = NULL;
+    for (size_t i = 3 * PAGE_SIZE; i < 4 * PAGE_SIZE; i++) dev_data[i] = (uint8_t)(i / PAGE_SIZE + i);
     return 0;
 }
 
@@ -232,7 +272,7 @@ TEST(ramfs_counters_and_fsync) {
     ASSERT_EQ(vfs_fsync(f), 0);   /* nowhere to write: clean now */
     filemap_stats(&s);
     ASSERT_EQ(s.dirty, s0.dirty);
-    ASSERT_EQ(filemap_drop_clean(), 0);   /* ramfs pages are never dropped */
+    ASSERT_EQ(reclaim_drop_clean(), 0);   /* ramfs pages are never dropped */
     /* A hole costs nothing and reads as zeros */
     ASSERT_EQ(pwr(f, "y", 1, 10 * 4096), 1);
     filemap_stats(&s);
@@ -571,6 +611,7 @@ TestCase filemap_tests[] = {
     TEST_ENTRY(radix_out_of_memory),
     TEST_ENTRY(readahead_windows),
     TEST_ENTRY(drop_keeps_used_and_dirty_pages),
+    TEST_ENTRY(sync_and_release_flush_the_disk_cache),
     TEST_ENTRY(read_error_is_eio_and_retried),
     TEST_ENTRY(ramfs_counters_and_fsync),
     TEST_ENTRY(write_past_16_tib_is_efbig),

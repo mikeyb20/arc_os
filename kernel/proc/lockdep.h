@@ -19,6 +19,7 @@
 /* Levels: work-blocks.md §7, numbered with gaps. Lower = taken first. */
 #define LOCK_LEVEL_KERNEL        0   /* big kernel lock (interim, proc/kernel_lock.h) */
 #define LOCK_LEVEL_DEVICE        5   /* sleeping: device model (bus lists, probe/remove/suspend; M1-09) */
+#define LOCK_LEVEL_WRITEBACK     6   /* sleeping: one write-back pass or sync at a time (M1-14) */
 #define LOCK_LEVEL_FILE_POS      7   /* sleeping: an open file's position (M1-11) */
 #define LOCK_LEVEL_RENAME        8   /* sleeping: one rename per filesystem (M1-11) */
 #define LOCK_LEVEL_INODE         10   /* sleeping: write, truncate, rename, directories (M1-11) */
@@ -31,7 +32,7 @@
 #define LOCK_LEVEL_MAPPING       40   /* sleeping: VMAs mapping a file (M1-12) */
 #define LOCK_LEVEL_FS_IO         45   /* sleeping: a filesystem's device reads (FAT32 volume; M1-11) */
 #define LOCK_LEVEL_PAGE_TABLE    50   /* spinlock, per mm; today the kernel page tables */
-#define LOCK_LEVEL_PAGE_LRU      59   /* spinlock: the evictable page-cache pages (M1-12) */
+#define LOCK_LEVEL_PAGE_LRU      59   /* spinlock: the inactive and active page-cache lists (M1-12, M1-14) */
 #define LOCK_LEVEL_PAGE_CACHE    60   /* spinlock, per address space (M1-12) */
 #define LOCK_LEVEL_MOUNT         62   /* spinlock: adding to the mount table (M1-11) */
 #define LOCK_LEVEL_DCACHE        63   /* spinlock: the dentry cache (M1-11) */
@@ -43,6 +44,7 @@
  * socket, tty, wait4, mutex/semaphore guards) */
 #define LOCK_LEVEL_OBJECT        75
 #define LOCK_LEVEL_OBJECT_TABLE  76   /* a table of objects looked up under an object lock (sockets) */
+#define LOCK_LEVEL_WB_LIST       78   /* IRQ-safe: write-back list, flusher timer; taken in interrupts (M1-14) */
 #define LOCK_LEVEL_WAITQUEUE     80   /* wait-queue locks */
 #define LOCK_LEVEL_BLK_QUEUE     85   /* IRQ-safe: one disk's request queue; taken in interrupts (M1-10) */
 #define LOCK_LEVEL_RUNQUEUE      90   /* run queues: interrupts off; two only in CPU-index order */

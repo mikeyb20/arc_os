@@ -1,0 +1,4 @@
+# qemu.reclaim (M1-14): on a 512 MiB machine, a 2 GiB ext2 file read and then
+# mapped in full, every word checked; reclaim keeps free memory above the min
+# watermark and unmaps the pages it frees. Exit status = failed checks.
+reclaimtest /boot/reclaimtest

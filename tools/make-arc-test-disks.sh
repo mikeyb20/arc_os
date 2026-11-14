@@ -13,6 +13,12 @@
 #       DIR/arc-sums.txt      CRC-32 of every file ext2test reads ("crc PATH HEX")
 #       DIR/foreign.sha256    the foreign disk's checksum before the run
 #       HELLO, if given, is copied to /system/bin/hello (exec from ext2).
+#   make-arc-test-disks.sh make-big DIR
+#       DIR/big-disk.img      an arc_os disk for qemu.reclaim (M1-14): only a
+#                             system partition, holding big.bin, a 2 GiB
+#                             sparse file: in each 8 MiB stretch b, the first
+#                             64 KiB are data (64-bit word j is b << 32 | j),
+#                             the rest a hole (reclaimtest checks both)
 #   make-arc-test-disks.sh check DIR SERIAL_LOG
 #       After the run: ext2test's crc lines match arc-sums.txt, and the foreign
 #       disk is byte for byte what it was (it is attached writable).
@@ -114,6 +120,30 @@ PY
     echo "Created arc_os and foreign test disks in $dir"
 }
 
+make_big() {
+    local dir="$1" tmp
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' EXIT
+    mkdir -p "$dir" "$tmp/system"
+    python3 - "$tmp/system/big.bin" <<'PY'
+import struct, sys
+STRETCH, DATA, SIZE = 8 << 20, 64 << 10, 2 << 30
+with open(sys.argv[1], "wb") as f:
+    for b in range(SIZE // STRETCH):
+        f.seek(b * STRETCH)
+        f.write(struct.pack("<%dQ" % (DATA // 8), *((b << 32) | j for j in range(DATA // 8))))
+    f.truncate(SIZE)
+PY
+    mkfs.ext2 -q -F -t ext2 -b 4096 -I 256 -O large_file -d "$tmp/system" "$tmp/system.img" 32M
+    local img="$dir/big-disk.img"
+    rm -f "$img"
+    truncate -s 40M "$img"
+    sgdisk -o -U "$ARC_DISK" \
+        -n 1:2048:+32M -t 1:"$(def ARC_PART_TYPE_SYSTEM)" -c 1:"$(def ARC_PART_LABEL_SYSTEM)" "$img" >/dev/null
+    place "$img" 1 "$tmp/system.img"
+    echo "Created the reclaim test disk $img"
+}
+
 # Copy a volume image into partition n of a disk image
 place() {
     local first
@@ -140,7 +170,8 @@ check() {
 
 case "$1" in
 make) make_disks "$2" "$3" ;;
+make-big) make_big "$2" ;;
 check) check "$2" "$3" 1 ;;
 check-foreign) check "$2" "$3" 0 ;;
-*) echo "usage: $0 make DIR [HELLO] | check DIR SERIAL_LOG | check-foreign DIR SERIAL_LOG" >&2; exit 2 ;;
+*) echo "usage: $0 make DIR [HELLO] | make-big DIR | check DIR SERIAL_LOG | check-foreign DIR SERIAL_LOG" >&2; exit 2 ;;
 esac

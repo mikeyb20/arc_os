@@ -17,7 +17,8 @@
  * take an mm lock (the VMAs on the list are alive while the mapping lock is
  * held: ops->close waits for it).
  * Cost: a fault on a cached page copies nothing (one lookup, one entry); a
- * private write copies one page; truncate and write-protect walk the
+ * private write copies one page; truncate, write-protect and reclaim's
+ * reverse mapping (filemap_page_young, filemap_unmap_page) walk the
  * mapping's VMAs (one per mapping process, typically a handful). */
 
 #include "mm/filemap.h"
@@ -77,11 +78,13 @@ void filemap_unmap_from(AddressSpace *as, uint64_t first) {
 
 void filemap_unmap_page(AddressSpace *as, struct page *pg) {
     uint64_t index = pg->index;
+    uint64_t phys = page_to_phys(pg);
     mutex_lock(&as->map_lock);
     for (Vma *v = as->vmas; v != NULL; v = v->as_next) {
         if (index < vma_first(v) || index >= vma_end(v)) continue;
-        uint64_t addr = v->start + ((index - v->pgoff) << PAGE_SHIFT);
-        mm_zap_range(v->mm, addr, addr + PAGE_SIZE, MM_ZAP_FLUSH);
+        /* Only entries that map pg: in a private mapping the entry may be the
+         * process's own copy (copy on write), which is not pg's to take */
+        (void)mm_zap_page_if(v->mm, v->start + ((index - v->pgoff) << PAGE_SHIFT), phys);
     }
     mutex_unlock(&as->map_lock);
 }
@@ -107,6 +110,23 @@ void filemap_mkclean(AddressSpace *as, struct page *pg) {
     mutex_unlock(&as->map_lock);
 }
 
+int filemap_page_young(AddressSpace *as, struct page *pg) {
+    uint64_t index = pg->index;
+    uint64_t phys = page_to_phys(pg);
+    int young = 0;
+    mutex_lock(&as->map_lock);
+    for (Vma *v = as->vmas; v != NULL; v = v->as_next) {
+        if (index < vma_first(v) || index >= vma_end(v)) continue;
+        Mm *mm = v->mm;
+        uint64_t addr = v->start + ((index - v->pgoff) << PAGE_SHIFT);
+        spin_lock(&mm->pt_lock);
+        young += vmm_test_clear_accessed_in(mm->pgd, addr, phys);
+        spin_unlock(&mm->pt_lock);
+    }
+    mutex_unlock(&as->map_lock);
+    return young;
+}
+
 /* --- Faults --- */
 
 /* Widen the entry at addr to the VMA's rights if it still maps expect
@@ -126,7 +146,7 @@ static int pte_rewrite(Mm *mm, uint64_t addr, uint64_t expect, uint32_t flags) {
  * place of the entry old (replace) or where there is none (!replace). Takes
  * over nothing; src stays the caller's. */
 static int cow_install(Mm *mm, Vma *v, uint64_t addr, const struct page *src, int replace, uint64_t old) {
-    struct page *np = alloc_pages(0, GFP_KERNEL);
+    struct page *np = alloc_pages(0, GFP_RECLAIM);
     if (np == NULL) return MM_FAULT_OOM;
     memcpy(page_to_virt(np), page_to_virt(src), PAGE_SIZE);
     struct page *gone = NULL;

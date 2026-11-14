@@ -1,0 +1,3 @@
+# qemu.writeback / qemu.writeback.verify (M1-14): the kernel's write-back test
+# (kernel/diag/wbtest.c) runs in place of init and ends the run itself
+# (ARC_TEST DONE); no programs.

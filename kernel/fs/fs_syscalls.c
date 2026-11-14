@@ -23,6 +23,7 @@
 #include "proc/fd.h"
 #include "proc/signal.h"
 #include "mm/kmalloc.h"
+#include "mm/writeback.h"
 #include "lib/mem.h"
 #include "lib/string.h"
 #include "user_access.h"
@@ -373,6 +374,14 @@ static int64_t sys_fsync(uint64_t fd, uint64_t a1, uint64_t a2, uint64_t a3, uin
     return r;
 }
 
+/* sync() — 162: write every dirty page-cache page back and wait (M1-14).
+ * Linux returns nothing that can fail; neither does this. */
+static int64_t sys_sync(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a0, (void)a1, (void)a2, (void)a3, (void)a4, (void)a5;
+    wb_sync_all();
+    return 0;
+}
+
 /* fdatasync(fd) — 75: fsync (the cache keeps no metadata apart from the data) */
 static int64_t sys_fdatasync(uint64_t fd, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
     return sys_fsync(fd, a1, a2, a3, a4, a5);
@@ -672,6 +681,7 @@ void fs_syscalls_init(void) {
     syscall_register(__NR_fcntl, sys_fcntl);
     syscall_register(__NR_fsync, sys_fsync);
     syscall_register(__NR_fdatasync, sys_fdatasync);
+    syscall_register(__NR_sync, sys_sync);
     syscall_register(__NR_ftruncate, sys_ftruncate);
     syscall_register(__NR_getcwd, sys_getcwd);
     syscall_register(__NR_chdir, sys_chdir);

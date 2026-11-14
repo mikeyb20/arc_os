@@ -7,6 +7,7 @@
 
 extern int blk_mem_fail;       /* nonzero: every request fails with -EIO */
 extern int blk_mem_requests;   /* requests that reached the "device" */
+extern int blk_mem_flushes;    /* BLK_OP_FLUSH requests (not in blk_mem_requests) */
 extern int blk_mem_defer;      /* nonzero: requests wait for blk_mem_run */
 
 #define BLK_MEM_POISON 0xAA   /* what a deferred read writes */
