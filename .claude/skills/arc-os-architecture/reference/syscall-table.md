@@ -100,6 +100,7 @@ same PR that changes a syscall (the `add-syscall` skill does this). Since M0-06 
 | 110 | getppid | done | 15 | shell; inventory: musl |
 | 121 | getpgid | done | 32 | shell |
 | 158 | arch_prctl | partial (ARCH_SET_FS / ARCH_GET_FS only) | — | musl TLS; inventory: musl, musl threads, C++, SQLite, zstd, llama.cpp (M0-06) |
+| 162 | sync | done (writes every mapping waiting for write-back and waits, a flusher pass already running included; M1-14) | — | write-back tests, shutdown (M1-14) |
 | 200 | tkill | missing | — | inventory: musl (M1-17) |
 | 202 | futex | missing | — | musl threads; inventory: musl threads, C++, zstd, llama.cpp (M1-16) |
 | 203 | sched_setaffinity | missing | — | P-core pinning (M1) |

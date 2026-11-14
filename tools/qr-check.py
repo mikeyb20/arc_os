@@ -65,7 +65,10 @@ def decode(path):
     with tempfile.TemporaryDirectory() as tmp:
         pgm = os.path.join(tmp, "shot.pgm")
         w, h = ppm_to_pgm(path, pgm)
-        res = subprocess.run(["zbarimg", "--raw", "-q", "-Sbinary", pgm], capture_output=True)
+        # QR only: the other symbologies find false 1D barcodes in a dense
+        # code (an "I2/5" read was appended to a version 30 page)
+        res = subprocess.run(["zbarimg", "--raw", "-q", "-Sdisable", "-Sqrcode.enable", "-Sbinary", pgm],
+                             capture_output=True)
     if res.returncode != 0 or not res.stdout:
         fail(f"{os.path.basename(path)} ({w}x{h}): zbarimg found no code")
     if res.stdout.count(b"ARC1 ") != 1:

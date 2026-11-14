@@ -46,6 +46,10 @@ void devtest_register(void);
  * flush, a lost interrupt, refused requests); logs "[BLKTEST]" lines. */
 void blktest_run(void);
 
+/* Write-back test (M1-14, suite "writeback"): starts a kernel thread that
+ * runs in place of init and ends the run. Returns 1 if it started. */
+int wbtest_start(void);
+
 /* Busy-wait ms milliseconds by the TSC (diagnostics only). */
 void diag_delay_ms(uint32_t ms);
 

@@ -25,6 +25,7 @@
 #include "proc/mutex.h"
 #include "proc/rwsem.h"
 #include "proc/sched.h"
+#include "proc/thread.h"
 #include "proc/waitqueue.h"
 #include "user_access.h"
 #include "arch/x86_64/cpu.h"
@@ -158,17 +159,49 @@ static void arena_init(void) {
 }
 
 void (*vfs_env_alloc_hook)(void);
+uint32_t vfs_env_last_gfp;   /* flags of the last alloc_pages call */
+
+/* As pmm.c's: the watermarks and pressure hook reclaim_init installs */
+static PmmWatermarks env_wm;
+static pmm_pressure_fn env_pressure;
+static uint64_t env_free_lowest = UINT64_MAX;
+
+void pmm_set_watermarks(const PmmWatermarks *w) {
+    env_wm = *w;
+}
+
+void pmm_get_watermarks(PmmWatermarks *out) {
+    *out = env_wm;
+}
+
+void pmm_set_pressure_hook(pmm_pressure_fn fn) {
+    env_pressure = fn;
+}
+
+uint64_t pmm_free_lowest(void) {
+    return env_free_lowest == UINT64_MAX ? pmm_get_free_pages() : env_free_lowest;
+}
 
 struct page *alloc_pages(unsigned order, uint32_t flags) {
     if (vfs_env_alloc_hook != NULL) vfs_env_alloc_hook();
+    vfs_env_last_gfp = flags;
+    struct page *pg = pmm_alloc_block(order, flags);
+    if (env_pressure != NULL && (pg == NULL || pmm_get_free_pages() < env_wm.low)) pg = env_pressure(pg, order, flags);
+    return pg;
+}
+
+int vfs_env_arena_full;
+
+struct page *pmm_alloc_block(unsigned order, uint32_t flags) {
     arena_init();
-    if (order != 0 || should_fail()) return NULL;
+    if (order != 0 || should_fail() || vfs_env_arena_full) return NULL;
     for (uint32_t i = 0; i < ARENA_PAGES; i++) {
         if (page_used[i]) continue;
         page_used[i] = 1;
         live_pages++;
         memset(arena + (size_t)i * PAGE_SIZE, (flags & GFP_ZERO) ? 0 : 0xee, PAGE_SIZE);
         pmm_page_array[i].refcount = 1;
+        if (pmm_get_free_pages() < env_free_lowest) env_free_lowest = pmm_get_free_pages();
         return &pmm_page_array[i];
     }
     return NULL;
@@ -189,6 +222,7 @@ void free_pages(struct page *page, unsigned order) {
     page->flags = 0;
     page_used[pfn] = 0;
     live_pages--;
+    vfs_env_arena_full = 0;   /* a page came back */
 }
 
 uint64_t pmm_get_total_pages(void) {
@@ -267,6 +301,7 @@ static struct {
     uint64_t pgd, virt, phys;
     uint32_t flags;
     int used;
+    int accessed;   /* the CPU's accessed bit: set by a new entry, vfs_env_pte_touch */
 } env_ptes[ENV_PTES];
 int vfs_env_tlb_flushes;
 
@@ -275,6 +310,19 @@ static int env_pte_find(uint64_t pgd, uint64_t virt) {
         if (env_ptes[i].used && env_ptes[i].pgd == pgd && env_ptes[i].virt == virt) return i;
     }
     return -1;
+}
+
+int vmm_test_clear_accessed_in(uint64_t pgd, uint64_t virt, uint64_t phys) {
+    int i = env_pte_find(pgd, virt);
+    if (i < 0 || env_ptes[i].phys != phys) return 0;
+    int was = env_ptes[i].accessed;
+    env_ptes[i].accessed = 0;
+    return was;
+}
+
+void vfs_env_pte_touch(uint64_t pgd, uint64_t virt) {
+    int i = env_pte_find(pgd, virt);
+    if (i >= 0) env_ptes[i].accessed = 1;
 }
 
 int vmm_lookup_in(uint64_t pgd, uint64_t virt, uint64_t *phys) {
@@ -295,6 +343,7 @@ int vmm_map_page_in(uint64_t pgd, uint64_t virt, uint64_t phys, uint32_t flags) 
     env_ptes[i].phys = phys;
     env_ptes[i].flags = flags;
     env_ptes[i].used = 1;
+    env_ptes[i].accessed = 1;   /* the access that faulted it in */
     return 0;
 }
 
@@ -347,6 +396,13 @@ uint64_t mm_zap_range(Mm *mm, uint64_t start, uint64_t end, int flush) {
         }
     }
     return n;
+}
+
+/* As mm.c's: only an entry that maps phys */
+int mm_zap_page_if(Mm *mm, uint64_t addr, uint64_t phys) {
+    int i = env_pte_find(mm->pgd, addr);
+    if (i < 0 || env_ptes[i].phys != phys) return 0;
+    return mm_zap_range(mm, addr, addr + PAGE_SIZE, MM_ZAP_FLUSH) != 0;
 }
 
 /* --- Sleeping locks: single-threaded, so they only check pairing --- */
@@ -504,6 +560,23 @@ int mm_format_maps(Mm *mm, char *buf, int size) {
 /* The host suites run as a scheduled thread: page waits take the sleeping path */
 int sched_can_block(void) {
     return 1;
+}
+
+/* Kernel threads (kswapd, the flusher) never start on the host: the suites
+ * call reclaim and write-back directly */
+Thread *thread_create(thread_entry_t entry, void *arg) {
+    (void)entry;
+    (void)arg;
+    return NULL;
+}
+
+void sched_add_thread(Thread *t) {
+    (void)t;
+}
+
+/* No kernel thread exists: the caller is never kswapd or the flusher */
+Thread *thread_current(void) {
+    return NULL;
 }
 
 int sched_cpu_stats(uint32_t cpu, SchedCpuStats *out) {

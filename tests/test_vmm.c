@@ -23,6 +23,7 @@ static inline void kprintf(const char *fmt, ...) { (void)fmt; }
 #define PTE_USER       (1ULL << 2)
 #define PTE_PWT        (1ULL << 3)
 #define PTE_PCD        (1ULL << 4)
+#define PTE_ACCESSED   (1ULL << 5)
 #define PTE_HUGE       (1ULL << 7)
 #define PTE_PROTNONE   (1ULL << 9)
 #define PTE_NX         (1ULL << 63)
@@ -715,6 +716,26 @@ TEST(ensure_table_creates_on_first_use) {
     return 0;
 }
 
+/* M1-14: reclaim reads and clears the accessed bit of the entry mapping a page */
+TEST(test_clear_accessed_in) {
+    reset_vmm_state();
+    uint64_t pml4 = kernel_pml4_phys;
+    vmm_map_page_in(pml4, 0x400000, 0xA000, VMM_FLAG_USER);
+    uint64_t *pte = walk_to_pt_entry(pml4, 0x400000);
+    ASSERT_TRUE(pte != NULL);
+    *pte &= ~PTE_ACCESSED;
+    ASSERT_EQ(vmm_test_clear_accessed_in(pml4, 0x400000, 0xA000), 0);   /* not used since */
+    *pte |= PTE_ACCESSED;                                                 /* the CPU used it */
+    ASSERT_EQ(vmm_test_clear_accessed_in(pml4, 0x400000, 0xB000), 0);   /* another frame there now */
+    ASSERT_TRUE((*pte & PTE_ACCESSED) != 0);
+    ASSERT_EQ(vmm_test_clear_accessed_in(pml4, 0x400000, 0xA000), 1);
+    ASSERT_TRUE((*pte & PTE_ACCESSED) == 0);
+    ASSERT_EQ(vmm_get_phys_in(pml4, 0x400000), 0xA000);                 /* the entry itself stays */
+    ASSERT_EQ(vmm_test_clear_accessed_in(pml4, 0x401000, 0xA000), 0);   /* no entry */
+    ASSERT_EQ(vmm_test_clear_accessed_in(pml4, 0x40000000, 0xA000), 0); /* no table */
+    return 0;
+}
+
 /* --- Test suite export --- */
 
 TestCase vmm_tests[] = {
@@ -756,6 +777,7 @@ TestCase vmm_tests[] = {
     TEST_ENTRY(init_sets_pml4),
     TEST_ENTRY(remap_after_unmap),
     TEST_ENTRY(ensure_table_creates_on_first_use),
+    TEST_ENTRY(test_clear_accessed_in),
 };
 
 int vmm_test_count = sizeof(vmm_tests) / sizeof(vmm_tests[0]);

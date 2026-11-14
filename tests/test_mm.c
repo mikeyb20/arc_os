@@ -825,6 +825,31 @@ TEST(reap_frees_pages) {
     return 0;
 }
 
+/* Reclaim's unmap (M1-14 review): the entry goes only if it maps the frame
+ * asked for, with the flush before the frame is freed */
+TEST(zap_page_if_checks_the_frame) {
+    Mm *mm = new_mm();
+    mm_map_anon(mm, BASE, PAGE_SIZE, RW, 0, MM_MAP_FIXED, 0, 0);
+    ASSERT_EQ(fill(mm, BASE, 1, 0x5A), 0);
+    uint64_t phys;
+    ASSERT_TRUE(vmm_lookup_in(mm->pgd, BASE, &phys));
+    int flushes = tlb_flushes;
+    ASSERT_EQ(mm_zap_page_if(mm, BASE, phys + PAGE_SIZE), 0); /* another frame: stays */
+    ASSERT_EQ(mm_zap_page_if(mm, BASE + PAGE_SIZE, phys), 0); /* nothing mapped there */
+    ASSERT_EQ(tlb_flushes, flushes);
+    ASSERT_TRUE(page_at(mm, BASE) != NULL && page_at(mm, BASE)[0] == 0x5A);
+    ASSERT_EQ(mm_rss(mm), 1);
+    ASSERT_EQ(mm_zap_page_if(mm, BASE, phys), 1);
+    ASSERT_TRUE(page_at(mm, BASE) == NULL);
+    ASSERT_EQ(tlb_flushes, flushes + 1);
+    ASSERT_EQ(pages_in_use, 0);
+    ASSERT_EQ(frame_errors, 0); /* freed after the flush */
+    ASSERT_EQ(mm_rss(mm), 0);
+    ASSERT_TRUE(clean(mm));
+    mm_put(mm);
+    return 0;
+}
+
 /* CR3 loads only on a change of mm; the loaded-CPU set follows */
 TEST(switch_tracks_cpus) {
     Mm *a = new_mm();
@@ -871,6 +896,7 @@ TestCase mm_tests[] = {
     TEST_ENTRY(setup_vma_overlap_rules),
     TEST_ENTRY(format_maps),
     TEST_ENTRY(reap_frees_pages),
+    TEST_ENTRY(zap_page_if_checks_the_frame),
     TEST_ENTRY(switch_tracks_cpus),
 };
 int mm_test_count = sizeof(mm_tests) / sizeof(mm_tests[0]);

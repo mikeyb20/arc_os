@@ -14,6 +14,7 @@ of that level (a lock without a subkey counts as 0). Give every lock of a nestab
 |---|---|---|---|---|
 | 0 | `LOCK_LEVEL_KERNEL` | big kernel lock | `kernel_lock` (see below) | M1-05, interim |
 | 5 | `LOCK_LEVEL_DEVICE` | sleeping | device model: bus device and driver lists, binding, probe/remove/suspend/resume calls (`drivers/bus.c`) | M1-09 |
+| 6 | `LOCK_LEVEL_WRITEBACK` | sleeping | `wb_mutex` (`mm/writeback.c`): one write-back pass at a time (the flusher, `sync`), held while it writes each listed mapping | M1-14 |
 | 7 | `LOCK_LEVEL_FILE_POS` | sleeping | `File.pos_lock`: the position of a seekable open file (read, write, lseek, getdents) | M1-11 |
 | 8 | `LOCK_LEVEL_RENAME` | sleeping | `rename_mutex` (vfs.c): one rename at a time, held from before either path is resolved | M1-11 |
 | 10 | `LOCK_LEVEL_INODE` | sleeping, read-write | `Inode.lock` (`RwSem`): a directory's entries (lookup shared, changes exclusive), a regular file's data and size (read shared, write and truncate exclusive); a pipe's reader and writer mutexes | M1-11 |
@@ -26,7 +27,7 @@ of that level (a lock without a subkey counts as 0). Give every lock of a nestab
 | 40 | `LOCK_LEVEL_MAPPING` | sleeping | `AddressSpace.map_lock`: the list of VMAs mapping a file (mmap, munmap, fork, truncate's unmap, write-back's write-protect) | M1-12 |
 | 45 | `LOCK_LEVEL_FS_IO` | sleeping | a filesystem's device reads: the FAT32 volume's `io_lock` (cluster buffer, chain cursors) | M1-11 |
 | 50 | `LOCK_LEVEL_PAGE_TABLE` | spinlock | `Mm.pt_lock`, per address space (inside `Mm.lock`); the kernel page tables (`vmm.c`) | M1-05, M1-07 |
-| 59 | `LOCK_LEVEL_PAGE_LRU` | spinlock | the list of evictable page-cache pages (`filemap_drop_clean`, adding and freeing cache pages) | M1-12 |
+| 59 | `LOCK_LEVEL_PAGE_LRU` | spinlock | `lru_lock` (`mm/reclaim.c`): the active and inactive lists of evictable page-cache pages (adding, removing, activating, isolating a batch for reclaim) | M1-12, M1-14 |
 | 60 | `LOCK_LEVEL_PAGE_CACHE` | spinlock | `AddressSpace.tree_lock`: the radix-tree index of one address space (lookup takes a page reference under it) | M1-12 |
 | 62 | `LOCK_LEVEL_MOUNT` | spinlock | adding to the mount table (readers take no lock: entries are published, never removed) | M1-11 |
 | 63 | `LOCK_LEVEL_DCACHE` | spinlock | the dentry cache: hash chains, LRU list, count | M1-11 |
@@ -36,6 +37,7 @@ of that level (a lock without a subkey counts as 0). Give every lock of a nestab
 | 70 | `LOCK_LEVEL_SIGNAL` | spinlock | thread-group and signal lock | M1-16 |
 | 75 | `LOCK_LEVEL_OBJECT` | spinlock | one object's state, the lock handed to `wq_sleep`: pipe, socket, tty, wait4, mutex and semaphore guards | M1-05 |
 | 76 | `LOCK_LEVEL_OBJECT_TABLE` | spinlock | a table looked up under an object lock: the socket table | M1-05 |
+| 78 | `LOCK_LEVEL_WB_LIST` | spinlock, IRQ-safe | `wb_lock` (`mm/writeback.c`): the list of mappings with dirty pages, their `WB_*` flags, the flusher's timer and wake-up, the write-back progress count and the throttled waiters' deadline; taken when a page becomes dirty and in the timer interrupt, so it sits above every lock a thread holds with interrupts on (75–76) | M1-14 |
 | 80 | `LOCK_LEVEL_WAITQUEUE` | spinlock | wait-queue locks | M1-05 |
 | 85 | `LOCK_LEVEL_BLK_QUEUE` | spinlock, IRQ-safe | one disk's request queue (`BlkQueue.lock`): pending and flight lists, tags, every `BlockOps` call; taken in the disk's interrupt and by the timeout tick | M1-10 |
 | 90 | `LOCK_LEVEL_RUNQUEUE` | spinlock, interrupts off | per-CPU run queues; two at once only in CPU-index order (subkey = index + 1) | M1-05 |
@@ -54,6 +56,19 @@ lock. Copies from user memory into a locked page (write) prefault the buffer, co
 locks up to 32 new pages at once for one batch read (`readpages`): they are inserted locked, so no one else
 can hold or wait for them first, and the checker does not record them. The FAT32 `io_lock` (45) sits inside
 the page lock: `readpage` is called with the page locked.
+
+M1-14 adds reclaim and write-back (6, 78; 59 now holds two lists). Reclaim takes pages off a list under
+`lru_lock` with `page_trylock` only (never a waiting lock under a spinlock): a page another thread has locked is
+moved to the list's head and skipped. A taken page is held off the lists, locked and with a reference, while
+reclaim works on it with no spinlock held: its accessed bits (the mapping lock 40, then each mm's `pt_lock`
+50), unmapping with the TLB shootdown, a write (kswapd only), and taking it out of its tree (60). Before its
+lock is released the page is back on a list or out of its tree. `page_trylock` is not recorded by the checker,
+so reclaim's own page locks are invisible to it; nothing reclaim does under one takes a lock below level 35.
+Direct reclaim runs inside `alloc_pages` only for `GFP_RECLAIM` callers holding no spinlock that may sleep
+(page faults, page-cache reads and writes); `GFP_KERNEL` never reclaims. Write-back: `wb_mutex` (6) is
+outermost apart from the kernel lock, so `sync` and the flusher take page locks (30, 35) and filesystem locks
+under it; `wb_lock` (78) is a leaf apart from wait-queue wake-ups (80, 90). A page lock records its level in the page
+(`PG_LOCK_META`), so unlocking a block-device page that left its mapping (unmount, reclaim) ends the right record.
 
 Levels 7, 8, 11, 12, 45 and 62–65 are M1-11's additions (see "VFS locks" below). Levels 75 and 76 are additions to §7's list: the pipe, socket and tty locks are the "condition" locks passed to
 `wq_sleep`, so they sit just above the signal lock and below the wait-queue locks; the socket table is looked up

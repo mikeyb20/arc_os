@@ -79,6 +79,7 @@
 #define __NR_getppid           110
 #define __NR_getpgid           121
 #define __NR_arch_prctl        158
+#define __NR_sync              162
 #define __NR_tkill             200
 #define __NR_futex             202
 #define __NR_sched_setaffinity 203

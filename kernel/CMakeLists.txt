@@ -46,6 +46,8 @@ set(KERNEL_C_SOURCES
     mm/radix.c
     mm/filemap.c
     mm/filemap_mmap.c
+    mm/reclaim.c
+    mm/writeback.c
     mm/vma.c
     mm/mm.c
     mm/fault.c
@@ -131,6 +133,7 @@ set(KERNEL_C_SOURCES
     diag/qr_text.c
     diag/devtest.c
     diag/blktest.c
+    diag/wbtest.c
     diag/qr_screen.c
     diag/qr_mode.c
 )

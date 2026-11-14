@@ -62,6 +62,11 @@ int vmm_get_flags_in(uint64_t pml4, uint64_t virt);
  * its frame. 0 if not. */
 int vmm_lookup_in(uint64_t pml4, uint64_t virt, uint64_t *phys);
 
+/* 1 if virt maps the frame phys (present) and the CPU marked the entry
+ * accessed since the last call; clears the mark. No TLB flush (reclaim's
+ * page aging, M1-14). Under the mm's page-table lock. */
+int vmm_test_clear_accessed_in(uint64_t pml4, uint64_t virt, uint64_t phys);
+
 /* Receives each frame an unmap took out: a user page (table 0) or an emptied
  * page-table page (table 1). It must not free it before the TLB flush. A
  * non-zero return for a user page stops the walk after it (the caller's

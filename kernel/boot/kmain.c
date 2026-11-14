@@ -9,6 +9,8 @@
 #include "mm/slab.h"
 #include "mm/mm.h"
 #include "mm/filemap.h"
+#include "mm/reclaim.h"
+#include "mm/writeback.h"
 #include "boot/bootinfo.h"
 #include "fs/sysmount.h"
 #include "proc/thread.h"
@@ -354,9 +356,11 @@ static void disk_mount(const SysmountPick *pick) {
     }
 }
 
-/* Request timeouts (ADR-0005): checked on the timer tick until M1-06 */
+/* Request timeouts (ADR-0005) and the flusher's timer (M1-14): checked on
+ * the timer tick until M1-06 */
 static void blk_tick(void) {
     blk_expire_all(hal_tsc_read());
+    wb_tick();
 }
 
 /* Driver model (M1-09): IRQ layer, the PCI bus, then the drivers, which bind
@@ -434,6 +438,8 @@ void kmain(void) {
     kmalloc_init();
     mm_init();   /* VMA and address-space caches (M1-07) */
     filemap_init();   /* page-cache radix nodes and mappings (M1-12) */
+    wb_init();        /* write-back list and locks, before any page is dirty (M1-14) */
+    reclaim_init();   /* watermarks; low memory reclaims page-cache pages (M1-14) */
     klog_setup_buffer();
     heap_self_test();
     pmm_self_test();
@@ -459,6 +465,8 @@ void kmain(void) {
     /* Initialize threading — converts boot context to thread 0 */
     thread_init();
     sched_init();
+    reclaim_start();   /* kswapd (M1-14) */
+    wb_start();        /* the flusher (M1-14) */
     proc_init();
     syscall_init();
 
@@ -503,8 +511,11 @@ void kmain(void) {
         testmode_set_end_hook(report_end_budgets);
     }
 
-    /* Launch init process from boot module */
-    if (init_launch(info) != 0) {
+    /* Launch init process from boot module, unless a kernel test runs instead
+     * (suite "writeback", M1-14) */
+    if (wbtest_start()) {
+        kprintf("[TEST] write-back test thread runs in place of init\n");
+    } else if (init_launch(info) != 0) {
         kprintf("[BOOT] WARNING: init_launch failed, falling back to test threads\n");
         Process *pa = proc_create(test_thread_entry, (void *)"THREAD A");
         Process *pb = proc_create(test_thread_entry, (void *)"THREAD B");

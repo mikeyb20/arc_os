@@ -13,6 +13,7 @@
 #include "drivers/blkdev.h"
 #include "fs/ext2.h"
 #include "mm/filemap.h"
+#include "mm/reclaim.h"
 #include "mm/pmm.h"
 #include "uapi/dirent.h"
 #include "uapi/errno.h"
@@ -302,12 +303,12 @@ TEST(reads_medium_file) {
     if (ext2_ready() != 0) return 0;
     static uint8_t buf[300000 + 100];
     for (int i = 0; i < NVOLS; i++) {
-        (void)filemap_drop_clean();
+        (void)reclaim_drop_clean();
         ASSERT_EQ(vfs_env_read_file(P(&vols[i], "medium.bin"), (char *)buf, sizeof(buf)), 300000);
         ASSERT_TRUE(pat_ok(buf, 0, 300000));
         File *f;
         ASSERT_EQ(vfs_open(P(&vols[i], "medium.bin"), O_RDONLY, 0, &f), 0);
-        (void)filemap_drop_clean();
+        (void)reclaim_drop_clean();
         loff_t offs[] = {299999, 12 * 1024 - 3, 268 * 1024 - 1, 49151, 4095, 0, 150001};
         for (size_t k = 0; k < sizeof(offs) / sizeof(offs[0]); k++) {
             IoBuf b = iob_kernel(buf, 9000);
@@ -332,13 +333,13 @@ TEST(reads_sparse_file_to_triple_indirect) {
         File *f;
         ASSERT_EQ(vfs_open(P(&vols[i], "sparse.bin"), O_RDONLY, 0, &f), 0);
         for (size_t k = 0; k < sizeof(data) / sizeof(data[0]); k++) {
-            (void)filemap_drop_clean();
+            (void)reclaim_drop_clean();
             IoBuf b = iob_kernel(buf, 4096);
             ASSERT_EQ(vfs_pread(f, &b, (loff_t)data[k]), 4096);
             ASSERT_TRUE(pat_ok(buf, data[k], 4096));
         }
         for (size_t k = 0; k < sizeof(holes) / sizeof(holes[0]); k++) {
-            (void)filemap_drop_clean();
+            (void)reclaim_drop_clean();
             memset(buf, 0xAA, sizeof(buf));
             IoBuf b = iob_kernel(buf, 4096);
             ASSERT_EQ(vfs_pread(f, &b, (loff_t)holes[k]), 4096);
@@ -352,7 +353,7 @@ TEST(reads_sparse_file_to_triple_indirect) {
         ASSERT_EQ(vfs_pread(f, &b, (loff_t)(5ull << 30) - 100), 100);
         ASSERT_EQ(vfs_pread(f, &b, (loff_t)(5ull << 30)), 0);
         fput(f);
-        (void)filemap_drop_clean();
+        (void)reclaim_drop_clean();
     }
     return 0;
 }
@@ -563,7 +564,7 @@ TEST(failed_mounts_leak_nothing) {
     if (ext2_ready() != 0) return 0;
     int err;
     VfsEnvUsage before, after;
-    (void)filemap_drop_clean();
+    (void)reclaim_drop_clean();
     vfs_env_usage(&before);
     uint32_t bad = 0x0002 | 0x40;
     uint8_t *copy = patched(vols[1].data, vols[1].size, 1024 + 96, &bad, 4);
@@ -581,7 +582,7 @@ TEST(failed_mounts_leak_nothing) {
     ASSERT_TRUE(vfs_env_no_leak(&before, &after));
     int failures = 0;
     for (int n = 1; n <= 64; n++) {
-        (void)filemap_drop_clean();
+        (void)reclaim_drop_clean();
         vfs_env_usage(&before);
         vfs_env_fail_alloc_in(n);
         SuperBlock *sb = ext2_mount(&vols[2].bdev, vols[2].size, "oom", &err);
@@ -589,7 +590,7 @@ TEST(failed_mounts_leak_nothing) {
         if (sb != NULL) break;   /* past the last allocation (this volume stays) */
         failures++;
         ASSERT_TRUE(err == -ENOMEM || err == -EIO);
-        (void)filemap_drop_clean();
+        (void)reclaim_drop_clean();
         vfs_env_usage(&after);
         ASSERT_TRUE(vfs_env_no_leak(&before, &after));
     }
@@ -671,7 +672,7 @@ TEST(reads_through_the_page_cache) {
     static uint8_t buf[65536];
     File *f;
     ASSERT_EQ(vfs_open("/e4k/medium.bin", O_RDONLY, 0, &f), 0);
-    (void)filemap_drop_clean();
+    (void)reclaim_drop_clean();
     FilemapStats s0, s;
     filemap_stats(&s0);
     IoBuf b = iob_kernel(buf, sizeof(buf));
@@ -686,7 +687,7 @@ TEST(reads_through_the_page_cache) {
     ASSERT_EQ(vfs_pread(f, &b, 0), (int64_t)sizeof(buf)); /* cached: no read */
     filemap_stats(&s);
     ASSERT_EQ(s.pgpgin, in);
-    ASSERT_TRUE(filemap_drop_clean() >= cached);
+    ASSERT_TRUE(reclaim_drop_clean() >= cached);
     ASSERT_EQ(filemap_of(f->inode)->nrpages, 0);
     memset(buf, 0, sizeof(buf));
     b = iob_kernel(buf, sizeof(buf));

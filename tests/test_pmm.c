@@ -506,6 +506,70 @@ static int test_compat_contiguous(void) {
     return 0;
 }
 
+/* --- Memory pressure hook (M1-14) --- */
+
+static int hook_calls;
+static struct page *hook_got;
+static unsigned hook_order;
+
+static struct page *count_hook(struct page *got, unsigned order, uint32_t flags) {
+    (void)flags;
+    hook_calls++;
+    hook_got = got;
+    hook_order = order;
+    return got;
+}
+
+static int test_pressure_hook(void) {
+    setup_small();
+    free_lowest = UINT64_MAX;   /* earlier tests ran other maps */
+    uint64_t free0 = pmm_get_free_pages();
+    PmmWatermarks wm = {0, 0, 0};
+    pmm_set_watermarks(&wm);
+    pmm_set_pressure_hook(count_hook);
+    hook_calls = 0;
+    /* Above low: the hook is not called */
+    struct page *a = alloc_pages(0, 0);
+    ASSERT_TRUE(a != NULL);
+    ASSERT_EQ(hook_calls, 0);
+    ASSERT_EQ(pmm_free_lowest(), free0 - 1);
+    /* Below low after the allocation: called with the block it got */
+    wm.min = 1;
+    wm.low = free0;
+    wm.high = free0 + 1;
+    pmm_set_watermarks(&wm);
+    PmmWatermarks back;
+    pmm_get_watermarks(&back);
+    ASSERT_EQ(back.low, free0);
+    struct page *b = alloc_pages(1, 0);
+    ASSERT_TRUE(b != NULL);
+    ASSERT_EQ(hook_calls, 1);
+    ASSERT_TRUE(hook_got == b);
+    ASSERT_EQ(hook_order, 1);
+    ASSERT_EQ(pmm_free_lowest(), free0 - 3);
+    /* A failed allocation: called with NULL, whatever the watermarks */
+    wm.low = 0;
+    pmm_set_watermarks(&wm);
+    ASSERT_TRUE(alloc_pages(PAGE_MAX_ORDER + 1, 0) == NULL);
+    ASSERT_EQ(hook_calls, 2);
+    ASSERT_TRUE(hook_got == NULL);
+    /* pmm_alloc_block never calls it */
+    wm.low = free0 + 10;
+    pmm_set_watermarks(&wm);
+    struct page *c = pmm_alloc_block(0, 0);
+    ASSERT_TRUE(c != NULL);
+    ASSERT_EQ(hook_calls, 2);
+    free_pages(a, 0);
+    free_pages(b, 1);
+    free_pages(c, 0);
+    ASSERT_EQ(pmm_get_free_pages(), free0);
+    ASSERT_EQ(pmm_free_lowest(), free0 - 4);   /* the lowest point stays */
+    pmm_set_pressure_hook(NULL);
+    wm.min = wm.low = wm.high = 0;
+    pmm_set_watermarks(&wm);
+    return 0;
+}
+
 /* --- Test suite export --- */
 
 TestCase pmm_tests[] = {
@@ -531,6 +595,7 @@ TestCase pmm_tests[] = {
     {"refcount_holds_page", test_refcount_holds_page},
     {"compat_single_pages", test_compat_single_pages},
     {"compat_contiguous", test_compat_contiguous},
+    {"pressure_hook", test_pressure_hook},
 };
 
 int pmm_test_count = sizeof(pmm_tests) / sizeof(pmm_tests[0]);

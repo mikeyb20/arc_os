@@ -206,4 +206,9 @@ void mm_rss_account(Mm *mm, int64_t anon, int64_t file);
 #define MM_ZAP_FLUSH_ALWAYS 1   /* flush even if nothing was (stale entries) */
 uint64_t mm_zap_range(Mm *mm, uint64_t start, uint64_t end, int flush);
 
+/* mm_zap_range of the one page at addr, only if its entry maps the frame
+ * phys (checked and removed under one hold of the page-table lock: an entry a
+ * private write replaced with its own copy stays). 1 if it was removed. */
+int mm_zap_page_if(Mm *mm, uint64_t addr, uint64_t phys);
+
 #endif /* ARCHOS_MM_MM_H */
