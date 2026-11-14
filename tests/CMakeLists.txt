@@ -166,15 +166,15 @@ target_include_directories(arc_vfs_host PUBLIC ${CMAKE_SOURCE_DIR}/kernel ${CMAK
 target_compile_options(arc_vfs_host PUBLIC -Wall -Wextra -std=c11 -DARC_HOST_TEST
     -idirafter ${CMAKE_SOURCE_DIR}/kernel/include)
 add_executable(test_vfs_runner vfs_main.c test_harness.c
-    test_vfs.c test_fd.c test_pipe.c test_devfs.c test_procfs.c test_fat32.c test_cred.c test_filemap.c)
+    test_vfs.c test_fd.c test_pipe.c test_devfs.c test_procfs.c test_fat32.c test_ext2.c test_cred.c test_filemap.c)
 target_link_libraries(test_vfs_runner PRIVATE arc_vfs_host)
 # test_filemap's truncate-vs-fault tests run a truncate inside the fault's page_lock call
 target_link_options(test_vfs_runner PRIVATE -Wl,--wrap=page_lock)
 add_test(NAME vfs_tests COMMAND test_vfs_runner)
-foreach(_suite vfs fd pipe devfs procfs fat32 cred filemap)
+foreach(_suite vfs fd pipe devfs procfs fat32 ext2 cred filemap)
     add_test(NAME test_${_suite} COMMAND test_vfs_runner --suite ${_suite})
 endforeach()
-set_tests_properties(vfs_tests test_fat32 PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+set_tests_properties(vfs_tests test_fat32 test_ext2 PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 
 # The FAT32 suite reads tests/fat32_test.img (gitignored); build it first.
 # Needs mkfs.fat (dosfstools) and mtools, both installed by tools/dev-setup.sh.
@@ -184,6 +184,15 @@ set_tests_properties(fat32_test_image PROPERTIES
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     FIXTURES_SETUP fat32_image)
 set_tests_properties(test_fat32 vfs_tests PROPERTIES FIXTURES_REQUIRED fat32_image)
+
+# The ext2 suite reads tests/ext2_{4k,2k,1k}.img (gitignored), made by
+# mkfs.ext2 from e2fsprogs (tools/dev-setup.sh) with no root needed.
+add_test(NAME ext2_test_images
+    COMMAND bash ${CMAKE_SOURCE_DIR}/tools/make-ext2-test-images.sh tests)
+set_tests_properties(ext2_test_images PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    FIXTURES_SETUP ext2_images)
+set_tests_properties(test_ext2 vfs_tests PROPERTIES FIXTURES_REQUIRED ext2_images)
 
 # M0-05: kernel/include/uapi against the host's Linux headers (sizes, offsets,
 # syscall numbers, errno and flag values). Its own program: the two header sets

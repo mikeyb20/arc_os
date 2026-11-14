@@ -535,6 +535,75 @@ TEST(rename_directory_moves_dotdot) {
     return 0;
 }
 
+/* M1-13: the walk starts from an inode, not path text: "..", "." and
+ * repeated slashes are walked; a base directory keeps working after it is
+ * renamed; its path (getcwd) follows the rename; rename's ancestry checks
+ * walk ".." through the tree */
+TEST(walk_from_a_directory_and_rename_ancestry) {
+    vfs_env_setup();
+    ASSERT_EQ(vfs_mkdir("/tmp/wk", 0755), 0);
+    ASSERT_EQ(vfs_mkdir("/tmp/wk/a", 0755), 0);
+    ASSERT_EQ(vfs_mkdir("/tmp/wk/a/b", 0755), 0);
+    ASSERT_EQ(vfs_mkdir("/tmp/wk/a/b/c", 0755), 0);
+    ASSERT_EQ(mkfile("/tmp/wk/a/b/c/f", "hi"), 0);
+    struct stat st, st2;
+    ASSERT_EQ(vfs_stat("/../..//tmp/./wk/a/b/../b/c//f", &st), 0);   /* ".." at "/" stays */
+    ASSERT_EQ(st.st_size, 2);
+    ASSERT_EQ(vfs_stat("/tmp/wk/a/b/c/f/", &st), -ENOTDIR);   /* trailing '/' wants a directory */
+    ASSERT_EQ(vfs_stat("/tmp/wk/a/b/c/f/..", &st), -ENOTDIR);
+    ASSERT_EQ(vfs_stat("/tmp/wk/a/b/c/", &st), 0);
+    ASSERT_EQ(vfs_stat("", &st), -ENOENT);
+
+    PathLoc base;
+    ASSERT_EQ(vfs_resolve("/tmp/wk/a/b", &base), 0);
+    ASSERT_EQ(vfs_stat_at(&base, "c/f", WALK_FOLLOW, &st), 0);
+    ASSERT_EQ(vfs_stat_at(&base, "..", WALK_FOLLOW, &st), 0);
+    ASSERT_EQ(vfs_stat("/tmp/wk/a", &st2), 0);
+    ASSERT_EQ(st.st_ino, st2.st_ino);
+    char path[64];
+    ASSERT_EQ(vfs_path_of(&base, path, sizeof(path)), 11);
+    ASSERT_STR_EQ(path, "/tmp/wk/a/b");
+    ASSERT_EQ(vfs_path_of(&base, path, 11), -ERANGE);   /* no room for the NUL */
+
+    ASSERT_EQ(vfs_rename("/tmp/wk/a", "/tmp/wk/z"), 0);
+    ASSERT_EQ(vfs_stat_at(&base, "c/f", WALK_FOLLOW, &st), 0);   /* the base moved with it */
+    ASSERT_EQ(vfs_path_of(&base, path, sizeof(path)), 11);
+    ASSERT_STR_EQ(path, "/tmp/wk/z/b");
+    ASSERT_EQ(vfs_mkdir_at(&base, "new", 0755), 0);
+    ASSERT_EQ(vfs_stat("/tmp/wk/z/b/new", &st), 0);
+
+    /* Ancestry: a directory into its own subtree is -EINVAL at any depth; over
+     * one of its ancestors -ENOTEMPTY (that ancestor holds it) */
+    ASSERT_EQ(vfs_rename("/tmp/wk/z", "/tmp/wk/z/b/c/x"), -EINVAL);
+    ASSERT_EQ(vfs_rename("/tmp/wk/z/b", "/tmp/wk/z/b/new/x"), -EINVAL);
+    ASSERT_EQ(vfs_rename_at(&base, "c", NULL, "/tmp/wk/z"), -ENOTEMPTY);
+    ASSERT_EQ(vfs_rename("/tmp/wk/z/b/c", "/tmp/wk/c2"), 0);   /* up two levels is fine */
+    ASSERT_EQ(vfs_rename("/tmp/wk/c2", "/tmp/wk/z/b/new/c3"), 0);   /* and down */
+    ASSERT_EQ(vfs_stat_at(&base, "new/c3/f", WALK_FOLLOW, &st), 0);
+
+    /* Dot names */
+    ASSERT_EQ(vfs_mkdir_at(&base, ".", 0755), -EEXIST);
+    ASSERT_EQ(vfs_mkdir_at(&base, "..", 0755), -EEXIST);
+    ASSERT_EQ(vfs_rmdir_at(&base, "."), -EINVAL);
+    ASSERT_EQ(vfs_rmdir_at(&base, ".."), -ENOTEMPTY);
+    ASSERT_EQ(vfs_unlink_at(&base, ".."), -EISDIR);
+    ASSERT_EQ(vfs_rename_at(&base, ".", NULL, "/tmp/wk/q"), -EBUSY);
+    ASSERT_EQ(vfs_unlink_at(&base, "new/c3/f/"), -ENOTDIR);
+
+    /* A removed directory: walks from it find nothing, it has no path */
+    ASSERT_EQ(vfs_unlink("/tmp/wk/z/b/new/c3/f"), 0);
+    ASSERT_EQ(vfs_rmdir("/tmp/wk/z/b/new/c3"), 0);
+    ASSERT_EQ(vfs_rmdir("/tmp/wk/z/b/new"), 0);
+    ASSERT_EQ(vfs_rmdir("/tmp/wk/z/b"), 0);
+    ASSERT_EQ(vfs_path_of(&base, path, sizeof(path)), -ENOENT);
+    ASSERT_EQ(vfs_stat_at(&base, ".", WALK_FOLLOW, &st), 0);   /* itself still stats */
+    ASSERT_EQ(vfs_mkdir_at(&base, "x", 0755), -ENOENT);
+    File *f;
+    ASSERT_EQ(vfs_open_at(&base, "y", O_CREAT | O_WRONLY, 0644, &f), -ENOENT);
+    loc_put(&base);
+    return 0;
+}
+
 /* --- Permissions --- */
 
 TEST(permissions_on_create_and_open) {
@@ -856,6 +925,7 @@ TestCase vfs_tests[] = {
     TEST_ENTRY(rename_within_and_across_directories),
     TEST_ENTRY(rename_replaces_and_type_checks),
     TEST_ENTRY(rename_directory_moves_dotdot),
+    TEST_ENTRY(walk_from_a_directory_and_rename_ancestry),
     TEST_ENTRY(permissions_on_create_and_open),
     TEST_ENTRY(search_permission_on_path),
     TEST_ENTRY(sticky_directory_protects_entries),

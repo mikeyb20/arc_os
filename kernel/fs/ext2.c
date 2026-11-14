@@ -194,7 +194,7 @@ static const FileOps ext2_special_fops;
 static const AddressSpaceOps ext2_aops;
 static const SuperOps ext2_sops;
 
-static Ext2Vol *vol_of(const Inode *inode) {
+static Ext2Vol *ext2_vol(const Inode *inode) {
     return (Ext2Vol *)inode->sb;
 }
 
@@ -252,7 +252,7 @@ static int64_t ind_entry(Ext2Vol *v, uint32_t block, uint32_t idx) {
 /* The disk block holding file block lblk of inode: > 0, 0 for a hole, or
  * -errno. */
 static int64_t ext2_bmap(Inode *inode, uint32_t lblk) {
-    Ext2Vol *v = vol_of(inode);
+    Ext2Vol *v = ext2_vol(inode);
     Ext2Inode *ei = ei_of(inode);
     if (lblk < EXT2_NDIR_BLOCKS) {
         uint32_t b = ei->block[lblk];
@@ -394,7 +394,7 @@ typedef int (*DirVisit)(const Ext2DirEntry *e, uint64_t pos, uint64_t next, void
  * inside a block: entries before it are skipped). The visitor's stop value,
  * 0 at the end, or -errno. A malformed entry is -EIO (and logged). */
 static int dir_walk(Inode *dir, uint64_t pos, DirVisit visit, void *ctx) {
-    Ext2Vol *v = vol_of(dir);
+    Ext2Vol *v = ext2_vol(dir);
     uint32_t bs = v->block_size;
     uint64_t size = (uint64_t)dir->size;
     while (pos < size) {
@@ -452,7 +452,7 @@ static int ext2_lookup(Inode *dir, const char *name, Inode **out) {
     int rc = dir_walk(dir, 0, lookup_visit, &c);
     if (rc < 0) return rc;
     if (rc == 0) return -ENOENT;
-    return ext2_iget(vol_of(dir), c.ino, out);
+    return ext2_iget(ext2_vol(dir), c.ino, out);
 }
 
 /* EXT2_FT_* -> DT_* */
@@ -478,7 +478,7 @@ static int iter_visit(const Ext2DirEntry *e, uint64_t pos, uint64_t next, void *
 static int ext2_iterate(File *file, DirContext *ctx) {
     Inode *dir = file->inode;
     if (ctx->pos < 0 || ctx->pos >= dir->size) return 0;
-    IterCtx c = {ctx, vol_of(dir)->filetype};
+    IterCtx c = {ctx, ext2_vol(dir)->filetype};
     int rc = dir_walk(dir, (uint64_t)ctx->pos, iter_visit, &c);
     if (rc == 0) ctx->pos = dir->size;
     return rc < 0 ? rc : 0;
@@ -487,7 +487,7 @@ static int ext2_iterate(File *file, DirContext *ctx) {
 /* --- Symlinks --- */
 
 static int ext2_readlink(Inode *inode, char *buf, size_t size) {
-    Ext2Vol *v = vol_of(inode);
+    Ext2Vol *v = ext2_vol(inode);
     size_t len = (size_t)inode->size;
     size_t n = len < size ? len : size;
     if (ei_of(inode)->fast_link) {
@@ -508,7 +508,7 @@ static int ext2_readlink(Inode *inode, char *buf, size_t size) {
  * each), the block holding the end copied from the metadata cache with its
  * tail zeroed (see the top). The read ends when its last piece does. */
 static void ext2_start_page(Inode *inode, struct page *pg) {
-    Ext2Vol *v = vol_of(inode);
+    Ext2Vol *v = ext2_vol(inode);
     uint32_t sh = v->block_shift, bs = v->block_size;
     uint32_t bpp = PAGE_SIZE >> sh;
     uint64_t base = (uint64_t)pg->index << PAGE_SHIFT;
@@ -520,6 +520,10 @@ static void ext2_start_page(Inode *inode, struct page *pg) {
         uint64_t at = base + ((uint64_t)i << sh);
         if (at >= size) {
             memset(mem + ((size_t)i << sh), 0, (size_t)(bpp - i) << sh);
+            break;
+        }
+        if ((at >> sh) > UINT32_MAX) {   /* a size no block map reaches (1 KiB blocks) */
+            err = corrupt(v, "file size", size);
             break;
         }
         uint32_t lblk = (uint32_t)(at >> sh);
