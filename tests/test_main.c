@@ -15,6 +15,8 @@ extern TestCase clock_tests[];
 extern int clock_test_count;
 extern TestCase tsc_tests[];
 extern int tsc_test_count;
+extern TestCase power_tests[];
+extern int power_test_count;
 extern TestCase mem_tests[];
 extern int mem_test_count;
 extern TestCase pmm_tests[];
@@ -182,6 +184,7 @@ int main(int argc, char **argv) {
         { "timer",        timer_tests,        &timer_test_count },
         { "clock",        clock_tests,        &clock_test_count },
         { "tsc",          tsc_tests,          &tsc_test_count },
+        { "power",        power_tests,        &power_test_count },
         { "panic",        panic_tests,        &panic_test_count },
         { "smbios",       smbios_tests,       &smbios_test_count },
     };

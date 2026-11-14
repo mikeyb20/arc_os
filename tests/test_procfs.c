@@ -1,12 +1,13 @@
 /* arc_os — /proc on the real procfs.c (M1-11): fixed files, per-process
  * directories made per lookup and freed after, /proc/self, /proc/mounts,
  * partial reads, kmsg permissions, the root listing and
- * /proc/sys/vm/drop_caches. */
+ * /proc/sys/vm/drop_caches, /proc/arc/power (M1-21). */
 
 #include "test_framework.h"
 #include "vfs_env.h"
 
 #include "fs/vfs_internal.h"
+#include "power/power.h"
 #include "uapi/errno.h"
 #include "uapi/fcntl.h"
 
@@ -158,8 +159,9 @@ TEST(root_listing_and_no_new_names) {
     vfs_env_setup();
     Names n;
     ASSERT_EQ(list("/proc", &n), 0);
-    ASSERT_STR_EQ(n.names,
-                  ". .. meminfo uptime cmdline cpuinfo slabinfo kmsg sched_debug mounts interrupts vmstat sys self 1");
+    ASSERT_STR_EQ(
+        n.names,
+        ". .. meminfo uptime cmdline cpuinfo slabinfo kmsg sched_debug mounts interrupts vmstat sys arc self 1");
     File *f;
     ASSERT_EQ(vfs_open("/proc/new", O_CREAT | O_WRONLY, 0644, &f), -EACCES);   /* no create op */
     ASSERT_EQ(vfs_mkdir("/proc/d", 0755), -EPERM);                            /* no mkdir op */
@@ -216,6 +218,74 @@ TEST(drop_caches_empties_the_dentry_cache) {
     return 0;
 }
 
+/* /proc/arc/power (M1-21): one snapshot per pass from offset 0, kept with
+ * the open file; profile names written by root switch profile */
+extern int vfs_env_power_status_calls;
+extern int vfs_env_power_profile;
+
+TEST(arc_power_snapshot_and_profile) {
+    vfs_env_setup();
+    Names n;
+    ASSERT_EQ(list("/proc/arc", &n), 0);
+    ASSERT_STR_EQ(n.names, ". .. power");
+    struct stat st;
+    ASSERT_EQ(vfs_stat("/proc/arc/power", &st), 0);
+    ASSERT_EQ(st.st_mode, S_IFREG | 0644);
+
+    vfs_env_power_status_calls = 0;
+    ASSERT_TRUE(vfs_env_read_file("/proc/arc/power", text, sizeof(text)) > 0);
+    ASSERT_EQ(vfs_env_power_status_calls, 1);
+    ASSERT_TRUE(strncmp(text, "profile: balanced\nprofiles: performance balanced saver\n", 55) == 0);
+    ASSERT_TRUE(strstr(text, "\nhwp: absent (firmware P-states)\n") != NULL);
+    ASSERT_TRUE(strstr(text, "\nidle: hlt HLT (no MWAIT)\n") != NULL);
+    ASSERT_TRUE(strstr(text, "\nenergy_j: package 1.000005\n") != NULL);
+    ASSERT_TRUE(strstr(text, "\navg_w: package 1.500 (over 2000 ms since the previous read)\n") != NULL);
+    ASSERT_TRUE(strstr(text, "\ncpu0 HLT 123456789 42\n") != NULL);
+
+    /* 7 bytes at a time: one snapshot, the same text shape */
+    File *f;
+    ASSERT_EQ(vfs_open("/proc/arc/power", O_RDONLY, 0, &f), 0);
+    char parts[1024];
+    int64_t got = 0;
+    for (;;) {
+        IoBuf b = iob_kernel(parts + got, 7);
+        int64_t r = vfs_read(f, &b);
+        ASSERT_TRUE(r >= 0);
+        if (r == 0) break;
+        got += r;
+    }
+    parts[got] = '\0';
+    ASSERT_EQ(vfs_env_power_status_calls, 2);
+    ASSERT_TRUE(strstr(parts, "energy_j: package 2.000005\n") != NULL);
+    ASSERT_EQ((size_t)got, strlen(text));
+    /* Back to offset 0: a fresh snapshot */
+    ASSERT_EQ(vfs_llseek(f, 0, SEEK_SET), 0);
+    IoBuf b = iob_kernel(parts, sizeof(parts) - 1);
+    ASSERT_TRUE(vfs_read(f, &b) > 0);
+    ASSERT_EQ(vfs_env_power_status_calls, 3);
+    fput(f);
+
+    ASSERT_EQ(write_str("/proc/arc/power", "saver\n"), 6);
+    ASSERT_EQ(vfs_env_power_profile, POWER_PROFILE_SAVER);
+    ASSERT_EQ(write_str("/proc/arc/power", "turbo"), -EINVAL);
+    ASSERT_EQ(write_str("/proc/arc/power", "performance-and-more"), -EINVAL);
+    ASSERT_EQ(vfs_env_power_profile, POWER_PROFILE_SAVER);
+    vfs_env_as(1000, 1000);
+    ASSERT_EQ(write_str("/proc/arc/power", "balanced"), -EACCES);
+    ASSERT_TRUE(vfs_env_read_file("/proc/arc/power", text, sizeof(text)) > 0); /* anyone reads */
+    vfs_env_as(0, 0);
+    ASSERT_EQ(write_str("/proc/arc/power", "balanced"), 8);
+    ASSERT_EQ(vfs_env_power_profile, POWER_PROFILE_BALANCED);
+
+    /* Opening and closing frees the kept snapshot */
+    VfsEnvUsage before, after;
+    vfs_env_usage(&before);
+    for (int i = 0; i < 5; i++) ASSERT_TRUE(vfs_env_read_file("/proc/arc/power", text, sizeof(text)) > 0);
+    vfs_env_usage(&after);
+    ASSERT_TRUE(vfs_env_no_leak(&before, &after));
+    return 0;
+}
+
 TestCase procfs_tests[] = {
     TEST_ENTRY(meminfo_fields),
     TEST_ENTRY(fixed_files),
@@ -226,5 +296,6 @@ TestCase procfs_tests[] = {
     TEST_ENTRY(pid_entries_are_freed),
     TEST_ENTRY(root_listing_and_no_new_names),
     TEST_ENTRY(drop_caches_empties_the_dentry_cache),
+    TEST_ENTRY(arc_power_snapshot_and_profile),
 };
 int procfs_test_count = sizeof(procfs_tests) / sizeof(procfs_tests[0]);

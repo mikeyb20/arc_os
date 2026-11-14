@@ -44,6 +44,7 @@ of that level (a lock without a subkey counts as 0). Give every lock of a nestab
 | 100 | `LOCK_LEVEL_SLAB` | spinlock | one slab cache | M1-02b |
 | 101 | `LOCK_LEVEL_BUDDY` | spinlock | buddy allocator (the only lock taken under a slab lock) | M1-02 |
 | 105 | `LOCK_LEVEL_TIMER` | spinlock, IRQ-safe | one CPU's timer queue (`kernel/time/timer.c`): its tree and earliest expiry (a timer's running count is atomic); taken under the run-queue (90) and block-queue (85) locks; only the log under it | M1-06 |
+| 107 | `LOCK_LEVEL_POWER` | spinlock, IRQ-safe | RAPL energy samples (`arch/x86_64/power.c`, `rapl_lock`; the idle path only tries it) and the power profile with its last-read snapshot (`kernel/power/power.c`, `status_lock`); leaves, never nested in each other | M1-21 |
 | 109 | `LOCK_LEVEL_LOG` | spinlock | kernel log ring: `kprintf` works under any lock | M1-04 |
 
 M1-12 adds the page-cache levels (30, 40, 59, 60; `kernel/mm/filemap.h`). A page fault holds the mm lock
@@ -147,6 +148,17 @@ the process list (the process row, M1-16); the tty line discipline (the TTY row)
   release may free the pipe).
 - Directory changes re-check `I_DEAD` under the parent's lock (create, mkdir, rename's target), since the
   directory may be removed between resolving and locking it.
+
+## Power (M1-21)
+
+- The idle loop sleeps with interrupts off and no lock held (`power_idle`, from `sched_idle_loop`). Its per-CPU
+  residency counters are written only by their CPU, inside a sequence count (`PerCpu.idle_seq`) that readers on
+  other CPUs retry on; no lock.
+- A profile change takes `status_lock` (107) and, under it, writes this CPU's `IA32_HWP_REQUEST` and sends every
+  other CPU a reschedule IPI. Each CPU applies the new EPP itself, in the IPI handler or before its next sleep,
+  with interrupts off and no lock (`power_cpu_sync`), so no cross-CPU call waits for anyone.
+- `rapl_lock` (107) is taken with interrupts off by readers of `/proc/arc/power` and tried (never waited for) by
+  an idle CPU at most once a second.
 
 ## Block layer locks (M1-10)
 

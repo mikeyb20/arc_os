@@ -51,6 +51,7 @@
 #define LOCK_LEVEL_SLAB          100   /* one slab cache */
 #define LOCK_LEVEL_BUDDY         101   /* buddy allocator (the only lock taken under a slab lock) */
 #define LOCK_LEVEL_TIMER         105   /* IRQ-safe: one CPU's timer queue, under run-queue and disk locks (M1-06) */
+#define LOCK_LEVEL_POWER         107   /* IRQ-safe leaf: RAPL samples, the profile's last-read snapshot (M1-21) */
 #define LOCK_LEVEL_LOG           109   /* kernel log ring: kprintf works under any lock */
 
 /* Spinlocks one CPU may hold at once (deepest nesting seen is about 5) */

@@ -140,7 +140,7 @@ Start every block with `/os/implement-block <ID>`. These rules are what keep ses
 | M1-18 | AF_UNIX sockets + poll/select | M | R | KB | M1-06, M1-11 | Echo server over a UNIX socket; poll with timeouts | todo |
 | M1-19 | Hardening: SMEP, SMAP, NX, W^X | M | D | KA | M1-07 | All suites pass with SMEP/SMAP/NX on | todo |
 | M1-20 | Syscall gap fill | M | R | KB | M1-11, M1-17, M1-18 | Every inventory syscall done, or `-ENOSYS` with a reason | todo |
-| M1-21 | Power base: idle states, HWP, RAPL | M | R | KB | M1-06 | MWAIT/HLT idle; EPP by profile; energy readout | todo |
+| M1-21 | Power base: idle states, HWP, RAPL | M | R | KB | M1-06 | MWAIT/HLT idle; EPP by profile; energy readout | review (#46) |
 | M1-22 | M1 done-test + second hardware boot | M | R | K+H | M1-04, M1-08, M1-15, M1-19, M1-20, M1-21 | 10 GB ext2 mmap test passes; both machines reach the shell | todo |
 
 ### M2 — Toolchain and first LLM (specs from M2-00a and M2-00)

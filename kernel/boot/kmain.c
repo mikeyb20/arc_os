@@ -13,6 +13,7 @@
 #include "proc/process.h"
 #include "proc/init.h"
 #include "time/clock.h"
+#include "power/power.h"
 #include "drivers/acpi.h"
 #include "drivers/pci.h"
 #include "drivers/virtio_blk.h"
@@ -466,6 +467,7 @@ void kmain(void) {
      * interrupt can arm a timer; no periodic tick anywhere */
     serial_puts("[BOOT] stage: clocks\n");
     clock_init();
+    power_init();   /* idle states, HWP on every CPU, RAPL (M1-21) */
 
     serial_puts("[BOOT] stage: devices\n");
     devices_setup();

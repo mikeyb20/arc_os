@@ -31,6 +31,7 @@
 #include "arch/x86_64/smp.h"     /* APIC switch-over, AP start */
 #include "arch/x86_64/tsc.h"     /* TSC frequency (M1-04), clocksource (M1-06) */
 #include "arch/x86_64/rtc.h"     /* CMOS real-time clock (M1-06) */
+#include "arch/x86_64/power.h"   /* idle states, HWP, RAPL (M1-21) */
 #include "arch/x86_64/debug_exit.h"   /* hal_debug_exit: QEMU test-mode exit */
 #include "arch/x86_64/ipi.h"     /* halt the other CPUs on panic */
 #include "arch/x86_64/lapic.h"   /* APIC mode for the boot report */
@@ -199,7 +200,60 @@ static inline int hal_cpu_core_kind(uint32_t cpu) {
 /* Idle: enable interrupts and halt until the next one, in one step (no
  * wakeup can slip in between). Returns with interrupts on. */
 static inline void hal_idle_wait(void) {
-    __asm__ volatile("sti; hlt" ::: "memory");
+    cpu_sti_hlt();
+}
+
+/* --- Power (M1-21, arch/x86_64/power.h) --- */
+
+/* Probe idle states, HWP and RAPL; turn HWP on every CPU with this EPP.
+ * idle_override: POWER_IDLE_AUTO, _HLT or _C1 (arc.idle). Boot, after the
+ * timer queues. */
+static inline void hal_power_init(int idle_override, uint8_t epp) {
+    power_hw_init(idle_override, epp);
+}
+
+/* What hal_power_init found (idle states, HWP, RAPL). */
+static inline const PowerHwInfo *hal_power_info(void) {
+    return power_hw_info();
+}
+
+/* The idle loop's sleep: interrupts off on entry, on at return; the state
+ * is chosen for sleep_ns (time to the next timer, UINT64_MAX: none); a
+ * write to wake's cache line may end it early. */
+static inline void hal_idle_enter(uint64_t sleep_ns, const volatile void *wake) {
+    power_idle_enter(sleep_ns, wake);
+}
+
+/* Idle residency (ns) and entries per state of CPU index cpu; -1 if offline. */
+static inline int hal_idle_stats(uint32_t cpu, uint64_t ns[POWER_IDLE_MAX], uint64_t entries[POWER_IDLE_MAX]) {
+    return power_idle_stats(cpu, ns, entries);
+}
+
+/* Energy preference every CPU requests (0 performance .. 255 power). */
+static inline void hal_power_set_epp(uint8_t epp) {
+    power_set_epp(epp);
+}
+
+/* Energy per RAPL domain in microjoules; returns the domains present. */
+static inline uint32_t hal_power_energy(uint64_t uj[POWER_RAPL_DOMAINS]) {
+    return power_energy_read(uj);
+}
+
+/* The safe MSR path, for the self-test: IA32_APIC_BASE (always there) read
+ * with rdmsr_safe and plainly, and an MSR no CPU has read with rdmsr_safe
+ * (a real CPU or KVM raises #GP: -EIO; QEMU's TCG reads unknown MSRs as 0). */
+#define HAL_MSR_MISSING 0xDEADBEEFu
+typedef struct {
+    int present_rc;
+    uint64_t present_safe, present_plain;
+    int missing_rc;
+    uint64_t missing_val;
+} HalMsrCheck;
+static inline void hal_msr_check(HalMsrCheck *c) {
+    c->present_rc = rdmsr_safe(MSR_APIC_BASE, &c->present_safe);
+    c->present_plain = rdmsr(MSR_APIC_BASE);
+    c->missing_val = 0x5A5A5A5A5A5A5A5AULL;   /* the fixup must clear it */
+    c->missing_rc = rdmsr_safe(HAL_MSR_MISSING, &c->missing_val);
 }
 
 /* Ask CPU index cpu to reschedule (an IPI; it runs sched_preempt). */

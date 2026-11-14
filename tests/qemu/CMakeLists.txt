@@ -88,6 +88,25 @@ add_test(NAME qemu.time.deadline COMMAND ${_qemu_test} --suite time --name time-
     --expect "timetest: idle: 0 failures")
 set_tests_properties(qemu.time.deadline PROPERTIES SKIP_RETURN_CODE 77)
 
+# Power base (M1-21): the idle loop on HLT (QEMU's CPUs have no MWAIT, HWP or
+# RAPL, so the kernel must say so and carry on), /proc/arc/power and
+# switching profiles; arc.idle=c1 on a CPU without MWAIT stays on HLT
+add_test(NAME qemu.power COMMAND ${_qemu_test} --suite power --module powertest --cmdline arc.idle=c1
+    --expect "\\[POWER\\] Idle: HLT \\(no MWAIT\\)"
+    --expect "\\[POWER\\] HWP: not present"
+    --expect "\\[POWER\\] RAPL: not present"
+    --expect "\\[POWER\\] Profile saver \\(EPP 192\\)"
+    --expect "powertest: profile: 0 failures"
+    --expect "powertest: chunks: 0 failures"
+    --expect "powertest: idle: 0 failures")
+# A missing MSR read through rdmsr_safe: KVM raises #GP like a real CPU and the
+# exception-table fixup turns it into -EIO (TCG reads unknown MSRs as 0, so
+# only KVM, i.e. CI, can show the fixup)
+add_test(NAME qemu.power.msr COMMAND ${_qemu_test} --suite diag --name power-msr --cmdline arc.selftest=1
+    --require-kvm --timeout 120
+    --expect "\\[REPORT\\] SELFTEST PASS msr +missing MSR 0xdeadbeef: -EIO \\(#GP caught\\)")
+set_tests_properties(qemu.power.msr PROPERTIES SKIP_RETURN_CODE 77)
+
 # CPU floor (M1-01): on a CPU without AVX2 the kernel says why and stops
 add_test(NAME qemu.cpufloor COMMAND ${_qemu_test} --suite cpufloor --cpu Nehalem
     --expect-exit 0x7e --timeout 60
@@ -202,7 +221,9 @@ add_test(NAME qemu.diag COMMAND ${_qemu_test} --suite diag
     --expect "\\[REPORT\\] BENCH context switch"
     --expect "\\[REPORT\\] SELFTEST PASS tscsync +TSCs in step on 4 CPUs"
     --expect "\\[REPORT\\] SELFTEST PASS timer +.* timer due in 50 ms fired"
-    --expect "ARC_TEST DONE pass=8 fail=0")
+    --expect "\\[REPORT\\] Power +idle (hlt|mwait) "
+    --expect "\\[REPORT\\] SELFTEST PASS msr +missing MSR 0xdeadbeef"
+    --expect "ARC_TEST DONE pass=9 fail=0")
 
 # QR screens (M1-04c): arc.qr=1 draws the report as ARC1 QR pages. The harness
 # takes a QEMU screendump on each "ARC_QR shown" line and presses a key for the
@@ -312,7 +333,7 @@ add_test(NAME qemu.pagecache COMMAND ${_qemu_test} --suite pagecache --module pc
 set_tests_properties(qemu.smoke qemu.mem.buddy qemu.mem.cap qemu.userland qemu.abi qemu.musl qemu.fpu qemu.cpufloor
     qemu.smp.xapic qemu.smp.x2apic qemu.sched qemu.lockorder qemu.selftest.fail qemu.selftest.panic
     qemu.panic.fault qemu.diag qemu.mm qemu.mm.oom qemu.vfs qemu.pagecache qemu.qr.report qemu.qr.log qemu.qr.panic
-    qemu.devices qemu.devices.intx qemu.time qemu.time.fallback qemu.time.deadline
+    qemu.devices qemu.devices.intx qemu.time qemu.time.fallback qemu.time.deadline qemu.power qemu.power.msr
     PROPERTIES LABELS qemu TIMEOUT 180 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     FIXTURES_SETUP qemu_logs)
 set_tests_properties(qemu.mm.oom qemu.pagecache PROPERTIES TIMEOUT 320)

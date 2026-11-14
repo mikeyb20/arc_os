@@ -25,6 +25,7 @@
 #include "proc/rwsem.h"
 #include "proc/sched.h"
 #include "proc/waitqueue.h"
+#include "power/power.h"
 #include "user_access.h"
 #include "arch/x86_64/cpu.h"
 #include "uapi/errno.h"
@@ -565,6 +566,60 @@ int ksnprintf(char *buf, size_t size, const char *fmt, ...) {
     int n = vsnprintf(buf, size, fmt, ap);
     va_end(ap);
     return n;
+}
+
+int kvsnprintf(char *buf, size_t size, const char *fmt, va_list ap) {
+    return vsnprintf(buf, size, fmt, ap);
+}
+
+/* --- Power (M1-21): /proc/arc/power over a fake status that moves on at
+ * every call, so a test can tell one snapshot from two --- */
+int vfs_env_power_status_calls;
+int vfs_env_power_profile = POWER_PROFILE_BALANCED;
+
+void power_status(PowerStatus *st) {
+    vfs_env_power_status_calls++;
+    memset(st, 0, sizeof(*st));
+    st->profile = (PowerProfile)vfs_env_power_profile;
+    st->epp = 0x80;
+    st->idle_method = "hlt";
+    st->idle_why = "no MWAIT";
+    st->idle_count = 1;
+    st->idle_names[0] = "HLT";
+    st->energy_mask = 1;
+    st->energy_uj[0] = 1000000ULL * (uint64_t)vfs_env_power_status_calls + 5;
+    st->avg_mw[0] = 1500;
+    st->interval_ns = 2000000000ULL;
+}
+
+const char *power_profile_name(PowerProfile p) {
+    static const char *const names[] = {"performance", "balanced", "saver"};
+    return (unsigned)p < 3 ? names[p] : "?";
+}
+
+int power_profile_parse(const char *s, size_t len, PowerProfile *out) {
+    static const char *const names[] = {"performance", "balanced", "saver"};
+    while (len > 0 && (s[len - 1] == '\n' || s[len - 1] == ' ')) len--;
+    for (int i = 0; i < 3; i++) {
+        if (strlen(names[i]) == len && strncmp(s, names[i], len) == 0) {
+            *out = (PowerProfile)i;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+int power_set_profile(PowerProfile p) {
+    vfs_env_power_profile = (int)p;
+    return 0;
+}
+
+int power_idle_stats(uint32_t cpu, uint64_t ns[2], uint64_t entries[2]) {
+    if (cpu > 0) return -1;
+    ns[0] = 123456789;
+    entries[0] = 42;
+    ns[1] = entries[1] = 0;
+    return 0;
 }
 
 /* --- Terminal --- */
