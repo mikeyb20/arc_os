@@ -105,7 +105,6 @@ set(KERNEL_C_SOURCES
     fs/fat32.c
     fs/devfs.c
     fs/procfs.c
-    fs/path.c
     fs/passwd.c
     net/net_util.c
     net/netif.c

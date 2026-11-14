@@ -67,8 +67,6 @@ extern TestCase signal_tests[];
 extern int signal_test_count;
 extern TestCase waitqueue_tests[];
 extern int waitqueue_test_count;
-extern TestCase path_tests[];
-extern int path_test_count;
 extern TestCase exec_argv_tests[];
 extern int exec_argv_test_count;
 extern TestCase net_util_tests[];
@@ -144,7 +142,6 @@ int main(int argc, char **argv) {
         { "shell",        shell_tests,        &shell_test_count },
         { "signal",       signal_tests,       &signal_test_count },
         { "waitqueue",    waitqueue_tests,    &waitqueue_test_count },
-        { "path",         path_tests,         &path_test_count },
         { "exec_argv",    exec_argv_tests,    &exec_argv_test_count },
         { "net_util",     net_util_tests,     &net_util_test_count },
         { "ethernet",     ethernet_tests,     &ethernet_test_count },

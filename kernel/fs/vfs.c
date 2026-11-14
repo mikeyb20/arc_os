@@ -1,13 +1,22 @@
 /* arc_os — mounts and names: path walk, mount table, namespace operations
- * (vfs.h, M1-11)
+ * (vfs.h, M1-11; the walk rework is M1-13)
  *
- * Owns: the mount table, the one path walk every path goes through, and the
- * operations that change directories (create, mkdir, unlink, rmdir, rename)
- * and attributes (setattr), with their permission checks.
+ * Owns: the mount table, the one path walk every path goes through, the
+ * working directory of a process, and the operations that change directories
+ * (create, mkdir, unlink, rmdir, rename) and attributes (setattr), with their
+ * permission checks.
  *
- * Paths are absolute and normalized (path_normalize): no ".", "..", or
- * repeated slashes. ".." is therefore resolved on the path text, which is
- * exact while no filesystem has symlinks (see M1-11 Notes).
+ * The walk takes a path as the caller gave it and a starting point (PathLoc:
+ * a mount and an inode; the cwd or a dirfd's directory, "/" for absolute
+ * paths). "." stays, ".." steps to the parent the filesystem names (its ".."
+ * entry), and at the root of a mount first back to the directory the mount
+ * covers; at "/" it stays. A symlink met before the last component, or as the
+ * last one when the caller follows (or a '/' follows it), is replaced by its
+ * target: the rest of the path is appended to the target, and an absolute
+ * target restarts at "/". At most VFS_MAX_LINKS links per walk (-ELOOP).
+ * Nothing is resolved on the path text, so "a/link/.." is the link target's
+ * parent, as on Linux, and a cwd or dirfd keeps working when its directory is
+ * renamed.
  *
  * Mounts: entry 0 is "/". Every other entry places a filesystem root, or any
  * directory (a bind-style subtree mount, ADR-0009), over an existing
@@ -17,25 +26,29 @@
  * at the table only when a component has I_MOUNTPOINT.
  *
  * Locks (docs/kernel/locking.md): a walk holds no lock across components
- * (each lookup takes its directory shared, or none on a dcache hit). Changes
- * take the parent exclusive (LOCK_LEVEL_INODE); rmdir then the victim
- * (LOCK_LEVEL_INODE_CHILD). Rename takes rename_mutex *before* it resolves
- * either path, then the two parents ancestor first (LOCK_LEVEL_INODE,
- * LOCK_LEVEL_INODE_2), then a replaced directory (LOCK_LEVEL_INODE_CHILD).
- * Only rename moves a directory, so while rename_mutex is held the tree's
- * shape can't change under the resolved paths: their text gives the exact
- * ancestry (one mount, no hard links to directories), which orders the two
- * parent locks and rejects moving a directory into itself. Every path that
- * holds two inode locks takes an ancestor before its descendant, so they
+ * (each lookup takes its directory shared, or none on a dcache hit; ".."
+ * takes it shared too, never cached). Changes take the parent exclusive
+ * (LOCK_LEVEL_INODE); rmdir then the victim (LOCK_LEVEL_INODE_CHILD). Rename
+ * takes rename_mutex *before* it resolves either path, then works out
+ * whether one parent is an ancestor of the other by walking ".." up from
+ * each (only rename moves a directory, so the answer holds until it is done),
+ * then locks the two parents ancestor first (LOCK_LEVEL_INODE,
+ * LOCK_LEVEL_INODE_2), a moved directory (LOCK_LEVEL_INODE_CHILD: its ".."
+ * changes) and a replaced directory (LOCK_LEVEL_INODE_CHILD_2). Every path
+ * that holds two inode locks takes an ancestor before its descendant, so they
  * can't cycle.
  *
- * Cost: a walk is O(components): a dcache probe each, a filesystem lookup on
- * a miss, a scan of at most VFS_MAX_MOUNTS entries at a mount point. */
+ * Cost: a walk is O(components + links followed): a dcache probe each, a
+ * filesystem lookup on a miss or for "..", a scan of at most VFS_MAX_MOUNTS
+ * entries at a mount point. Symlink targets go through one 1 KiB buffer
+ * allocated only when a walk meets a link. Rename adds O(depth) ".." lookups;
+ * vfs_path_of (getcwd) O(depth x entries). */
 
 #include "fs/vfs_internal.h"
 #include "fs/path.h"
 #include "lib/string.h"
 #include "lib/mem.h"
+#include "mm/kmalloc.h"
 #include "proc/process.h"
 
 #define VFS_MAX_MOUNTS   16
@@ -45,6 +58,7 @@
 struct Mount {
     Inode *root;       /* what the mount shows (a reference) */
     Inode *covered;    /* the directory it hides (a reference); NULL for "/" */
+    Mount *parent;     /* the mount `covered` is in; NULL for "/" */
     SuperBlock *sb;
     char path[MOUNT_PATH_MAX];
     char source[MOUNT_SOURCE_MAX];
@@ -117,6 +131,7 @@ static int mount_add(const char *path, const char *source, PathLoc *target, Inod
         Mount *m = &mounts[n];
         m->root = igrab(root);
         m->covered = igrab(target->inode);
+        m->parent = target->mnt;
         m->sb = sb;
         strncpy(m->path, path, MOUNT_PATH_MAX - 1);
         m->path[MOUNT_PATH_MAX - 1] = '\0';
@@ -135,6 +150,7 @@ int vfs_mount_root(SuperBlock *sb, const char *source) {
     Mount *m = &mounts[0];
     m->root = igrab(sb->root);
     m->covered = NULL;
+    m->parent = NULL;
     m->sb = sb;
     strncpy(m->path, "/", MOUNT_PATH_MAX - 1);
     strncpy(m->source, source != NULL ? source : "none", MOUNT_SOURCE_MAX - 1);
@@ -189,8 +205,13 @@ int vfs_format_mounts(char *buf, int size) {
 
 /* --- Lookup --- */
 
-/* Find name in dir, which the caller has locked (shared or exclusive).
- * 0 with *out (a reference), or -ENOENT. */
+/* "." or ".." */
+static int is_dots(const char *name) {
+    return name[0] == '.' && (name[1] == '\0' || (name[1] == '.' && name[2] == '\0'));
+}
+
+/* Find name (never "." or "..") in dir, which the caller has locked (shared
+ * or exclusive). 0 with *out (a reference), or -ENOENT. */
 static int lookup_locked(Inode *dir, const char *name, Inode **out) {
     if (dir->flags & I_DEAD) return -ENOENT;
     int cacheable = !(dir->sb->flags & SB_NO_DCACHE);
@@ -217,6 +238,39 @@ static int lookup_one(Inode *dir, const char *name, Inode **out) {
     return err;
 }
 
+/* dir's parent inside its filesystem (its ".." entry), never cached: a
+ * rename changes it. 0 with *out (a reference), -ENOENT for a removed
+ * directory. */
+static int lookup_dotdot(Inode *dir, Inode **out) {
+    rwsem_down_read(&dir->lock);
+    int err;
+    if (dir->flags & I_DEAD)
+        err = -ENOENT;
+    else if (dir->iop == NULL || dir->iop->lookup == NULL)
+        err = -ENOTDIR;
+    else
+        err = dir->iop->lookup(dir, "..", out);
+    rwsem_up_read(&dir->lock);
+    return err;
+}
+
+int vfs_mount_subdir(const char *target, SuperBlock *sb, const char *name, const char *source) {
+    if (sb == NULL || sb->root == NULL || is_dots(name)) return -EINVAL;
+    Inode *dir;
+    int err = lookup_one(sb->root, name, &dir);
+    if (err != 0) return err;
+    PathLoc to;
+    err = vfs_resolve(target, &to);
+    if (err == 0) {
+        err = mount_add(target, source, &to, dir, sb);
+        loc_put(&to);
+    }
+    iput(dir);
+    return err;
+}
+
+/* --- The walk --- */
+
 /* Copy the component at *p into comp and step past it. Returns its length,
  * 0 at the end of the path, or -ENAMETOOLONG. */
 static int next_component(const char **p, char comp[VFS_NAME_MAX + 1]) {
@@ -237,72 +291,272 @@ static int at_end(const char *p) {
     return *p == '\0';
 }
 
-/* Walk path from "/". With last != NULL, stop before the final component and
- * copy it there (-EINVAL if the path has none). */
-static int walk_path(const char *path, PathLoc *out, char *last) {
-    if (path == NULL || path[0] != '/') return -EINVAL;
-    uint32_t n = mounts_published();
-    if (n == 0) return -ENOENT;
-    PathLoc loc = {&mounts[0], igrab(mounts[0].root)};
-    char comp[VFS_NAME_MAX + 1];
-    const char *p = path;
-    int err = 0;
-    for (;;) {
-        int len = next_component(&p, comp);
-        if (len < 0) {
-            err = len;
-            break;
-        }
-        if (len == 0) {
-            if (last != NULL) err = -EINVAL;   /* "/" has no final component */
-            break;
-        }
-        if (len == 2 && comp[0] == '.' && comp[1] == '.') {
-            err = -EINVAL;   /* not normalized */
-            break;
-        }
-        if (!S_ISDIR(loc.inode->mode)) {
-            err = -ENOTDIR;
-            break;
-        }
-        if (last != NULL && at_end(p)) {
-            memcpy(last, comp, (size_t)len + 1);
-            break;
-        }
-        if (len == 1 && comp[0] == '.') continue;
-        err = inode_permission(loc.inode, X_OK);
-        if (err != 0) break;
-        Inode *child;
-        err = lookup_one(loc.inode, comp, &child);
-        if (err != 0) break;
-        iput(loc.inode);
-        loc.inode = child;
-        cross_mounts(&loc);
+static void loc_root(PathLoc *loc) {
+    loc->mnt = &mounts[0];
+    loc->inode = igrab(mounts[0].root);
+}
+
+/* Step loc to its parent (".."). At the root of a mount, first back to the
+ * directory the mount covers (as often as needed); at "/" it stays. A parent
+ * that is itself a mount point shows what is mounted there, as on Linux. */
+static int step_up(PathLoc *loc) {
+    while (loc->inode == loc->mnt->root) {
+        if (loc->mnt->parent == NULL) return 0;   /* "/" */
+        Inode *covered = igrab(loc->mnt->covered);
+        iput(loc->inode);
+        loc->inode = covered;
+        loc->mnt = loc->mnt->parent;
     }
-    if (err != 0) {
-        iput(loc.inode);
-        return err;
-    }
-    *out = loc;
+    Inode *parent;
+    int err = lookup_dotdot(loc->inode, &parent);
+    if (err != 0) return err;
+    iput(loc->inode);
+    loc->inode = parent;
+    cross_mounts(loc);
     return 0;
 }
 
-int vfs_resolve(const char *path, PathLoc *out) {
-    return walk_path(path, out, NULL);
+typedef struct Walk {
+    PathLoc loc;
+    char *buf;         /* 2 x PATH_MAX for symlink targets, allocated at the first link */
+    int cur;           /* the half of buf the path is in now */
+    uint32_t links;    /* followed so far */
+} Walk;
+
+/* Read link's target into buf (PATH_MAX bytes) with tail appended (the rest
+ * of the path being walked, and buf must not hold it). Length, or -errno. */
+static int link_target(Inode *link, char *buf, const char *tail) {
+    if (link->iop == NULL || link->iop->readlink == NULL) return -EIO;
+    int n = link->iop->readlink(link, buf, PATH_MAX);
+    if (n < 0) return n;
+    if (n == 0) return -ENOENT;   /* an empty target names nothing (Linux) */
+    size_t rest = strlen(tail);
+    if ((size_t)n + rest >= PATH_MAX) return -ENAMETOOLONG;
+    memcpy(buf + n, tail, rest + 1);
+    return n;
 }
 
-int vfs_resolve_parent(const char *path, PathLoc *dir, char name[VFS_NAME_MAX + 1]) {
-    int err = walk_path(path, dir, name);
-    if (err == 0 && !S_ISDIR(dir->inode->mode)) {
-        loc_put(dir);
-        return -ENOTDIR;
+/* Replace the symlink just met by its target: the walk goes on with the
+ * target followed by the rest of the path (*p); an absolute target restarts
+ * at "/". */
+static int walk_follow(Walk *w, Inode *link, const char **p) {
+    if (++w->links > VFS_MAX_LINKS) return -ELOOP;
+    if (w->buf == NULL) {
+        w->buf = kmalloc(2 * PATH_MAX, 0);
+        if (w->buf == NULL) return -ENOMEM;
     }
-    return err;
+    char *dst = w->buf + (w->cur ^ 1) * PATH_MAX;   /* *p may be in the other half */
+    int n = link_target(link, dst, *p);
+    if (n < 0) return n;
+    w->cur ^= 1;
+    *p = dst;
+    if (dst[0] == '/') {
+        iput(w->loc.inode);
+        loc_root(&w->loc);
+    }
+    return 0;
+}
+
+/* Walk path from w->loc. With last != NULL, stop before the last component
+ * and copy it there (-EINVAL if the path has none: "/"), *slash saying
+ * whether a '/' followed it. */
+static int walk_run(Walk *w, const char *path, uint32_t flags, char *last, int *slash) {
+    char comp[VFS_NAME_MAX + 1];
+    const char *p = path;
+    for (;;) {
+        int len = next_component(&p, comp);
+        if (len < 0) return len;
+        if (len == 0) return last != NULL ? -EINVAL : 0;
+        if (!S_ISDIR(w->loc.inode->mode)) return -ENOTDIR;
+        int final = at_end(p);
+        int trailing = final && *p == '/';
+        if (final && last != NULL) {
+            memcpy(last, comp, (size_t)len + 1);
+            *slash = trailing;
+            return 0;
+        }
+        int err = inode_permission(w->loc.inode, X_OK);
+        if (err != 0) return err;
+        if (len == 1 && comp[0] == '.') continue;
+        if (len == 2 && comp[0] == '.' && comp[1] == '.') {
+            err = step_up(&w->loc);
+            if (err != 0) return err;
+            continue;
+        }
+        Inode *child;
+        err = lookup_one(w->loc.inode, comp, &child);
+        if (err != 0) return err;
+        if (S_ISLNK(child->mode) && (!final || trailing || (flags & WALK_FOLLOW))) {
+            err = walk_follow(w, child, &p);
+            iput(child);
+            if (err != 0) return err;
+            continue;
+        }
+        iput(w->loc.inode);
+        w->loc.inode = child;
+        cross_mounts(&w->loc);
+        if (final) return trailing && !S_ISDIR(w->loc.inode->mode) ? -ENOTDIR : 0;
+    }
+}
+
+static int path_walk(const PathLoc *base, const char *path, uint32_t flags, PathLoc *out, char *last, int *slash) {
+    if (path == NULL) return -EINVAL;
+    if (path[0] == '\0') return -ENOENT;
+    if (mounts_published() == 0) return -ENOENT;
+    Walk w = {.buf = NULL, .cur = 0, .links = 0};
+    if (path[0] != '/' && base != NULL && base->inode != NULL)
+        loc_get(&w.loc, base);
+    else
+        loc_root(&w.loc);
+    int err = walk_run(&w, path, flags, last, slash);
+    kfree(w.buf);
+    if (err != 0) {
+        iput(w.loc.inode);
+        return err;
+    }
+    *out = w.loc;
+    return 0;
+}
+
+int vfs_resolve_at(const PathLoc *base, const char *path, uint32_t flags, PathLoc *out) {
+    return path_walk(base, path, flags, out, NULL, NULL);
+}
+
+int vfs_resolve_parent_at(const PathLoc *base, const char *path, PathLoc *dir, char name[VFS_NAME_MAX + 1],
+                          int *slash) {
+    return path_walk(base, path, 0, dir, name, slash);
+}
+
+void loc_get(PathLoc *dst, const PathLoc *src) {
+    dst->mnt = src->mnt;
+    dst->inode = src->inode != NULL ? igrab(src->inode) : NULL;
 }
 
 void loc_put(PathLoc *loc) {
     if (loc->inode != NULL) iput(loc->inode);
     loc->inode = NULL;
+}
+
+/* --- Working directory (see vfs.h) --- */
+
+void vfs_cwd_get(PathLoc *out) {
+    Process *p = proc_current();
+    if (p != NULL && p->cwd != NULL) {
+        out->mnt = p->cwd_mnt;
+        out->inode = igrab(p->cwd);
+    } else if (mounts_published() != 0) {
+        loc_root(out);
+    } else {
+        out->mnt = NULL;
+        out->inode = NULL;
+    }
+}
+
+void vfs_cwd_set(PathLoc *loc) {
+    Process *p = proc_current();
+    if (p == NULL) {
+        loc_put(loc);
+        return;
+    }
+    Inode *old = p->cwd;
+    p->cwd = loc->inode;
+    p->cwd_mnt = loc->mnt;
+    loc->inode = NULL;
+    if (old != NULL) iput(old);
+}
+
+void vfs_cwd_copy(Process *child, const Process *parent) {
+    child->cwd = parent->cwd != NULL ? igrab(parent->cwd) : NULL;
+    child->cwd_mnt = parent->cwd_mnt;
+}
+
+void vfs_cwd_release(Process *p) {
+    Inode *cwd = p->cwd;
+    p->cwd = NULL;
+    p->cwd_mnt = NULL;
+    if (cwd != NULL) iput(cwd);
+}
+
+/* --- Names of directories (getcwd) --- */
+
+typedef struct {
+    DirContext ctx;   /* first: the actor gets &ctx */
+    uint64_t ino;
+    char *name;
+    int found;
+} FindIno;
+
+static int find_ino_actor(DirContext *ctx, const char *name, size_t len, uint64_t ino, uint8_t dtype, loff_t next) {
+    (void)dtype, (void)next;
+    FindIno *f = (FindIno *)ctx;
+    if (ino != f->ino || len > VFS_NAME_MAX) return 0;
+    if ((len == 1 && name[0] == '.') || (len == 2 && name[0] == '.' && name[1] == '.')) return 0;
+    memcpy(f->name, name, len);
+    f->name[len] = '\0';
+    f->found = 1;
+    return 1;   /* stop */
+}
+
+/* The name under which dir lists the inode numbered ino. O(entries). */
+static int name_in_dir(Inode *dir, uint64_t ino, char name[VFS_NAME_MAX + 1]) {
+    File *f = file_new(igrab(dir), dir->fop, O_RDONLY | O_DIRECTORY);
+    if (f == NULL) {
+        iput(dir);
+        return -ENOMEM;
+    }
+    int err = 0;
+    if (f->fop != NULL && f->fop->open != NULL) {
+        err = f->fop->open(dir, f);
+        if (err != 0) f->fop = NULL;   /* open failed: no release */
+    }
+    FindIno fi = {.ctx = {.actor = find_ino_actor}, .ino = ino, .name = name};
+    if (err == 0) err = vfs_iterate(f, &fi.ctx);
+    fput(f);
+    if (err == 0 && !fi.found) err = -ENOENT;
+    return err;
+}
+
+/* Put s (n bytes) in front of buf[*pos..]. -ERANGE when it doesn't fit. */
+static int prepend(char *buf, size_t *pos, const char *s, size_t n) {
+    if (n > *pos) return -ERANGE;
+    *pos -= n;
+    memcpy(buf + *pos, s, n);
+    return 0;
+}
+
+int vfs_path_of(const PathLoc *loc, char *buf, size_t size) {
+    if (size < 2) return -ERANGE;
+    size_t pos = size - 1;
+    buf[pos] = '\0';
+    PathLoc cur;
+    loc_get(&cur, loc);
+    int err = 0;
+    char name[VFS_NAME_MAX + 1];
+    for (uint32_t depth = 0; err == 0; depth++) {
+        if (depth > PATH_MAX / 2) {
+            err = -ENAMETOOLONG;   /* a loop of ".." entries (a corrupt disk) */
+            break;
+        }
+        if (cur.inode == cur.mnt->root) {
+            /* "/", or a mount: its path is where the rest comes from */
+            if (cur.mnt->parent != NULL) err = prepend(buf, &pos, cur.mnt->path, strlen(cur.mnt->path));
+            break;
+        }
+        Inode *parent;
+        err = lookup_dotdot(cur.inode, &parent);
+        if (err != 0) break;
+        err = name_in_dir(parent, cur.inode->ino, name);
+        if (err == 0) err = prepend(buf, &pos, name, strlen(name));
+        if (err == 0) err = prepend(buf, &pos, "/", 1);
+        iput(cur.inode);
+        cur.inode = parent;
+    }
+    loc_put(&cur);
+    if (err == 0 && pos == size - 1) err = prepend(buf, &pos, "/", 1);
+    if (err != 0) return err;
+    size_t len = size - 1 - pos;
+    memmove(buf, buf + pos, len + 1);
+    return (int)len;
 }
 
 /* --- Changing directories --- */
@@ -337,47 +591,97 @@ int vfs_create_locked(Inode *dir, const char *name, uint32_t mode, Inode **out) 
     return err;
 }
 
-int vfs_open_locate(const char *path, uint32_t flags, uint32_t mode, PathLoc *out, int *created) {
-    *created = 0;
-    if (!(flags & O_CREAT)) return vfs_resolve(path, out);
-
-    char name[VFS_NAME_MAX + 1];
-    PathLoc dir;
-    int err = vfs_resolve_parent(path, &dir, name);
-    if (err == -EINVAL) return -EISDIR;   /* "/" */
+/* One try of open(O_CREAT) in dir: the existing entry, or a new file. */
+static int open_create_in(Inode *dir, const char *name, int slash, uint32_t flags, uint32_t mode, Inode **inode,
+                          int *created) {
+    int err = inode_permission(dir, X_OK);
     if (err != 0) return err;
-    err = inode_permission(dir.inode, X_OK);
-    if (err != 0) {
-        loc_put(&dir);
-        return err;
-    }
-    Inode *inode = NULL;
-    rwsem_down_write(&dir.inode->lock);
-    err = lookup_locked(dir.inode, name, &inode);
+    rwsem_down_write(&dir->lock);
+    err = lookup_locked(dir, name, inode);
     if (err == 0 && (flags & O_EXCL)) {
-        iput(inode);
+        iput(*inode);
         err = -EEXIST;
     } else if (err == -ENOENT) {
-        err = vfs_create_locked(dir.inode, name, mode, &inode);
+        err = slash ? -EISDIR : vfs_create_locked(dir, name, mode, inode);
         *created = (err == 0);
     }
-    rwsem_up_write(&dir.inode->lock);
-    if (err == 0) {
-        out->mnt = dir.mnt;
-        out->inode = inode;
-        cross_mounts(out);
-    }
-    loc_put(&dir);
+    rwsem_up_write(&dir->lock);
     return err;
 }
 
-int vfs_mkdir(const char *path, uint32_t mode) {
+int vfs_open_locate(const PathLoc *base, const char *path, uint32_t flags, uint32_t mode, PathLoc *out,
+                    int *created) {
+    *created = 0;
+    if (!(flags & O_CREAT)) {
+        int err = vfs_resolve_at(base, path, (flags & O_NOFOLLOW) ? 0 : WALK_FOLLOW, out);
+        if (err == 0 && S_ISLNK(out->inode->mode)) {   /* O_NOFOLLOW on a symlink */
+            loc_put(out);
+            err = -ELOOP;
+        }
+        return err;
+    }
+    /* O_CREAT: the last component is looked up (or made) under its
+     * directory's lock; a symlink there is followed by trying again with its
+     * target, relative to that directory (a dangling one creates its target,
+     * as on Linux) */
+    PathLoc at = {NULL, NULL};   /* the directory of the last link followed */
+    char *target = NULL;
+    const char *p = path;
+    int err;
+    for (uint32_t links = 0;; links++) {
+        char name[VFS_NAME_MAX + 1];
+        int slash;
+        PathLoc dir;
+        err = vfs_resolve_parent_at(at.inode != NULL ? &at : base, p, &dir, name, &slash);
+        if (err == -EINVAL) err = -EISDIR;   /* "/" */
+        if (err != 0) break;
+        Inode *inode = NULL;
+        err = is_dots(name) ? -EISDIR : open_create_in(dir.inode, name, slash, flags, mode, &inode, created);
+        if (err == 0 && S_ISLNK(inode->mode)) {
+            if ((flags & O_NOFOLLOW) || links >= VFS_MAX_LINKS) {
+                err = -ELOOP;
+            } else if (target == NULL && (target = kmalloc(PATH_MAX, 0)) == NULL) {
+                err = -ENOMEM;
+            } else {
+                err = link_target(inode, target, slash ? "/" : "");
+                if (err > 0) {
+                    iput(inode);
+                    loc_put(&at);
+                    at = dir;   /* the next try starts in the link's directory */
+                    p = target;
+                    continue;
+                }
+            }
+            iput(inode);
+        } else if (err == 0) {
+            out->mnt = dir.mnt;
+            out->inode = inode;
+            cross_mounts(out);
+            if (S_ISDIR(out->inode->mode) || (slash && !S_ISDIR(out->inode->mode))) {
+                err = S_ISDIR(out->inode->mode) ? -EISDIR : -ENOTDIR;   /* Linux: O_CREAT on a directory */
+                loc_put(out);
+            }
+        }
+        loc_put(&dir);
+        break;
+    }
+    loc_put(&at);
+    kfree(target);
+    return err;
+}
+
+int vfs_mkdir_at(const PathLoc *base, const char *path, uint32_t mode) {
     char name[VFS_NAME_MAX + 1];
+    int slash;
     PathLoc dir;
-    int err = vfs_resolve_parent(path, &dir, name);
+    int err = vfs_resolve_parent_at(base, path, &dir, name, &slash);
     if (err == -EINVAL) err = -EEXIST;   /* "/" */
     if (err != 0) return err;
     Inode *d = dir.inode;
+    if (is_dots(name)) {
+        loc_put(&dir);
+        return -EEXIST;
+    }
     rwsem_down_write(&d->lock);
     Inode *existing;
     err = lookup_locked(d, name, &existing);
@@ -400,18 +704,24 @@ int vfs_mkdir(const char *path, uint32_t mode) {
     return err;
 }
 
-int vfs_unlink(const char *path) {
+int vfs_unlink_at(const PathLoc *base, const char *path) {
     char name[VFS_NAME_MAX + 1];
+    int slash;
     PathLoc dir;
-    int err = vfs_resolve_parent(path, &dir, name);
+    int err = vfs_resolve_parent_at(base, path, &dir, name, &slash);
     if (err == -EINVAL) err = -EISDIR;   /* "/" */
     if (err != 0) return err;
+    if (is_dots(name)) {
+        loc_put(&dir);
+        return -EISDIR;
+    }
     Inode *d = dir.inode;
     Cred c = current_cred();
     Inode *victim = NULL;
     rwsem_down_write(&d->lock);
     err = lookup_locked(d, name, &victim);
     if (err == 0 && S_ISDIR(victim->mode)) err = -EISDIR;
+    if (err == 0 && slash) err = -ENOTDIR;   /* "file/" (Linux) */
     if (err == 0) err = may_change_dir(d);
     if (err == 0) err = may_delete(d, victim, &c);
     if (err == 0 && (d->iop == NULL || d->iop->unlink == NULL)) err = -EPERM;
@@ -442,12 +752,17 @@ static int busy(const Inode *inode) {
     return (inode->flags & I_MOUNTPOINT) || (S_ISDIR(inode->mode) && is_mount_root(inode));
 }
 
-int vfs_rmdir(const char *path) {
+int vfs_rmdir_at(const PathLoc *base, const char *path) {
     char name[VFS_NAME_MAX + 1];
+    int slash;
     PathLoc dir;
-    int err = vfs_resolve_parent(path, &dir, name);
+    int err = vfs_resolve_parent_at(base, path, &dir, name, &slash);
     if (err == -EINVAL) err = -EBUSY;   /* "/" */
     if (err != 0) return err;
+    if (is_dots(name)) {   /* Linux: "." is -EINVAL, ".." -ENOTEMPTY */
+        loc_put(&dir);
+        return name[1] == '\0' ? -EINVAL : -ENOTEMPTY;
+    }
     Inode *d = dir.inode;
     Cred c = current_cred();
     Inode *victim = NULL;
@@ -474,24 +789,33 @@ int vfs_rmdir(const char *path) {
     return err;
 }
 
-/* Is a (a normalized path) an ancestor of b, or b itself when or_self? */
-static int path_is_ancestor(const char *a, const char *b, int or_self) {
-    size_t n = strlen(a);
-    if (strncmp(a, b, n) != 0) return 0;
-    if (b[n] == '\0') return or_self;
-    return n == 1 || b[n] == '/';   /* a is "/" or a whole leading component */
-}
-
-/* Parent part of a normalized path ("/a/b" -> "/a", "/a" -> "/") into out. */
-static void parent_path(const char *path, char out[PATH_MAX]) {
-    strncpy(out, path, PATH_MAX - 1);
-    out[PATH_MAX - 1] = '\0';
-    char *slash = out;
-    for (char *s = out; *s != '\0'; s++) {
-        if (*s == '/') slash = s;
+/* Is anc a proper ancestor of the directory desc, both in mount m? Walks
+ * ".." up from desc (with rename_mutex held no directory moves meanwhile).
+ * 1 with *below = anc's child on the way (a reference), 0, or -errno. */
+static int find_ancestor(Mount *m, Inode *anc, Inode *desc, Inode **below) {
+    Inode *cur = igrab(desc), *prev = NULL;
+    int err = 0;
+    for (uint32_t depth = 0; cur != anc && cur != m->root; depth++) {
+        Inode *up;
+        if (depth > PATH_MAX / 2) {
+            err = -ELOOP;   /* a loop of ".." entries (a corrupt disk) */
+            break;
+        }
+        err = lookup_dotdot(cur, &up);
+        if (err != 0) break;
+        if (prev != NULL) iput(prev);
+        prev = cur;
+        cur = up;
+        if (cur == prev) break;   /* a filesystem root that is its own parent */
     }
-    if (slash == out) slash++;   /* keep the root's "/" */
-    *slash = '\0';
+    int found = err == 0 && cur == anc && prev != NULL;
+    if (found) {
+        *below = prev;
+        prev = NULL;
+    }
+    if (prev != NULL) iput(prev);
+    iput(cur);
+    return err != 0 ? err : found;
 }
 
 /* Checks on a rename's source and replaced entry, both directories locked. */
@@ -508,43 +832,47 @@ static int rename_check(Inode *odir, Inode *src, Inode *ndir, Inode *victim, con
     return may_delete(ndir, victim, c);
 }
 
-/* Lock the two parents of a rename, ancestor first. */
-static void rename_lock_dirs(Inode *odir, const char *opath, Inode *ndir, const char *npath) {
-    if (odir == ndir) {
-        rwsem_down_write(&odir->lock);
-        return;
-    }
-    char op[PATH_MAX], np[PATH_MAX];
-    parent_path(opath, op);
-    parent_path(npath, np);
-    Inode *first = path_is_ancestor(np, op, 0) ? ndir : odir;
-    rwsem_down_write(&first->lock);
-    rwsem_down_write_nested(&(first == odir ? ndir : odir)->lock, LOCK_LEVEL_INODE_2);
-}
+/* How the two parents of a rename relate: below_o is odir's child on the way
+ * down to ndir when odir is an ancestor of ndir; below_n likewise for ndir
+ * over odir (each a reference, or NULL). */
+typedef struct {
+    Inode *below_o;
+    Inode *below_n;
+} RenameAncestry;
 
-/* The rename itself, the parents resolved and in the same mount. */
-static int rename_in(PathLoc *od, const char *oname, PathLoc *nd, const char *nname, const char *oldpath,
-                     const char *newpath) {
-    Inode *odir = od->inode, *ndir = nd->inode;
+/* The rename itself, the parents resolved and in the same mount, and their
+ * ancestry known: lock, look up, check, call the filesystem. */
+static int rename_locked(Inode *odir, const char *oname, Inode *ndir, const char *nname, int slash,
+                         const RenameAncestry *a) {
     Cred c = current_cred();
     Inode *src = NULL, *victim = NULL;
-    rename_lock_dirs(odir, oldpath, ndir, newpath);
+    if (odir == ndir) {
+        rwsem_down_write(&odir->lock);
+    } else {
+        Inode *first = a->below_n != NULL ? ndir : odir;   /* the ancestor, else either */
+        rwsem_down_write(&first->lock);
+        rwsem_down_write_nested(&(first == odir ? ndir : odir)->lock, LOCK_LEVEL_INODE_2);
+    }
     int err = lookup_locked(odir, oname, &src);
     if (err == 0) {
         err = lookup_locked(ndir, nname, &victim);
         if (err == -ENOENT) err = 0;
     }
-    int locked_victim = 0;
+    int locked_src = 0, locked_victim = 0;
     if (err == 0 && src != victim) {
-        /* A target that contains the source (rename("/a/b/c", "/a/b")) is
-         * not empty; it is one of the parents we hold, so decide on the path
-         * text instead of locking it again */
-        if (path_is_ancestor(newpath, oldpath, 0)) err = -ENOTEMPTY;
-        if (err == 0 && S_ISDIR(src->mode) && path_is_ancestor(oldpath, newpath, 0)) err = -EINVAL; /* into itself */
+        if (slash && !S_ISDIR(src->mode)) err = -ENOTDIR;
+        /* The target contains the source (rename("/a/b/c", "/a/b")): not empty */
+        if (err == 0 && victim != NULL && victim == a->below_n) err = -ENOTEMPTY;
+        /* A directory into itself or below it */
+        if (err == 0 && S_ISDIR(src->mode) && src == a->below_o) err = -EINVAL;
         if (err == 0) err = rename_check(odir, src, ndir, victim, &c);
         if (err == 0 && (odir->iop == NULL || odir->iop->rename == NULL)) err = -EPERM;
+        if (err == 0 && S_ISDIR(src->mode)) {   /* its ".." changes */
+            rwsem_down_write_nested(&src->lock, LOCK_LEVEL_INODE_CHILD);
+            locked_src = 1;
+        }
         if (err == 0 && victim != NULL && S_ISDIR(victim->mode)) {
-            rwsem_down_write_nested(&victim->lock, LOCK_LEVEL_INODE_CHILD);
+            rwsem_down_write_nested(&victim->lock, LOCK_LEVEL_INODE_CHILD_2);
             locked_victim = 1;
         }
         if (err == 0) {
@@ -560,6 +888,7 @@ static int rename_in(PathLoc *od, const char *oname, PathLoc *nd, const char *nn
         }
     }
     if (locked_victim) rwsem_up_write(&victim->lock);
+    if (locked_src) rwsem_up_write(&src->lock);
     if (ndir != odir) rwsem_up_write(&ndir->lock);
     rwsem_up_write(&odir->lock);
     if (src != NULL) iput(src);
@@ -567,20 +896,41 @@ static int rename_in(PathLoc *od, const char *oname, PathLoc *nd, const char *nn
     return err;
 }
 
-int vfs_rename(const char *oldpath, const char *newpath) {
+/* The rename, the parents resolved and in the same mount. */
+static int rename_in(PathLoc *od, const char *oname, PathLoc *nd, const char *nname, int slash) {
+    Inode *odir = od->inode, *ndir = nd->inode;
+    if (odir->sb->flags & SB_RDONLY) return -EROFS;   /* before any ".." walk reads the disk */
+    RenameAncestry a = {NULL, NULL};
+    int err = 0;
+    if (odir != ndir) {
+        err = find_ancestor(od->mnt, odir, ndir, &a.below_o);
+        if (err == 0) err = find_ancestor(nd->mnt, ndir, odir, &a.below_n);
+        if (err > 0) err = 0;
+    }
+    if (err == 0) err = rename_locked(odir, oname, ndir, nname, slash, &a);
+    if (a.below_o != NULL) iput(a.below_o);
+    if (a.below_n != NULL) iput(a.below_n);
+    return err;
+}
+
+int vfs_rename_at(const PathLoc *obase, const char *oldpath, const PathLoc *nbase, const char *newpath) {
     char oname[VFS_NAME_MAX + 1], nname[VFS_NAME_MAX + 1];
+    int oslash, nslash;
     PathLoc od, nd;
     mutex_lock(&rename_mutex);   /* before resolving: no directory moves until we're done */
-    int err = vfs_resolve_parent(oldpath, &od, oname);
+    int err = vfs_resolve_parent_at(obase, oldpath, &od, oname, &oslash);
     if (err == -EINVAL) err = -EBUSY; /* "/" */
     if (err != 0) {
         mutex_unlock(&rename_mutex);
         return err;
     }
-    err = vfs_resolve_parent(newpath, &nd, nname);
+    err = vfs_resolve_parent_at(nbase, newpath, &nd, nname, &nslash);
     if (err == -EINVAL) err = -EBUSY;
     if (err == 0) {
-        err = od.mnt != nd.mnt ? -EXDEV : rename_in(&od, oname, &nd, nname, oldpath, newpath);
+        if (is_dots(oname) || is_dots(nname))
+            err = -EBUSY;   /* Linux */
+        else
+            err = od.mnt != nd.mnt ? -EXDEV : rename_in(&od, oname, &nd, nname, oslash || nslash);
         loc_put(&nd);
     }
     loc_put(&od);
@@ -588,13 +938,29 @@ int vfs_rename(const char *oldpath, const char *newpath) {
     return err;
 }
 
-int vfs_stat(const char *path, struct stat *st) {
+int vfs_stat_at(const PathLoc *base, const char *path, uint32_t flags, struct stat *st) {
     PathLoc loc;
-    int err = vfs_resolve(path, &loc);
+    int err = vfs_resolve_at(base, path, flags, &loc);
     if (err != 0) return err;
     vfs_fill_stat(loc.inode, st);
     loc_put(&loc);
     return 0;
+}
+
+int vfs_readlink_at(const PathLoc *base, const char *path, char *buf, size_t size) {
+    PathLoc loc;
+    int err = vfs_resolve_at(base, path, 0, &loc);
+    if (err != 0) return err;
+    Inode *inode = loc.inode;
+    if (!S_ISLNK(inode->mode))
+        err = -EINVAL;
+    else if (inode->iop == NULL || inode->iop->readlink == NULL)
+        err = -EIO;
+    else
+        err = inode->iop->readlink(inode, buf, size);
+    if (err > (int)size) err = (int)size;   /* readlink(2) cuts the target */
+    loc_put(&loc);
+    return err;
 }
 
 int vfs_setattr(Inode *inode, const InodeAttr *attr) {

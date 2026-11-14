@@ -14,8 +14,10 @@
  *   mounts      a filesystem's root, or any directory of one (a bind-style
  *               subtree mount), placed over an existing directory (vfs.c)
  *
- * Paths reaching this layer are absolute and normalized (path_normalize in
- * path.c resolves ".", ".." and the cwd); no filesystem parses paths.
+ * Paths reaching this layer are as the caller gave them: absolute, or
+ * relative to a starting directory (the cwd or a dirfd, as a PathLoc). The
+ * walk (vfs.c) resolves ".", ".." (through the filesystem's own ".." entry,
+ * and across mounts) and symlinks (M1-13); no filesystem parses paths.
  *
  * Locks, outermost first (docs/kernel/locking.md):
  *   File.pos_lock     sleeping, LOCK_LEVEL_FILE_POS: position of a seekable file
@@ -149,7 +151,9 @@ typedef struct InodeAttr {
 /* Called with the directory (dir, odir) locked: shared for lookup,
  * exclusive for the rest. Names are one NUL-terminated component. */
 typedef struct InodeOps {
-    /* Find name: 0 with *out (a new reference), or -ENOENT. */
+    /* Find name: 0 with *out (a new reference), or -ENOENT. ".." gives the
+     * parent directory (the walk asks only below a filesystem's root, and
+     * only for a directory that isn't I_DEAD); "." is never asked. */
     int (*lookup)(Inode *dir, const char *name, Inode **out);
     /* New regular file; mode includes S_IFREG. *out gets a reference.
      * NULL: -EACCES (as Linux's open(O_CREAT) on such a directory). */
@@ -164,8 +168,11 @@ typedef struct InodeOps {
      * nname doesn't exist; an empty directory is locked). Both directories
      * are on this filesystem and locked; the VFS has checked the types. */
     int (*rename)(Inode *odir, const char *oname, Inode *src, Inode *ndir, const char *nname, Inode *victim);
-    /* NULL: -EPERM (no filesystem has symlinks yet; see M1-11 Notes) */
+    /* NULL: -EPERM (no filesystem creates symlinks yet: ext2 write is M1-15) */
     int (*symlink)(Inode *dir, const char *name, const char *target);
+    /* A symlink's target: up to size bytes into buf (kernel memory, no NUL).
+     * Returns the target's full length (may exceed size: the caller sees it
+     * was cut) or -errno. Called with no lock held. */
     int (*readlink)(Inode *inode, char *buf, size_t size);
     /* Called with inode locked exclusive. NULL: mode/uid/gid are copied and
      * a size change gets -EPERM. */
@@ -266,7 +273,7 @@ struct File {
     loff_t pos;           /* under pos_lock */
     uint32_t flags;       /* O_ACCMODE and the status flags (O_APPEND, O_NONBLOCK) */
     uint32_t refcount;    /* atomic: fd-table entries and callers in flight */
-    char *path;           /* directories: the absolute path opened (openat bases) */
+    Mount *mnt;           /* the mount the file was opened in (a dirfd's walks start here); NULL for pipes */
     void *priv;           /* the file's own data (socket index, ...) */
     FileRa ra;            /* readahead (racy by design: a hint shared by the File's users) */
     Mutex pos_lock;       /* LOCK_LEVEL_FILE_POS */
@@ -328,11 +335,18 @@ void vfs_fill_stat(const Inode *inode, struct stat *st);
  * Mounts and names (vfs.c). Paths are absolute and normalized.
  * ------------------------------------------------------------------------- */
 
-/* Where a path ended: the mount it is in and the inode (a reference). */
+/* Where a path ended: the mount it is in and the inode (a reference). A
+ * walk starts at one too (the cwd, a dirfd). */
 typedef struct PathLoc {
     Mount *mnt;
     Inode *inode;
 } PathLoc;
+
+/* Walk flags */
+#define WALK_FOLLOW 0x1   /* follow a symlink in the last component (stat, open; not lstat, O_NOFOLLOW) */
+
+/* Symlinks one walk may follow (Linux MAXSYMLINKS); one more is -ELOOP */
+#define VFS_MAX_LINKS 40
 
 /* Make sb the root filesystem ("/"). Once, before any other mount. */
 int vfs_mount_root(SuperBlock *sb, const char *source);
@@ -345,27 +359,81 @@ int vfs_mount(const char *path, SuperBlock *sb, const char *source);
  * the directory at target too: the subtree is reachable at both paths. */
 int vfs_bind_mount(const char *src, const char *target);
 
+/* Mount the directory `name` (one component) of sb's root over the existing
+ * directory at target: a subtree mount of a filesystem that has no mount of
+ * its own (the data partition's /apps, /home, ...; ADR-0009). */
+int vfs_mount_subdir(const char *target, SuperBlock *sb, const char *name, const char *source);
+
 /* /proc/mounts text ("source target type rw 0 0" lines) into buf. Returns
  * the length; output stops at size - 1. */
 int vfs_format_mounts(char *buf, int size);
 
-/* Resolve path. 0 with *out filled (release with loc_put), or -errno. */
-int vfs_resolve(const char *path, PathLoc *out);
+/* Resolve path, relative to base (NULL: "/") unless it starts with '/'.
+ * 0 with *out filled (release with loc_put), or -errno: -ENOENT (also for
+ * ""), -ENOTDIR, -EACCES, -ENAMETOOLONG, -ELOOP. A trailing '/' requires a
+ * directory (and follows a final symlink). */
+int vfs_resolve_at(const PathLoc *base, const char *path, uint32_t flags, PathLoc *out);
+
+static inline int vfs_resolve(const char *path, PathLoc *out) {
+    return vfs_resolve_at(NULL, path, WALK_FOLLOW, out);
+}
+
+/* Copy a PathLoc, taking a reference. */
+void loc_get(PathLoc *dst, const PathLoc *src);
 
 /* Release a PathLoc's inode reference. */
 void loc_put(PathLoc *loc);
 
 /* Resolve all but the last component of path: *dir is the directory (a
- * reference), name its last component. -EINVAL for "/" itself, -ENOENT,
- * -ENOTDIR, -ENAMETOOLONG. */
-int vfs_resolve_parent(const char *path, PathLoc *dir, char name[VFS_NAME_MAX + 1]);
+ * reference), name its last component (".", ".." included: callers refuse
+ * them as Linux does), *slash 1 when the path ends in '/'. -EINVAL for "/"
+ * itself, -ENOENT, -ENOTDIR, -ENAMETOOLONG, -ELOOP. */
+int vfs_resolve_parent_at(const PathLoc *base, const char *path, PathLoc *dir, char name[VFS_NAME_MAX + 1],
+                          int *slash);
 
-/* Namespace operations by path, with the calling process's credentials. */
-int vfs_mkdir(const char *path, uint32_t mode);
-int vfs_unlink(const char *path);
-int vfs_rmdir(const char *path);
-int vfs_rename(const char *oldpath, const char *newpath);
-int vfs_stat(const char *path, struct stat *st);
+/* The absolute path of a directory (getcwd): from loc up to "/" through
+ * "..", each name found by a scan of its parent; a mount root takes its
+ * mount's path. Returns the length (without NUL), -ENOENT for a removed
+ * directory, -ERANGE when it doesn't fit size. O(depth x entries). */
+int vfs_path_of(const PathLoc *loc, char *buf, size_t size);
+
+/* Namespace operations by path (relative to base, NULL: "/"), with the
+ * calling process's credentials. */
+int vfs_mkdir_at(const PathLoc *base, const char *path, uint32_t mode);
+int vfs_unlink_at(const PathLoc *base, const char *path);
+int vfs_rmdir_at(const PathLoc *base, const char *path);
+int vfs_rename_at(const PathLoc *obase, const char *oldpath, const PathLoc *nbase, const char *newpath);
+int vfs_stat_at(const PathLoc *base, const char *path, uint32_t flags, struct stat *st);
+/* readlink(2): the target of the symlink at path (not followed), up to
+ * size bytes. Bytes copied, -EINVAL if not a symlink. */
+int vfs_readlink_at(const PathLoc *base, const char *path, char *buf, size_t size);
+
+static inline int vfs_mkdir(const char *path, uint32_t mode) {
+    return vfs_mkdir_at(NULL, path, mode);
+}
+static inline int vfs_unlink(const char *path) {
+    return vfs_unlink_at(NULL, path);
+}
+static inline int vfs_rmdir(const char *path) {
+    return vfs_rmdir_at(NULL, path);
+}
+static inline int vfs_rename(const char *oldpath, const char *newpath) {
+    return vfs_rename_at(NULL, oldpath, NULL, newpath);
+}
+static inline int vfs_stat(const char *path, struct stat *st) {
+    return vfs_stat_at(NULL, path, WALK_FOLLOW, st);
+}
+
+/* The calling process's working directory (a reference; "/" for the kernel
+ * and for processes that never changed it), and changing it. A process's
+ * cwd is touched only by its own thread until threads share one (CLONE_FS,
+ * M1-16, adds a lock). */
+void vfs_cwd_get(PathLoc *out);
+void vfs_cwd_set(PathLoc *loc);   /* takes over loc's reference */
+struct Process;
+/* fork: the child starts in the parent's directory. exit: drop it. */
+void vfs_cwd_copy(struct Process *child, const struct Process *parent);
+void vfs_cwd_release(struct Process *p);
 
 /* chmod (ATTR_MODE), chown (ATTR_UID/ATTR_GID, root only) and truncate
  * (ATTR_SIZE) on an inode, with permission checks and the inode locked. */
@@ -375,14 +443,21 @@ int vfs_setattr(Inode *inode, const InodeAttr *attr);
  * Open files (file.c)
  * ------------------------------------------------------------------------- */
 
-/* Open path (O_CREAT with mode, O_EXCL, O_TRUNC, O_APPEND, O_DIRECTORY,
- * O_NONBLOCK; O_CLOEXEC is the caller's, for the fd). *out is a File with one
- * reference. */
-int vfs_open(const char *path, uint32_t flags, uint32_t mode, File **out);
+/* Open path relative to base (O_CREAT with mode, O_EXCL, O_TRUNC, O_APPEND,
+ * O_DIRECTORY, O_NOFOLLOW, O_NONBLOCK; O_CLOEXEC is the caller's, for the
+ * fd). *out is a File with one reference. */
+int vfs_open_at(const PathLoc *base, const char *path, uint32_t flags, uint32_t mode, File **out);
 
 /* Open path for execve: a regular file with execute permission (-EACCES
  * otherwise); read permission is not needed, as on Linux. Read-only File. */
-int vfs_open_exec(const char *path, File **out);
+int vfs_open_exec_at(const PathLoc *base, const char *path, File **out);
+
+static inline int vfs_open(const char *path, uint32_t flags, uint32_t mode, File **out) {
+    return vfs_open_at(NULL, path, flags, mode, out);
+}
+static inline int vfs_open_exec(const char *path, File **out) {
+    return vfs_open_exec_at(NULL, path, out);
+}
 
 /* A File on an inode the caller holds a reference for (taken over by the
  * File). For pipes and sockets. NULL when out of memory. */

@@ -4,7 +4,6 @@
 #include "proc/thread.h"
 #include "proc/signal.h"
 #include "proc/waitqueue.h"
-#include "fs/path.h"
 #include <stdint.h>
 
 /* Process ID type */
@@ -37,8 +36,10 @@ typedef struct ForkContext {
     uint64_t user_r9;
 } ForkContext;
 
-/* Forward declaration */
+/* Forward declarations */
 typedef struct FdTable FdTable;
+struct Inode;
+struct Mount;
 
 /* Process Control Block */
 typedef struct Process {
@@ -50,7 +51,8 @@ typedef struct Process {
     Thread         *main_thread;
     struct Mm *mm;             /* user address space (mm/mm.h); NULL: kernel only, or exited */
     FdTable *fd_table;       /* Per-process file descriptor table */
-    char            cwd[PATH_MAX];  /* Current working directory */
+    struct Inode   *cwd;            /* Working directory (a reference; NULL: "/"); fs/vfs.c vfs_cwd_* */
+    struct Mount   *cwd_mnt;        /* the mount cwd is in */
     uid_t           uid;            /* Real user ID */
     gid_t           gid;            /* Real group ID */
     uid_t           euid;           /* Effective user ID */

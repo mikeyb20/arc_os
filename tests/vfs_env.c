@@ -631,7 +631,7 @@ void vfs_env_setup(void) {
     vfs_env_proc.pgid = 1;
     vfs_env_as(0, 0);
     vfs_env_proc.umask = done ? 022 : 0;   /* boot runs with umask 0, as kmain does */
-    strcpy(vfs_env_proc.cwd, "/");
+    vfs_cwd_release(&vfs_env_proc);   /* back to "/" */
     vfs_env_sleep_hook = NULL;
     fail_in = 0;
     if (done) return;

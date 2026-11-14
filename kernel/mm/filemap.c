@@ -125,8 +125,18 @@ void page_wait_unlocked(struct page *pg) {
     }
 }
 
+/* Lock-order level of a page's lock. A block-device mapping's pages
+ * (filesystem metadata: ext2's block map, M1-13) are read while a file page
+ * is locked, so they rank below file pages. A block-device page keeps its
+ * mapping while locked (only filemap_bdev_release, at unmount, takes its
+ * pages out), so lock and unlock see the same level. */
+static uint16_t page_level(const struct page *pg) {
+    const AddressSpace *as = pg->mapping;
+    return as != NULL && as->host == NULL ? LOCK_LEVEL_META_PAGE : LOCK_LEVEL_PAGE;
+}
+
 void page_lock(struct page *pg) {
-    lockdep_sleep_acquire(LOCK_LEVEL_PAGE, "page");
+    lockdep_sleep_acquire(page_level(pg), "page");
     while (page_test_and_set(pg, PG_LOCKED)) page_wait_unlocked(pg);
 }
 
@@ -145,8 +155,9 @@ static void unlock_bit(struct page *pg) {
 }
 
 void page_unlock(struct page *pg) {
+    uint16_t level = page_level(pg);
     unlock_bit(pg);
-    lockdep_sleep_release(LOCK_LEVEL_PAGE);
+    lockdep_sleep_release(level);
 }
 
 void filemap_end_read(struct page *pg, int err) {
@@ -391,9 +402,10 @@ static int read_on_miss(AddressSpace *as, uint64_t index, FileRa *ra, int seq_hi
 /* Read a locked page again after a failed or missing read; the caller's
  * lock-order record of the page lock ends here. */
 static void reread_locked(AddressSpace *as, struct page *pg) {
+    uint16_t level = page_level(pg);
     page_clear(pg, PG_ERROR);
     start_read(as, pg);
-    lockdep_sleep_release(LOCK_LEVEL_PAGE);
+    lockdep_sleep_release(level);
 }
 
 struct page *filemap_get_page(AddressSpace *as, uint64_t index, FileRa *ra, int seq_hint, unsigned *off, int *err) {
@@ -515,7 +527,7 @@ static struct page *write_begin(AddressSpace *as, uint64_t index, size_t in_page
                 if (*err == -EEXIST) continue;
                 return NULL;
             }
-            lockdep_sleep_acquire(LOCK_LEVEL_PAGE, "page");   /* this thread holds the new page's lock */
+            lockdep_sleep_acquire(page_level(pg), "page");   /* this thread holds the new page's lock */
             if (!whole && ((as->flags & AS_MEMBACKED) || index >= size_pages(size))) {
                 memset(page_to_virt(pg), 0, PAGE_SIZE);   /* a hole, or past the end: zeros */
                 page_set(pg, PG_UPTODATE);

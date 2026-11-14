@@ -37,7 +37,6 @@ add_executable(test_runner
     test_shell.c
     test_signal.c
     test_waitqueue.c
-    test_path.c
     test_exec_argv.c
     test_net_util.c
     test_ethernet.c
@@ -120,7 +119,6 @@ add_test(NAME test_keyboard     COMMAND test_runner --suite keyboard)
 add_test(NAME test_shell        COMMAND test_runner --suite shell)
 add_test(NAME test_signal       COMMAND test_runner --suite signal)
 add_test(NAME test_waitqueue    COMMAND test_runner --suite waitqueue)
-add_test(NAME test_path         COMMAND test_runner --suite path)
 add_test(NAME test_exec_argv   COMMAND test_runner --suite exec_argv)
 add_test(NAME test_net_util    COMMAND test_runner --suite net_util)
 add_test(NAME test_ethernet    COMMAND test_runner --suite ethernet)
@@ -156,7 +154,6 @@ add_library(arc_vfs_host STATIC
     ${CMAKE_SOURCE_DIR}/kernel/fs/devfs.c
     ${CMAKE_SOURCE_DIR}/kernel/fs/procfs.c
     ${CMAKE_SOURCE_DIR}/kernel/fs/fat32.c
-    ${CMAKE_SOURCE_DIR}/kernel/fs/path.c
     ${CMAKE_SOURCE_DIR}/kernel/proc/fd.c
     ${CMAKE_SOURCE_DIR}/kernel/lib/rbtree.c
     ${CMAKE_SOURCE_DIR}/kernel/mm/radix.c

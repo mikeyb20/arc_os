@@ -145,7 +145,10 @@ static const struct {
 #define DEV_COOKIE0 2   /* cookie of devices[0]: after "." and ".." */
 
 static int devfs_lookup(Inode *dir, const char *name, Inode **out) {
-    (void)dir;
+    if (strcmp(name, "..") == 0) {   /* the root is the only directory */
+        *out = igrab(dir);
+        return 0;
+    }
     for (uint32_t i = 0; i < DEV_COUNT; i++) {
         if (strcmp(name, devices[i].name) == 0) {
             *out = igrab(devices[i].inode);
