@@ -2,7 +2,8 @@
  *
  * Owns: arc.qr=1 (the boot report, self-test and bench text as numbered ARC1
  * QR pages), arc.qr=log (the newest 8 KiB of the kernel log, snapshotted
- * once), the page loop (10 s or any key, forever; in test mode one pass), and
+ * once), the page loop (each page held by diag_page_hold, forever; in test
+ * mode one pass, a key from the harness per page), and
  * the panic screen hook that adds one code to the panic view.
  * Invariants: the pager draws only with the console held and paused, and
  * waits with it released, so kprintf from any CPU still reaches the serial
@@ -15,6 +16,7 @@
  * O(8 KiB)). */
 
 #include "diag/diag.h"
+#include "diag/pager.h"
 #include "diag/qr_screen.h"
 #include "drivers/fb_console.h"
 #include "lib/build_commit.h"
@@ -27,7 +29,6 @@
 #include "mm/kmalloc.h"
 #include "time/clock.h"
 
-#define QR_PAGE_SECONDS  10      /* as the text pager */
 #define QR_TEST_WAIT_S   60      /* test mode: the harness presses a key per page */
 #define QR_LOG_BYTES     8192    /* arc.qr=log: the newest 8 KiB of the log */
 #define QR_MAX_PAGES     64      /* report: 320 lines of 120 bytes is about 30 pages */
@@ -61,15 +62,34 @@ static char *report_text(size_t *len) {
     return buf;
 }
 
-/* Draw page `index` with the console held and paused. Returns qr_screen_show_page's result. */
-static int show_page(const QrTextFormat *fmt, const char *text, const QrTextPage *pages, int npages, int index,
-                     QrCode *qr, char *payload) {
+/* One QR pager run: what show_page and the caption callback draw */
+typedef struct {
+    const QrTextFormat *fmt;
+    const char *text;
+    const QrTextPage *pages;
+    int npages, index;
+    QrCode *qr;
+    char *payload;
+} QrPager;
+
+/* Draw page p->index with the console held and paused, hint in its caption
+ * (NULL: none). Returns qr_screen_show_page's result. */
+static int show_page(const QrPager *p, const char *hint) {
     int owned = klog_console_acquire();
     fb_console_pause();
-    int rc = qr_screen_show_page(fmt, text, pages, npages, index, testmode_active() ? 0 : QR_PAGE_SECONDS, qr, payload);
+    int rc = qr_screen_show_page(p->fmt, p->text, p->pages, p->npages, p->index, hint, p->qr, p->payload);
     if (rc != 0) fb_console_resume();   /* nothing drawn: give the text screen back */
     if (owned) klog_console_release();
     return rc;
+}
+
+/* DiagPageHold callback: the caption with the hint, the console held (it
+ * stays paused from show_page). */
+static void caption_show_hint(const char *hint, void *ctx) {
+    const QrPager *p = ctx;
+    int owned = klog_console_acquire();
+    qr_screen_show_caption(p->fmt, p->text, p->pages, p->npages, p->index, hint);
+    if (owned) klog_console_release();
 }
 
 void diag_qr_run(int can_halt, int passes, int fails) {
@@ -96,15 +116,16 @@ void diag_qr_run(int can_halt, int passes, int fails) {
     QrTextPage *pages = kmalloc(sizeof(QrTextPage) * QR_MAX_PAGES, GFP_KERNEL);
     QrCode *qr = kmalloc(sizeof(QrCode), GFP_KERNEL);
     char *payload = kmalloc(QR_BYTES_MAX, GFP_KERNEL);
-    int npages = -1, rc = -1;
+    QrPager p = {.fmt = &fmt, .text = text, .pages = pages, .npages = -1, .index = 0, .qr = qr, .payload = payload};
+    int rc = -1;
     if (text != NULL && pages != NULL && qr != NULL && payload != NULL && fmt.max_version > 0) {
         size_t len = qr_text_sanitize((const uint8_t *)raw, raw_len, text, 4 * raw_len + 1);
-        npages = qr_text_paginate(&fmt, text, len, pages, QR_MAX_PAGES);
-        if (npages > 0) rc = show_page(&fmt, text, pages, npages, 0, qr, payload);
+        p.npages = qr_text_paginate(&fmt, text, len, pages, QR_MAX_PAGES);
+        if (p.npages > 0) rc = show_page(&p, NULL);
     }
     if (rc != 0) {
         kprintf("[QR] can't show %s codes (screen %ux%u, pages %d, error %d): text pages instead\n", fmt.kind,
-                fb_console_width(), fb_console_height(), npages, rc);
+                fb_console_width(), fb_console_height(), p.npages, rc);
         if (testmode_active()) qr_test_end(passes, fails + 1);
         kfree(raw);
         kfree(text);
@@ -115,24 +136,25 @@ void diag_qr_run(int can_halt, int passes, int fails) {
     }
 
     int shown = 0, timeouts = 0;
-    for (int page = 0;;) {
+    DiagPageHold hold = {.auto_s = PAGER_AUTO_SECONDS, .can_halt = can_halt, .show_hint = caption_show_hint, .ctx = &p};
+    for (;;) {
         if (testmode_active()) {
             /* The qr suite takes a screendump on this line, then presses a key */
-            kprintf("ARC_QR shown %s %d/%d\n", fmt.kind, page + 1, npages);
+            kprintf("ARC_QR shown %s %d/%d\n", fmt.kind, p.index + 1, p.npages);
             if (diag_wait_key(QR_TEST_WAIT_S, can_halt)) {
-                kprintf("ARC_TEST PASS qr-%s-page-%d\n", fmt.kind, page + 1);
+                kprintf("ARC_TEST PASS qr-%s-page-%d\n", fmt.kind, p.index + 1);
                 shown++;
             } else {
-                kprintf("ARC_TEST FAIL qr-%s-page-%d no key within %d s\n", fmt.kind, page + 1, QR_TEST_WAIT_S);
+                kprintf("ARC_TEST FAIL qr-%s-page-%d no key within %d s\n", fmt.kind, p.index + 1, QR_TEST_WAIT_S);
                 timeouts++;
             }
-            if (page + 1 == npages) qr_test_end(passes + shown, fails + timeouts);
+            if (p.index + 1 == p.npages) qr_test_end(passes + shown, fails + timeouts);
         } else {
-            diag_wait_key(QR_PAGE_SECONDS, can_halt);
+            diag_page_hold(&hold, 0);
         }
-        page = (page + 1) % npages;
-        if (show_page(&fmt, text, pages, npages, page, qr, payload) != 0 && testmode_active()) {
-            kprintf("ARC_TEST FAIL qr-%s-page-%d not drawn\n", fmt.kind, page + 1);
+        p.index = (p.index + 1) % p.npages;
+        if (show_page(&p, NULL) != 0 && testmode_active()) {
+            kprintf("ARC_TEST FAIL qr-%s-page-%d not drawn\n", fmt.kind, p.index + 1);
             timeouts++;
         }
     }
