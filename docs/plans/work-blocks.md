@@ -125,7 +125,7 @@ Start every block with `/os/implement-block <ID>`. These rules are what keep ses
 | M1-04b | QR encoder (host-tested) | M | R | K | M1-04 | Plain-text QR codes round-trip through `zbarimg` on the host for every supported version; no allocation | done |
 | M1-04c | Report, log and panic as QR codes | S | R | KB | M1-04b, M1-05 | `arc.qr=1` pages decode from a QEMU screendump to the serial `[REPORT]` text; panic screen carries a code | done |
 | M1-05 | SMP scheduler | L | D | K | M1-03, M1-02b | Threads run on all CPUs; lock order checked at runtime | done |
-| M1-06 | Clocks, timers, tickless idle | M | D | KB | M1-05 | `clock_gettime`, `nanosleep`; idle CPUs get no timer interrupts | review (#45) |
+| M1-06 | Clocks, timers, tickless idle | M | D | KB | M1-05 | `clock_gettime`, `nanosleep`; idle CPUs get no timer interrupts | done |
 | M1-07 | VMAs, demand paging, anonymous mmap | L | D | KA | M1-02, M1-05 | musl malloc works; bad pointers give `-EFAULT`; TLB shootdown | done |
 | M1-08 | Copy-on-write fork + 2 MiB pages | M | D | KB | M1-07 | COW fork; huge pages for large anonymous memory | todo |
 | M1-09 | Driver model, MSI-X, DMA helpers | M | D | KB | M1-05 | virtio on the bus model with MSI-X | done |
@@ -140,7 +140,7 @@ Start every block with `/os/implement-block <ID>`. These rules are what keep ses
 | M1-18 | AF_UNIX sockets + poll/select | M | R | KB | M1-06, M1-11 | Echo server over a UNIX socket; poll with timeouts | todo |
 | M1-19 | Hardening: SMEP, SMAP, NX, W^X | M | D | KA | M1-07 | All suites pass with SMEP/SMAP/NX on | review (#50) |
 | M1-20 | Syscall gap fill | M | R | KB | M1-11, M1-17, M1-18 | Every inventory syscall done, or `-ENOSYS` with a reason | todo |
-| M1-21 | Power base: idle states, HWP, RAPL | M | R | KB | M1-06 | MWAIT/HLT idle; EPP by profile; energy readout | todo |
+| M1-21 | Power base: idle states, HWP, RAPL | M | R | KB | M1-06 | MWAIT/HLT idle; EPP by profile; energy readout | review (#46) |
 | M1-22 | M1 done-test + second hardware boot | M | R | K+H | M1-04, M1-08, M1-15, M1-19, M1-20, M1-21 | 10 GB ext2 mmap test passes; both machines reach the shell | todo |
 
 ### M2 — Toolchain and first LLM (specs from M2-00a and M2-00)

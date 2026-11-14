@@ -56,6 +56,10 @@
 # changes, truncate, directory changes, superblock state, shutdown), the
 # asynchronous page write and block-list helpers (filemap_block.c), the
 # two-list write-back pass, and their backtrace names.
+# 628657 -> 645074 after M1-21 (+16417, inside the limit; 647229 with the
+# report pager, #48): safe MSR access,
+# idle states with residency, HWP and EPP, RAPL, the power profiles,
+# /proc/arc/power, the report's Power line and the msr self-test.
 # Limit = measured + 5%)
 kernel_image_bytes     660000      max  bytes  M0-08  build
 

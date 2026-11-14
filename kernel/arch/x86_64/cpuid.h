@@ -29,6 +29,28 @@ static inline uint64_t cpu_rdtsc_ordered(void) {
     return ((uint64_t)hi << 32) | lo;
 }
 
+/* Idle instructions (M1-21, arch/x86_64/power.c). */
+
+/* Enable interrupts and halt until the next one, in one step (STI's shadow:
+ * no interrupt is taken between the two). */
+static inline void cpu_sti_hlt(void) {
+    __asm__ volatile("sti; hlt" ::: "memory");
+}
+
+/* Enable interrupts. */
+static inline void cpu_sti(void) {
+    __asm__ volatile("sti" ::: "memory");
+}
+
+/* Arm address monitoring on addr's cache line, then wait in the C-state
+ * hint names until a write to it or an interrupt; ECX bit 0 makes an
+ * interrupt end the wait even while interrupts are masked (CPUID 5 ECX
+ * bit 1 must say so). */
+static inline void cpu_monitor_mwait(const volatile void *addr, uint32_t hint) {
+    __asm__ volatile("monitor" ::"a"(addr), "c"(0), "d"(0));
+    __asm__ volatile("mwait" ::"a"(hint), "c"(1) : "memory");
+}
+
 /* AT_HWCAP on x86_64: CPUID leaf 1 EDX (as Linux reports it) */
 static inline uint64_t cpu_hwcap(void) {
     uint32_t a, b, c, d;

@@ -1,0 +1,6 @@
+# qemu.power (M1-21): power profiles and the idle readout in /proc/arc/power.
+# Built with stock musl; exit status = failed checks. QEMU's CPUs have no
+# MWAIT, HWP or RAPL, so this covers the HLT idle path and the profile file.
+profile   /boot/powertest profile
+chunks    /boot/powertest chunks
+idle      /boot/powertest idle

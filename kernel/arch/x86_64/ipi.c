@@ -10,6 +10,7 @@
 #include "arch/x86_64/percpu.h"
 #include "arch/x86_64/cpuid.h"
 #include "arch/x86_64/tlb.h"
+#include "arch/x86_64/power.h"
 #include "arch/hal_lock.h"
 #include "proc/sched.h"
 #include "lib/kprintf.h"
@@ -19,6 +20,7 @@ static void ipi_schedule_handler(InterruptFrame *frame) {
     (void)frame;
     this_cpu()->irq_stat[PERCPU_STAT_RESCHED]++;
     lapic_eoi();   /* first: sched_ipi may switch threads */
+    power_cpu_sync();   /* a new EPP is announced with this IPI (power.c, M1-21) */
     sched_ipi();
 }
 
@@ -47,7 +49,14 @@ static void ipi_call_handler(InterruptFrame *frame) {
 }
 
 static uint32_t ipi_call(void (*fn)(void *arg), void *arg, uint64_t max_cycles, int self) {
-    if (cpu_count <= 1) return 0;
+    if (cpu_count <= 1) {
+        if (self) {   /* no other CPU, but this one still runs it (ipi_call_all) */
+            uint64_t flags = irq_save();
+            fn(arg);
+            irq_restore(flags);
+        }
+        return 0;
+    }
     call_arg = arg;
     __atomic_store_n(&call_done, 0, __ATOMIC_SEQ_CST);
     __atomic_store_n(&call_fn, fn, __ATOMIC_RELEASE);   /* publishes call_arg */
