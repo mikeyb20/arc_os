@@ -198,6 +198,7 @@ static int64_t do_write(File *file, const IoBuf *buf, loff_t *pos, int append) {
     if (n > 0) {
         vfs_now(&inode->mtime);
         inode->ctime = inode->mtime;
+        vfs_inode_dirty(inode); /* times and size reach the filesystem's own copy */
     }
     rwsem_up_write(&inode->lock);
     return n;
