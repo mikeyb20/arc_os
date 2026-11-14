@@ -196,8 +196,8 @@ TEST(root_listing) {
         Listing l;
         ASSERT_EQ(list_dir(vols[i].mnt, &l, 0), 0);
         /* . .. lost+found hello.txt empty dir medium.bin sparse.bin dddd... link_fast
-         * link_slow link_dangling loop_a loop_b link_dir many fifo */
-        ASSERT_EQ(l.n, 17);
+         * link_slow link_dangling loop_a loop_b link_dir links many fifo */
+        ASSERT_EQ(l.n, 18);
         for (int k = 0; k < 8; k++) ASSERT_EQ(l.has[k], 1);
         ASSERT_EQ(l.dtypes[0], DT_REG);   /* the filetype byte */
         ASSERT_EQ(l.dtypes[1], DT_DIR);
@@ -383,6 +383,12 @@ TEST(symlinks) {
         ASSERT_EQ(vfs_stat_at(NULL, P(v, "link_dangling"), 0, &st), 0);
         ASSERT_EQ(vfs_stat(P(v, "loop_a"), &st), -ELOOP);
         File *f;
+        /* Exactly 40 links resolve; 41 are -ELOOP (Linux's limit) */
+        ASSERT_EQ(vfs_stat(P(v, "links/l00"), &st), 0);
+        ASSERT_EQ(st.st_size, 13);   /* hello.txt */
+        ASSERT_EQ(vfs_env_read_file(P(v, "links/l00"), text, sizeof(text)), 13);
+        ASSERT_EQ(vfs_stat(P(v, "links/over"), &st), -ELOOP);
+        ASSERT_EQ(vfs_open(P(v, "links/over"), O_RDONLY, 0, &f), -ELOOP);
         ASSERT_EQ(vfs_open(P(v, "link_fast"), O_RDONLY | O_NOFOLLOW, 0, &f), -ELOOP);
         ASSERT_EQ(vfs_open(P(v, "link_dir/"), O_RDONLY | O_DIRECTORY, 0, &f), 0);   /* trailing '/' follows */
         fput(f);
@@ -474,17 +480,25 @@ TEST(inodes_are_shared_and_leak_free) {
     return 0;
 }
 
-/* The block of the root directory's first entries, read off the raw image */
-static uint64_t root_dir_block_offset(const uint8_t *data, uint32_t *bs_out) {
+/* Byte offset of the first block of directory inode ino, read off the raw
+ * image (one-group lookup through the group descriptor table) */
+static uint64_t dir_block_offset(const uint8_t *data, uint32_t ino, uint32_t *bs_out) {
     const uint8_t *s = data + 1024;
     uint32_t bs = 1024u << *(const uint32_t *)(s + 24);
     uint32_t first = *(const uint32_t *)(s + 20);
+    uint32_t per_group = *(const uint32_t *)(s + 40);
     uint16_t isz = *(const uint16_t *)(s + 88);
-    uint32_t itable = *(const uint32_t *)(data + (uint64_t)(first + 1) * bs + 8);
-    const uint8_t *ino2 = data + (uint64_t)itable * bs + isz;   /* inode 2: index 1 */
+    uint32_t group = (ino - 1) / per_group, index = (ino - 1) % per_group;
+    uint32_t itable = *(const uint32_t *)(data + (uint64_t)(first + 1) * bs + group * 32 + 8);
+    const uint8_t *inode = data + (uint64_t)itable * bs + (uint64_t)index * isz;
     *bs_out = bs;
-    uint32_t block0 = *(const uint32_t *)(ino2 + 40);   /* i_block[0] */
+    uint32_t block0 = *(const uint32_t *)(inode + 40);   /* i_block[0] */
     return (uint64_t)block0 * bs;
+}
+
+/* The block of the root directory's first entries */
+static uint64_t root_dir_block_offset(const uint8_t *data, uint32_t *bs_out) {
+    return dir_block_offset(data, 2, bs_out);
 }
 
 TEST(rejects_bad_superblocks) {
@@ -610,6 +624,46 @@ TEST(corrupt_directory_entry_is_eio) {
     return 0;
 }
 
+/* A corrupt ".." (only a damaged disk has one): naming a regular file, or
+ * the volume's root from below a subtree mount's root, is -EIO, never a walk
+ * to that inode or out of the subtree. "dir" mounted alone, as /apps is. */
+TEST(corrupt_dotdot_is_eio) {
+    if (ext2_ready() != 0) return 0;
+    struct stat a, b, file;
+    ASSERT_EQ(vfs_stat("/e4k/dir/a", &a), 0);
+    ASSERT_EQ(vfs_stat("/e4k/dir/a/b", &b), 0);
+    ASSERT_EQ(vfs_stat("/e4k/hello.txt", &file), 0);
+    uint8_t *copy = malloc(vols[0].size);
+    ASSERT_TRUE(copy != NULL);
+    memcpy(copy, vols[0].data, vols[0].size);
+    uint32_t bs;
+    uint64_t at = dir_block_offset(copy, (uint32_t)a.st_ino, &bs) + 12; /* past "." */
+    ASSERT_MEM_EQ(copy + at + 8, "..", 2);
+    uint32_t ino = (uint32_t)file.st_ino;
+    memcpy(copy + at, &ino, 4); /* dir/a/.. -> hello.txt */
+    at = dir_block_offset(copy, (uint32_t)b.st_ino, &bs) + 12;
+    ASSERT_MEM_EQ(copy + at + 8, "..", 2);
+    ino = 2;
+    memcpy(copy + at, &ino, 4); /* dir/a/b/.. -> the volume's root */
+    static BlockDevice dev; /* stays mounted */
+    disk_init(&dev, copy, vols[0].size);
+    int err;
+    SuperBlock *sb = ext2_mount(&dev, vols[0].size, "dd", &err);
+    ASSERT_TRUE(sb != NULL);
+    ASSERT_EQ(vfs_mkdir("/dsub", 0755), 0);
+    ASSERT_EQ(vfs_mount_subdir("/dsub", sb, "dir", "dd"), 0);
+    struct stat st;
+    ASSERT_EQ(vfs_stat("/dsub/a/b/c/deep.txt", &st), 0); /* the rest is fine */
+    ASSERT_EQ(vfs_stat("/dsub/a/..", &st), -EIO);
+    ASSERT_EQ(vfs_stat("/dsub/a/b/../hello.txt", &st), -EIO);
+    ASSERT_EQ(vfs_stat("/dsub/a/b/..", &st), -EIO);
+    struct stat root;
+    ASSERT_EQ(vfs_stat("/", &root), 0);
+    ASSERT_EQ(vfs_stat("/dsub/..", &st), 0); /* the mount's own root still steps out */
+    ASSERT_EQ(st.st_ino, root.st_ino);
+    return 0;
+}
+
 /* File data goes through the page cache: drop_caches frees it and the next
  * read fills it again; the metadata pages of the volume can be dropped too */
 TEST(reads_through_the_page_cache) {
@@ -704,6 +758,7 @@ TestCase ext2_tests[] = {
     TEST_ENTRY(rejects_bad_superblocks),
     TEST_ENTRY(failed_mounts_leak_nothing),
     TEST_ENTRY(corrupt_directory_entry_is_eio),
+    TEST_ENTRY(corrupt_dotdot_is_eio),
     TEST_ENTRY(reads_through_the_page_cache),
     TEST_ENTRY(readahead_pieces_land_late_eof_page_does_not_wait),
 };

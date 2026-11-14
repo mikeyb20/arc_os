@@ -91,6 +91,7 @@ TEST(boot_disk_by_guid) {
     pick(GUID_C, "", &p);   /* labels play no part */
     ASSERT_TRUE(p.system == c1);
     ASSERT_TRUE(p.data == c2);
+    ASSERT_TRUE(p.disk == c1->disk);
     pick(GUID_B, NULL, &p);
     ASSERT_TRUE(p.system == b1);
     ASSERT_TRUE(p.data == b2);
@@ -105,6 +106,7 @@ TEST(boot_disk_without_arc_partitions_uses_labels) {
     pick(GUID_A, "", &p);
     ASSERT_TRUE(p.system == b1);
     ASSERT_TRUE(p.data == b2);
+    ASSERT_TRUE(p.disk == b1->disk);   /* /disk is vdb's ESP, never vda's */
     return 0;
 }
 
@@ -131,6 +133,28 @@ TEST(label_fallback_needs_the_type) {
     add_part(d, 2, WINDOWS_TYPE, ARC_PART_LABEL_DATA, NULL);
     pick(NULL, "", &p);
     ASSERT_TRUE(p.system == NULL);
+    ASSERT_TRUE(p.data == NULL);
+    ASSERT_TRUE(p.disk == NULL);   /* and nothing at /disk */
+    return 0;
+}
+
+/* A cloned disk (dd) has the same GPT GUID: both partitions come from the
+ * first such disk, never one from each */
+TEST(cloned_disk_guid_stays_on_one_disk) {
+    setup();
+    no_devs();
+    BlockDevice *orig = add_disk("vda", GUID_B);
+    BlockDevice *o1 = add_part(orig, 1, ARC_PART_TYPE_SYSTEM, ARC_PART_LABEL_SYSTEM, NULL);
+    BlockDevice *clone = add_disk("vdb", GUID_B);
+    add_part(clone, 1, ARC_PART_TYPE_SYSTEM, ARC_PART_LABEL_SYSTEM, NULL);
+    add_part(clone, 2, ARC_PART_TYPE_DATA, ARC_PART_LABEL_DATA, NULL);
+    SysmountPick p;
+    pick(GUID_B, "", &p);
+    ASSERT_TRUE(p.disk == orig);
+    ASSERT_TRUE(p.system == o1);
+    ASSERT_TRUE(p.data == NULL);   /* not the clone's */
+    pick(NULL, "", &p);            /* by label: the same */
+    ASSERT_TRUE(p.system == o1);
     ASSERT_TRUE(p.data == NULL);
     return 0;
 }
@@ -161,6 +185,7 @@ TestCase sysmount_tests[] = {
     TEST_ENTRY(boot_disk_by_guid),
     TEST_ENTRY(boot_disk_without_arc_partitions_uses_labels),
     TEST_ENTRY(label_fallback_needs_the_type),
+    TEST_ENTRY(cloned_disk_guid_stays_on_one_disk),
     TEST_ENTRY(data_named_by_partuuid),
 };
 int sysmount_test_count = sizeof(sysmount_tests) / sizeof(sysmount_tests[0]);

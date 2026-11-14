@@ -4,13 +4,15 @@
  * (vda: Linux and Windows partitions labelled arc-system and arc-data) and
  * the arc_os disk second (vdb).
  *   mounts    /proc/mounts: /system from vdb1, /apps ... /var from vdb2, all
- *             ext2 read-only; nothing from vda;
+ *             ext2 read-only, /disk from vdb3 (the arc_os disk's ESP);
+ *             nothing from vda (its ESP included);
  *   crc       one "ext2test: crc PATH HEX" line per file (CRC-32), checked
  *             against the host's by the suite's --check;
  *   tree      symlinks, "..", getcwd inside /system, readdir, EROFS;
  *   exec      /system/bin/hello runs from the ext2 page cache;
  *   named     (argument "named": arc.data names the foreign Windows
- *             partition) /system mounted, no data mounts at all.
+ *             partition) /system mounted, no data mounts at all, /disk
+ *             still the arc_os disk's ESP.
  * Prints one FAIL line per failed check; exit status = number of failures. */
 
 #define _GNU_SOURCE
@@ -22,6 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -109,7 +112,10 @@ static void check_mounts(void) {
         snprintf(line, sizeof(line), "vdb2 /%s ext2 ro 0 0\n", dirs[i]);
         CHECK(mounts_has(m, line));
     }
-    CHECK(!mounts_has(m, "vda"));   /* the foreign disk: nothing */
+    CHECK(mounts_has(m, "vdb3 /disk vfat "));   /* the arc_os disk's ESP */
+    struct stat st;
+    CHECK(stat("/disk/ARC.TXT", &st) == 0);
+    CHECK(!mounts_has(m, "vda"));   /* the foreign disk: nothing, not even its ESP */
     printf("ext2test: mounts ok\n");
 }
 
@@ -120,6 +126,9 @@ static void test_tree(void) {
     if (fd >= 0) close(fd);
     ssize_t n = readlink("/system/link", text, sizeof(text));
     CHECK(n == 16 && memcmp(text, "dir/sub/deep.txt", 16) == 0);
+    /* bufsiz is an int (Linux): the upper 32 bits play no part */
+    memset(text, 'x', sizeof(text));
+    CHECK(syscall(SYS_readlink, "/system/link", text, (size_t)0x100000005ull) == 5 && text[5] == 'x');
     struct stat st;
     CHECK(lstat("/system/link", &st) == 0 && S_ISLNK(st.st_mode));
     CHECK(chdir("/system/dir/sub") == 0);
@@ -169,6 +178,7 @@ static void test_named(void) {
     CHECK(mounts_has(m, "vdb1 /system ext2 ro 0 0\n"));
     CHECK(!mounts_has(m, " /apps "));
     CHECK(!mounts_has(m, "vda"));
+    CHECK(mounts_has(m, "vdb3 /disk vfat "));
     struct stat st;
     CHECK(stat("/apps/FOREIGN.txt", &st) == -1);
     printf("ext2test: named ok\n");

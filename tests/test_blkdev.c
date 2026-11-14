@@ -283,10 +283,10 @@ TEST(blk_register_scans_gpt) {
     ASSERT_STR_EQ(data->label, "arc-data");
     Guid t;
     gpt_guid_parse(ARC_PART_TYPE_DATA, &t);
-    ASSERT_TRUE(blk_find_part(&fd->disk.disk_guid, &t) == data);
+    ASSERT_TRUE(blk_find_part(&fd->disk, &t) == data);
     Guid other = fd->disk.disk_guid;
     other.b[0] ^= 1;
-    ASSERT_TRUE(blk_find_part(&other, &t) == NULL);
+    ASSERT_TRUE(blk_find_part(data, &t) == NULL); /* a partition is no disk */
     ASSERT_TRUE(blk_find_label("no-such-label", NULL) == NULL);
     /* M1-13's lookups: the disk by GUID, a label that must also have the
      * type, a PARTUUID */

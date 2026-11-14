@@ -154,7 +154,7 @@ void blktest_run(void) {
     Guid esp_type;
     gpt_guid_parse(ARC_PART_TYPE_ESP, &esp_type);
     BlockDevice *part = blk_find_label("blktest", NULL);
-    BlockDevice *esp = part != NULL ? blk_find_part(&part->disk_guid, &esp_type) : NULL;
+    BlockDevice *esp = part != NULL ? blk_find_part(part->disk, &esp_type) : NULL;
     if (part == NULL || esp == NULL) {
         kprintf("[BLKTEST] partitions FAILED: no \"blktest\" partition beside an ESP\n");
         return;

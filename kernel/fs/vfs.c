@@ -298,7 +298,10 @@ static void loc_root(PathLoc *loc) {
 
 /* Step loc to its parent (".."). At the root of a mount, first back to the
  * directory the mount covers (as often as needed); at "/" it stays. A parent
- * that is itself a mount point shows what is mounted there, as on Linux. */
+ * that is itself a mount point shows what is mounted there, as on Linux.
+ * A ".." from a corrupt disk is -EIO when it names a non-directory, or the
+ * volume's root from below a subtree mount's root (the walk stops at the
+ * mount's root first, so no sound walk gets there). */
 static int step_up(PathLoc *loc) {
     while (loc->inode == loc->mnt->root) {
         if (loc->mnt->parent == NULL) return 0;   /* "/" */
@@ -310,6 +313,10 @@ static int step_up(PathLoc *loc) {
     Inode *parent;
     int err = lookup_dotdot(loc->inode, &parent);
     if (err != 0) return err;
+    if (!S_ISDIR(parent->mode) || (parent == parent->sb->root && parent != loc->mnt->root)) {
+        iput(parent);
+        return -EIO;
+    }
     iput(loc->inode);
     loc->inode = parent;
     cross_mounts(loc);

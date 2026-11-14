@@ -322,23 +322,28 @@ static void vfs_setup(const BootInfo *info) {
     boot_mount("/proc", procfs_init(), "proc");
 }
 
-/* FAT32 at /disk, read-only: the first disk's EFI system partition when it
- * has a GPT, else the whole disk (test images). M1-13 mounts the arc_os
- * partitions of the boot disk. */
-static void disk_mount(void) {
-    BlockDevice *dev = blk_find("vda");
-    if (!dev) {
-        kprintf("[BLK] No block device registered\n");
-        return;
-    }
-    if (dev->has_gpt) {
-        Guid esp;
-        gpt_guid_parse(ARC_PART_TYPE_ESP, &esp);
-        dev = blk_find_part(&dev->disk_guid, &esp);
-        if (!dev) {
-            kprintf("[BLK] vda: GPT without an EFI system partition\n");
+/* FAT32 at /disk, read-only: the EFI system partition of the arc_os disk
+ * sysmount chose (ADR-0018: never a partition of another disk). Only in test
+ * mode, with no arc_os disk, the first disk's ESP or the whole disk (the
+ * test images of qemu.vfs, qemu.pagecache and qemu.devices). */
+static void disk_mount(const SysmountPick *pick) {
+    Guid esp;
+    gpt_guid_parse(ARC_PART_TYPE_ESP, &esp);
+    BlockDevice *dev = pick->disk;
+    if (dev == NULL) {
+        dev = testmode_active() ? blk_find("vda") : NULL;
+        if (dev == NULL) {
+            kprintf("[BLK] No arc_os disk: nothing at /disk\n");
             return;
         }
+    }
+    if (dev->has_gpt) {
+        BlockDevice *part = blk_find_part(dev, &esp);
+        if (part == NULL) {
+            kprintf("[BLK] %s: GPT without an EFI system partition\n", dev->name);
+            return;
+        }
+        dev = part;
     }
 
     SuperBlock *fat = fat32_mount(dev);
@@ -367,8 +372,9 @@ static void devices_setup(const BootInfo *info) {
         devtest_register();
         blktest_run();
     }
-    disk_mount();
-    sysmount_boot(info->boot_gpt ? info->boot_disk_guid : NULL, cmdline_raw());
+    SysmountPick pick;
+    sysmount_boot(info->boot_gpt ? info->boot_disk_guid : NULL, cmdline_raw(), &pick);
+    disk_mount(&pick);
 }
 
 /* Stop on a CPU below x86-64-v3 (ADR-0003), saying why on serial and, when

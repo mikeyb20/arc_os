@@ -542,11 +542,12 @@ static int64_t sys_rename(uint64_t old_addr, uint64_t new_addr, uint64_t a2, uin
 static int64_t sys_readlinkat(uint64_t dirfd, uint64_t path_addr, uint64_t buf_addr, uint64_t bufsiz, uint64_t a4,
                               uint64_t a5) {
     (void)a4, (void)a5;
-    if ((int64_t)(int32_t)bufsiz <= 0) return -EINVAL;
+    int n = (int)bufsiz;   /* Linux's int bufsiz: the upper 32 bits play no part */
+    if (n <= 0) return -EINVAL;
     char path[PATH_MAX], target[PATH_MAX];
     PathLoc base;
     int err = at_path((int64_t)dirfd, path_addr, path, sizeof(path), 0, &base);
-    if (err == 0) err = vfs_readlink_at(&base, path, target, bufsiz < sizeof(target) ? bufsiz : sizeof(target));
+    if (err == 0) err = vfs_readlink_at(&base, path, target, (size_t)n < sizeof(target) ? (size_t)n : sizeof(target));
     loc_put(&base);
     if (err < 0) return err;
     if (copy_to_user((void *)buf_addr, target, (size_t)err) != 0) return -EFAULT;

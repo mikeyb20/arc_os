@@ -4,10 +4,12 @@
 #   make-arc-test-disks.sh make DIR [HELLO]
 #       DIR/arc-disk.img      an arc_os disk: GPT, partition 1 = system (ext2,
 #                             type and label from kernel/include/arc_disk.h),
-#                             partition 2 = data (apps, models, packs, home, var)
+#                             partition 2 = data (apps, models, packs, home, var),
+#                             partition 3 = an EFI system partition (FAT32)
 #       DIR/foreign-disk.img  someone else's disk: a Linux partition labelled
 #                             "arc-system" and a Windows one labelled "arc-data",
-#                             both holding ext2 volumes arc_os must not mount
+#                             both holding ext2 volumes, and its own EFI system
+#                             partition, none of which arc_os may mount
 #       DIR/arc-sums.txt      CRC-32 of every file ext2test reads ("crc PATH HEX")
 #       DIR/foreign.sha256    the foreign disk's checksum before the run
 #       HELLO, if given, is copied to /system/bin/hello (exec from ext2).
@@ -79,24 +81,35 @@ PY
     for v in system data foreign1 foreign2; do
         mkfs.ext2 -q -F -t ext2 -b 4096 -I 256 -O large_file -d "$tmp/$v" "$tmp/$v.img" 24M
     done
+    # EFI system partitions (FAT32 needs 34 MiB at 512-byte clusters), one
+    # file each: /disk shows which was mounted
+    for v in arc foreign; do
+        truncate -s 34M "$tmp/esp-$v.img"
+        mkfs.fat -F 32 -n "ESP" "$tmp/esp-$v.img" >/dev/null
+        echo "$v esp" | mcopy -i "$tmp/esp-$v.img" - "::$(echo "$v" | tr a-z A-Z).TXT"
+    done
     # arc_os disk
     local img="$dir/arc-disk.img"
     rm -f "$img"
-    truncate -s 52M "$img"
+    truncate -s 88M "$img"
     sgdisk -o -U "$ARC_DISK" \
         -n 1:2048:+24M -t 1:"$(def ARC_PART_TYPE_SYSTEM)" -c 1:"$(def ARC_PART_LABEL_SYSTEM)" \
-        -n 2:0:+24M -t 2:"$(def ARC_PART_TYPE_DATA)" -c 2:"$(def ARC_PART_LABEL_DATA)" "$img" >/dev/null
+        -n 2:0:+24M -t 2:"$(def ARC_PART_TYPE_DATA)" -c 2:"$(def ARC_PART_LABEL_DATA)" \
+        -n 3:0:+34M -t 3:"$(def ARC_PART_TYPE_ESP)" "$img" >/dev/null
     place "$img" 1 "$tmp/system.img"
     place "$img" 2 "$tmp/data.img"
+    place "$img" 3 "$tmp/esp-arc.img"
     # Foreign disk: the labels say arc_os, the types don't
     img="$dir/foreign-disk.img"
     rm -f "$img"
-    truncate -s 52M "$img"
+    truncate -s 88M "$img"
     sgdisk -o -U "$FOREIGN_DISK" \
         -n 1:2048:+24M -t 1:"$LINUX" -c 1:"$(def ARC_PART_LABEL_SYSTEM)" \
-        -n 2:0:+24M -t 2:"$WINDOWS" -u 2:"$FOREIGN_P2" -c 2:"$(def ARC_PART_LABEL_DATA)" "$img" >/dev/null
+        -n 2:0:+24M -t 2:"$WINDOWS" -u 2:"$FOREIGN_P2" -c 2:"$(def ARC_PART_LABEL_DATA)" \
+        -n 3:0:+34M -t 3:"$(def ARC_PART_TYPE_ESP)" "$img" >/dev/null
     place "$img" 1 "$tmp/foreign1.img"
     place "$img" 2 "$tmp/foreign2.img"
+    place "$img" 3 "$tmp/esp-foreign.img"
     sha256sum "$img" | cut -d' ' -f1 >"$dir/foreign.sha256"
     echo "Created arc_os and foreign test disks in $dir"
 }

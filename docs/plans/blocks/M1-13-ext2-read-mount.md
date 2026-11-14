@@ -49,7 +49,7 @@ through the page cache (ADR-0008, ADR-0009, ADR-0018).
   rename's ancestry check (path text, exact only under `rename_mutex`) then has to walk ".." instead. See the
   M1-11 Notes.
 - From M1-10: partitions are block devices named like Linux (`vda1`, `nvme0n1p1`), each with `disk_guid`,
-  `part_guid` (PARTUUID), `type_guid` and `label`; find them with `blk_find_part(disk_guid, type)` and
+  `part_guid` (PARTUUID), `type_guid` and `label`; find them with `blk_find_part(disk_guid, type)` (M1-13: now `blk_find_part(disk, type)`, by the whole-disk device) and
   `blk_find_label(label)`, and parse GUID text with `gpt_guid_parse`. The arc_os type GUIDs and labels are in
   `kernel/include/arc_disk.h`; `tools/make-gpt-test-disk.sh` reads them from there with `sed`, so build the
   system/data test disk in that script. Any number of virtio-blk disks bind (`vda`, `vdb`, ...), so the
@@ -87,7 +87,8 @@ through the page cache (ADR-0008, ADR-0009, ADR-0018).
   partition of the data type, else no data is mounted (no silent fallback). The lookups live in
   `drivers/blk_lookup.c` (moved out of blkdev.c so host suites link them; new `blk_find_disk`,
   `blk_find_partuuid`; `blk_find_label` takes a type GUID, NULL = any, so a label alone never picks a partition
-  arc_os mounts). The boot-time page waits poll the disks (#43's `blk_poll_all` in `page_wait_unlocked`).
+  arc_os mounts; `blk_find_part` takes the whole-disk device, so a cloned disk with the same GPT GUID never lends
+  a partition, and `blk_find_disk` warns about the duplicate). The boot-time page waits poll the disks (#43's `blk_poll_all` in `page_wait_unlocked`).
 - File pages after #43: `readpages` puts every page's pieces on one plug; the EOF block still comes from the
   metadata cache, so the EOF page is complete before any interrupt (host test with deferred requests).
 - Tests: `test_ext2` (mkfs.ext2 images at 4/2/1 KiB blocks: 5 GiB sparse file read at every block-map level to
@@ -99,13 +100,20 @@ through the page cache (ADR-0008, ADR-0009, ADR-0018).
   from ext2, foreign disk SHA-256 unchanged; a foreign PARTUUID refused). Cost: lookups scan a directory
   linearly (O(entries), htree ignored); a block map walk is O(depth), O(1) on the cached indirect block; mount
   O(groups); picking partitions O(devices).
+- D3 review fixes (2026-11-14): `/disk` is now the ESP of the arc_os disk sysmount chose (`SysmountPick.disk`),
+  never a foreign disk's; only test mode with no arc_os disk keeps the old first-disk path (qemu.vfs, pagecache,
+  devices). Both qemu.ext2 disks have an ESP now, so ext2test checks `/disk` is vdb3 and nothing is from vda. A
+  corrupt `..` naming a non-directory, or the volume root from below a subtree mount's root, is -EIO
+  (`step_up`); deeper containment against bad `..` entries is fsck's job (M5-01). readlinkat uses bufsiz as an
+  int. New tests pin the link limit (40 links resolve, 41 are -ELOOP). Open nit: an `O_CREAT` open's retry loop
+  counts links per retry, not per open as Linux does (bounded). `PATH_MAX` is 512, so slow symlinks over ~511
+  bytes give -ENAMETOOLONG (pre-existing; needs an owner before ports). When M1-15 makes data writable, write only
+  to a data partition chosen through the boot disk or `arc.data` (the label path can pick another disk).
 - For the next blocks: M1-15 writes must clear `ind_cache` when a file's block map changes, keep `ro_forced`
   volumes read-only, clear `EXT2_INDEX_FL` on a `dir_index` directory it changes (it doesn't maintain the htree;
   my read, verify against e2fsprogs), and keep the EOF block's metadata-cache copy coherent with the file page
   (or read that block another way), since `ext2_start_page` copies it from there. M1-16 (`CLONE_FS`) adds the
-  cwd's lock; today only the process's own thread touches it. No `ETXTBSY` yet. kmain still mounts
-  vda's ESP at `/disk` even when vda isn't the boot disk (FAT32 read-only, from M1-10): ADR-0018 wants only the
-  boot disk's; the bring-up block that next touches `disk_mount` should pick the ESP by the boot disk too. With a
+  cwd's lock; today only the process's own thread touches it. No `ETXTBSY` yet. With a
   data partition, `/home` is its `home` directory, so the installer must create `home/user` (the ramfs one is
   hidden). Kernel image 558053 bytes (+19779 over #43's 538274), limit 586000. Two disks with the same GPT GUID
   (a cloned stick plugged in beside the original) are ambiguous: the first registered wins (my read: the

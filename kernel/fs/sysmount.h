@@ -27,6 +27,7 @@ struct BlockDevice;
 typedef struct {
     struct BlockDevice *system;   /* NULL: none found */
     struct BlockDevice *data;
+    struct BlockDevice *disk;     /* the arc_os disk chosen (boot disk or by label), NULL: none */
 } SysmountPick;
 
 /* Choose the partitions (rules above) without mounting anything.
@@ -35,7 +36,8 @@ typedef struct {
 void sysmount_pick(const uint8_t *boot_disk_guid, const char *cmdline, SysmountPick *out);
 
 /* Pick and mount (ext2, read-only until M1-15). Returns how many of the six
- * mounts succeeded. A failure is logged and the rest go on. */
-int sysmount_boot(const uint8_t *boot_disk_guid, const char *cmdline);
+ * mounts succeeded. A failure is logged and the rest go on. The pick is
+ * copied to *out unless out is NULL (kmain mounts that disk's ESP). */
+int sysmount_boot(const uint8_t *boot_disk_guid, const char *cmdline, SysmountPick *out);
 
 #endif /* ARCHOS_FS_SYSMOUNT_H */

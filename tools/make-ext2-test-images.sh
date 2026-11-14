@@ -42,6 +42,12 @@ os.symlink("nowhere", os.path.join(root, "link_dangling"))
 os.symlink("loop_b", os.path.join(root, "loop_a"))
 os.symlink("loop_a", os.path.join(root, "loop_b"))
 os.symlink("dir/a", os.path.join(root, "link_dir"))
+# The link limit (40 per walk, as Linux): l00 -> l01 -> ... -> l39 -> hello.txt
+# follows exactly 40 links; over -> l00 needs 41
+os.makedirs(os.path.join(root, "links"))
+for i in range(40):
+    os.symlink("l%02d" % (i + 1) if i < 39 else "../hello.txt", os.path.join(root, "links", "l%02d" % i))
+os.symlink("l00", os.path.join(root, "links", "over"))
 os.makedirs(os.path.join(root, "many"))
 for i in range(400):
     w("many/file_%03d_with_a_longish_name" % i, b"%d\n" % i)

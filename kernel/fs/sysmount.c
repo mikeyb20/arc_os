@@ -48,18 +48,18 @@ void sysmount_pick(const uint8_t *boot_disk_guid, const char *cmdline, SysmountP
     Guid sys_type, data_type;
     gpt_guid_parse(ARC_PART_TYPE_SYSTEM, &sys_type);
     gpt_guid_parse(ARC_PART_TYPE_DATA, &data_type);
-    out->system = out->data = NULL;
-    const Guid *disk = NULL;
+    out->system = out->data = out->disk = NULL;
+    BlockDevice *disk = NULL;
     Guid boot;
     char text[GUID_STR_LEN];
     if (boot_disk_guid != NULL) {
         memcpy(boot.b, boot_disk_guid, sizeof(boot.b));
         gpt_guid_format(&boot, text);
         BlockDevice *d = blk_find_disk(&boot);
-        BlockDevice *sys = d != NULL ? blk_find_part(&boot, &sys_type) : NULL;
-        if (d != NULL && (sys != NULL || blk_find_part(&boot, &data_type) != NULL)) {
+        BlockDevice *sys = d != NULL ? blk_find_part(d, &sys_type) : NULL;
+        if (d != NULL && (sys != NULL || blk_find_part(d, &data_type) != NULL)) {
             kprintf("[MOUNT] boot disk %s is %s\n", text, d->name);
-            disk = &boot;
+            disk = d;
             out->system = sys;
         } else if (d != NULL) {   /* an ISO image written to a stick: no arc_os partitions on it */
             kprintf("[MOUNT] boot disk %s (%s) has no arc_os partitions: by label\n", text, d->name);
@@ -72,10 +72,10 @@ void sysmount_pick(const uint8_t *boot_disk_guid, const char *cmdline, SysmountP
         /* Boot disk unknown: the label picks the disk, the type must match */
         out->system = blk_find_label(ARC_PART_LABEL_SYSTEM, &sys_type);
         if (out->system != NULL) {
-            disk = &out->system->disk_guid;
+            disk = out->system->disk;
             kprintf("[MOUNT] %s by label \"%s\"\n", out->system->disk->name, ARC_PART_LABEL_SYSTEM);
         } else if ((out->data = blk_find_label(ARC_PART_LABEL_DATA, &data_type)) != NULL) {
-            disk = &out->data->disk_guid;
+            disk = out->data->disk;
         } else {
             kprintf("[MOUNT] no arc_os partition labelled \"%s\" or \"%s\"\n", ARC_PART_LABEL_SYSTEM,
                     ARC_PART_LABEL_DATA);
@@ -87,6 +87,7 @@ void sysmount_pick(const uint8_t *boot_disk_guid, const char *cmdline, SysmountP
     } else if (out->data == NULL && disk != NULL) {
         out->data = blk_find_part(disk, &data_type);
     }
+    out->disk = disk;
 }
 
 /* ext2 on dev: its superblock, or NULL (logged) */
@@ -110,9 +111,10 @@ static int mount_at(const char *target, SuperBlock *sb, const char *name, BlockD
     return 1;
 }
 
-int sysmount_boot(const uint8_t *boot_disk_guid, const char *cmdline) {
+int sysmount_boot(const uint8_t *boot_disk_guid, const char *cmdline, SysmountPick *out) {
     SysmountPick p;
     sysmount_pick(boot_disk_guid, cmdline, &p);
+    if (out != NULL) *out = p;
     int mounted = 0;
     SuperBlock *sb;
     if (p.system != NULL && (sb = mount_ext2(p.system, "system")) != NULL)
