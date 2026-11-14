@@ -147,17 +147,25 @@ int slab_get_info(unsigned n, SlabInfo *out) {
 }
 
 /* --- Page arena: PFN 0 is the arena's first page --- */
-#define ARENA_PAGES 1024
+static uint32_t arena_pages = 1024;   /* vfs_env_arena_size before the first use */
 struct page *pmm_page_array;
 uint64_t pmm_hhdm_offset;
 static uint8_t *arena;
-static uint8_t page_used[ARENA_PAGES];
+static uint8_t *page_used;
+static uint32_t next_free;   /* where the next search starts (next fit) */
 
 static void arena_init(void) {
     if (arena != NULL) return;
-    arena = aligned_alloc(PAGE_SIZE, (size_t)ARENA_PAGES * PAGE_SIZE);
-    pmm_page_array = calloc(ARENA_PAGES, sizeof(struct page));
+    arena = aligned_alloc(PAGE_SIZE, (size_t)arena_pages * PAGE_SIZE);
+    pmm_page_array = calloc(arena_pages, sizeof(struct page));
+    page_used = calloc(arena_pages, 1);
+    if (arena == NULL || pmm_page_array == NULL || page_used == NULL) abort();
     pmm_hhdm_offset = (uint64_t)(uintptr_t)arena;
+}
+
+void vfs_env_arena_size(uint32_t pages) {
+    if (arena != NULL) abort();   /* too late: pages are in use */
+    arena_pages = pages;
 }
 
 void (*vfs_env_alloc_hook)(void);
@@ -197,8 +205,10 @@ int vfs_env_arena_full;
 struct page *pmm_alloc_block(unsigned order, uint32_t flags) {
     arena_init();
     if (order != 0 || should_fail() || vfs_env_arena_full) return NULL;
-    for (uint32_t i = 0; i < ARENA_PAGES; i++) {
+    for (uint32_t k = 0; k < arena_pages; k++) {
+        uint32_t i = (next_free + k) % arena_pages;
         if (page_used[i]) continue;
+        next_free = i + 1;
         page_used[i] = 1;
         live_pages++;
         memset(arena + (size_t)i * PAGE_SIZE, (flags & GFP_ZERO) ? 0 : 0xee, PAGE_SIZE);
@@ -212,7 +222,7 @@ struct page *pmm_alloc_block(unsigned order, uint32_t flags) {
 void free_pages(struct page *page, unsigned order) {
     (void)order;
     uint64_t pfn = page_to_pfn(page);
-    if (pfn >= ARENA_PAGES || !page_used[pfn]) {
+    if (pfn >= arena_pages || !page_used[pfn]) {
         fprintf(stderr, "vfs_env: free_pages of a free page\n");
         abort();
     }
@@ -228,15 +238,15 @@ void free_pages(struct page *page, unsigned order) {
 }
 
 uint64_t pmm_get_total_pages(void) {
-    return ARENA_PAGES;
+    return arena_pages;
 }
 
 uint64_t pmm_get_free_pages(void) {
-    return ARENA_PAGES - (uint64_t)live_pages;
+    return arena_pages - (uint64_t)live_pages;
 }
 
 uint64_t pmm_get_descriptor_bytes(void) {
-    return ARENA_PAGES * sizeof(struct page);
+    return arena_pages * sizeof(struct page);
 }
 
 void vfs_env_usage(VfsEnvUsage *u) {
@@ -576,6 +586,20 @@ void timer_cancel_sync(Timer *t) {
 
 int timer_pending(const Timer *t) {
     return t->pending;
+}
+
+/* Dequeue expired timers without running them (a callback in flight on
+ * another CPU), so a test can race them */
+int vfs_env_take_timers(Timer **out, int max) {
+    int n = 0;
+    for (int i = 0; i < ENV_TIMERS && n < max; i++) {
+        Timer *t = env_timers[i];
+        if (t != NULL && t->pending && t->expires <= clock_mono_ns()) {
+            t->pending = 0;
+            out[n++] = t;
+        }
+    }
+    return n;
 }
 
 int vfs_env_run_timers(void) {

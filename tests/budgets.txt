@@ -52,11 +52,15 @@
 # clocks, RTC/HPET readers, time syscalls, clock-event setup, the tickless
 # slice, the D3 review fixes and the write-back timers swapped to one-shot
 # Timers.
-# 598658 -> 613763 after M1-21 (+15105, inside the limit): safe MSR access,
+# 598658 -> 628657 after M1-15 (+29999): ext2 writing (allocator, block map
+# changes, truncate, directory changes, superblock state, shutdown), the
+# asynchronous page write and block-list helpers (filemap_block.c), the
+# two-list write-back pass, and their backtrace names.
+# 628657 -> 645074 after M1-21 (+16417, inside the limit): safe MSR access,
 # idle states with residency, HWP and EPP, RAPL, the power profiles,
 # /proc/arc/power, the report's Power line and the msr self-test.
 # Limit = measured + 5%)
-kernel_image_bytes     628000      max  bytes  M0-08  build
+kernel_image_bytes     660000      max  bytes  M0-08  build
 
 # Free memory when init starts, booted with -m 4G (qemu.smoke; measured 4251873280)
 boot_free_bytes        3830000000  min  bytes  M0-08  smoke

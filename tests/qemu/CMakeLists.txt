@@ -418,22 +418,64 @@ add_test(NAME qemu.writeback COMMAND ${_qemu_test} --suite writeback ${_wb_qemu}
     --expect "\\[WBTEST\\] sync wrote 32 pages and flushed the disk cache, timer disarmed ok"
     --expect "\\[WBTEST\\] release wrote 32 pages and flushed the disk cache, timer disarmed ok"
     --expect "ARC_TEST DONE pass=15 fail=0")
-set_tests_properties(qemu.writeback PROPERTIES FIXTURES_REQUIRED wb_disk FIXTURES_SETUP wb_written RESOURCE_LOCK wb_disk)
+set_tests_properties(qemu.writeback PROPERTIES FIXTURES_REQUIRED wb_disk RESOURCE_LOCK wb_disk)
 add_test(NAME qemu.writeback.verify COMMAND ${_qemu_test} --suite writeback --name writeback-verify ${_wb_qemu}
     --cmdline arc.wbtest=verify --timeout 60
     --expect "\\[WBTEST\\] verify: 160 pages read from the disk, 0 wrong"
     --expect "ARC_TEST DONE pass=1 fail=0")
 set_tests_properties(qemu.writeback.verify PROPERTIES FIXTURES_REQUIRED "wb_disk;wb_written" RESOURCE_LOCK wb_disk)
 
+# ext2 writing (M1-15): a fresh disk from make-arc-test-disks.sh make-write,
+# attached writable; arc.data=PARTUUID= names its data partition, so it is
+# mounted read-write (a data partition found by label stays read-only,
+# ADR-0018). qemu.ext2w writes a 1 GiB file (temp + fsync + rename), an
+# atomic replace and a tree; the kernel's end-of-run hook shuts the volume
+# down, and the host checks the partition with e2fsck. qemu.ext2w.verify
+# boots again on the same disk, reads everything back and frees the file;
+# e2fsck again.
+set(_write_disk_args
+    --qemu-arg=-drive --qemu-arg=file=${_arc_disks}/write-disk.img,if=none,id=wd,format=raw
+    --qemu-arg=-device --qemu-arg=virtio-blk-pci,drive=wd
+    --cmdline arc.data=PARTUUID=33333333-4444-4555-8666-777777777772)
+add_test(NAME qemu.ext2w.disk COMMAND bash ${_arc_disks_tool} make-write ${_arc_disks})
+set_tests_properties(qemu.ext2w.disk PROPERTIES LABELS qemu FIXTURES_SETUP write_disk RESOURCE_LOCK write_disk)
+add_test(NAME qemu.ext2w COMMAND ${_qemu_test} --suite ext2w --module ext2wtest ${_write_disk_args} --timeout 560
+    --expect "\\[MOUNT\\] /var: vda2 /var \\(ext2, read-write\\)"
+    --expect "ext2wtest: mounts ok"
+    --expect "ext2wtest: wrote 1073741824 bytes"
+    --expect "ext2wtest: tree ok"
+    --expect "ext2wtest: write ok"
+    --expect "ext2wtest: 0 failures"
+    --expect "\\[EXT2\\] vda2: written back, clean, read-only"
+    --check "bash ${_arc_disks_tool} check-write ${_arc_disks} first")
+set_tests_properties(qemu.ext2w PROPERTIES FIXTURES_REQUIRED write_disk RESOURCE_LOCK write_disk)
+add_test(NAME qemu.ext2w.verify COMMAND ${_qemu_test} --suite ext2wverify --module ext2wtest ${_write_disk_args}
+    --timeout 400
+    --expect "\\[MOUNT\\] /var: vda2 /var \\(ext2, read-write\\)"
+    --expect "ext2wtest: verify 1073741824 bytes, 0 bad words"
+    --expect "ext2wtest: tree verified"
+    --expect "ext2wtest: freed ok"
+    --expect "ext2wtest: 0 failures"
+    --expect "\\[EXT2\\] vda2: written back, clean, read-only"
+    --check "bash ${_arc_disks_tool} check-write ${_arc_disks} second")
+set_tests_properties(qemu.ext2w.verify PROPERTIES FIXTURES_REQUIRED "write_disk;write_written" RESOURCE_LOCK write_disk)
+
 set_tests_properties(qemu.smoke qemu.mem.buddy qemu.mem.cap qemu.userland qemu.abi qemu.musl qemu.fpu qemu.cpufloor
     qemu.smp.xapic qemu.smp.x2apic qemu.sched qemu.lockorder qemu.selftest.fail qemu.selftest.panic
     qemu.panic.fault qemu.diag qemu.mm qemu.mm.oom qemu.vfs qemu.pagecache qemu.qr.report qemu.qr.log qemu.qr.panic
-    qemu.devices qemu.devices.intx qemu.ext2 qemu.ext2.named qemu.reclaim qemu.writeback qemu.writeback.verify
+    qemu.devices qemu.devices.intx qemu.ext2 qemu.ext2.named qemu.ext2w qemu.ext2w.verify qemu.reclaim
+    qemu.writeback qemu.writeback.verify
     qemu.time qemu.time.fallback qemu.time.deadline qemu.power qemu.power.msr
     PROPERTIES LABELS qemu TIMEOUT 180 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     FIXTURES_SETUP qemu_logs)
 set_tests_properties(qemu.mm.oom qemu.pagecache qemu.ext2 PROPERTIES TIMEOUT 320)
-set_tests_properties(qemu.reclaim PROPERTIES TIMEOUT 600)
+# The write-then-verify pairs: the list above sets FIXTURES_SETUP, which
+# replaces the earlier value, so the writer's own fixture is set again here
+# (else ctest may boot the verify run first)
+set_tests_properties(qemu.writeback PROPERTIES FIXTURES_SETUP "wb_written;qemu_logs")
+set_tests_properties(qemu.ext2w PROPERTIES FIXTURES_SETUP "write_written;qemu_logs")
+set_tests_properties(qemu.reclaim qemu.ext2w PROPERTIES TIMEOUT 600)
+set_tests_properties(qemu.ext2w.verify PROPERTIES TIMEOUT 440)
 set_tests_properties(qemu.vfs qemu.pagecache PROPERTIES FIXTURES_REQUIRED fat32_image)
 
 # Budgets (ADR-0019, M0-08): sizes and counts from the build and from the

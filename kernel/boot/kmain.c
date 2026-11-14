@@ -121,9 +121,12 @@ static void diag_setup(const BootInfo *info) {
     diag_run();
 }
 
-/* Test mode: budgets measured when init exits (testmode end hook) */
-static void report_end_budgets(void) {
+/* Test mode, when init exits (testmode end hook): the budgets measured at
+ * the end, then the writable volumes written back and marked clean, as a
+ * power-off will (M4-11) */
+static void test_end(void) {
     ARC_BUDGET("slab_steps_max", slab_max_steps());
+    sysmount_shutdown();
 }
 
 static void test_thread_entry(void *arg) {
@@ -505,7 +508,7 @@ void kmain(void) {
         ARC_BUDGET("boot_free_bytes", pmm_get_free_pages() * PAGE_SIZE);
         ARC_BUDGET("kernel_heap_bytes", hs.total_used + hs.large_bytes);
         ARC_BUDGET("page_descriptor_bytes", pmm_get_descriptor_bytes());
-        testmode_set_end_hook(report_end_budgets);
+        testmode_set_end_hook(test_end);
     }
 
     /* Launch init process from boot module, unless a kernel test runs instead

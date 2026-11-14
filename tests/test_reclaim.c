@@ -546,6 +546,61 @@ TEST(flusher_timer_armed_only_while_dirty) {
     return 0;
 }
 
+/* A flusher timer callback in flight (dequeued on another
+ * CPU, waiting for wb_lock) while the owner cancels and re-arms it must not
+ * act for the new arming */
+TEST(stale_flusher_callback_ignored) {
+    AddressSpace *as = mf_setup();
+    ASSERT_TRUE(as != NULL);
+    ASSERT_EQ(mf_dirty(as, 0, 0x11), 0);
+    ASSERT_TRUE(wb_timer_armed());
+    vfs_env_uptime_ms += WB_DELAY_MS;
+    Timer *stale[4];
+    int n = vfs_env_take_timers(stale, 4);   /* fired, callback not yet run */
+    ASSERT_EQ(n, 1);
+    wb_sync_all();                            /* pass cancels, writes, list empty */
+    ASSERT_FALSE(wb_timer_armed());
+    ASSERT_EQ(mf_dirty(as, 1, 0x22), 0);      /* listed again: re-armed */
+    ASSERT_TRUE(wb_timer_armed());
+    stale[0]->fn(stale[0]->arg);              /* the stale callback gets wb_lock now */
+    ASSERT_TRUE(wb_timer_armed());            /* still armed for the new deadline */
+    ASSERT_TRUE(timer_pending(stale[0]));
+    vfs_env_uptime_ms += WB_DELAY_MS;
+    ASSERT_EQ(vfs_env_run_timers(), 1);       /* the real one fires and kicks */
+    ASSERT_FALSE(wb_timer_armed());
+    wb_sync_all();
+    return 0;
+}
+
+static void sleep_tick(void);
+/* A stale wake-timer callback after progress, then a new waiter arms afresh */
+static Timer *probe_stale;
+static int probe_step;
+static void probe_hook(void) {
+    if (probe_step++ == 0) {
+        vfs_env_uptime_ms += WB_THROTTLE_MS;          /* first waiter's limit passes */
+        Timer *t[4];
+        if (vfs_env_take_timers(t, 4) != 1) abort();
+        probe_stale = t[0];
+        probe_stale->fn(probe_stale->arg);            /* runs: ends the wait */
+    }
+}
+
+TEST(wake_timer_rearms_for_next_waiter) {
+    vfs_env_sleep_hook = probe_hook;
+    probe_step = 0;
+    int moved = wb_wait_progress(WB_THROTTLE_MS);
+    ASSERT_FALSE(moved);
+    ASSERT_FALSE(timer_pending(probe_stale));
+    /* a second waiter arms afresh */
+    probe_step = 1;
+    vfs_env_sleep_hook = sleep_tick;
+    moved = wb_wait_progress(WB_THROTTLE_MS);
+    ASSERT_FALSE(moved);
+    vfs_env_sleep_hook = NULL;
+    return 0;
+}
+
 TEST(ramfs_never_arms_the_flusher) {
     vfs_env_setup();
     wb_sync_all();
@@ -629,7 +684,9 @@ static void sleep_flusher(void) {
 /* While the allocator waits, nothing gets written: its time runs out */
 static void sleep_tick(void) {
     vfs_env_uptime_ms += WB_THROTTLE_MS;
-    vfs_env_run_timers();
+    /* The waiter armed its wake timer and it fired (the host's wq_sleep
+     * returns anyway, so an unarmed timer would go unseen otherwise) */
+    if (vfs_env_run_timers() < 1) abort();
 }
 
 TEST(dirty_limits_follow_ram) {
@@ -832,6 +889,8 @@ TestCase reclaim_tests[] = {
     TEST_ENTRY(direct_reclaim_below_min_only_when_allowed),
     TEST_ENTRY(direct_reclaim_on_a_failed_allocation),
     TEST_ENTRY(flusher_timer_armed_only_while_dirty),
+    TEST_ENTRY(stale_flusher_callback_ignored),
+    TEST_ENTRY(wake_timer_rearms_for_next_waiter),
     TEST_ENTRY(ramfs_never_arms_the_flusher),
     TEST_ENTRY(failed_write_back_is_listed_again),
     TEST_ENTRY(fsync_writes_through_the_list),

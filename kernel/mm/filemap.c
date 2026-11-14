@@ -124,24 +124,42 @@ static PageWait *wait_of(const struct page *pg) {
     return &page_waits[(page_to_pfn(pg) * 0x9E3779B97F4A7C15ull) >> 58];
 }
 
-void page_wait_unlocked(struct page *pg) {
-    while (!sched_can_block() && page_test(pg, PG_LOCKED)) {
-        /* Boot, before the scheduler (a mount reading through the page
-         * cache): nothing can sleep, so poll the disks until the read that
-         * holds the page ends (or times out) */
+/* Sleep until bit (PG_LOCKED, PG_WRITEBACK) of pg is clear */
+static void wait_bit_clear(struct page *pg, uint32_t bit) {
+    while (!sched_can_block() && page_test(pg, bit)) {
+        /* Boot, before the scheduler (a mount reading or writing through
+         * the page cache): nothing can sleep, so poll the disks until the
+         * I/O that holds the page ends (or times out) */
         blk_poll_all();
         hal_cpu_relax();
     }
-    while (page_test(pg, PG_LOCKED)) {
+    while (page_test(pg, bit)) {
         PageWait *w = wait_of(pg);
         uint64_t f;
         spin_lock_irqsave(&w->lock, &f);
-        if (!page_test(pg, PG_LOCKED)) {   /* unlocked before this thread queued: no lost wakeup */
+        if (!page_test(pg, bit)) {   /* cleared before this thread queued: no lost wakeup */
             spin_unlock_irqrestore(&w->lock, f);
             return;
         }
         wq_sleep(&w->wq, &w->lock, f);
     }
+}
+
+/* Wake whoever waits on pg's bucket (after clearing the bit they wait for) */
+static void wake_page(struct page *pg) {
+    PageWait *w = wait_of(pg);
+    uint64_t f;
+    spin_lock_irqsave(&w->lock, &f);
+    wq_wake_all(&w->wq);
+    spin_unlock_irqrestore(&w->lock, f);
+}
+
+void page_wait_unlocked(struct page *pg) {
+    wait_bit_clear(pg, PG_LOCKED);
+}
+
+void filemap_wait_writeback(struct page *pg) {
+    wait_bit_clear(pg, PG_WRITEBACK);
 }
 
 /* Lock-order level of a page's lock. A block-device mapping's pages
@@ -170,6 +188,14 @@ static uint16_t lock_noted(struct page *pg) {
     return LOCK_LEVEL_META_PAGE;
 }
 
+/* The lock-order record of a page this thread just locked (a new page is
+ * inserted locked without one) */
+static void lock_record(struct page *pg) {
+    uint16_t level = page_level(pg);
+    lockdep_sleep_acquire(level, "page");
+    lock_note(pg, level);
+}
+
 void page_lock(struct page *pg) {
     uint16_t level = page_level(pg);
     lockdep_sleep_acquire(level, "page");
@@ -184,11 +210,7 @@ int page_trylock(struct page *pg) {
 /* Clear the lock bit and wake whoever waits on this bucket */
 static void unlock_bit(struct page *pg) {
     page_clear(pg, PG_LOCKED);
-    PageWait *w = wait_of(pg);
-    uint64_t f;
-    spin_lock_irqsave(&w->lock, &f);
-    wq_wake_all(&w->wq);
-    spin_unlock_irqrestore(&w->lock, f);
+    wake_page(pg);
 }
 
 void page_unlock(struct page *pg) {
@@ -283,8 +305,11 @@ static void clear_dirty(const AddressSpace *as, struct page *pg) {
 }
 
 /* Take a locked page out of its tree; drops the tree's reference (the
- * caller still holds its own). */
+ * caller still holds its own). A write of it still in flight ends first:
+ * its completion needs the page's mapping, and the block it writes may be
+ * freed and used again as soon as the page is gone (M1-15). */
 static void remove_page(AddressSpace *as, struct page *pg) {
+    filemap_wait_writeback(pg);
     spin_lock(&as->tree_lock);
     struct page *was = radix_delete(&as->tree, pg->index);
     if (was == pg) __atomic_sub_fetch(&as->nrpages, 1, __ATOMIC_RELAXED);
@@ -572,9 +597,7 @@ static struct page *write_begin(AddressSpace *as, uint64_t index, size_t in_page
                 if (*err == -EEXIST) continue;
                 return NULL;
             }
-            uint16_t level = page_level(pg);
-            lockdep_sleep_acquire(level, "page"); /* this thread holds the new page's lock */
-            lock_note(pg, level);
+            lock_record(pg); /* this thread holds the new page's lock */
             if (!whole && ((as->flags & AS_MEMBACKED) || index >= size_pages(size))) {
                 memset(page_to_virt(pg), 0, PAGE_SIZE);   /* a hole, or past the end: zeros */
                 page_set(pg, PG_UPTODATE);
@@ -651,8 +674,18 @@ int64_t filemap_write(File *file, const IoBuf *buf, loff_t *pos) {
         loff_t size = inode->size;
         struct page *pg = write_begin(as, index, in_page, n, size, &err);
         if (pg == NULL) break;
-        size_t got = copy_in_nofault((uint8_t *)page_to_virt(pg) + in_page, buf, done, n);
-        if (got < n && !page_test(pg, PG_UPTODATE)) {
+        /* The filesystem gives the bytes a place on its disk first (M1-15) */
+        int fresh = as->ops != NULL && as->ops->prepare_write != NULL ? as->ops->prepare_write(as, pg, in_page, n) : 0;
+        size_t got = 0;
+        if (fresh < 0) {
+            err = fresh;
+            fresh = 0;
+        } else {
+            got = copy_in_nofault((uint8_t *)page_to_virt(pg) + in_page, buf, done, n);
+        }
+        if (err != 0) {
+            /* Nothing copied: below, a page past the end goes again */
+        } else if (got < n && !page_test(pg, PG_UPTODATE)) {
             /* A whole-page write fell short: the rest of the page has no data yet */
             if ((as->flags & AS_MEMBACKED) || index >= size_pages(size)) {
                 memset((uint8_t *)page_to_virt(pg) + got, 0, PAGE_SIZE - got);   /* a hole or past the end */
@@ -667,10 +700,13 @@ int64_t filemap_write(File *file, const IoBuf *buf, loff_t *pos) {
             filemap_set_dirty(pg);
             if ((loff_t)(at + got) > inode->size) __atomic_store_n(&inode->size, (loff_t)(at + got), __ATOMIC_RELEASE);
         } else if (index >= size_pages(inode->size) && pg->mapping == as) {
-            remove_page(as, pg);   /* nothing written past the end: no page there */
+            remove_page(as, pg); /* nothing written past the end: no page there (the owner frees its blocks) */
+        } else if (fresh) {
+            filemap_set_dirty(pg); /* a new block under the page: its zeros must reach the disk */
         }
         page_unlock(pg);
         page_put(pg);
+        if (err != 0) break;
         done += got;
         /* Nothing copied although the prefault worked: the buffer was
          * unmapped meanwhile. Stop rather than retry forever. */
@@ -728,51 +764,101 @@ void filemap_truncate(Inode *inode, loff_t size) {
     zero_tail(as, size);
 }
 
+/* Write a linked file's dirty pages back and wait: 0, or the error (logged) */
+static int write_out(Inode *inode, AddressSpace *as) {
+    int e = filemap_write_range(as, 0, UINT64_MAX);
+    if (e != 0) kprintf("[FILEMAP] inode %lu: write-back failed (%d) as it left memory; changes lost\n", inode->ino, e);
+    return e;
+}
+
+void filemap_inode_flush(Inode *inode) {
+    AddressSpace *as = filemap_of(inode);
+    if (as != NULL && inode->nlink != 0 && as->ops != NULL && as->ops->writepage != NULL) (void)write_out(inode, as);
+}
+
 void filemap_inode_evict(Inode *inode) {
     AddressSpace *as = filemap_of(inode);
     if (as == NULL) return;
-    /* A file still linked keeps its data: write it before the pages go */
-    if (inode->nlink != 0 && as->ops != NULL && as->ops->writepage != NULL) {
-        int e = filemap_write_range(as, 0, UINT64_MAX);
-        if (e != 0)
-            kprintf("[FILEMAP] inode %lu: write-back failed (%d) as it left memory; changes lost\n", inode->ino, e);
-    }
+    /* A file still linked keeps its data: iput wrote it before unhashing
+     * (filemap_inode_flush); again here for an inode never hashed */
+    if (inode->nlink != 0 && as->ops != NULL && as->ops->writepage != NULL && !(inode->flags & I_FLUSHED))
+        (void)write_out(inode, as);
     drop_pages_from(as, 0);   /* no VMA maps it: each holds a File reference, so the inode */
     wb_mapping_forget(as); /* off the write-back list, no pass still writing it */
     kmem_cache_free(as_cache, as);
     inode->mapping = NULL;
 }
 
-/* --- Write-back --- */
+/* --- Write-back ---
+ *
+ * A write of a page runs like a read (see the top): the writer locks the
+ * page, clears PG_DIRTY, sets PG_WRITEBACK, takes a reference and a share of
+ * the page's I/O count, and calls writepage, which adds pieces
+ * (filemap_write_piece) and returns. The page is unlocked right after; the
+ * write ends when the writer's share and every piece have ended
+ * (end_write): PG_WRITEBACK cleared, waiters woken, a failure dirties the
+ * page again (or gives it up: wb_write_result). Whoever needs the bytes on
+ * the disk waits for PG_WRITEBACK (filemap_wait_range). A page is never
+ * written twice at once: a writer waits for the last write to end first, so
+ * two writes of one block can't reach the disk out of order. */
+
+/* The write ended (any context, an interrupt included): err is its result */
+static void end_write(struct page *pg, int err) {
+    AddressSpace *as = pg->mapping; /* set: removing a page waits for its write */
+    wb_page_write_end(err);
+    if (wb_write_result(as, err)) filemap_set_dirty(pg); /* tried again later, unless as keeps failing */
+    page_clear(pg, PG_WRITEBACK);
+    wake_page(pg);
+    page_put(pg); /* the write's reference; the tree holds another */
+}
+
+/* Drop one share of a write; the last one ends it with the first error
+ * seen (a failed piece is -EIO) */
+static void write_put(struct page *pg, int err) {
+    if (err != 0) page_set(pg, PG_ERROR);
+    uint32_t old = __atomic_fetch_sub(&pg->flags, PG_IO_ONE, __ATOMIC_ACQ_REL);
+    if ((old & PG_IO_MASK) == PG_IO_ONE) end_write(pg, err != 0 ? err : page_test(pg, PG_ERROR) ? -EIO : 0);
+}
 
 int filemap_writepage_locked(AddressSpace *as, struct page *pg) {
+    filemap_wait_writeback(pg); /* the last write first: never two at once */
     /* Write-protect first, so a store after the copy faults and dirties it again */
     if (as->vmas != NULL) filemap_mkclean(as, pg);
     clear_dirty(as, pg);
     if (!writes_back(as)) return 0; /* the pages are the storage */
     wb_page_write_begin();
+    page_ref_get(pg);
+    page_clear(pg, PG_ERROR); /* on an up-to-date page: the last write failed */
+    page_set(pg, PG_WRITEBACK);
+    __atomic_add_fetch(&pg->flags, PG_IO_ONE, __ATOMIC_ACQ_REL); /* the writer's share */
     int e = as->ops->writepage(as, pg);
-    wb_page_write_end(e);
-    if (wb_write_result(as, e)) filemap_set_dirty(pg); /* tried again later, unless as keeps failing */
+    write_put(pg, e);
     return e;
 }
 
-int filemap_write_range(AddressSpace *as, uint64_t first, uint64_t last) {
+/* The cached page with the lowest index in [first, last], with a
+ * reference, its index in *idx; NULL if none */
+static struct page *next_in_range(AddressSpace *as, uint64_t first, uint64_t last, uint64_t *idx) {
+    spin_lock(&as->tree_lock);
+    struct page *pg = radix_next(&as->tree, first, idx);
+    if (pg != NULL && *idx <= last)
+        page_ref_get(pg);
+    else
+        pg = NULL;
+    spin_unlock(&as->tree_lock);
+    return pg;
+}
+
+int filemap_start_range_if(AddressSpace *as, uint64_t first, uint64_t last, int (*want)(void *ctx, uint64_t index),
+                           void *ctx) {
     int ret = 0;
     while (first <= last) {
         uint64_t idx = 0;
-        spin_lock(&as->tree_lock);
-        struct page *pg = radix_next(&as->tree, first, &idx);
-        if (pg != NULL && idx <= last)
-            page_ref_get(pg);
-        else
-            pg = NULL;
-        spin_unlock(&as->tree_lock);
+        struct page *pg = next_in_range(as, first, last, &idx);
         if (pg == NULL) break;
-        /* A locked page may be under write-back by someone else (the
-         * flusher, kswapd: they clear PG_DIRTY before they write): wait for
-         * it, so the caller's data is on the disk when this returns */
-        if (page_test(pg, PG_DIRTY) || page_test(pg, PG_LOCKED)) {
+        /* A locked page may be about to become dirty (a write(2) copying
+         * into it): take its lock, then look */
+        if ((page_test(pg, PG_DIRTY) || page_test(pg, PG_LOCKED)) && (want == NULL || want(ctx, idx))) {
             page_lock(pg);
             if (pg->mapping == as && page_test(pg, PG_DIRTY)) {
                 int e = filemap_writepage_locked(as, pg);
@@ -785,6 +871,99 @@ int filemap_write_range(AddressSpace *as, uint64_t first, uint64_t last) {
         first = idx + 1;
     }
     return ret;
+}
+
+int filemap_wait_range_if(AddressSpace *as, uint64_t first, uint64_t last, int (*want)(void *ctx, uint64_t index),
+                          void *ctx) {
+    int ret = 0;
+    while (first <= last) {
+        uint64_t idx = 0;
+        struct page *pg = next_in_range(as, first, last, &idx);
+        if (pg == NULL) break;
+        if (want == NULL || want(ctx, idx)) {
+            filemap_wait_writeback(pg);
+            /* PG_ERROR on an up-to-date page: its last write failed (it is
+             * dirty again, or given up and kept in wb_err). Told once; -ENOSPC
+             * when the file system had no block for it, -EROFS when its
+             * volume was shut down (wb_err says so, and stays for fsync),
+             * else -EIO. */
+            if (page_test(pg, PG_UPTODATE) && !page_test(pg, PG_WRITEBACK) && page_test_and_clear(pg, PG_ERROR) &&
+                ret == 0) {
+                int we = __atomic_load_n(&as->wb_err, __ATOMIC_RELAXED);
+                ret = we == -ENOSPC || we == -EROFS ? we : -EIO;
+            }
+        }
+        page_put(pg);
+        if (idx == UINT64_MAX) break;
+        first = idx + 1;
+    }
+    return ret;
+}
+
+int filemap_write_range_if(AddressSpace *as, uint64_t first, uint64_t last, int (*want)(void *ctx, uint64_t index),
+                           void *ctx) {
+    int e = filemap_start_range_if(as, first, last, want, ctx);
+    int w = filemap_wait_range_if(as, first, last, want, ctx);
+    return e != 0 ? e : w;
+}
+
+int filemap_write_range(AddressSpace *as, uint64_t first, uint64_t last) {
+    return filemap_write_range_if(as, first, last, NULL, NULL);
+}
+
+int filemap_start_all(AddressSpace *as) {
+    if (as->ops != NULL && as->ops->writepages != NULL) return as->ops->writepages(as);
+    return filemap_start_range_if(as, 0, UINT64_MAX, NULL, NULL);
+}
+
+int filemap_wait_all(AddressSpace *as) {
+    return filemap_wait_range_if(as, 0, UINT64_MAX, NULL, NULL);
+}
+
+int filemap_write_all(AddressSpace *as) {
+    int e = filemap_start_all(as);
+    int w = filemap_wait_all(as);
+    return e != 0 ? e : w;
+}
+
+struct page *filemap_grab_zeroed(AddressSpace *as, uint64_t index, int *err) {
+    for (;;) {
+        unsigned off;
+        struct page *pg = filemap_find(as, index, &off);
+        if (pg == NULL) {
+            pg = add_new_page(as, index, err);
+            if (pg == NULL) {
+                if (*err == -EEXIST) continue;
+                return NULL;
+            }
+            lock_record(pg);
+        } else {
+            page_lock(pg);
+            if (pg->mapping != as) { /* dropped meanwhile */
+                page_unlock(pg);
+                page_put(pg);
+                continue;
+            }
+        }
+        filemap_wait_writeback(pg); /* its old bytes may still be going to the disk */
+        memset(page_to_virt(pg), 0, PAGE_SIZE);
+        page_clear(pg, PG_ERROR);
+        page_set(pg, PG_UPTODATE);
+        return pg;
+    }
+}
+
+void filemap_drop_page(AddressSpace *as, uint64_t index) {
+    unsigned off;
+    struct page *pg = filemap_find(as, index, &off);
+    if (pg == NULL) return;
+    page_lock(pg);
+    if (pg->mapping == as) {
+        if (__atomic_load_n(&pg->mapcount, __ATOMIC_RELAXED) != 0) filemap_unmap_page(as, pg);
+        remove_page(as, pg);
+    }
+    page_unlock(pg);
+    page_put(pg);
 }
 
 int filemap_fsync(File *file) {
@@ -814,7 +993,8 @@ int filemap_remove_unused(AddressSpace *as, struct page *pg) {
     /* Lookups take their reference under this lock: with only the tree's and
      * the caller's, nobody is reading, mapping or waiting on it, and nobody
      * can start once it is out */
-    if (page_ref_count(pg) == 2 && !page_test(pg, PG_DIRTY) && radix_delete(&as->tree, pg->index) == pg) {
+    if (page_ref_count(pg) == 2 && !page_test(pg, PG_DIRTY | PG_WRITEBACK) &&
+        radix_delete(&as->tree, pg->index) == pg) {
         __atomic_sub_fetch(&as->nrpages, 1, __ATOMIC_RELAXED);
         drop = 1;
     }
@@ -871,9 +1051,18 @@ int filemap_bdev_read(struct BlkPlug *plug, struct BlockDevice *dev, uint64_t se
     return 0;
 }
 
-int filemap_bdev_write(struct BlockDevice *dev, uint64_t sector, uint32_t count, struct page *pg, size_t byte_off) {
-    void *buf = (uint8_t *)page_to_virt(pg) + byte_off;
-    return blk_rw_sync(dev, BLK_OP_WRITE, sector, buf, (size_t)count * BLK_SECTOR_SIZE) != 0 ? -EIO : 0;
+/* A write piece's request ended (usually the disk interrupt) */
+static void bdev_write_end_io(void *priv, int status) {
+    write_put(priv, status != 0 ? -EIO : 0);
+}
+
+int filemap_write_piece(struct BlockDevice *dev, uint64_t sector, uint32_t count, struct page *pg, size_t byte_off) {
+    BlkRequest *rq = blk_rq_alloc(dev, BLK_OP_WRITE, sector, bdev_write_end_io, pg);
+    if (rq == NULL) return -ENOMEM;
+    blk_rq_add_page(rq, pg, (uint32_t)byte_off, count * BLK_SECTOR_SIZE);
+    __atomic_add_fetch(&pg->flags, PG_IO_ONE, __ATOMIC_ACQ_REL); /* before: end_io may run inside the submit */
+    blk_submit(rq);
+    return 0;
 }
 
 #define BDEV_SECTOR 512u
@@ -885,7 +1074,7 @@ static uint32_t bdev_sectors(const AddressSpace *as, const struct page *pg) {
     return (uint32_t)((n + BDEV_SECTOR - 1) / BDEV_SECTOR);
 }
 
-static int bdev_readpage(AddressSpace *as, struct page *pg) {
+int filemap_bdev_readpage(AddressSpace *as, struct page *pg) {
     uint32_t count = bdev_sectors(as, pg);
     memset(page_to_virt(pg), 0, PAGE_SIZE);   /* past a device end that is not page aligned */
     filemap_io_begin(pg);
@@ -894,24 +1083,24 @@ static int bdev_readpage(AddressSpace *as, struct page *pg) {
     return 0;
 }
 
-static int bdev_writepage(AddressSpace *as, struct page *pg) {
-    return filemap_bdev_write(as->bdev, (uint64_t)pg->index * (PAGE_SIZE / BDEV_SECTOR), bdev_sectors(as, pg), pg, 0);
+int filemap_bdev_writepage(AddressSpace *as, struct page *pg) {
+    return filemap_write_piece(as->bdev, (uint64_t)pg->index * (PAGE_SIZE / BDEV_SECTOR), bdev_sectors(as, pg), pg, 0);
 }
 
 static const AddressSpaceOps bdev_aops = {
-    .readpage = bdev_readpage,
-    .writepage = bdev_writepage,
+    .readpage = filemap_bdev_readpage,
+    .writepage = filemap_bdev_writepage,
 };
 
-void filemap_bdev_init(AddressSpace *as, struct BlockDevice *dev, loff_t size) {
-    as_init(as, &bdev_aops, 0);
+void filemap_bdev_init(AddressSpace *as, struct BlockDevice *dev, loff_t size, const AddressSpaceOps *ops) {
+    as_init(as, ops != NULL ? ops : &bdev_aops, 0);
     as->host = NULL;
     as->bdev = dev;
     as->dev_size = size;
 }
 
 void filemap_bdev_release(AddressSpace *as) {
-    int e = filemap_write_range(as, 0, UINT64_MAX); /* unmount: the metadata reaches the disk */
+    int e = filemap_write_all(as); /* unmount: the metadata reaches the disk */
     if (e == 0) e = filemap_flush_device(as); /* and the medium, past the disk's write cache */
     if (e != 0) kprintf("[FILEMAP] %s: write-back at release failed (%d)\n", as->bdev->name, e);
     drop_pages_from(as, 0);

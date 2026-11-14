@@ -28,6 +28,7 @@
 #define LOCK_LEVEL_INODE_CHILD_2 13   /* sleeping: a directory a rename replaces (M1-13) */
 #define LOCK_LEVEL_MM            20   /* sleeping read-write: mmap, munmap, faults (M1-07) */
 #define LOCK_LEVEL_PAGE          30   /* sleeping, per page (M1-12) */
+#define LOCK_LEVEL_FS_ALLOC      32   /* sleeping: a volume's allocation and block maps (ext2, M1-15) */
 #define LOCK_LEVEL_META_PAGE     35   /* sleeping: a block-device mapping's page (filesystem metadata, M1-13) */
 #define LOCK_LEVEL_MAPPING       40   /* sleeping: VMAs mapping a file (M1-12) */
 #define LOCK_LEVEL_FS_IO         45   /* sleeping: a filesystem's device reads (FAT32 volume; M1-11) */
@@ -60,10 +61,13 @@
 
 /* Spinlocks one CPU may hold at once (deepest nesting seen is about 5) */
 #define LOCKDEP_MAX_HELD       16
-/* Sleeping locks one thread may hold at once. Deepest today: a write whose
- * user buffer maps a file faults while holding the File position, inode, mm,
- * page and filesystem-I/O locks (5; M1-12) */
-#define LOCKDEP_MAX_SLEEP_HELD 6
+/* Sleeping locks one thread may hold at once. Deepest today (M1-15): an
+ * ext2 rename that moves a directory over another and needs a new directory
+ * block holds the rename, two directory, two child and allocation locks,
+ * and a page allocation inside may reclaim (mapping lock): 7. A write whose
+ * user buffer maps a file faults while holding the File position, inode,
+ * mm, page and filesystem-I/O locks (5; M1-12). */
+#define LOCKDEP_MAX_SLEEP_HELD 8
 
 struct Spinlock;
 

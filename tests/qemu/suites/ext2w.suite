@@ -1,0 +1,5 @@
+# qemu.ext2w (M1-15): the data partition, named with arc.data=PARTUUID=, is
+# mounted read-write; a 1 GiB file by temp + fsync + rename, an atomic
+# replace, a tree of small files; the kernel marks the volume clean when the
+# run ends. Exit status = failed checks.
+ext2wtest /boot/ext2wtest write

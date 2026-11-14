@@ -86,7 +86,7 @@ static int ext2_ready(void) {
         }
         disk_init(&v->bdev, v->data, v->size);
         int err;
-        SuperBlock *sb = ext2_mount(&v->bdev, v->size, v->dev, &err);
+        SuperBlock *sb = ext2_mount(&v->bdev, v->size, v->dev, 0, &err);
         if (sb == NULL || vfs_mkdir(v->mnt, 0755) != 0 || vfs_mount(v->mnt, sb, v->dev) != 0) abort();
     }
     state = 1;
@@ -508,9 +508,9 @@ TEST(rejects_bad_superblocks) {
     static uint8_t zero[8192];
     BlockDevice zdev;
     disk_init(&zdev, zero, sizeof(zero));
-    ASSERT_TRUE(ext2_mount(&zdev, sizeof(zero), "z", &err) == NULL);   /* no magic */
+    ASSERT_TRUE(ext2_mount(&zdev, sizeof(zero), "z", 0, &err) == NULL);   /* no magic */
     ASSERT_EQ(err, -EINVAL);
-    ASSERT_TRUE(ext2_mount(NULL, 1 << 20, "z", &err) == NULL);
+    ASSERT_TRUE(ext2_mount(NULL, 1 << 20, "z", 0, &err) == NULL);
     if (ext2_ready() != 0) return 0;
     struct {
         uint32_t at;   /* byte in the superblock */
@@ -534,7 +534,7 @@ TEST(rejects_bad_superblocks) {
         uint8_t *copy = patched(vols[0].data, vols[0].size, 1024 + cases[k].at, &cases[k].value, cases[k].len);
         BlockDevice *dev = malloc(sizeof(*dev));   /* a mounted volume keeps both */
         disk_init(dev, copy, vols[0].size);
-        SuperBlock *sb = ext2_mount(dev, vols[0].size, "bad", &err);
+        SuperBlock *sb = ext2_mount(dev, vols[0].size, "bad", 0, &err);
         if (cases[k].ok) {
             ASSERT_TRUE(sb != NULL);
             ASSERT_EQ(ext2_ro_forced(sb), cases[k].at == 100);
@@ -549,11 +549,11 @@ TEST(rejects_bad_superblocks) {
     /* A device smaller than the volume says */
     BlockDevice dev;
     disk_init(&dev, vols[0].data, vols[0].size);
-    ASSERT_TRUE(ext2_mount(&dev, vols[0].size / 2, "short", &err) == NULL);
+    ASSERT_TRUE(ext2_mount(&dev, vols[0].size / 2, "short", 0, &err) == NULL);
     ASSERT_EQ(err, -EINVAL);
     /* An unreadable device: two sectors, the superblock past them */
     disk_init(&dev, vols[0].data, 1024);
-    ASSERT_TRUE(ext2_mount(&dev, 1 << 20, "eio", &err) == NULL);
+    ASSERT_TRUE(ext2_mount(&dev, 1 << 20, "eio", 0, &err) == NULL);
     ASSERT_EQ(err, -EIO);
     return 0;
 }
@@ -570,12 +570,12 @@ TEST(failed_mounts_leak_nothing) {
     uint8_t *copy = patched(vols[1].data, vols[1].size, 1024 + 96, &bad, 4);
     BlockDevice dev;
     disk_init(&dev, copy, vols[1].size);
-    ASSERT_TRUE(ext2_mount(&dev, vols[1].size, "bad", &err) == NULL);
+    ASSERT_TRUE(ext2_mount(&dev, vols[1].size, "bad", 0, &err) == NULL);
     free(copy);
     uint32_t far = 0x00ffffff;
     copy = patched(vols[1].data, vols[1].size, 2048 + 8, &far, 4);   /* 2 KiB blocks: group descriptors in block 1 */
     disk_init(&dev, copy, vols[1].size);
-    ASSERT_TRUE(ext2_mount(&dev, vols[1].size, "bad", &err) == NULL);
+    ASSERT_TRUE(ext2_mount(&dev, vols[1].size, "bad", 0, &err) == NULL);
     ASSERT_EQ(err, -EINVAL);
     free(copy);
     vfs_env_usage(&after);
@@ -585,7 +585,7 @@ TEST(failed_mounts_leak_nothing) {
         (void)reclaim_drop_clean();
         vfs_env_usage(&before);
         vfs_env_fail_alloc_in(n);
-        SuperBlock *sb = ext2_mount(&vols[2].bdev, vols[2].size, "oom", &err);
+        SuperBlock *sb = ext2_mount(&vols[2].bdev, vols[2].size, "oom", 0, &err);
         vfs_env_fail_alloc_in(0);
         if (sb != NULL) break;   /* past the last allocation (this volume stays) */
         failures++;
@@ -612,7 +612,7 @@ TEST(corrupt_directory_entry_is_eio) {
         uint16_t lens[NVOLS] = {0, 13, (uint16_t)(bs + 4)};
         disk_init(&devs[i], patched(vols[i].data, vols[i].size, at + 4, &lens[i], 2), vols[i].size); /* "."'s rec_len */
         int err;
-        SuperBlock *sb = ext2_mount(&devs[i], vols[i].size, "bad", &err);
+        SuperBlock *sb = ext2_mount(&devs[i], vols[i].size, "bad", 0, &err);
         ASSERT_TRUE(sb != NULL); /* the root inode is fine; its entries aren't */
         ASSERT_EQ(vfs_mkdir(mnts[i], 0755), 0);
         ASSERT_EQ(vfs_mount(mnts[i], sb, "bad"), 0);
@@ -649,7 +649,7 @@ TEST(corrupt_dotdot_is_eio) {
     static BlockDevice dev; /* stays mounted */
     disk_init(&dev, copy, vols[0].size);
     int err;
-    SuperBlock *sb = ext2_mount(&dev, vols[0].size, "dd", &err);
+    SuperBlock *sb = ext2_mount(&dev, vols[0].size, "dd", 0, &err);
     ASSERT_TRUE(sb != NULL);
     ASSERT_EQ(vfs_mkdir("/dsub", 0755), 0);
     ASSERT_EQ(vfs_mount_subdir("/dsub", sb, "dir", "dd"), 0);
@@ -698,9 +698,10 @@ TEST(reads_through_the_page_cache) {
 }
 
 /* A readahead batch with async pieces (deferred reads write BLK_MEM_POISON):
- * a whole page's blocks go on the plug and land late; the page holding EOF is
- * copied from the metadata cache with its tail zeroed, never touched by a
- * piece, so it is done (and right) before any interrupt. 1 KiB blocks. */
+ * a whole page's blocks go on the plug and land late; the block holding EOF
+ * is read synchronously straight into its page and the tail zeroed after
+ * (mm/filemap_block.c), never by a piece, so that page is done (and right)
+ * before any interrupt, with exactly one request. 1 KiB blocks. */
 TEST(readahead_pieces_land_late_eof_page_does_not_wait) {
     if (ext2_ready() != 0) return 0;
     File *f;
@@ -727,7 +728,7 @@ TEST(readahead_pieces_land_late_eof_page_does_not_wait) {
     blk_mem_defer = 0;
     ASSERT_TRUE(page_test(pg[0], PG_LOCKED)); /* its pieces are still in flight */
     ASSERT_TRUE(!page_test(pg[1], PG_LOCKED) && page_test(pg[1], PG_UPTODATE));
-    ASSERT_TRUE(blk_mem_requests == before); /* nothing reached the disk yet */
+    ASSERT_TRUE(blk_mem_requests == before + 1); /* only the EOF block's synchronous read */
     blk_mem_run();
     ASSERT_TRUE(blk_mem_requests > before);
     ASSERT_TRUE(!page_test(pg[0], PG_LOCKED) && page_test(pg[0], PG_UPTODATE));

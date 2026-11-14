@@ -51,6 +51,11 @@ void proc_exit(Process *p, int32_t exit_status, uint8_t term_signal) {
     mm_switch(NULL);
     mm_put(mm);
 
+    /* Kernel test mode: init exiting ends the QEMU run with its status. Here,
+     * while this thread can still sleep: the end hook writes the disks back
+     * (sysmount_shutdown, M1-15). */
+    testmode_process_exited((int)p->pid, exit_status);
+
     p->exit_status = exit_status;
     p->term_signal = term_signal;
     Process *heir = proc_reparent_children(p);
@@ -60,9 +65,6 @@ void proc_exit(Process *p, int32_t exit_status, uint8_t term_signal) {
      * up the kernel lock in sched_schedule(); proc_reap then waits until the
      * switch away has finished before it frees the stack (sched_wait_off_cpu). */
     thread_current()->state = THREAD_DEAD;
-
-    /* Kernel test mode: init exiting ends the QEMU run with its status */
-    testmode_process_exited((int)p->pid, p->exit_status);
 
     if (heir != NULL) {               /* init adopted a zombie: let it reap */
         wq_wake(&heir->child_exit_wq);
