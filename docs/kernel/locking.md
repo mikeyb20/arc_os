@@ -13,6 +13,7 @@ of that level (a lock without a subkey counts as 0). Give every lock of a nestab
 | Level | Name in `lockdep.h` | Kind | Locks today | From |
 |---|---|---|---|---|
 | 0 | `LOCK_LEVEL_KERNEL` | big kernel lock | `kernel_lock` (see below) | M1-05, interim |
+| 5 | `LOCK_LEVEL_DEVICE` | sleeping | device model: bus device and driver lists, binding, probe/remove/suspend/resume calls (`drivers/bus.c`) | M1-09 |
 | 7 | `LOCK_LEVEL_FILE_POS` | sleeping | `File.pos_lock`: the position of a seekable open file (read, write, lseek, getdents) | M1-11 |
 | 8 | `LOCK_LEVEL_RENAME` | sleeping | `rename_mutex` (vfs.c): one rename at a time, held from before either path is resolved | M1-11 |
 | 10 | `LOCK_LEVEL_INODE` | sleeping, read-write | `Inode.lock` (`RwSem`): a directory's entries (lookup shared, changes exclusive), a regular file's data and size (read shared, write and truncate exclusive); a pipe's reader and writer mutexes | M1-11 |
@@ -33,6 +34,9 @@ of that level (a lock without a subkey counts as 0). Give every lock of a nestab
 | 76 | `LOCK_LEVEL_OBJECT_TABLE` | spinlock | a table looked up under an object lock: the socket table | M1-05 |
 | 80 | `LOCK_LEVEL_WAITQUEUE` | spinlock | wait-queue locks | M1-05 |
 | 90 | `LOCK_LEVEL_RUNQUEUE` | spinlock, interrupts off | per-CPU run queues; two at once only in CPU-index order (subkey = index + 1) | M1-05 |
+| 95 | `LOCK_LEVEL_IRQ_DESC` | spinlock, IRQ-safe | interrupt descriptors: request, free, affinity, INTx line chains, `/proc/interrupts` (`drivers/irq.c`); never taken in an interrupt | M1-09 |
+| 96 | `LOCK_LEVEL_IRQ_VECTOR` | spinlock, IRQ-safe | per-CPU device vector tables (`arch/x86_64/irq_vector.c`), under the descriptor lock; never taken in an interrupt | M1-09 |
+| 97 | `LOCK_LEVEL_PCI_CONFIG` | spinlock, IRQ-safe | PCI config ports 0xCF8/0xCFC (`drivers/pci.c`): one address-then-data pair at a time; leaf | M1-09 |
 | 99 | `LOCK_LEVEL_SLAB_REGISTRY` | spinlock | the list of slab caches | M1-05 |
 | 100 | `LOCK_LEVEL_SLAB` | spinlock | one slab cache | M1-02b |
 | 101 | `LOCK_LEVEL_BUDDY` | spinlock | buddy allocator (the only lock taken under a slab lock) | M1-02 |
@@ -41,6 +45,13 @@ of that level (a lock without a subkey counts as 0). Give every lock of a nestab
 Levels 7, 8, 11, 12, 45 and 62–65 are M1-11's additions (see "VFS locks" below). Levels 75 and 76 are additions to §7's list: the pipe, socket and tty locks are the "condition" locks passed to
 `wq_sleep`, so they sit just above the signal lock and below the wait-queue locks; the socket table is looked up
 while one socket's lock is held. Timer-queue locks (M1-06) go between 101 and 109.
+
+M1-09 adds the device levels. Probe and remove run under the device lock (5, sleeping), so a driver may sleep,
+allocate and take any lock from a later row from them, but never hold a spinlock across them. The descriptor
+lock (95) nests the vector-table lock (96) and the PCI config lock (97), because masking and retargeting an
+interrupt writes config space; it also allocates under itself (the first vector table of a CPU: slab and buddy,
+99-101, still above it). Interrupt handlers take none of the three: a device vector is one table load, an INTx
+line walks its chain without a lock (it only grows at the head, and an unlinked entry keeps its next pointer).
 
 ## Rules the checker enforces (debug builds, `ARC_DEBUG=1`)
 
@@ -75,8 +86,9 @@ Before M1-05 one CPU ran all kernel code with interrupts off, and the process li
 tables and signal state relied on that instead of locks. `kernel_lock` (`kernel/proc/kernel_lock.h`) keeps that
 guarantee while user code runs on every CPU:
 
-- A thread holds it from syscall entry to syscall exit (and through `execve` until it enters user mode); a
-  device interrupt handler (keyboard, virtio-net) holds it while it runs (`kernel_lock_irq`).
+- A thread holds it from syscall entry to syscall exit (and through `execve` until it enters user mode); the
+  keyboard interrupt handler holds it while it runs (`kernel_lock_irq`). Since M1-09 virtio-net's interrupt does
+  not: it only wakes the RX worker thread, which takes the lock like a syscall (interrupts off, no other lock).
 - It is held only with interrupts off. A thread that blocks gives it up inside `sched_schedule` and takes it
   back when it runs again, so sleeping with it is allowed.
 - The timer, IPIs and the scheduler never take it. Wait queues and the scheduler are correct without it. Pipes,
@@ -92,7 +104,7 @@ off removes the lock.
 | Process list, PID counter, fork/exec/exit/wait bookkeeping, credentials | KB | M1-16 |
 | Signal state (`SigState`, delivery, stop and continue) | KB | M1-16 |
 | Network stack outside the socket locks (interfaces, ARP, IP, UDP/TCP demux) | KB | M1-18 |
-| TTY line discipline and VT/ANSI state (the keyboard IRQ holds the lock) | KB | M1-09 |
+| TTY line discipline and VT/ANSI state (the keyboard IRQ holds the lock) | KB | M1-18 |
 
 M1-11 took the VFS, ramfs, devfs, procfs, FAT32, path lookup, fd tables and pipes off this list: they are
 correct without the kernel lock (it is still taken at every syscall entry for the rows above). What they read

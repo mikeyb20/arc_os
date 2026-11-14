@@ -201,9 +201,50 @@ add_test(NAME qemu.qr.panic COMMAND ${_qemu_test} --suite kpanic --name qr-panic
     --check "${_qr_check} --kind panic"
     --expect "PANIC: Page Fault on CPU 0")
 
+# Driver model (M1-09, ADR-0006): virtio-blk and virtio-net bound through the
+# PCI bus with MSI-X (config + queue vectors spread over the CPUs), QEMU's edu
+# device with MSI, an affinity move and a DMA round trip, virtio-net's RX
+# interrupt, and the FAT32 disk mounted (its reads raise the queue
+# interrupt). The .intx run takes MSI-X away from virtio-blk (vectors=0) and
+# runs edu on its legacy line. The FAT32 disk image is made by the fixture.
+set(_devices_disk ${CMAKE_BINARY_DIR}/devices-disk.img)
+add_test(NAME qemu.devices.disk COMMAND bash ${CMAKE_SOURCE_DIR}/tools/make-fat32-test-disk.sh ${_devices_disk})
+set_tests_properties(qemu.devices.disk PROPERTIES LABELS qemu FIXTURES_SETUP devices_disk)
+set(_devices_qemu
+    --qemu-arg=-drive --qemu-arg=file=${_devices_disk},if=none,id=disk0,format=raw,snapshot=on
+    --qemu-arg=-netdev --qemu-arg=user,id=net0
+    --qemu-arg=-device --qemu-arg=virtio-net-pci,netdev=net0,disable-modern=on
+    --qemu-arg=-device --qemu-arg=edu,dma_mask=0xffffffff)
+add_test(NAME qemu.devices COMMAND ${_qemu_test} --suite devices ${_devices_qemu}
+    --qemu-arg=-device --qemu-arg=virtio-blk-pci,drive=disk0,disable-modern=on
+    --expect "\\[BUS\\] 0000:00:[0-9a-f.]+: bound to virtio-blk"
+    --expect "\\[BUS\\] 0000:00:[0-9a-f.]+: bound to virtio-net"
+    --expect "\\[DEVTEST\\] edu: id 0x[0-9a-f]+, liveness ok"
+    --expect "\\[DEVTEST\\] edu: msi interrupt on cpu[0-9] ok"
+    --expect "\\[DEVTEST\\] edu: affinity move refused without per-vector masking ok"
+    --expect "\\[DEVTEST\\] edu: dma 4096 bytes round trip ok"
+    --expect "\\[DEVTEST\\] net: ARP reply from the gateway after [1-9][0-9]* RX interrupt\\(s\\) ok"
+    --expect "\\[DEVTEST\\] net: rx interrupt moved cpu[0-9] -> cpu[0-9]"
+    --expect "\\[DEVTEST\\] net: rx interrupt arrived on cpu[0-9] ok"
+    --expect "\\[VFS\\] Mounted vfat at /disk"
+    --expect ":( +[0-9]+)* +[1-9][0-9]*( +[0-9]+)*  PCI-MSIX 0000:00:[0-9a-f.]+ 1 cpu[0-9]/0x[0-9a-f]+  virtio-blk-queue"
+    --expect ":( +[0-9]+)* +[1-9][0-9]*( +[0-9]+)*  PCI-MSIX 0000:00:[0-9a-f.]+ 1 cpu[0-9]/0x[0-9a-f]+  virtio-net-rx"
+    --expect "PCI-MSI +0000:00:[0-9a-f.]+ 0 cpu[0-9]/0x[0-9a-f]+  edu")
+add_test(NAME qemu.devices.intx COMMAND ${_qemu_test} --suite devices --name devices-intx ${_devices_qemu}
+    --qemu-arg=-device --qemu-arg=virtio-blk-pci,drive=disk0,disable-modern=on,vectors=0
+    --cmdline arc.devtest=intx
+    --expect "\\[PCI\\] 0000:00:[0-9a-f.]+: WARNING: INTx on line [0-9]+ from the firmware's irq_line"
+    --expect "\\[DEVTEST\\] edu: intx interrupt on cpu0 ok"
+    --expect "\\[DEVTEST\\] edu: dma 4096 bytes round trip ok"
+    --expect "\\[VFS\\] Mounted vfat at /disk"
+    --expect ":( +[0-9]+)* +[1-9][0-9]*( +[0-9]+)*  INTx +0000:00:[0-9a-f.]+ line [0-9]+  virtio-blk"
+    --expect "INTx +0000:00:[0-9a-f.]+ line [0-9]+  edu")
+set_tests_properties(qemu.devices qemu.devices.intx PROPERTIES FIXTURES_REQUIRED devices_disk)
+
 set_tests_properties(qemu.smoke qemu.mem.buddy qemu.mem.cap qemu.userland qemu.abi qemu.musl qemu.fpu qemu.cpufloor
     qemu.smp.xapic qemu.smp.x2apic qemu.sched qemu.lockorder qemu.selftest.fail qemu.selftest.panic
     qemu.panic.fault qemu.diag qemu.mm qemu.mm.oom qemu.vfs qemu.qr.report qemu.qr.log qemu.qr.panic
+    qemu.devices qemu.devices.intx
     PROPERTIES LABELS qemu TIMEOUT 180 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     FIXTURES_SETUP qemu_logs)
 set_tests_properties(qemu.mm.oom PROPERTIES TIMEOUT 320)

@@ -1,12 +1,27 @@
+/* arc_os — virtio-blk driver (legacy virtio-PCI)
+ *
+ * Owns: one virtio block device (the first one found), its request queue and
+ * its block-device registration.
+ * Invariants: requests are synchronous: one in flight, polled to completion
+ * (M1-10 makes them asynchronous with interrupt completion). The queue's
+ * MSI-X vector is set up and counted now; its handler has nothing to finish
+ * yet.
+ * Locks: none of its own; callers are serialized by the big kernel lock
+ * (syscalls) or run at boot. The interrupt handlers touch no driver state.
+ * Cost: one request = two coherent DMA allocations + one copy (M1-10 drops
+ * both). */
+
 #include "drivers/virtio_blk.h"
 #include "drivers/blkdev.h"
 #include "drivers/virtio.h"
 #include "drivers/pci.h"
-#include "arch/x86_64/io.h"
+#include "drivers/irq.h"
+#include "drivers/dma.h"
+#include "arch/hal.h"
 #include "mm/pmm.h"
-#include "mm/vmm.h"
 #include "lib/mem.h"
 #include "lib/kprintf.h"
+#include "uapi/errno.h"
 
 /* Sector size in bytes */
 #define SECTOR_SIZE 512
@@ -20,54 +35,102 @@ static int blk_initialized;
 
 static void virtio_blk_register_blkdev(void);
 
-/* Free 'count' contiguous physical pages starting at phys. */
-static void free_contiguous_pages(uint64_t phys, uint32_t count) {
-    for (uint32_t i = 0; i < count; i++)
-        pmm_free_page(phys + i * PAGE_SIZE);
+/* Queue vector (MSI-X): completions are still polled, so only count it. */
+static int blk_queue_irq(void *arg) {
+    (void)arg;
+    return IRQ_HANDLED;
 }
 
-int virtio_blk_init(void) {
-    const PciDevice *pci = pci_find_device(VIRTIO_BLK_VENDOR_ID, VIRTIO_BLK_DEVICE_ID);
-    if (!pci) {
-        kprintf("[VIRTIO-BLK] No VirtIO block device found\n");
-        return -1;
-    }
+/* Config-change vector (MSI-X): capacity changes are not handled yet. */
+static int blk_config_irq(void *arg) {
+    (void)arg;
+    return IRQ_HANDLED;
+}
 
-    kprintf("[VIRTIO-BLK] Found device at %x:%x.%x\n",
-            pci->addr.bus, pci->addr.device, pci->addr.function);
+/* INTx (shared line): reading the ISR status acknowledges the device. */
+static int blk_intx_irq(void *arg) {
+    return virtio_isr_status(arg) != 0 ? IRQ_HANDLED : IRQ_NONE;
+}
 
-    if (virtio_init_device(&blk_vdev, pci) != 0) {
-        return -1;
+/* MSI-X entry 0 = config changes, entry 1 = request queue (with a single
+ * vector the queue takes entry 0); INTx = one shared handler. */
+static int blk_setup_irqs(VirtioDevice *v) {
+    Device *dev = &v->pci->dev;
+    int n = virtio_setup_irqs(v, 2);
+    if (n < 0) return n;
+    if (!v->msix) return irq_request(dev, 0, blk_intx_irq, v, IRQF_SHARED, "virtio-blk");
+    uint16_t qvec = n >= 2 ? 1 : 0;
+    int rc = irq_request(dev, qvec, blk_queue_irq, v, 0, "virtio-blk-queue");
+    if (rc == 0 && n >= 2) rc = irq_request(dev, 0, blk_config_irq, v, 0, "virtio-blk-config");
+    if (rc != 0) return rc;
+    if (virtio_set_queue_vector(v, 0, qvec) != 0 ||
+        virtio_set_config_vector(v, n >= 2 ? 0 : VIRTIO_MSI_NO_VECTOR) != 0) {
+        kprintf("[VIRTIO-BLK] device refused the MSI-X vectors\n");
+        return -EIO;
     }
+    return 0;
+}
+
+static int virtio_blk_probe(PciDevice *pci, const PciDeviceId *id) {
+    (void)id;
+    if (blk_initialized) return -EBUSY;   /* one virtio disk for now */
+
+    if (virtio_init_device(&blk_vdev, pci) != 0) return -ENODEV;
 
     /* Negotiate features — we don't need any optional features for basic I/O */
     virtio_negotiate_features(&blk_vdev, 0);
 
     /* Initialize request queue (queue 0) */
-    if (virtio_init_queue(&blk_vdev, 0) != 0) {
-        return -1;
-    }
+    if (virtio_init_queue(&blk_vdev, 0) != 0) return -ENOMEM;
 
-    /* Read capacity from device-specific config (offset 0x14 from BAR0).
-     * Legacy VirtIO-blk config: 64-bit capacity at offset 0. */
-    uint32_t cap_lo = inl(blk_vdev.io_base + VIRTIO_REG_CONFIG + 0);
-    uint32_t cap_hi = inl(blk_vdev.io_base + VIRTIO_REG_CONFIG + 4);
+    int rc = blk_setup_irqs(&blk_vdev);
+    if (rc != 0) return rc;
+
+    /* Capacity: 64 bits at the start of the device config (moved by MSI-X) */
+    uint32_t cap_lo = virtio_config_read32(&blk_vdev, 0);
+    uint32_t cap_hi = virtio_config_read32(&blk_vdev, 4);
     blk_capacity = ((uint64_t)cap_hi << 32) | cap_lo;
 
-    kprintf("[VIRTIO-BLK] Capacity: %lu sectors (%lu MB)\n",
-            blk_capacity, (blk_capacity * SECTOR_SIZE) / (1024 * 1024));
+    kprintf("[VIRTIO-BLK] Capacity: %lu sectors (%lu MB), %s\n", blk_capacity,
+            (blk_capacity * SECTOR_SIZE) / (1024 * 1024), blk_vdev.msix ? "MSI-X" : "INTx");
 
     /* Mark device ready */
     virtio_device_ready(&blk_vdev);
 
     blk_initialized = 1;
-    kprintf("[VIRTIO-BLK] Initialized successfully\n");
+    pci->dev.driver_data = &blk_vdev;
 
     /* Register as a generic block device */
     virtio_blk_register_blkdev();
-
-    pci_set_driver(pci, "virtio-blk");   /* boot report (M1-04) */
     return 0;
+}
+
+/* ADR-0017: the hooks exist; power management of the disk comes later. */
+static int virtio_blk_suspend(Device *dev, int how) {
+    (void)how;
+    kprintf("[VIRTIO-BLK] %s: suspend not supported yet\n", dev->name);
+    return -EOPNOTSUPP;
+}
+
+static int virtio_blk_resume(Device *dev, int how) {
+    (void)how;
+    kprintf("[VIRTIO-BLK] %s: resume not supported yet\n", dev->name);
+    return -EOPNOTSUPP;
+}
+
+static const PciDeviceId virtio_blk_ids[] = {
+    PCI_DEVICE(VIRTIO_BLK_VENDOR_ID, VIRTIO_BLK_DEVICE_ID),
+    {0},
+};
+
+static PciDriver virtio_blk_driver = {
+    .driver = {.name = "virtio-blk", .suspend = virtio_blk_suspend, .resume = virtio_blk_resume},
+    .ids = virtio_blk_ids,
+    .probe = virtio_blk_probe,
+};
+
+int virtio_blk_register(void) {
+    return pci_register_driver(&virtio_blk_driver);
 }
 
 /* Build a 3-descriptor chain for a VirtIO-blk request.
@@ -116,37 +179,36 @@ static int blk_transfer(uint64_t sector, uint32_t count, void *buf, int is_write
 
     const char *op = is_write ? "Write" : "Read";
     Virtqueue *vq = &blk_vdev.queues[0];
-    uint64_t hhdm = vmm_get_hhdm_offset();
+    Device *dev = &blk_vdev.pci->dev;
     uint32_t data_bytes = count * SECTOR_SIZE;
 
-    /* Allocate request page (header + status) and data pages */
-    uint64_t req_phys = pmm_alloc_page();
-    if (req_phys == 0) {
+    /* Request page (header + status) and data buffer: coherent DMA memory */
+    uint64_t req_phys, data_phys;
+    uint8_t *req = dma_alloc_coherent(dev, PAGE_SIZE, &req_phys, 0);
+    if (req == NULL) {
         kprintf("[VIRTIO-BLK] Failed to alloc request page\n");
         return -1;
     }
-
-    uint32_t data_pages = (data_bytes + PAGE_SIZE - 1) / PAGE_SIZE;
-    uint64_t data_phys = pmm_alloc_contiguous(data_pages);
-    if (data_phys == 0) {
-        kprintf("[VIRTIO-BLK] Failed to alloc %u data pages\n", data_pages);
-        pmm_free_page(req_phys);
+    uint8_t *data = dma_alloc_coherent(dev, data_bytes, &data_phys, 0);
+    if (data == NULL) {
+        kprintf("[VIRTIO-BLK] Failed to alloc %u data bytes\n", data_bytes);
+        dma_free_coherent(dev, PAGE_SIZE, req, req_phys);
         return -1;
     }
 
     /* Set up request header */
-    VirtioBlkReqHeader *hdr = (VirtioBlkReqHeader *)(req_phys + hhdm);
+    VirtioBlkReqHeader *hdr = (VirtioBlkReqHeader *)req;
     hdr->type = is_write ? VIRTIO_BLK_T_OUT : VIRTIO_BLK_T_IN;
     hdr->reserved = 0;
     hdr->sector = sector;
 
     /* For writes, copy caller data into DMA pages before submit */
     if (is_write) {
-        memcpy((void *)(data_phys + hhdm), buf, data_bytes);
+        memcpy(data, buf, data_bytes);
     }
 
     /* Status byte at end of request page */
-    uint8_t *status_ptr = (uint8_t *)(req_phys + hhdm + sizeof(VirtioBlkReqHeader));
+    uint8_t *status_ptr = req + sizeof(VirtioBlkReqHeader);
     *status_ptr = VIRTIO_BLK_STATUS_INIT;
     uint64_t status_phys = req_phys + sizeof(VirtioBlkReqHeader);
 
@@ -157,8 +219,8 @@ static int blk_transfer(uint64_t sector, uint32_t count, void *buf, int is_write
                                           status_phys, data_flags);
     if (desc_head == VRING_DESC_NONE) {
         kprintf("[VIRTIO-BLK] No free descriptors\n");
-        pmm_free_page(req_phys);
-        free_contiguous_pages(data_phys, data_pages);
+        dma_free_coherent(dev, data_bytes, data, data_phys);
+        dma_free_coherent(dev, PAGE_SIZE, req, req_phys);
         return -1;
     }
 
@@ -173,8 +235,8 @@ static int blk_transfer(uint64_t sector, uint32_t count, void *buf, int is_write
     if (timeout == 0) {
         kprintf("[VIRTIO-BLK] %s timeout (sector %lu, count %u)\n", op, sector, count);
         virtq_free_chain(vq, desc_head);
-        pmm_free_page(req_phys);
-        free_contiguous_pages(data_phys, data_pages);
+        dma_free_coherent(dev, data_bytes, data, data_phys);
+        dma_free_coherent(dev, PAGE_SIZE, req, req_phys);
         return -1;
     }
 
@@ -188,7 +250,7 @@ static int blk_transfer(uint64_t sector, uint32_t count, void *buf, int is_write
     if (*status_ptr == VIRTIO_BLK_S_OK) {
         /* For reads, copy data to caller's buffer */
         if (!is_write) {
-            memcpy(buf, (void *)(data_phys + hhdm), data_bytes);
+            memcpy(buf, data, data_bytes);
         }
         ret = 0;
     } else {
@@ -196,8 +258,8 @@ static int blk_transfer(uint64_t sector, uint32_t count, void *buf, int is_write
     }
 
     /* Free buffers */
-    pmm_free_page(req_phys);
-    free_contiguous_pages(data_phys, data_pages);
+    dma_free_coherent(dev, data_bytes, data, data_phys);
+    dma_free_coherent(dev, PAGE_SIZE, req, req_phys);
 
     return ret;
 }

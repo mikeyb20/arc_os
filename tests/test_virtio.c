@@ -3,13 +3,24 @@
 #include "test_framework.h"
 #include <stdint.h>
 
-/* Guard kernel headers that conflict or need stubbing */
+/* Guard kernel headers that conflict or need stubbing; the real pci.h and
+ * irq.h give the types, and the PCI and DMA calls virtio.c makes are faked
+ * (renamed, so they don't meet test_pci.c's real pci.c) */
 #define ARCHOS_LIB_KPRINTF_H
 #define ARCHOS_ARCH_X86_64_IO_H
 #define ARCHOS_MM_PMM_H
 #define ARCHOS_MM_VMM_H
-#define ARCHOS_DRIVERS_PCI_H
+#define ARCHOS_DRIVERS_DMA_H
 #define ARCHOS_LIB_MEM_H  /* Use libc memset/memcpy */
+
+#include <string.h>
+
+#define pci_bar_io_base       virtio_test_pci_bar_io_base
+#define pci_enable_bus_master virtio_test_pci_enable_bus_master
+#define pci_enable_decode     virtio_test_pci_enable_decode
+#define pci_alloc_irq_vectors virtio_test_pci_alloc_irq_vectors
+#include "drivers/pci.h"
+#include "drivers/irq.h"
 
 /* Stub kprintf */
 static inline void kprintf(const char *fmt, ...) { (void)fmt; }
@@ -22,56 +33,52 @@ static uint16_t inw(uint16_t port) { (void)port; return 0; }
 static void outl(uint16_t port, uint32_t value) { (void)port; (void)value; }
 static uint32_t inl(uint16_t port) { (void)port; return 0; }
 
-/* Stub PMM */
 #define PAGE_SIZE 4096
 #define PAGE_ALIGN_UP(x)    (((x) + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1ULL))
 #define PAGE_ALIGN_DOWN(x)  ((x) & ~(PAGE_SIZE - 1ULL))
+
+/* Fake coherent DMA memory: a bump arena, bus address = host address */
 static uint8_t fake_pmm_arena[PAGE_SIZE * 16] __attribute__((aligned(4096)));
 static int fake_pmm_next_page;
 
-static uint64_t pmm_alloc_page(void) {
-    if (fake_pmm_next_page >= 16) return 0;
-    return (uint64_t)(uintptr_t)&fake_pmm_arena[PAGE_SIZE * fake_pmm_next_page++];
+static void *dma_alloc_coherent(Device *dev, size_t size, uint64_t *bus, uint32_t flags) {
+    (void)dev;
+    (void)flags;
+    int pages = (int)((size + PAGE_SIZE - 1) / PAGE_SIZE);
+    if (fake_pmm_next_page + pages > 16) return NULL;
+    void *p = &fake_pmm_arena[PAGE_SIZE * fake_pmm_next_page];
+    fake_pmm_next_page += pages;
+    *bus = (uint64_t)(uintptr_t)p;
+    return p;
 }
 
-static uint64_t pmm_alloc_contiguous(size_t count) {
-    if (fake_pmm_next_page + (int)count > 16) return 0;
-    uint64_t base = (uint64_t)(uintptr_t)&fake_pmm_arena[PAGE_SIZE * fake_pmm_next_page];
-    fake_pmm_next_page += (int)count;
-    return base;
+static void dma_free_coherent(Device *dev, size_t size, void *cpu, uint64_t bus) {
+    (void)dev;
+    (void)size;
+    (void)cpu;
+    (void)bus;
 }
 
-static void pmm_free_page(uint64_t phys_addr) { (void)phys_addr; }
-
-/* Stub VMM — HHDM offset is 0 since we use real pointers in host tests */
-static uint64_t vmm_get_hhdm_offset(void) { return 0; }
-
-/* Reproduce PCI types (since we guard pci.h) */
-typedef struct {
-    uint8_t bus;
-    uint8_t device;
-    uint8_t function;
-} PciAddress;
-
-typedef struct {
-    PciAddress addr;
-    uint16_t vendor_id;
-    uint16_t device_id;
-    uint8_t class_code;
-    uint8_t subclass;
-    uint8_t prog_if;
-    uint8_t revision;
-    uint8_t header_type;
-    uint8_t irq_line;
-    uint8_t irq_pin;
-    uint32_t bar[6];
-} PciDevice;
-
-static uint16_t pci_bar_io_base(uint32_t bar) {
+uint16_t virtio_test_pci_bar_io_base(uint32_t bar) {
     return (uint16_t)(bar & 0xFFFC);
 }
 
-static void pci_enable_bus_master(const PciDevice *dev) { (void)dev; }
+void virtio_test_pci_enable_bus_master(const PciDevice *dev) {
+    (void)dev;
+}
+void virtio_test_pci_enable_decode(const PciDevice *dev, int mem) {
+    (void)dev;
+    (void)mem;
+}
+
+static int fake_irq_kind = IRQ_KIND_MSIX;
+
+int virtio_test_pci_alloc_irq_vectors(PciDevice *dev, unsigned min, unsigned max, unsigned types) {
+    (void)min;
+    (void)types;
+    dev->irq_kind = (uint8_t)fake_irq_kind;
+    return fake_irq_kind == IRQ_KIND_MSIX ? (int)max : 1;
+}
 
 /* Include the real VirtIO implementation */
 #include "../kernel/drivers/virtio.c"
@@ -269,17 +276,40 @@ static int test_virtio_init_queue(void) {
     return 0;
 }
 
+/* With MSI-X on, the device config moves from 0x14 to 0x18 (legacy virtio) */
+static int test_virtio_config_offset(void) {
+    PciDevice fake_pci;
+    memset(&fake_pci, 0, sizeof(fake_pci));
+    fake_pci.bar[0] = 0xC041;
+    VirtioDevice vdev;
+    memset(&vdev, 0, sizeof(vdev));
+    ASSERT_EQ(virtio_init_device(&vdev, &fake_pci), 0);
+    ASSERT_EQ(vdev.config_off, 0x14);
+    fake_irq_kind = IRQ_KIND_MSIX;
+    ASSERT_EQ(virtio_setup_irqs(&vdev, 2), 2);
+    ASSERT_EQ(vdev.msix, 1);
+    ASSERT_EQ(vdev.config_off, 0x18);
+    fake_irq_kind = IRQ_KIND_INTX;
+    ASSERT_EQ(virtio_setup_irqs(&vdev, 2), 1);
+    ASSERT_EQ(vdev.msix, 0);
+    ASSERT_EQ(vdev.config_off, 0x14);
+    fake_pci.bar[0] = 0xFEB00000;   /* memory BAR: legacy virtio needs I/O */
+    ASSERT_EQ(virtio_init_device(&vdev, &fake_pci), -1);
+    return 0;
+}
+
 /* --- Test suite export --- */
 
 TestCase virtio_tests[] = {
-    { "virtq_alloc_desc_basic",   test_virtq_alloc_desc_basic },
-    { "virtq_free_chain_single",  test_virtq_free_chain_single },
-    { "virtq_free_chain_multi",   test_virtq_free_chain_multi },
-    { "virtq_alloc_after_free",   test_virtq_alloc_after_free },
-    { "virtq_has_used_empty",     test_virtq_has_used_empty },
-    { "virtq_has_used_after_device", test_virtq_has_used_after_device },
-    { "virtq_pop_used_multiple",  test_virtq_pop_used_multiple },
-    { "virtio_init_queue",        test_virtio_init_queue },
+    {"virtq_alloc_desc_basic", test_virtq_alloc_desc_basic},
+    {"virtq_free_chain_single", test_virtq_free_chain_single},
+    {"virtq_free_chain_multi", test_virtq_free_chain_multi},
+    {"virtq_alloc_after_free", test_virtq_alloc_after_free},
+    {"virtq_has_used_empty", test_virtq_has_used_empty},
+    {"virtq_has_used_after_device", test_virtq_has_used_after_device},
+    {"virtq_pop_used_multiple", test_virtq_pop_used_multiple},
+    {"virtio_init_queue", test_virtio_init_queue},
+    {"virtio_config_offset", test_virtio_config_offset},
 };
 
 int virtio_test_count = sizeof(virtio_tests) / sizeof(virtio_tests[0]);

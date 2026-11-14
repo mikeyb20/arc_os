@@ -27,6 +27,14 @@ extern TestCase process_tests[];
 extern int process_test_count;
 extern TestCase pci_tests[];
 extern int pci_test_count;
+extern TestCase bus_tests[];
+extern int bus_test_count;
+extern TestCase irq_tests[];
+extern int irq_test_count;
+extern TestCase irq_vector_tests[];
+extern int irq_vector_test_count;
+extern TestCase dma_tests[];
+extern int dma_test_count;
 extern TestCase virtio_tests[];
 extern int virtio_test_count;
 extern TestCase string_tests[];
@@ -116,6 +124,10 @@ int main(int argc, char **argv) {
         { "sched",   sched_tests,   &sched_test_count },
         { "process", process_tests, &process_test_count },
         { "pci",     pci_tests,     &pci_test_count },
+        { "bus",     bus_tests,     &bus_test_count },
+        { "irq",     irq_tests,     &irq_test_count },
+        { "irq_vector", irq_vector_tests, &irq_vector_test_count },
+        { "dma",     dma_tests,     &dma_test_count },
         { "virtio",  virtio_tests,  &virtio_test_count },
         { "string",  string_tests,  &string_test_count },
         { "syscall", syscall_tests, &syscall_test_count },

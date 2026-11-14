@@ -40,11 +40,21 @@ typedef void (*isr_handler_t)(InterruptFrame *frame);
 /* Register a handler for a specific interrupt vector. */
 void isr_register_handler(int vector, isr_handler_t handler);
 
+/* The handler registered for vector, or NULL. */
+isr_handler_t isr_get_handler(int vector);
+
 /* C dispatcher called from assembly. */
 void isr_dispatch(InterruptFrame *frame);
 
 /* Set APIC mode: when true, isr_dispatch sends LAPIC EOI instead of PIC EOI. */
 void isr_set_apic_mode(int enabled);
+
+/* 1 once the I/O APIC replaced the PIC (isr_set_apic_mode). */
+int isr_apic_mode(void);
+
+/* Send legacy line irq's EOI after its handler instead of before (level
+ * triggered PCI INTx; the handler must not switch threads). */
+void isr_set_late_eoi(uint8_t irq);
 
 /* Fill a panic report (lib/panic.h PanicInfo) for a panic raised by code, not
  * by an exception: CPU index, RSP, RBP, RFLAGS, CR3 and a backtrace starting

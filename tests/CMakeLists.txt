@@ -14,6 +14,10 @@ add_executable(test_runner
     test_sched.c
     test_process.c
     test_pci.c
+    test_bus.c
+    test_irq.c
+    test_irq_vector.c
+    test_dma.c
     test_virtio.c
     test_string.c
     test_syscall.c
@@ -91,6 +95,10 @@ add_test(NAME test_thread  COMMAND test_runner --suite thread)
 add_test(NAME test_sched   COMMAND test_runner --suite sched)
 add_test(NAME test_process COMMAND test_runner --suite process)
 add_test(NAME test_pci     COMMAND test_runner --suite pci)
+add_test(NAME test_bus     COMMAND test_runner --suite bus)
+add_test(NAME test_irq     COMMAND test_runner --suite irq)
+add_test(NAME test_irq_vector COMMAND test_runner --suite irq_vector)
+add_test(NAME test_dma     COMMAND test_runner --suite dma)
 add_test(NAME test_virtio  COMMAND test_runner --suite virtio)
 add_test(NAME test_string  COMMAND test_runner --suite string)
 add_test(NAME test_syscall  COMMAND test_runner --suite syscall)

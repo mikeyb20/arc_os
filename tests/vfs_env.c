@@ -11,6 +11,7 @@
 #include "fs/procfs.h"
 #include "fs/ramfs.h"
 #include "fs/vfs_internal.h"
+#include "drivers/irq.h"
 #include "drivers/tty.h"
 #include "lib/klog.h"
 #include "mm/kmalloc.h"
@@ -384,6 +385,12 @@ void mm_get(Mm *mm) {
 
 void mm_put(Mm *mm) {
     (void)mm;
+}
+
+/* /proc/interrupts text comes from the IRQ layer (test_irq.c tests it) */
+int irq_format_proc(char *buf, int size) {
+    return snprintf(buf, (size_t)size,
+                    "            CPU0\n   0:          3  PCI-MSIX 0000:00:04.0 1 cpu0/0x30  q\n ERR: 0\n");
 }
 
 int mm_format_maps(Mm *mm, char *buf, int size) {

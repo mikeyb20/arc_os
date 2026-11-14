@@ -31,8 +31,9 @@ typedef struct {
     uint64_t sector;    /* Starting sector (512-byte units) */
 } __attribute__((packed)) VirtioBlkReqHeader;
 
-/* Initialize the VirtIO block device. Returns 0 on success. */
-int virtio_blk_init(void);
+/* Register the virtio-blk PCI driver; it binds to the first virtio-blk
+ * device and registers it as a block device. Returns how many it bound. */
+int virtio_blk_register(void);
 
 /* Read sectors from the block device (polling).
  * sector: starting sector number

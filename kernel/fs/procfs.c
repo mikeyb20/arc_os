@@ -25,6 +25,7 @@
 #include "arch/hal.h"
 #include "proc/process.h"
 #include "proc/sched.h"
+#include "drivers/irq.h"
 #include "lib/mem.h"
 #include "lib/string.h"
 #include "lib/cmdline.h"
@@ -255,6 +256,14 @@ static int gen_mounts(char *buf, int bufsz, void *ctx) {
     return vfs_format_mounts(buf, bufsz);
 }
 
+/* /proc/interrupts (M1-09): one line per device interrupt with its count on
+ * each CPU, the source (PCI-MSIX, PCI-MSI, INTx), device, entry and target,
+ * then ERR (interrupts nobody claimed). Linux's columns, arc_os's numbering. */
+static int gen_interrupts(char *buf, int bufsz, void *ctx) {
+    (void)ctx;
+    return irq_format_proc(buf, bufsz);
+}
+
 /* --- Inodes --- */
 
 #define PROC_INO_ROOT   1
@@ -323,11 +332,14 @@ static const FileOps procfs_kmsg_fops = {
 
 /* Fixed files in /proc, in readdir order */
 static ProcGen fixed_gen[] = {
-    {gen_meminfo, NULL, 0},  {gen_uptime, NULL, 0}, {gen_cmdline, NULL, 0},     {gen_cpuinfo, NULL, 0},
-    {gen_slabinfo, NULL, 0}, {NULL, NULL, 0},       {gen_sched_debug, NULL, 0}, {gen_mounts, NULL, PROCFS_MOUNTS_SIZE},
+    {gen_meminfo, NULL, 0},     {gen_uptime, NULL, 0},
+    {gen_cmdline, NULL, 0},     {gen_cpuinfo, NULL, 0},
+    {gen_slabinfo, NULL, 0},    {NULL, NULL, 0},
+    {gen_sched_debug, NULL, 0}, {gen_mounts, NULL, PROCFS_MOUNTS_SIZE},
+    {gen_interrupts, NULL, 0},
 };
-static const char *const fixed_names[] = {"meminfo",  "uptime", "cmdline",     "cpuinfo",
-                                          "slabinfo", "kmsg",   "sched_debug", "mounts"};
+static const char *const fixed_names[] = {"meminfo", "uptime",      "cmdline", "cpuinfo",   "slabinfo",
+                                          "kmsg",    "sched_debug", "mounts",  "interrupts"};
 #define FIXED_COUNT (sizeof(fixed_names) / sizeof(fixed_names[0]))
 #define FIXED_KMSG  5
 _Static_assert(sizeof(fixed_gen) / sizeof(fixed_gen[0]) == FIXED_COUNT, "one generator per fixed file");

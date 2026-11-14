@@ -2,6 +2,7 @@
 #include "arch/x86_64/pic.h"
 #include "arch/x86_64/lapic.h"
 #include "arch/x86_64/percpu.h"
+#include "arch/x86_64/irq_vector.h"
 #include "arch/x86_64/fpu.h"
 #include "arch/hal_lock.h"
 #include "mm/mm.h"
@@ -17,6 +18,26 @@ static int apic_mode;
 
 void isr_set_apic_mode(int enabled) {
     apic_mode = enabled;
+}
+
+int isr_apic_mode(void) {
+    return apic_mode;
+}
+
+/* Legacy lines whose EOI follows the handler (isr_set_late_eoi) */
+static uint16_t late_eoi_lines;
+
+void isr_set_late_eoi(uint8_t irq) {
+    if (irq < IRQ_COUNT) __atomic_or_fetch(&late_eoi_lines, (uint16_t)(1u << irq), __ATOMIC_RELAXED);
+}
+
+/* End of interrupt for legacy line irq: LAPIC in APIC mode, else the PIC. */
+static void irq_eoi(uint8_t irq) {
+    if (apic_mode) {
+        lapic_eoi();
+    } else {
+        pic_send_eoi(irq);
+    }
 }
 
 /* Human-readable names for CPU exception vectors 0-31 */
@@ -59,6 +80,10 @@ void isr_register_handler(int vector, isr_handler_t handler) {
     if (vector >= 0 && vector < ISR_COUNT) {
         handlers[vector] = handler;
     }
+}
+
+isr_handler_t isr_get_handler(int vector) {
+    return (vector >= 0 && vector < ISR_COUNT) ? handlers[vector] : NULL;
 }
 
 /* Backtrace (M1-04): follow the saved-RBP chain. The kernel keeps frame
@@ -353,23 +378,29 @@ void isr_dispatch(InterruptFrame *frame) {
 static void isr_handle(InterruptFrame *frame) {
     uint64_t vector = frame->vector;
 
-    /* IRQ path (vectors 32-47) */
+    /* IRQ path (vectors 32-47). The EOI goes first, because the timer tick's
+     * handler may switch threads; lines marked late (PCI INTx, M1-09: level
+     * triggered, handlers never switch) get it after the handler acknowledged
+     * the device, or the still-asserted line would fire again at once. */
     if (vector >= IRQ_BASE && vector < IRQ_BASE + IRQ_COUNT) {
         uint8_t irq = (uint8_t)(vector - IRQ_BASE);
 
-        if (apic_mode) {
-            /* APIC mode: LAPIC EOI */
-            lapic_eoi();
-        } else {
-            /* PIC mode: check for spurious, send PIC EOI */
-            if (pic_is_spurious(irq)) return;
-            pic_send_eoi(irq);
-        }
+        /* PIC mode: a spurious IRQ 7/15 gets no handler (and no EOI from here) */
+        if (!apic_mode && pic_is_spurious(irq)) return;
+        int late = (__atomic_load_n(&late_eoi_lines, __ATOMIC_RELAXED) >> irq) & 1;
+        if (!late) irq_eoi(irq);
 
         /* Call registered handler if present */
         if (handlers[vector] != NULL) {
             handlers[vector](frame);
         }
+        if (late) irq_eoi(irq);
+        return;
+    }
+
+    /* Device vectors (MSI, MSI-X; M1-09): per-CPU table, EOI after the handler */
+    if (vector >= IRQ_VECTOR_FIRST && vector <= IRQ_VECTOR_LAST) {
+        irq_vector_dispatch((uint8_t)vector);
         return;
     }
 

@@ -9,8 +9,8 @@ file uses.
 
 **Read first.**
 - `docs/decisions/0012-model-service-api.md`
-- `kernel/net/socket.c`, `socket.h`, `kernel/fs/pipe.c`, `kernel/drivers/tty.c`, `kernel/proc/waitqueue.c`,
-  Notes of M1-11
+- `kernel/net/socket.c`, `socket.h`, `kernel/fs/pipe.c`, `kernel/drivers/tty.c`, `kernel/drivers/keyboard.c`,
+  `kernel/proc/waitqueue.c`, `docs/kernel/locking.md` (BKL coverage), Notes of M1-11
 
 **Build.**
 1. File op `poll(file, table)`: returns the ready mask and registers wait queues. Implemented for pipes, tty,
@@ -22,9 +22,13 @@ file uses.
    shutdown, getsockname/getpeername, socketpair, non-blocking mode, `MSG_NOSIGNAL`, `SIGPIPE` on a closed peer.
 4. Tests: an echo client and server move 1 MiB in chunks; poll on mixed fds with a timeout; select on tty input;
    EOF, `EPIPE` and `SIGPIPE` behave as Linux.
+5. Take the TTY line discipline and VT/ANSI state off the big kernel lock (decided 2026-11-13 in M1-09, which
+   moved the row here): an IRQ-safe tty lock that the keyboard interrupt takes instead of `kernel_lock_irq`, then
+   remove the TTY row from the BKL coverage table in `docs/kernel/locking.md`. tty poll needs this lock anyway.
 
 **Done when.**
 - [ ] Tests pass.
+- [ ] The keyboard interrupt no longer takes the kernel lock; the TTY row is gone from the BKL coverage table.
 
 **Watch out.**
 - One wait-queue registration per (file, poll table) entry; free them all when poll returns, or wakeups touch freed

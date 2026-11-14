@@ -4,10 +4,17 @@
 #include <stdint.h>
 #include "boot/bootinfo.h"
 
-/* Portable VMM flags (mapped to architecture-specific PTE flags internally) */
+/* Portable VMM flags (mapped to architecture-specific PTE flags internally).
+ * Every VMM_FLAG_* lives in this block and in the assert below, one bit each:
+ * the popcount of their OR equals their number only if no two share a bit. */
 #define VMM_FLAG_WRITABLE  (1 << 0)
 #define VMM_FLAG_USER      (1 << 1)
 #define VMM_FLAG_NOEXEC    (1 << 2)
+#define VMM_FLAG_PROTNONE  (1 << 3)   /* leaf keeps its page but allows no access (PROT_NONE, M1-07) */
+#define VMM_FLAG_UNCACHED  (1 << 4)   /* device memory: no caching (MMIO, M1-09) */
+#define VMM_FLAGS_ALL_     (VMM_FLAG_WRITABLE | VMM_FLAG_USER | VMM_FLAG_NOEXEC | VMM_FLAG_PROTNONE | VMM_FLAG_UNCACHED)
+#define VMM_FLAG_COUNT_    5
+_Static_assert(__builtin_popcount(VMM_FLAGS_ALL_) == VMM_FLAG_COUNT_, "VMM_FLAG_* bits must be distinct");
 
 /* Initialize VMM: create kernel page tables and switch CR3. */
 void vmm_init(const BootInfo *info);
@@ -30,9 +37,6 @@ uint64_t vmm_get_hhdm_offset(void);
 /* User-space address space constants */
 #define USER_STACK_TOP 0x00007FFFFFFFE000ULL
 #define USER_BASE      0x0000000000400000ULL  /* Default ELF load address */
-
-/* Leaf entry that keeps its page but allows no access (PROT_NONE, M1-07) */
-#define VMM_FLAG_PROTNONE (1 << 3)
 
 /* Create a new PML4 for a user process (copies kernel-half entries 256-511).
  * Returns its physical address, or 0 when out of memory. */

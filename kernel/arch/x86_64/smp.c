@@ -7,9 +7,10 @@
  * sees which bootloader that is.
  * Invariants: every CPU runs in the APIC mode the BSP chose; an AP is counted
  * in cpu_count only after its GDT, TSS, IDT, GS, SYSCALL MSRs, FPU and APIC are
- * set up. APs stay in HLT with interrupts on until smp_release_aps lets them
- * into the scheduler (sched_ap_start, M1-05), which moves them off the
- * bootloader's stack onto their idle threads.
+ * set up. APs switch to the kernel's page tables first, then stay in HLT with
+ * interrupts on (device interrupts may arrive, M1-09) until smp_release_aps
+ * lets them into the scheduler (sched_ap_start, M1-05), which moves them off
+ * the bootloader's stack onto their idle threads.
  * Locks: none. smp_init runs on the BSP before interrupts are enabled; APs only
  * write their own PerCpu block and the aps_online counter (atomic). */
 
@@ -24,6 +25,7 @@
 #include "arch/x86_64/ipi.h"
 #include "arch/x86_64/syscall.h"
 #include "arch/x86_64/cpuid.h"
+#include "arch/x86_64/paging.h"
 #include "mm/vmm.h"
 #include "proc/sched.h"
 #include "lib/kprintf.h"
@@ -48,6 +50,11 @@ static uint8_t gs_index_seen[MAX_CPUS];
 static void ap_entry(uint64_t arg) {
     PerCpu *cpu = percpu_get((uint32_t)arg);
 
+    /* Onto the kernel's page tables at once (M1-09): device interrupts may
+     * reach this CPU before the scheduler starts it, and their handlers use
+     * kernel-only mappings (the MMIO window). The bootloader's stack is in
+     * the HHDM, which both page tables map alike. */
+    paging_write_cr3(vmm_get_kernel_pml4());
     percpu_load(cpu);      /* GDT + TSS (IST stacks), GS base */
     idt_load();            /* the shared IDT */
     syscall_cpu_init();    /* SYSCALL MSRs are per CPU */

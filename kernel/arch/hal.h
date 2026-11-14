@@ -33,6 +33,7 @@
 #include "arch/x86_64/debug_exit.h"   /* hal_debug_exit: QEMU test-mode exit */
 #include "arch/x86_64/ipi.h"     /* halt the other CPUs on panic */
 #include "arch/x86_64/lapic.h"   /* APIC mode for the boot report */
+#include "arch/x86_64/irq_vector.h"   /* per-CPU device vectors, MSI format (M1-09) */
 #include "arch/x86_64/tlb.h"     /* TLB shootdown (M1-07) */
 #include "arch/x86_64/syscall.h"  /* syscall_register: subsystems add their handlers */
 #include "arch/x86_64/usermode.h" /* jump_to_usermode, fork_return_to_user */
@@ -263,6 +264,73 @@ static inline bool hal_irq_is_spurious(uint8_t irq) {
     return pic_is_spurious(irq);
 }
 
+/* ---- Device interrupts: per-CPU vectors, MSI, legacy lines (M1-09) ---- */
+
+/* Set the function every bound device vector calls with its cookie
+ * (interrupts off; the EOI follows it). */
+static inline void hal_irq_set_entry(void (*fn)(void *cookie)) {
+    irq_vector_set_entry(fn);
+}
+
+/* Take a free device vector on CPU index cpu, bound to cookie. Returns the
+ * vector, or -EINVAL, -ENOMEM, -ENOSPC. Thread context. */
+static inline int hal_irq_vector_alloc(uint32_t cpu, void *cookie) {
+    return irq_vector_alloc(cpu, cookie);
+}
+
+/* Give a device vector back. */
+static inline void hal_irq_vector_free(uint32_t cpu, int vector) {
+    irq_vector_free(cpu, vector);
+}
+
+/* MSI address/data for vector on CPU index cpu: 0, -EINVAL or -ERANGE (APIC
+ * ID above 255: needs interrupt remapping). */
+static inline int hal_irq_msi_message(uint32_t cpu, int vector, uint64_t *addr, uint32_t *data) {
+    return irq_msi_compose(cpu, vector, addr, data);
+}
+
+/* 1 when message-signalled interrupts can be delivered (local APIC on). */
+static inline int hal_irq_msi_available(void) {
+    return lapic_active();
+}
+
+/* 1 if CPU index cpu is online and can be an MSI target (APIC ID < 256). */
+static inline int hal_irq_msi_target_ok(uint32_t cpu) {
+    PerCpu *c = percpu_get(cpu);
+    return c != NULL && c->online && c->apic_id <= 0xFF;
+}
+
+/* Device vectors that arrived with nothing bound to them. */
+static inline uint64_t hal_irq_spurious_count(void) {
+    return irq_vector_spurious();
+}
+
+/* Legacy interrupt lines (ISA IRQs, and PCI INTx as the firmware routed it):
+ * line n arrives on vector HAL_IRQ_LINE_BASE + n of the boot CPU. */
+#define HAL_IRQ_LINES     16
+#define HAL_IRQ_LINE_BASE IRQ_BASE
+
+/* The handler on legacy line's vector, or NULL (a line the kernel itself uses
+ * for the PIT, the keyboard, ... is not free for a PCI device). */
+static inline isr_handler_t hal_irq_line_handler(uint8_t line) {
+    return isr_get_handler(HAL_IRQ_LINE_BASE + line);
+}
+
+/* 1 when a PCI function's firmware irq_line is where its INTx arrives (PIC
+ * mode). In APIC mode the I/O APIC pin comes from ACPI _PRT (M4-11; usually
+ * pins 16-23 on real chipsets), so irq_line is a guess that holds in QEMU. */
+static inline int hal_irq_line_routing_known(void) {
+    return !isr_apic_mode();
+}
+
+/* Let line through to the boot CPU for a device interrupt: the PIC unmasks it;
+ * in APIC mode the I/O APIC already routes lines 0-15 (ioapic_route_isa, level
+ * triggered where the MADT says so). Its EOI moves after the handler. */
+static inline void hal_irq_line_enable(uint8_t line) {
+    isr_set_late_eoi(line);   /* PCI INTx is level triggered: EOI once the device is acknowledged */
+    if (!isr_apic_mode()) pic_unmask(line);
+}
+
 /* ==================================================================
  * Timer
  * ================================================================== */
@@ -353,6 +421,12 @@ static inline void *hal_this_cpu_mm(void) {
 static inline void hal_set_this_cpu_mm(void *mm) {
     this_cpu()->mm = mm;
 }
+
+/* Kernel virtual window for device memory (MMIO helper, M1-09): 512 MiB at
+ * the old heap window, above the kernel image, below the top 512 MiB. Pages
+ * mapped there are uncached and never unmapped. */
+#define HAL_MMIO_BASE 0xFFFFFFFFC0000000ULL
+#define HAL_MMIO_SIZE (512ULL << 20)
 
 /* ==================================================================
  * Task State (kernel stack for ring transitions)

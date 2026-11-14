@@ -57,6 +57,7 @@ set(KERNEL_C_SOURCES
     arch/x86_64/percpu.c
     arch/x86_64/smp.c
     arch/x86_64/ipi.c
+    arch/x86_64/irq_vector.c
     arch/x86_64/tlb.c
     proc/thread.c
     proc/sched.c
@@ -76,6 +77,11 @@ set(KERNEL_C_SOURCES
     proc/condvar.c
     drivers/acpi.c
     drivers/pci.c
+    drivers/pci_irq.c
+    drivers/bus.c
+    drivers/irq.c
+    drivers/mmio.c
+    drivers/dma.c
     drivers/smbios.c
     drivers/virtio.c
     drivers/virtio_blk.c
@@ -117,6 +123,7 @@ set(KERNEL_C_SOURCES
     diag/bench.c
     diag/qr.c
     diag/qr_text.c
+    diag/devtest.c
     diag/qr_screen.c
     diag/qr_mode.c
 )

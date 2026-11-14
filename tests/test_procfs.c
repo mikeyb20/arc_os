@@ -59,6 +59,10 @@ TEST(fixed_files) {
     ASSERT_TRUE(vfs_env_read_file("/proc/sched_debug", text, sizeof(text)) > 0);
     ASSERT_TRUE(vfs_env_read_file("/proc/kmsg", text, sizeof(text)) > 0);
     ASSERT_STR_EQ(text, "<6>[BOOT] host\n");
+    /* /proc/interrupts (M1-09): the IRQ layer's text, passed through */
+    ASSERT_TRUE(vfs_env_read_file("/proc/interrupts", text, sizeof(text)) > 0);
+    ASSERT_TRUE(strstr(text, "PCI-MSIX 0000:00:04.0") != NULL);
+    ASSERT_TRUE(strstr(text, " ERR: 0\n") != NULL);
     struct stat st;
     ASSERT_EQ(vfs_stat("/proc/meminfo", &st), 0);
     ASSERT_EQ(st.st_mode, S_IFREG | 0444);
@@ -154,7 +158,8 @@ TEST(root_listing_and_no_new_names) {
     vfs_env_setup();
     Names n;
     ASSERT_EQ(list("/proc", &n), 0);
-    ASSERT_STR_EQ(n.names, ". .. meminfo uptime cmdline cpuinfo slabinfo kmsg sched_debug mounts sys self 1");
+    ASSERT_STR_EQ(n.names,
+                  ". .. meminfo uptime cmdline cpuinfo slabinfo kmsg sched_debug mounts interrupts sys self 1");
     File *f;
     ASSERT_EQ(vfs_open("/proc/new", O_CREAT | O_WRONLY, 0644, &f), -EACCES);   /* no create op */
     ASSERT_EQ(vfs_mkdir("/proc/d", 0755), -EPERM);                            /* no mkdir op */
