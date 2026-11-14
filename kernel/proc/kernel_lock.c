@@ -44,7 +44,12 @@ void kernel_lock(void) {
 
 void kernel_lock_irq(void) {
     while (!kernel_lock_try()) {
-        while (__atomic_load_n(&kernel_lock_word, __ATOMIC_RELAXED)) hal_cpu_relax();
+        /* Interrupts stay off here, so answer TLB shootdowns by hand: the
+         * holder may be waiting for this CPU's (M1-07) */
+        while (__atomic_load_n(&kernel_lock_word, __ATOMIC_RELAXED)) {
+            hal_spin_poll();
+            hal_cpu_relax();
+        }
     }
     kernel_lock_holder = NULL;
 }

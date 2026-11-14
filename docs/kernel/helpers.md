@@ -12,7 +12,8 @@ Kernel and user space are separate worlds: the same function in `kernel/lib` and
 | Memory copy, fill, compare | `memcpy`, `memset`, `memmove`, `memcmp` | `kernel/lib/mem.h` |
 | Strings | `strlen`, `strcmp`, `strncmp`, `strncpy`, `strchr` | `kernel/lib/string.h` |
 | Formatted output, log levels, format into a buffer | `kprintf`, `kprintf_level`, `kdebug` (hot paths), `ksnprintf`, `kvsnprintf` | `kernel/lib/kprintf.h` |
-| Kernel log ring (`/proc/kmsg` text), console owner | `klog_read`, `klog_tail`, `klog_head`, `klog_console_try_acquire` / `_release`, `klog_console_acquire` (bounded wait, for screen drawing outside the log), `klog_set_console_level` | `kernel/lib/klog.h` |
+| Kernel log ring (`/proc/kmsg` text), console owner | `klog_read`, `klog_tail`, `klog_head`, `klog_for_each_line` (whole lines, markers stripped, by level), `klog_console_try_acquire` / `_release`, `klog_console_acquire` (bounded wait, for screen drawing outside the log), `klog_set_console_level` | `kernel/lib/klog.h` |
+| Build commit (12-digit hash, `-dirty`, or `unknown`) | `arc_build_commit` | `kernel/lib/build_commit.h` |
 | Kernel command line | `cmdline_get`, `cmdline_raw` | `kernel/lib/cmdline.h` |
 | CRC-32 (IEEE 802.3, zlib-compatible chaining) | `crc32` | `kernel/lib/crc32.h` |
 | Test mode | `testmode_*` | `kernel/lib/testmode.h` |
@@ -30,7 +31,12 @@ Kernel and user space are separate worlds: the same function in `kernel/lib` and
 | Kernel heap (16 B-4 MiB, no header) | `kmalloc`, `kfree`, `krealloc` | `kernel/mm/kmalloc.h` |
 | Object caches for hot structures | `kmem_cache_create`, `kmem_cache_alloc`, `kmem_cache_free`, `kmem_cache_shrink`; `slab_owner` | `kernel/mm/slab.h` |
 | PFN-linked page lists (O(1) push/remove through `lru`) | `page_list_push`, `page_list_remove`, `page_list_first` | `kernel/mm/page.h` |
-| User memory | `copy_from_user`, `copy_to_user`, `strncpy_from_user` | `kernel/include/user_access.h` |
+| User memory (every user pointer; `-EFAULT`, never a raw dereference) | `copy_from_user`, `copy_to_user`, `strncpy_from_user`, `get_user`, `put_user`; range check only: `user_ptr_valid` | `kernel/include/user_access.h` |
+| Intrusive red-black tree (caller compares keys) | `rb_link_node`, `rb_insert_color`, `rb_erase`, `rb_first`, `rb_next`, `rb_entry` | `kernel/lib/rbtree.h` |
+| Sleeping read-write lock | `rwsem_init`, `rwsem_down_read` / `_up_read`, `rwsem_down_write` / `_up_write`, `rwsem_try_read`, `rwsem_write_held` | `kernel/proc/rwsem.h` |
+| VMA sets: lookup, split, merge, gap search | `vma_find`, `vma_find_containing`, `vma_range_free`, `vma_insert`, `vma_remove`, `vma_split`, `vma_merge_around`, `vma_find_gap` | `kernel/mm/vma.h` |
+| User address spaces: create, fork, load, map, fault | `mm_create`, `mm_get` / `mm_put`, `mm_fork`, `mm_switch`, `mm_map_anon`, `mm_unmap`, `mm_protect`, `mm_fault`, `mm_setup_vma` / `_page` / `_stack` (exec) | `kernel/mm/mm.h` |
+| Flush a user range's TLB entries on every CPU that has the mm loaded | `mm_flush_tlb_range`; portable code below mm: `hal_tlb_flush`, kernel ranges `hal_tlb_flush_kernel` | `kernel/mm/mm.h`, `kernel/arch/hal.h` (`arch/x86_64/tlb.h`) |
 | Spinlock (caller keeps the interrupt flags; every lock has a level) | `spin_lock_irqsave` / `spin_unlock_irqrestore`, `spin_lock` / `spin_unlock`, `spin_trylock`, `SPINLOCK_INIT(level, name)`, `spin_lock_init` | `kernel/proc/spinlock.h` |
 | Lock levels and the debug lock-order checker | `LOCK_LEVEL_*`, `lockdep_check_order` | `kernel/proc/lockdep.h` (`docs/kernel/locking.md`) |
 | Big kernel lock (interim, until subsystems have their own locks) | `kernel_lock`, `kernel_lock_irq`, `kernel_unlock`, `kernel_lock_held` | `kernel/proc/kernel_lock.h` |
@@ -38,7 +44,14 @@ Kernel and user space are separate worlds: the same function in `kernel/lib` and
 | CPU sets (affinity) | `CpuMask`, `cpumask_set`, `cpumask_test`, `cpumask_fill`, ... | `kernel/proc/cpumask.h` |
 | Run, wake, pin threads; per-CPU scheduler statistics | `sched_add_thread`, `sched_wake`, `sched_continue`, `sched_set_affinity`, `sched_core_mask`, `sched_cpu_stats`, `sched_wait_off_cpu` | `kernel/proc/sched.h` |
 | Sleeping locks and waits | mutex, semaphore, condvar, `wq_sleep` / `wq_wake` | `kernel/proc/{mutex,semaphore,condvar,waitqueue}.h` |
-| Close an fd, copy an fd (pipe/socket refs) | `fd_close`, `fd_file_addref` | `kernel/proc/fd.h` |
+| fd tables: install, look up (with a File reference), close, close-on-exec, fork copy | `fd_table_new` / `_dup` / `_get` / `_put`, `fd_install`, `fd_install_at`, `fd_get`, `fd_close`, `fd_get_cloexec` / `fd_set_cloexec`, `fd_close_on_exec` | `kernel/proc/fd.h` |
+| Open files: open by path, new File on an inode (pipes, sockets), references, I/O at the File's offset or at a given one, seek, directory listing | `vfs_open`, `file_new`, `fget_ref` / `fput`, `vfs_read` / `vfs_write`, `vfs_pread` / `vfs_pwrite`, `vfs_llseek`, `vfs_generic_llseek`, `vfs_iterate`, `vfs_ftruncate`, `vfs_fsync`; kernel whole-file write `vfs_write_file` | `kernel/fs/vfs.h` |
+| Kernel or user buffers for file I/O (one read/write path for both) | `IoBuf`, `iob_kernel`, `iob_user`, `iob_copy_in` / `_out`, `iob_zero` | `kernel/fs/vfs.h` |
+| Inodes: allocate, static, references, inode cache, times, permission, stat | `inode_new`, `inode_init_static`, `igrab` / `iput`, `icache_get` / `icache_add`, `vfs_now`, `vfs_check_perm`, `inode_permission`, `vfs_fill_stat` | `kernel/fs/vfs.h` |
+| Directory listing from a filesystem (getdents64 entries, "." and "..") | `dir_emit`, `dir_emit_dots`, `vfs_dtype` | `kernel/fs/vfs.h` |
+| Paths and names: resolve, parent + last name, namespace changes, mounts | `vfs_resolve` / `loc_put`, `vfs_resolve_parent`, `vfs_mkdir`, `vfs_unlink`, `vfs_rmdir`, `vfs_rename`, `vfs_stat`, `vfs_setattr`, `vfs_mount_root`, `vfs_mount`, `vfs_bind_mount`, `vfs_format_mounts`, `vfs_drop_caches` | `kernel/fs/vfs.h` |
+| Absolute, normalized path from cwd + input | `path_normalize` | `kernel/fs/path.h` |
+| Superblocks: set up, anonymous (pipes, sockets) | `vfs_sb_init`, `vfs_anon_sb` | `kernel/fs/vfs.h` |
 | End the current process (exit, fatal signal) | `proc_exit` | `kernel/proc/proc_syscalls.h` |
 | Hardware access from portable code | `hal_*`, FPU state, CPUID | `kernel/arch/hal.h` |
 | Per-CPU block (GS), running thread, entry stacks | `this_cpu`, `percpu_get`, `percpu_index_of_apic`; portable code: `hal_current_thread`, `hal_set_kernel_stack` | `kernel/arch/x86_64/percpu.h` (via `arch/hal.h`) |
@@ -58,10 +71,12 @@ Kernel and user space are separate worlds: the same function in `kernel/lib` and
 | Map device registers (uncached), read and write them | `mmio_map`, `mmio_read8`..`64`, `mmio_write8`..`64` | `kernel/drivers/mmio.h` |
 | DMA: coherent buffers, streaming maps, device masks | `dma_alloc_coherent`, `dma_free_coherent`, `dma_map_single`, `dma_map_page`, `dma_unmap`, `dma_set_mask`, `DMA_BIT_MASK`, `dma_fits` | `kernel/drivers/dma.h` |
 | Legacy virtio-PCI transport: vrings, features, MSI-X vectors | `virtio_init_device`, `virtio_setup_irqs`, `virtio_set_config_vector`, `virtio_set_queue_vector`, `virtio_isr_status`, `virtio_init_queue`, `virtq_*` | `kernel/drivers/virtio.h` |
-| One screen row of text (pagers, banners) | `fb_console_write_row` | `kernel/drivers/fb_console.h` |
-| Boot report line, TSC-timed delay or wait bound (diagnostic and test mode) | `diag_line`, `diag_delay_ms`, `diag_ms_to_cycles` | `kernel/diag/diag.h` |
+| One screen row of text (pagers, banners) | `fb_console_write_row`; pixels only, while paused: `fb_console_paint_row` | `kernel/drivers/fb_console.h` |
+| Own the screen, draw a 1-bit bitmap scaled (QR codes) | `fb_console_pause` / `_resume`, `fb_console_fill`, `fb_console_draw_bitmap`, `fb_console_width` / `_height` / `_row_height` | `kernel/drivers/fb_console.h` |
+| Boot report line, TSC-timed delay or wait bound, key wait, command-line flag (diagnostic and test mode) | `diag_line`, `diag_delay_ms`, `diag_ms_to_cycles`, `diag_wait_key`, `diag_flag_on` | `kernel/diag/diag.h` |
 | QR code from bytes (byte mode, level M, versions 1-30; no allocation) | `qr_encode`, `qr_capacity`, `qr_module` | `kernel/diag/qr.h` |
 | Text as numbered `ARC1` QR pages: sanitize (no links), split, header and CRCs | `qr_text_sanitize`, `qr_text_paginate`, `qr_text_page` | `kernel/diag/qr_text.h` |
+| QR page or panic code on screen; panic and log-tail texts | `qr_screen_show_page`, `qr_screen_draw_panic`, `qr_screen_scale`, `qr_screen_page_height`, `qr_panic_encode`, `qr_panic_text`, `qr_log_text` | `kernel/diag/qr_screen.h` |
 | CPU features, x86-64-v3 floor, core type | `cpu_features`, `cpu_floor_missing`, `cpu_core_type_detect`, `cpu_describe` | `kernel/arch/x86_64/cpu.h` (via `arch/hal.h`) |
 | Signal actions and masks (rt_sigaction, fork, execve) | `sig_set_action`, `sig_fork_copy`, `sig_exec_reset` | `kernel/proc/signal.h` |
 | Linux ABI values and structs | `__NR_*`, errno, flags, `struct stat`, ... | `kernel/include/uapi/` |

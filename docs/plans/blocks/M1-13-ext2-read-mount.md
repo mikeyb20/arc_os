@@ -43,4 +43,8 @@ through the page cache (ADR-0008, ADR-0009, ADR-0018).
 - Writing is M1-15. Mount read-only here.
 
 **Notes.**
--
+- From M1-11: symlinks need the path walk to follow links and handle ".." itself; today `path_normalize`
+  resolves "..", trailing slashes and `x/..` on text before the walk. The `*at` calls and the cwd are path
+  strings (a dirfd whose directory moved gives -ENOENT); a walk that starts from an inode fixes both, and
+  rename's ancestry check (path text, exact only under `rename_mutex`) then has to walk ".." instead. See the
+  M1-11 Notes.

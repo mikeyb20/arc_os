@@ -49,3 +49,9 @@
   (`sched_wait_off_cpu`) before freeing its stack; thread exit needs the same. fork copies the CPU affinity.
   Mutexes take a lock level (`mutex_init(m, level)`); debug builds check it. Threads sharing an mm need TLB
   shootdown on unmap (M1-07).
+- From M1-07: `Process.mm` (`struct Mm`, `kernel/mm/mm.h`) replaces `page_table` and the brk fields. Threads
+  share it with `mm_get` (`Mm.users`); the last `mm_put` frees it, after `mm_switch(NULL)` on the exiting CPU.
+  `mm_switch` keeps `Mm.cpus` (who has it loaded) right, and `mm_flush_tlb_range` already IPIs every CPU in that
+  set, so a second thread needs no new TLB code. The OOM killer and the `SIGKILL`-pending check in
+  `mm_handle_fault` work per process; with threads, kill the whole group. Fault signals use
+  `sig_force_fault` (per process today; per thread with you).

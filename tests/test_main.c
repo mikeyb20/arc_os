@@ -1,17 +1,14 @@
-/* arc_os — Minimal host-side test framework */
+/* arc_os — host-side test runner: every suite but the VFS ones (vfs_main.c) */
 
 #include "test_framework.h"
-
-/* Test result tracking */
-static int tests_run = 0;
-static int tests_passed = 0;
-static int tests_failed = 0;
 
 /* Collect tests from test files */
 extern TestCase cmdline_tests[];
 extern int cmdline_test_count;
 extern TestCase qr_tests[];
 extern int qr_test_count;
+extern TestCase qr_screen_tests[];
+extern int qr_screen_test_count;
 extern TestCase mem_tests[];
 extern int mem_test_count;
 extern TestCase pmm_tests[];
@@ -42,16 +39,10 @@ extern TestCase virtio_tests[];
 extern int virtio_test_count;
 extern TestCase string_tests[];
 extern int string_test_count;
-extern TestCase vfs_tests[];
-extern int vfs_test_count;
 extern TestCase syscall_tests[];
 extern int syscall_test_count;
 extern TestCase elf_tests[];
 extern int elf_test_count;
-extern TestCase fd_tests[];
-extern int fd_test_count;
-extern TestCase fd_refs_tests[];
-extern int fd_refs_test_count;
 extern TestCase vmm_tests[];
 extern int vmm_test_count;
 extern TestCase spinlock_tests[];
@@ -72,18 +63,10 @@ extern TestCase keyboard_tests[];
 extern int keyboard_test_count;
 extern TestCase shell_tests[];
 extern int shell_test_count;
-extern TestCase pipe_tests[];
-extern int pipe_test_count;
 extern TestCase signal_tests[];
 extern int signal_test_count;
 extern TestCase waitqueue_tests[];
 extern int waitqueue_test_count;
-extern TestCase fat32_tests[];
-extern int fat32_test_count;
-extern TestCase devfs_tests[];
-extern int devfs_test_count;
-extern TestCase procfs_tests[];
-extern int procfs_test_count;
 extern TestCase path_tests[];
 extern int path_test_count;
 extern TestCase exec_argv_tests[];
@@ -98,10 +81,14 @@ extern TestCase ipv4_tests[];
 extern int ipv4_test_count;
 extern TestCase icmp_tests[];
 extern int icmp_test_count;
-extern TestCase cred_tests[];
-extern int cred_test_count;
 extern TestCase mutex_tests[];
 extern int mutex_test_count;
+extern TestCase rbtree_tests[];
+extern int rbtree_test_count;
+extern TestCase vma_tests[];
+extern int vma_test_count;
+extern TestCase mm_tests[];
+extern int mm_test_count;
 extern TestCase acpi_tests[];
 extern int acpi_test_count;
 extern TestCase lapic_tests[];
@@ -125,29 +112,9 @@ extern int smbios_test_count;
 extern int panic_test_count;
 extern int ansi_test_count;
 
-static void run_suite(const char *suite_name, TestCase *tests, int count) {
-    printf("[%s] Running %d tests\n", suite_name, count);
-    for (int i = 0; i < count; i++) {
-        tests_run++;
-        int result = tests[i].fn();
-        if (result == 0) {
-            tests_passed++;
-            printf("  PASS: %s\n", tests[i].name);
-        } else {
-            tests_failed++;
-        }
-    }
-}
-
-typedef struct {
-    const char *name;
-    TestCase *tests;
-    int *count;
-} Suite;
-
 int main(int argc, char **argv) {
     /* clang-format off */
-    Suite suites[] = {
+    TestSuite suites[] = {
         { "mem",     mem_tests,     &mem_test_count },
         { "pmm",     pmm_tests,     &pmm_test_count },
         { "kprintf", kprintf_tests, &kprintf_test_count },
@@ -163,11 +130,8 @@ int main(int argc, char **argv) {
         { "dma",     dma_tests,     &dma_test_count },
         { "virtio",  virtio_tests,  &virtio_test_count },
         { "string",  string_tests,  &string_test_count },
-        { "vfs",     vfs_tests,     &vfs_test_count },
         { "syscall", syscall_tests, &syscall_test_count },
         { "elf",     elf_tests,     &elf_test_count },
-        { "fd",      fd_tests,      &fd_test_count },
-        { "fd_refs", fd_refs_tests, &fd_refs_test_count },
         { "vmm",      vmm_tests,      &vmm_test_count },
         { "spinlock",  spinlock_tests,  &spinlock_test_count },
         { "gdt",       gdt_tests,       &gdt_test_count },
@@ -178,12 +142,8 @@ int main(int argc, char **argv) {
         { "tty",          tty_tests,          &tty_test_count },
         { "keyboard",     keyboard_tests,     &keyboard_test_count },
         { "shell",        shell_tests,        &shell_test_count },
-        { "pipe",         pipe_tests,         &pipe_test_count },
         { "signal",       signal_tests,       &signal_test_count },
         { "waitqueue",    waitqueue_tests,    &waitqueue_test_count },
-        { "fat32",        fat32_tests,        &fat32_test_count },
-        { "devfs",        devfs_tests,        &devfs_test_count },
-        { "procfs",       procfs_tests,       &procfs_test_count },
         { "path",         path_tests,         &path_test_count },
         { "exec_argv",    exec_argv_tests,    &exec_argv_test_count },
         { "net_util",     net_util_tests,     &net_util_test_count },
@@ -191,8 +151,10 @@ int main(int argc, char **argv) {
         { "arp",          arp_tests,          &arp_test_count },
         { "ipv4",         ipv4_tests,         &ipv4_test_count },
         { "icmp",         icmp_tests,         &icmp_test_count },
-        { "cred",         cred_tests,         &cred_test_count },
         { "mutex",        mutex_tests,        &mutex_test_count },
+        { "rbtree",       rbtree_tests,       &rbtree_test_count },
+        { "vma",          vma_tests,          &vma_test_count },
+        { "mm",           mm_tests,           &mm_test_count },
         { "acpi",         acpi_tests,         &acpi_test_count },
         { "lapic",        lapic_tests,        &lapic_test_count },
         { "percpu",       percpu_tests,       &percpu_test_count },
@@ -204,30 +166,10 @@ int main(int argc, char **argv) {
         { "ansi",         ansi_tests,         &ansi_test_count },
         { "cmdline",      cmdline_tests,      &cmdline_test_count },
         { "qr",           qr_tests,           &qr_test_count },
+        { "qr_screen",    qr_screen_tests,    &qr_screen_test_count },
         { "panic",        panic_tests,        &panic_test_count },
         { "smbios",       smbios_tests,       &smbios_test_count },
     };
     /* clang-format on */
-    int suite_count = (int)(sizeof(suites) / sizeof(suites[0]));
-
-    /* Optional --suite filter */
-    const char *filter = NULL;
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--suite") == 0 && i + 1 < argc) {
-            filter = argv[++i];
-        }
-    }
-
-    printf("=== arc_os host-side tests ===\n\n");
-
-    for (int s = 0; s < suite_count; s++) {
-        if (filter == NULL || strcmp(filter, suites[s].name) == 0) {
-            run_suite(suites[s].name, suites[s].tests, *suites[s].count);
-        }
-    }
-
-    printf("\n=== Results: %d passed, %d failed, %d total ===\n",
-           tests_passed, tests_failed, tests_run);
-
-    return tests_failed > 0 ? 1 : 0;
+    return test_harness_main(argc, argv, "arc_os host-side tests", suites, (int)(sizeof(suites) / sizeof(suites[0])));
 }

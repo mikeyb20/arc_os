@@ -8,11 +8,15 @@
  * memmove scroll) costs tens of milliseconds per line. Once kmain attaches a
  * cell array (fb_console_attach_cells), it holds what every character cell
  * shows, and scrolling redraws only the cells that change. While the
- * scrollback view is open, output updates the cells but not the screen.
+ * scrollback view is open, the console is paused (QR screens, M1-04c) or
+ * the panic screen is up, output updates the cells but not the screen.
  * Pixel colours are packed with the framebuffer's own mask sizes and shifts.
  * Locks: none of its own. kprintf output arrives through the log drain, which
  * has one owner at a time (lib/klog.c); the scrollback keys take that owner
- * too, and so do TTY output and VT switches (klog_console_acquire, M1-05). */
+ * too, and so do TTY output, VT switches (klog_console_acquire, M1-05) and
+ * the QR screens' pause, draw and resume. The panic screen takes nothing.
+ * Cost: a glyph is 128 pixel writes (512 at 2x); a full-screen fill or bitmap
+ * writes each pixel once; scrollback and the panic view walk the log ring. */
 
 #include "drivers/fb_console.h"
 #include "drivers/font8x16.h"
@@ -46,8 +50,14 @@ static uint32_t bg_color; /* packed background pixel */
 
 static FbCell *cells;    /* rows * cols, or NULL before kmain attaches it */
 static uint32_t view_pages;   /* scrollback: pages above the live screen, 0 = live */
+static int paused;            /* fb_console_pause: the screen belongs to its caller */
 
 static int fb_initialized;
+
+/* Output reaches the screen (not covered by scrollback, a pause or a panic). */
+static inline int screen_live(void) {
+    return view_pages == 0 && !paused;
+}
 
 /* Scale one 8-bit channel to a mask of `size` bits. */
 static uint32_t channel(uint32_t v8, int i) {
@@ -96,7 +106,7 @@ static void set_cell(uint32_t col, uint32_t row, uint8_t ch, uint32_t fg, uint32
         c->fg = fg;
         c->bg = bg;
     }
-    if (view_pages == 0) draw_glyph(col, row, ch, fg, bg);
+    if (screen_live()) draw_glyph(col, row, ch, fg, bg);
 }
 
 /* Fill the whole screen with colour (writes only). */
@@ -122,7 +132,7 @@ static void redraw_all(void) {
  * at the top, since reading the framebuffer back is far too slow. */
 static void scroll_up(void) {
     if (cells == NULL) {
-        fill_screen(bg_color);
+        if (screen_live()) fill_screen(bg_color);
         cur_row = 0;
         return;
     }
@@ -132,7 +142,7 @@ static void scroll_up(void) {
             const FbCell *src = &cells[(r + 1) * cols + c];
             if (dst->ch != src->ch || dst->fg != src->fg || dst->bg != src->bg) {
                 *dst = *src;
-                if (view_pages == 0) draw_glyph(c, r, dst->ch, dst->fg, dst->bg);
+                if (screen_live()) draw_glyph(c, r, dst->ch, dst->fg, dst->bg);
             }
         }
     }
@@ -172,6 +182,7 @@ int fb_console_init(const Framebuffer *fb) {
     cur_row = 0;
     cells = NULL;
     view_pages = 0;
+    paused = 0;
 
     /* Default: light gray on black */
     fg_color = pack_color(0xAAAAAA);
@@ -258,7 +269,7 @@ void fb_console_clear(void) {
             cells[i].bg = bg_color;
         }
     }
-    if (view_pages == 0) fill_screen(bg_color);
+    if (screen_live()) fill_screen(bg_color);
     cur_col = 0;
     cur_row = 0;
 }
@@ -319,44 +330,29 @@ void fb_console_erase_line(int mode) {
 
 /* ---- Kernel-log scrollback (M1-04) ---- */
 
-/* Walk the printable log lines (level at or below the console level, the
- * first partial line skipped). Calls fn(line_index, text, len, ctx) for each
- * line whose index is in [first, first + count); returns the number of lines. */
+/* Walk the printable log lines (level at or below the console level, from
+ * the oldest line still in the ring). Calls fn(line_index, text, len, ctx) for
+ * each line whose index is in [first, first + count); returns the number of
+ * lines. */
 typedef void (*line_fn)(uint32_t index, const char *text, uint32_t len, void *ctx);
 
+typedef struct {
+    uint32_t first, count, index;
+    line_fn fn;
+    void *ctx;
+} LineWalk;
+
+static void count_line(const char *text, size_t len, void *ctx) {
+    LineWalk *w = ctx;
+    if (w->fn != NULL && w->index >= w->first && w->index - w->first < w->count)
+        w->fn(w->index, text, (uint32_t)len, w->ctx);
+    w->index++;
+}
+
 static uint32_t log_lines(uint32_t first, uint32_t count, line_fn fn, void *ctx) {
-    char chunk[256];
-    char line[FB_MAX_LINE];
-    uint32_t len = 0, index = 0;
-    int marker = 3, skip = 0;
-    uint64_t pos = klog_tail();
-    int partial = pos > 0;   /* the ring starts mid-line once it has wrapped */
-    size_t n;
-    while ((n = klog_read(&pos, chunk, sizeof(chunk))) > 0) {
-        for (size_t i = 0; i < n; i++) {
-            char c = chunk[i];
-            if (partial) {
-                if (c == '\n') partial = 0;
-                continue;
-            }
-            if (marker > 0) {
-                if (marker == 2) skip = (c - '0') > klog_console_level();
-                marker--;
-                continue;
-            }
-            if (c != '\n') {
-                if (!skip && len < FB_MAX_LINE) line[len++] = c;
-                continue;
-            }
-            if (!skip) {
-                if (fn != NULL && index >= first && index - first < count) fn(index, line, len, ctx);
-                index++;
-            }
-            len = 0;
-            marker = 3;
-        }
-    }
-    return index;
+    LineWalk w = {.first = first, .count = count, .fn = fn, .ctx = ctx};
+    klog_for_each_line(klog_tail(), klog_console_level(), count_line, &w);
+    return w.index;
 }
 
 /* Where log lines go: line `first` on row 1 (row 0 is the banner) */
@@ -365,13 +361,18 @@ typedef struct {
     uint32_t fg, bg;   /* packed */
 } LogView;
 
-static void draw_log_line(uint32_t index, const char *text, uint32_t len, void *ctx) {
-    const LogView *v = ctx;
-    uint32_t row = 1 + index - v->first;
+/* Draw text[0..len) on row `row`, padded with spaces to the full width, with
+ * control bytes as spaces (pixels only). */
+static void draw_row(uint32_t row, const char *text, uint32_t len, uint32_t fg, uint32_t bg) {
     for (uint32_t c = 0; c < cols; c++) {
         uint8_t ch = (c < len && (uint8_t)text[c] >= 0x20 && (uint8_t)text[c] < 0x7F) ? (uint8_t)text[c] : ' ';
-        draw_glyph(c, row, ch, v->fg, v->bg);
+        draw_glyph(c, row, ch, fg, bg);
     }
+}
+
+static void draw_log_line(uint32_t index, const char *text, uint32_t len, void *ctx) {
+    const LogView *v = ctx;
+    draw_row(1 + index - v->first, text, len, v->fg, v->bg);
 }
 
 /* Fill rows 1.. with log lines [first, end), then blank the rows below them
@@ -383,14 +384,18 @@ static void draw_log_page(uint32_t first, uint32_t end, uint32_t fg, uint32_t bg
     for (uint32_t r = 1 + (last > first ? last - first : 0); r < rows; r++) draw_log_line(first + r - 1, "", 0, &v);
 }
 
-static void draw_banner(const char *text, uint32_t fg, uint32_t bg) {
+/* Draw text on row `row` in packed colours, padded with spaces (pixels only). */
+static void draw_text_row(uint32_t row, const char *text, uint32_t fg, uint32_t bg) {
     uint32_t c = 0;
-    for (; text[c] != '\0' && c < cols; c++) draw_glyph(c, 0, (uint8_t)text[c], fg, bg);
-    for (; c < cols; c++) draw_glyph(c, 0, ' ', fg, bg);
+    for (; text[c] != '\0' && c < cols; c++) {
+        uint8_t ch = ((uint8_t)text[c] >= 0x20 && (uint8_t)text[c] < 0x7F) ? (uint8_t)text[c] : '?';
+        draw_glyph(c, row, ch, fg, bg);
+    }
+    for (; c < cols; c++) draw_glyph(c, row, ' ', fg, bg);
 }
 
 void fb_console_scrollback(int pages) {
-    if (!fb_initialized || cells == NULL || rows < 2) return;
+    if (!fb_initialized || cells == NULL || rows < 2 || paused) return;
 
     uint32_t page = rows - 1;   /* log lines per page, under the banner */
     uint32_t total = log_lines(0, 0, NULL, NULL);
@@ -411,15 +416,119 @@ void fb_console_scrollback(int pages) {
     uint32_t first = end > page ? end - page : 0;
     char banner[96];
     ksnprintf(banner, sizeof(banner), " Kernel log: lines %u-%u of %u  (Shift+PgUp/PgDn)", first + 1, end, total);
-    draw_banner(banner, pack_color(0x000000), pack_color(0xFFD75F));
+    draw_text_row(0, banner, pack_color(0x000000), pack_color(0xFFD75F));
     draw_log_page(first, end, pack_color(0xAAAAAA), pack_color(0x000000));
 }
 
-void fb_console_panic_view(void) {
+/* Length of the next screen row of a wrapped line text[0..len), at most width
+ * columns: a longer line breaks at its last space within the row (or at the
+ * width when there is none). *used is how many bytes the row consumes, the
+ * spaces at the break included. */
+static uint32_t wrap_row(const char *text, uint32_t len, uint32_t width, uint32_t *used) {
+    if (len <= width) {
+        *used = len;
+        return len;
+    }
+    for (uint32_t c = width; c > 0; c--) {
+        if (text[c] == ' ') {
+            uint32_t u = c + 1;
+            while (u < len && text[u] == ' ') u++;   /* the next row starts at text, not spaces */
+            *used = u;
+            return c;
+        }
+    }
+    *used = width;
+    return width;
+}
+
+/* The panic view's walk: the log's lines wrapped at `width` columns, screen
+ * rows numbered from the oldest; rows [first, first + rows - 1) are drawn */
+typedef struct {
+    uint32_t width, first, index;
+    int draw;
+} WrapView;
+
+static void wrap_line(const char *text, size_t len, void *ctx) {
+    WrapView *v = ctx;
+    uint32_t pos = 0, n = len < KLOG_LINE_MAX ? (uint32_t)len : KLOG_LINE_MAX;
+    do {
+        uint32_t used, seg = wrap_row(text + pos, n - pos, v->width, &used);
+        if (v->draw && v->index >= v->first && v->index - v->first < rows - 1)
+            draw_row(1 + v->index - v->first, text + pos, seg, pack_color(0xFFFFFF), pack_color(0x8B0000));
+        v->index++;
+        pos += used;
+    } while (pos < n);
+}
+
+void fb_console_panic_view(uint32_t text_width) {
     if (!fb_initialized || rows < 2) return;
     view_pages = UINT32_MAX;   /* freeze: later output updates cells only */
-    uint32_t total = log_lines(0, 0, NULL, NULL);
-    uint32_t first = total > rows - 1 ? total - (rows - 1) : 0;
-    draw_banner(" arc_os KERNEL PANIC - photograph this screen", pack_color(0x000000), pack_color(0xFFFF00));
-    draw_log_page(first, total, pack_color(0xFFFFFF), pack_color(0x8B0000));
+    uint32_t width = text_width / (FONT_WIDTH * scale);
+    if (text_width == 0 || width >= cols || width < FB_PANIC_MIN_COLS) width = cols;
+    WrapView v = {.width = width};
+    klog_for_each_line(klog_tail(), klog_console_level(), wrap_line, &v);   /* count the rows */
+    uint32_t total = v.index;
+    v.first = total > rows - 1 ? total - (rows - 1) : 0;
+    v.index = 0;
+    v.draw = 1;
+    draw_text_row(0, " arc_os KERNEL PANIC - scan the code or photograph this screen", pack_color(0x000000),
+                  pack_color(0xFFFF00));
+    klog_for_each_line(klog_tail(), klog_console_level(), wrap_line, &v);
+    /* Lines written between the two walks may have moved the window: blank what is left */
+    uint32_t drawn = v.index > v.first ? v.index - v.first : 0;
+    for (uint32_t r = 1 + (drawn < rows - 1 ? drawn : rows - 1); r < rows; r++)
+        draw_row(r, "", 0, pack_color(0xFFFFFF), pack_color(0x8B0000));
+}
+
+/* ---- Drawing outside the text grid (QR screens, M1-04c) ---- */
+
+uint32_t fb_console_width(void) {
+    return fb_initialized ? (uint32_t)fb_width : 0;
+}
+
+uint32_t fb_console_height(void) {
+    return fb_initialized ? (uint32_t)fb_height : 0;
+}
+
+uint32_t fb_console_row_height(void) {
+    return fb_initialized ? FONT_HEIGHT * scale : 0;
+}
+
+void fb_console_pause(void) {
+    paused = 1;
+}
+
+void fb_console_resume(void) {
+    if (!paused) return;
+    paused = 0;
+    if (!fb_initialized || view_pages != 0) return;
+    if (cells != NULL)
+        redraw_all();
+    else
+        fill_screen(bg_color);
+}
+
+void fb_console_fill(uint32_t rgb) {
+    if (fb_initialized) fill_screen(pack_color(rgb));
+}
+
+void fb_console_paint_row(uint32_t row, const char *text, uint32_t fg, uint32_t bg) {
+    if (fb_initialized && row < rows) draw_text_row(row, text, pack_color(fg), pack_color(bg));
+}
+
+void fb_console_draw_bitmap(const uint8_t *bits, uint32_t w, uint32_t h, uint32_t row_bytes, uint32_t quiet,
+                            uint32_t scale_px, uint32_t x, uint32_t y) {
+    if (!fb_initialized || scale_px == 0) return;
+    uint32_t dark = pack_color(0x000000), light = pack_color(0xFFFFFF);
+    uint64_t total_w = (uint64_t)(w + 2 * quiet) * scale_px;
+    uint64_t total_h = (uint64_t)(h + 2 * quiet) * scale_px;
+    for (uint64_t py = 0; py < total_h && y + py < fb_height; py++) {
+        int64_t my = (int64_t)(py / scale_px) - quiet;
+        for (uint64_t px = 0; px < total_w && x + px < fb_width; px++) {
+            int64_t mx = (int64_t)(px / scale_px) - quiet;
+            int on = mx >= 0 && my >= 0 && mx < (int64_t)w && my < (int64_t)h &&
+                     ((bits[(uint64_t)my * row_bytes + (uint64_t)mx / 8] >> (7 - mx % 8)) & 1);
+            put_pixel(x + px, y + py, on ? dark : light);
+        }
+    }
 }

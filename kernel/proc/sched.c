@@ -38,6 +38,7 @@
 #include "proc/kernel_lock.h"
 #include "mm/kmalloc.h"
 #include "mm/vmm.h"
+#include "mm/mm.h"
 #include "arch/hal.h"
 #include "lib/kprintf.h"
 
@@ -226,9 +227,8 @@ int sched_continue(Thread *t) {
 
 /* --- Switching --- */
 
-static uint64_t thread_cr3(const Thread *t) {
-    const Process *p = t->proc;
-    return (p != NULL && p->page_table != 0) ? p->page_table : vmm_get_kernel_pml4();
+static Mm *thread_mm(const Thread *t) {
+    return t->proc != NULL ? t->proc->mm : NULL;
 }
 
 /* Account the time since the last switch to the thread that had the CPU. */
@@ -291,12 +291,10 @@ void sched_schedule(void) {
     /* This CPU's entry stacks (TSS.RSP0 and SYSCALL) for the new thread */
     if (next->kernel_stack_top != 0) hal_set_kernel_stack(next->kernel_stack_top);
 
-    /* Address space: compare with what this CPU has loaded right now, not
-     * with prev's (prev may have run elsewhere) and not with a cached copy
-     * (exec, fork and init load CR3 themselves, and a freed PML4 comes back
-     * as the next process's: a stale copy could skip a needed load) */
-    uint64_t cr3 = thread_cr3(next);
-    if (cr3 != hal_get_address_space()) hal_switch_address_space(cr3);
+    /* Address space: mm_switch compares with what this CPU has loaded (its
+     * own record, which every CR3 load goes through) and keeps the mm's
+     * loaded-on set right for TLB shootdowns (M1-07) */
+    mm_switch(thread_mm(next));
 
     /* Slices only while a real thread runs: idle CPUs get no timer interrupts */
     if (slice_timer_ready) {

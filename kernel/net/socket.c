@@ -114,11 +114,6 @@ void socket_free(int idx) {
     kfree(sk);
 }
 
-void socket_addref(int idx) {
-    Socket *sk = socket_get(idx);
-    if (sk != NULL) sk->refs++;
-}
-
 void socket_release(int idx) {
     Socket *sk = socket_get(idx);
     if (sk == NULL) return;

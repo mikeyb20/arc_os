@@ -7,12 +7,12 @@
 #include "mm/vmm.h"
 #include "mm/kmalloc.h"
 #include "mm/slab.h"
+#include "mm/mm.h"
 #include "boot/bootinfo.h"
 #include "proc/thread.h"
 #include "proc/sched.h"
 #include "proc/lockdep.h"
 #include "proc/process.h"
-#include "arch/x86_64/syscall.h"
 #include "proc/init.h"
 #include "drivers/acpi.h"
 #include "drivers/pci.h"
@@ -102,7 +102,8 @@ static void fb_setup(const BootInfo *info) {
     if (!info->fb_present || fb_console_init(&info->framebuffer) != 0) return;
     fb_console_attach_cells(kmalloc(fb_console_cells_bytes(), GFP_KERNEL));
     kprintf_set_putchar_hook(fb_console_putchar);
-    panic_set_screen(fb_console_panic_view);
+    diag_qr_panic_setup();
+    panic_set_screen(diag_qr_panic_screen);   /* panic view plus a QR code of the report (M1-04c) */
     kprintf("[FB] Framebuffer console active (%lux%lu, %ux%u text)\n", info->framebuffer.width,
             info->framebuffer.height, fb_console_cols(), fb_console_rows());
 }
@@ -252,129 +253,70 @@ static void pmm_self_test(void) {
     kprintf("[PMM] Self-test passed: 2 MiB block at 0x%lx\n", huge_phys);
 }
 
-/* Initialize VFS with ramfs, load boot modules, create /etc/hostname. */
+/* Create path holding data, logging failures (boot files). */
+static void boot_write_file(const char *path, const void *data, uint64_t size, uint32_t mode) {
+    int err = vfs_write_file(path, data, size, mode);
+    if (err != 0) kprintf("[VFS] FAIL: %s (%d)\n", path, err);
+}
+
+/* Mount sb over a new directory at path. */
+static void boot_mount(const char *path, SuperBlock *sb, const char *source) {
+    int err = sb != NULL ? vfs_mkdir(path, 0755) : -ENOMEM;
+    if (err == 0) err = vfs_mount(path, sb, source);
+    if (err == 0) {
+        kprintf("[VFS] Mounted %s at %s\n", sb->type, path);
+    } else {
+        kprintf("[VFS] FAIL: mount %s (%d)\n", path, err);
+    }
+}
+
+/* Programs that stay only in /boot (the rest are copied to /bin) */
+static int boot_only(const char *name) {
+    static const char *const names[] = {"kernel.elf", "init", "login", "shell", "hello", "echo"};
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        if (strcmp(name, names[i]) == 0) return 1;
+    }
+    return 0;
+}
+
+/* Initialize the VFS with a ramfs root, load boot modules, create /etc,
+ * /home, /tmp, /bin and mount devfs and procfs. */
 static void vfs_setup(const BootInfo *info) {
     vfs_init();
-    VfsNode *vfs_root_node = ramfs_init();
-    vfs_set_root(vfs_root_node);
-    kprintf("[VFS] Initialized with ramfs root (inode=%lu)\n", vfs_root_node->inode_num);
+    if (vfs_mount_root(ramfs_create_sb(), "ramfs") != 0) {
+        kprintf("[VFS] FAIL: no root filesystem\n");
+        KERNEL_PANIC();
+    }
+    kprintf("[VFS] Initialized with ramfs root\n");
 
-    /* Load boot modules into ramfs */
+    /* Boot modules into ramfs; programs are executable */
     vfs_mkdir("/boot", 0755);
+    vfs_mkdir("/bin", 0755);
     for (uint64_t i = 0; i < info->module_count; i++) {
         const char *path = info->modules[i].path;
-        const void *data = info->modules[i].address;
-        uint64_t size = info->modules[i].size;
-
-        VfsFile mod_file;
-        if (vfs_open(path, O_CREAT | O_WRONLY, &mod_file) == 0) {
-            vfs_write(&mod_file, data, (uint32_t)size);
-            vfs_close(&mod_file);
-            kprintf("[BOOT] Loaded module '%s' (%lu bytes) into ramfs\n", path, size);
+        boot_write_file(path, info->modules[i].address, info->modules[i].size, 0755);
+        kprintf("[BOOT] Loaded module '%s' (%lu bytes) into ramfs\n", path, info->modules[i].size);
+        if (strncmp(path, "/boot/", 6) == 0 && strchr(path + 6, '/') == NULL && !boot_only(path + 6)) {
+            char dst[VFS_NAME_MAX + 6];
+            ksnprintf(dst, sizeof(dst), "/bin/%s", path + 6);
+            boot_write_file(dst, info->modules[i].address, info->modules[i].size, 0755);
         }
     }
+    kprintf("[VFS] Created /bin with coreutils\n");
 
-    /* Create /etc with hostname and passwd */
     vfs_mkdir("/etc", 0755);
-    {
-        VfsFile hf;
-        if (vfs_open("/etc/hostname", O_CREAT | O_WRONLY, &hf) == 0) {
-            const char *hostname = "arc_os\n";
-            vfs_write(&hf, hostname, 7);
-            vfs_close(&hf);
-            kprintf("[VFS] Created /etc/hostname\n");
-        }
-    }
-    {
-        VfsFile pf;
-        if (vfs_open("/etc/passwd", O_CREAT | O_WRONLY, &pf) == 0) {
-            const char *passwd =
-                "root::0:0:root:/:/boot/shell\n"
-                "user:user:1000:1000:user:/home/user:/boot/shell\n";
-            vfs_write(&pf, passwd, strlen(passwd));
-            vfs_close(&pf);
-            kprintf("[VFS] Created /etc/passwd\n");
-        }
-    }
-    /* Create /home/user for the default user account */
+    boot_write_file("/etc/hostname", "arc_os\n", 7, 0644);
+    static const char passwd[] = "root::0:0:root:/:/boot/shell\n"
+                                 "user:user:1000:1000:user:/home/user:/boot/shell\n";
+    boot_write_file("/etc/passwd", passwd, sizeof(passwd) - 1, 0644);
     vfs_mkdir("/home", 0755);
     vfs_mkdir("/home/user", 0755);
     /* /tmp exists on every Unix system; programs expect it (M0-10: a suite
      * creating it showed up as leaked heap) */
     vfs_mkdir("/tmp", 01777);
 
-    /* Create /bin and symlink boot modules into it */
-    vfs_mkdir("/bin", 0755);
-    {
-        VfsDirEntry boot_entries[32];
-        int bcount = vfs_readdir("/boot", boot_entries, 32);
-        for (int i = 0; i < bcount; i++) {
-            if (boot_entries[i].type == VFS_FILE) {
-                /* Read from /boot, write to /bin */
-                char src[256], dst[256];
-                strncpy(src, "/boot/", sizeof(src) - 1);
-                strncpy(dst, "/bin/", sizeof(dst) - 1);
-                src[6] = '\0'; dst[5] = '\0';
-                size_t slen = strlen(src);
-                size_t dlen = strlen(dst);
-                strncpy(src + slen, boot_entries[i].name, sizeof(src) - slen - 1);
-                src[sizeof(src) - 1] = '\0';
-                strncpy(dst + dlen, boot_entries[i].name, sizeof(dst) - dlen - 1);
-                dst[sizeof(dst) - 1] = '\0';
-
-                /* Skip kernel.elf and the 5 main programs */
-                if (strcmp(boot_entries[i].name, "kernel.elf") == 0 ||
-                    strcmp(boot_entries[i].name, "init") == 0 ||
-                    strcmp(boot_entries[i].name, "login") == 0 ||
-                    strcmp(boot_entries[i].name, "shell") == 0 ||
-                    strcmp(boot_entries[i].name, "hello") == 0 ||
-                    strcmp(boot_entries[i].name, "echo") == 0) {
-                    continue;
-                }
-
-                VfsFile sf, df;
-                if (vfs_open(src, O_RDONLY, &sf) == 0) {
-                    if (vfs_open(dst, O_CREAT | O_WRONLY, &df) == 0) {
-                        uint8_t tmpbuf[4096];
-                        int nr;
-                        while ((nr = vfs_read(&sf, tmpbuf, sizeof(tmpbuf))) > 0) {
-                            vfs_write(&df, tmpbuf, (uint32_t)nr);
-                        }
-                        /* Mark as executable */
-                        if (df.node) df.node->mode = 0755;
-                        vfs_close(&df);
-                    }
-                    vfs_close(&sf);
-                }
-            }
-        }
-        kprintf("[VFS] Created /bin with coreutils\n");
-    }
-
-    /* Mount devfs at /dev */
-    VfsNode *dev_root = devfs_init();
-    if (dev_root) {
-        vfs_mount("/dev", dev_root);
-        kprintf("[VFS] Mounted devfs at /dev\n");
-    }
-
-    /* Mount procfs at /proc */
-    VfsNode *proc_root_node = procfs_init();
-    if (proc_root_node) {
-        vfs_mount("/proc", proc_root_node);
-        kprintf("[VFS] Mounted procfs at /proc\n");
-    }
-
-    /* List root directory */
-    VfsDirEntry entries[16];
-    int count = vfs_readdir("/", entries, 16);
-    kprintf("[VFS] Root has %d entries\n", count);
-    for (int i = 0; i < count; i++) {
-        kprintf("[VFS]   %s (inode=%lu, type=%s)\n",
-                entries[i].name,
-                entries[i].inode_num,
-                entries[i].type == VFS_DIRECTORY ? "dir" : "file");
-    }
+    boot_mount("/dev", devfs_init(), "devfs");
+    boot_mount("/proc", procfs_init(), "proc");
 }
 
 /* Try a FAT32 mount of the first block device. */
@@ -385,10 +327,9 @@ static void disk_mount(void) {
         return;
     }
 
-    VfsNode *fat_root = fat32_mount(disk);
-    if (fat_root) {
-        vfs_mount("/disk", fat_root);
-        kprintf("[FAT32] Mounted at /disk\n");
+    SuperBlock *fat = fat32_mount(disk);
+    if (fat != NULL) {
+        boot_mount("/disk", fat, "vda");
     } else {
         kprintf("[BLK] No FAT32 filesystem found on disk\n");
     }
@@ -462,6 +403,7 @@ void kmain(void) {
     vmm_init(info);
     serial_puts("[BOOT] stage: heap\n");
     kmalloc_init();
+    mm_init();   /* VMA and address-space caches (M1-07) */
     klog_setup_buffer();
     heap_self_test();
     pmm_self_test();

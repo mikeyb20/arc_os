@@ -7,6 +7,7 @@
 
 /* Guard kernel headers — we provide stubs (elf.h itself is used as is) */
 #define ARCHOS_MM_VMM_H
+#define ARCHOS_MM_MM_H
 #define ARCHOS_MM_PMM_H
 #define ARCHOS_LIB_MEM_H
 #define ARCHOS_LIB_KPRINTF_H
@@ -21,6 +22,9 @@
 #define VMM_FLAG_WRITABLE  (1 << 0)
 #define VMM_FLAG_USER      (1 << 1)
 #define VMM_FLAG_NOEXEC    (1 << 2)
+#define VMA_READ            0x1u
+#define VMA_WRITE           0x2u
+#define VMA_EXEC            0x4u
 #define EINVAL 22
 #define ENOMEM 12
 #define ENOEXEC 8
@@ -70,7 +74,7 @@ static int mapping_find(uint64_t virt) {
     return -1;
 }
 
-static void vmm_map_page_in(uint64_t pml4, uint64_t virt, uint64_t phys, uint32_t flags) {
+static int vmm_map_page_in(uint64_t pml4, uint64_t virt, uint64_t phys, uint32_t flags) {
     if (map_call_count < MAX_MAP_CALLS) {
         map_calls[map_call_count].pml4 = pml4;
         map_calls[map_call_count].virt = virt;
@@ -85,6 +89,7 @@ static void vmm_map_page_in(uint64_t pml4, uint64_t virt, uint64_t phys, uint32_
         mappings[i].phys = phys;
         mappings[i].flags = flags;
     }
+    return 0;
 }
 
 static int vmm_get_flags_in(uint64_t pml4, uint64_t virt) {
@@ -99,6 +104,45 @@ static uint64_t vmm_get_phys_in(uint64_t pml4, uint64_t virt) {
     return i < 0 ? 0 : mappings[i].phys + (virt & (PAGE_SIZE - 1));
 }
 
+static int freed_page_count;
+static void pmm_free_page(uint64_t phys) {
+    (void)phys;
+    freed_page_count++;
+}
+
+/* mm.h stubs: the loader adds one VMA per segment and maps the pages that
+ * hold file data through mm_setup_page; the rest come on first touch */
+typedef struct Mm {
+    uint64_t pgd;
+} Mm;
+#define MAX_VMAS 8
+static struct {
+    uint64_t start, end;
+    uint32_t prot;
+} vmas[MAX_VMAS];
+static int vma_count;
+static int setup_page_fail;
+static int mm_setup_vma(Mm *mm, uint64_t start, uint64_t end, uint32_t prot, uint32_t flags) {
+    (void)mm;
+    (void)flags;
+    /* the real one allows one shared page with the VMA below */
+    for (int i = 0; i < vma_count; i++) {
+        if (start < vmas[i].end && vmas[i].start < end && vmas[i].end != start + PAGE_SIZE) return -EINVAL;
+    }
+    if (vma_count >= MAX_VMAS) return -ENOMEM;
+    vmas[vma_count].start = start;
+    vmas[vma_count].end = end;
+    vmas[vma_count].prot = prot;
+    vma_count++;
+    return 0;
+}
+static int mm_setup_page(Mm *mm, uint64_t virt, uint64_t phys, uint32_t vmm_flags) {
+    if (setup_page_fail) return -ENOMEM;
+    return vmm_map_page_in(mm->pgd, virt, phys, vmm_flags);
+}
+static Mm test_mm = {0x200000};
+#define TEST_MM (&test_mm)
+
 /* Reset test state */
 static void reset_stubs(void) {
     map_call_count = 0;
@@ -111,6 +155,9 @@ static void reset_stubs(void) {
         allocated_pages[i] = NULL;
     }
     allocated_page_count = 0;
+    freed_page_count = 0;
+    vma_count = 0;
+    setup_page_fail = 0;
 }
 
 /* Include the real elf.c implementation */
@@ -163,7 +210,7 @@ TEST(bad_magic) {
     uint8_t buf[512];
     memset(buf, 0, sizeof(buf));
     ElfLoadResult result;
-    ASSERT_EQ(elf_load(buf, sizeof(buf), 0x200000, &result), -ENOEXEC);
+    ASSERT_EQ(elf_load(buf, sizeof(buf), TEST_MM, &result), -ENOEXEC);
     return 0;
 }
 
@@ -173,7 +220,7 @@ TEST(wrong_class) {
     build_minimal_elf(buf, sizeof(buf), 0x400000, 0x400000, 5, 0, 4096);
     buf[4] = 1;
     ElfLoadResult result;
-    ASSERT_EQ(elf_load(buf, sizeof(buf), 0x200000, &result), -ENOEXEC);
+    ASSERT_EQ(elf_load(buf, sizeof(buf), TEST_MM, &result), -ENOEXEC);
     return 0;
 }
 
@@ -184,7 +231,7 @@ TEST(wrong_machine) {
     Elf64_Ehdr *ehdr = (Elf64_Ehdr *)buf;
     ehdr->e_machine = 3;
     ElfLoadResult result;
-    ASSERT_EQ(elf_load(buf, sizeof(buf), 0x200000, &result), -ENOEXEC);
+    ASSERT_EQ(elf_load(buf, sizeof(buf), TEST_MM, &result), -ENOEXEC);
     return 0;
 }
 
@@ -195,13 +242,13 @@ TEST(not_executable) {
     Elf64_Ehdr *ehdr = (Elf64_Ehdr *)buf;
     ehdr->e_type = 1;
     ElfLoadResult result;
-    ASSERT_EQ(elf_load(buf, sizeof(buf), 0x200000, &result), -ENOEXEC);
+    ASSERT_EQ(elf_load(buf, sizeof(buf), TEST_MM, &result), -ENOEXEC);
     return 0;
 }
 
 TEST(null_data) {
     ElfLoadResult result;
-    ASSERT_EQ(elf_load(NULL, 100, 0x200000, &result), -ENOEXEC);
+    ASSERT_EQ(elf_load(NULL, 100, TEST_MM, &result), -ENOEXEC);
     return 0;
 }
 
@@ -209,7 +256,7 @@ TEST(too_small) {
     reset_stubs();
     uint8_t buf[8];
     ElfLoadResult result;
-    ASSERT_EQ(elf_load(buf, sizeof(buf), 0x200000, &result), -ENOEXEC);
+    ASSERT_EQ(elf_load(buf, sizeof(buf), TEST_MM, &result), -ENOEXEC);
     return 0;
 }
 
@@ -218,7 +265,7 @@ TEST(valid_single_segment) {
     uint8_t buf[4096];
     build_minimal_elf(buf, sizeof(buf), 0x400000, 0x400100, 5, 256, 4096);
     ElfLoadResult result;
-    int err = elf_load(buf, sizeof(buf), 0x200000, &result);
+    int err = elf_load(buf, sizeof(buf), TEST_MM, &result);
     ASSERT_EQ(err, 0);
     ASSERT_EQ(result.entry_point, 0x400100);
     ASSERT_TRUE(result.brk_start >= 0x400000 + 4096);
@@ -234,7 +281,7 @@ TEST(segment_maps_correct_flags) {
     uint8_t buf[4096];
     build_minimal_elf(buf, sizeof(buf), 0x400000, 0x400000, 6, 100, 4096);
     ElfLoadResult result;
-    int err = elf_load(buf, sizeof(buf), 0x200000, &result);
+    int err = elf_load(buf, sizeof(buf), TEST_MM, &result);
     ASSERT_EQ(err, 0);
     ASSERT_EQ(map_call_count, 1);
     uint32_t expected = VMM_FLAG_USER | VMM_FLAG_WRITABLE | VMM_FLAG_NOEXEC;
@@ -247,7 +294,7 @@ TEST(kernel_space_rejected) {
     uint8_t buf[4096];
     build_minimal_elf(buf, sizeof(buf), 0xFFFF800000000000ULL, 0xFFFF800000000000ULL, 5, 0, 4096);
     ElfLoadResult result;
-    ASSERT_EQ(elf_load(buf, sizeof(buf), 0x200000, &result), -ENOEXEC);
+    ASSERT_EQ(elf_load(buf, sizeof(buf), TEST_MM, &result), -ENOEXEC);
     return 0;
 }
 
@@ -256,11 +303,14 @@ TEST(multi_page_segment) {
     uint8_t buf[8192];
     build_minimal_elf(buf, sizeof(buf), 0x400000, 0x400000, 5, 100, 8192);
     ElfLoadResult result;
-    int err = elf_load(buf, sizeof(buf), 0x200000, &result);
+    int err = elf_load(buf, sizeof(buf), TEST_MM, &result);
     ASSERT_EQ(err, 0);
-    ASSERT_EQ(map_call_count, 2);
+    ASSERT_EQ(map_call_count, 1);              /* the page past the file data: on first touch */
     ASSERT_EQ(map_calls[0].virt, 0x400000);
-    ASSERT_EQ(map_calls[1].virt, 0x401000);
+    ASSERT_EQ(vma_count, 1);                   /* one VMA covers both pages */
+    ASSERT_EQ(vmas[0].start, 0x400000);
+    ASSERT_EQ(vmas[0].end, 0x402000);
+    ASSERT_EQ(vmas[0].prot, VMA_READ | VMA_EXEC);
     return 0;
 }
 
@@ -298,9 +348,9 @@ TEST(shared_page_keeps_both_segments) {
     static uint8_t buf[4096];
     build_two_segment_elf(buf, sizeof(buf));
     ElfLoadResult result;
-    ASSERT_EQ(elf_load(buf, sizeof(buf), 0x200000, &result), 0);
-    ASSERT_EQ(allocated_page_count, 2);     /* 0x400000 once, 0x401000 */
-    ASSERT_EQ(mapping_count, 2);
+    ASSERT_EQ(elf_load(buf, sizeof(buf), TEST_MM, &result), 0);
+    ASSERT_EQ(allocated_page_count, 1);     /* 0x400000 once; 0x401000 is .bss */
+    ASSERT_EQ(mapping_count, 1);
     int i = mapping_find(0x400000);
     ASSERT_TRUE(i >= 0);
     uint8_t *page = (uint8_t *)(uintptr_t)mappings[i].phys;
@@ -310,8 +360,15 @@ TEST(shared_page_keeps_both_segments) {
     ASSERT_EQ(page[0xA00], 0);               /* bss */
     /* The shared page allows both: writable and executable */
     ASSERT_EQ(mappings[i].flags, VMM_FLAG_USER | VMM_FLAG_WRITABLE);
-    i = mapping_find(0x401000);
-    ASSERT_EQ(mappings[i].flags, VMM_FLAG_USER | VMM_FLAG_WRITABLE | VMM_FLAG_NOEXEC);
+    ASSERT_TRUE(mapping_find(0x401000) < 0);
+    /* text r-x, data rw- sharing its first page with text */
+    ASSERT_EQ(vma_count, 2);
+    ASSERT_EQ(vmas[0].start, 0x400000);
+    ASSERT_EQ(vmas[0].end, 0x401000);
+    ASSERT_EQ(vmas[0].prot, VMA_READ | VMA_EXEC);
+    ASSERT_EQ(vmas[1].start, 0x400000);
+    ASSERT_EQ(vmas[1].end, 0x402000);
+    ASSERT_EQ(vmas[1].prot, VMA_READ | VMA_WRITE);
     return 0;
 }
 
@@ -321,7 +378,7 @@ TEST(interp_rejected) {
     build_two_segment_elf(buf, sizeof(buf));
     add_phdr(buf, PT_INTERP, PF_R);
     ElfLoadResult result;
-    ASSERT_EQ(elf_load(buf, sizeof(buf), 0x200000, &result), -ENOEXEC);
+    ASSERT_EQ(elf_load(buf, sizeof(buf), TEST_MM, &result), -ENOEXEC);
     ASSERT_EQ(map_call_count, 0);            /* refused before mapping anything */
     return 0;
 }
@@ -335,7 +392,7 @@ TEST(static_pie_loads_at_base) {
     Elf64_Phdr *ph = (Elf64_Phdr *)(buf + ehdr->e_phoff);
     ph->p_offset = 0;                        /* covers the headers too */
     ElfLoadResult result;
-    ASSERT_EQ(elf_load(buf, sizeof(buf), 0x200000, &result), 0);
+    ASSERT_EQ(elf_load(buf, sizeof(buf), TEST_MM, &result), 0);
     ASSERT_EQ(result.load_bias, ELF_PIE_BASE);
     ASSERT_EQ(result.entry_point, ELF_PIE_BASE + 0x120);
     ASSERT_EQ(result.phdr_addr, ELF_PIE_BASE + sizeof(Elf64_Ehdr));
@@ -350,7 +407,7 @@ TEST(phdr_from_pt_phdr_or_first_segment) {
     /* Headers not inside any segment: AT_PHDR unknown (0) */
     build_two_segment_elf(buf, sizeof(buf));
     ElfLoadResult result;
-    ASSERT_EQ(elf_load(buf, sizeof(buf), 0x200000, &result), 0);
+    ASSERT_EQ(elf_load(buf, sizeof(buf), TEST_MM, &result), 0);
     ASSERT_EQ(result.phdr_addr, 0);
     ASSERT_EQ(result.phnum, 2);
     ASSERT_EQ(result.phent, sizeof(Elf64_Phdr));
@@ -360,7 +417,7 @@ TEST(phdr_from_pt_phdr_or_first_segment) {
     build_two_segment_elf(buf, sizeof(buf));
     Elf64_Phdr *ph = add_phdr(buf, PT_PHDR, PF_R);
     ph->p_vaddr = 0x400040;
-    ASSERT_EQ(elf_load(buf, sizeof(buf), 0x200000, &result), 0);
+    ASSERT_EQ(elf_load(buf, sizeof(buf), TEST_MM, &result), 0);
     ASSERT_EQ(result.phdr_addr, 0x400040);
     return 0;
 }
@@ -370,12 +427,12 @@ TEST(gnu_stack_flag) {
     static uint8_t buf[4096];
     build_two_segment_elf(buf, sizeof(buf));
     ElfLoadResult result;
-    ASSERT_EQ(elf_load(buf, sizeof(buf), 0x200000, &result), 0);
+    ASSERT_EQ(elf_load(buf, sizeof(buf), TEST_MM, &result), 0);
     ASSERT_EQ(result.stack_exec, 1);         /* no PT_GNU_STACK: Linux default */
     reset_stubs();
     build_two_segment_elf(buf, sizeof(buf));
     add_phdr(buf, PT_GNU_STACK, PF_R | PF_W);
-    ASSERT_EQ(elf_load(buf, sizeof(buf), 0x200000, &result), 0);
+    ASSERT_EQ(elf_load(buf, sizeof(buf), TEST_MM, &result), 0);
     ASSERT_EQ(result.stack_exec, 0);
     return 0;
 }
@@ -386,36 +443,79 @@ TEST(malformed_headers_rejected) {
 
     reset_stubs();
     build_minimal_elf(buf, sizeof(buf), 0x400000, 0x400000, PF_R, 0x100, 0x80);
-    ASSERT_EQ(elf_load(buf, sizeof(buf), 0x200000, &result), -ENOEXEC);  /* filesz > memsz */
+    ASSERT_EQ(elf_load(buf, sizeof(buf), TEST_MM, &result), -ENOEXEC);  /* filesz > memsz */
 
     reset_stubs();
     build_minimal_elf(buf, sizeof(buf), 0x400000, 0x400000, PF_R, 0, 0x1000);
     ((Elf64_Ehdr *)buf)->e_phentsize = 32;
-    ASSERT_EQ(elf_load(buf, sizeof(buf), 0x200000, &result), -ENOEXEC);
+    ASSERT_EQ(elf_load(buf, sizeof(buf), TEST_MM, &result), -ENOEXEC);
 
     reset_stubs();
     build_minimal_elf(buf, sizeof(buf), 0x400000, 0x400000, PF_R, 0, 0x1000);
     ((Elf64_Ehdr *)buf)->e_phoff = UINT64_MAX - 8;   /* would wrap */
-    ASSERT_EQ(elf_load(buf, sizeof(buf), 0x200000, &result), -ENOEXEC);
+    ASSERT_EQ(elf_load(buf, sizeof(buf), TEST_MM, &result), -ENOEXEC);
 
     reset_stubs();
     build_minimal_elf(buf, sizeof(buf), 0x400000, 0x400000, PF_R, 0x100, 0x1000);
     ((Elf64_Phdr *)(buf + sizeof(Elf64_Ehdr)))->p_offset = UINT64_MAX - 8;
-    ASSERT_EQ(elf_load(buf, sizeof(buf), 0x200000, &result), -ENOEXEC);
+    ASSERT_EQ(elf_load(buf, sizeof(buf), TEST_MM, &result), -ENOEXEC);
 
     reset_stubs();
     build_minimal_elf(buf, sizeof(buf), 0x400000, 0x400000, PF_R, 0, 0);  /* no loadable */
-    ASSERT_EQ(elf_load(buf, sizeof(buf), 0x200000, &result), -ENOEXEC);
+    ASSERT_EQ(elf_load(buf, sizeof(buf), TEST_MM, &result), -ENOEXEC);
 
     reset_stubs();
     build_minimal_elf(buf, sizeof(buf), 0x7FFFFFFFF000ULL, 0x400000, PF_R, 0, 0x2000);
-    ASSERT_EQ(elf_load(buf, sizeof(buf), 0x200000, &result), -ENOEXEC);  /* crosses the top */
+    ASSERT_EQ(elf_load(buf, sizeof(buf), TEST_MM, &result), -ENOEXEC);  /* crosses the top */
+    return 0;
+}
+
+/* Overlapping segments (more than the one shared page) are refused */
+TEST(overlapping_segments_rejected) {
+    reset_stubs();
+    static uint8_t buf[4096];
+    build_two_segment_elf(buf, sizeof(buf));
+    Elf64_Phdr *text = (Elf64_Phdr *)(buf + ((Elf64_Ehdr *)buf)->e_phoff);
+    text->p_memsz = 0x1800;     /* text now runs to 0x402000: data starts inside it */
+    ElfLoadResult result;
+    ASSERT_EQ(elf_load(buf, sizeof(buf), TEST_MM, &result), -ENOEXEC);
+    return 0;
+}
+
+/* A page that can't be mapped goes back to the allocator */
+TEST(map_failure_frees_page) {
+    reset_stubs();
+    uint8_t buf[4096];
+    build_minimal_elf(buf, sizeof(buf), 0x400000, 0x400000, 5, 256, 4096);
+    setup_page_fail = 1;
+    ElfLoadResult result;
+    ASSERT_EQ(elf_load(buf, sizeof(buf), TEST_MM, &result), -ENOMEM);
+    ASSERT_EQ(allocated_page_count, 1);
+    ASSERT_EQ(freed_page_count, 1);
+    return 0;
+}
+
+/* A segment of .bss only maps nothing up front */
+TEST(bss_only_segment_is_demand_zero) {
+    reset_stubs();
+    uint8_t buf[4096];
+    build_minimal_elf(buf, sizeof(buf), 0x400000, 0x400000, PF_R | PF_W, 0, 0x3000);
+    ElfLoadResult result;
+    ASSERT_EQ(elf_load(buf, sizeof(buf), TEST_MM, &result), 0);
+    ASSERT_EQ(map_call_count, 0);
+    ASSERT_EQ(allocated_page_count, 0);
+    ASSERT_EQ(vma_count, 1);
+    ASSERT_EQ(vmas[0].end, 0x403000);
+    ASSERT_EQ(result.brk_start, 0x403000);
     return 0;
 }
 
 /* --- Suite --- */
 
 TestCase elf_tests[] = {
+    TEST_ENTRY(overlapping_segments_rejected),
+    TEST_ENTRY(map_failure_frees_page),
+    TEST_ENTRY(bss_only_segment_is_demand_zero),
     TEST_ENTRY(bad_magic),
     TEST_ENTRY(wrong_class),
     TEST_ENTRY(wrong_machine),

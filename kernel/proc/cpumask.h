@@ -29,6 +29,16 @@ static inline int cpumask_test(const CpuMask *m, uint32_t cpu) {
     return cpu < SCHED_MAX_CPUS && (m->bits[cpu / 64] >> (cpu % 64)) & 1;
 }
 
+/* Atomic set / clear of one CPU, for masks other CPUs read without a lock
+ * (an mm's "loaded on" set, M1-07). Full barriers. */
+static inline void cpumask_set_atomic(CpuMask *m, uint32_t cpu) {
+    if (cpu < SCHED_MAX_CPUS) __atomic_fetch_or(&m->bits[cpu / 64], 1ULL << (cpu % 64), __ATOMIC_SEQ_CST);
+}
+
+static inline void cpumask_clear_atomic(CpuMask *m, uint32_t cpu) {
+    if (cpu < SCHED_MAX_CPUS) __atomic_fetch_and(&m->bits[cpu / 64], ~(1ULL << (cpu % 64)), __ATOMIC_SEQ_CST);
+}
+
 /* 1 if a and b share a CPU. */
 static inline int cpumask_intersects(const CpuMask *a, const CpuMask *b) {
     for (int i = 0; i < CPUMASK_WORDS; i++) {

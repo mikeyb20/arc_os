@@ -22,9 +22,15 @@ typedef void (*sig_handler_t)(int);
 /* SyscallFrame — the user registers syscall_entry.asm saved, in its push
  * order (lowest address first). Signal delivery and rt_sigreturn rewrite it;
  * the stub reloads every field on the way out. RAX is not here: it is the
- * value sig_maybe_deliver returns. RCX and R11 hold the user RIP and RFLAGS
- * (SYSCALL put them there), so a signal frame records those for rcx/r11. */
+ * value sig_maybe_deliver returns. The rcx and r11 slots hold the user RIP and
+ * RFLAGS (SYSCALL put them there); ret_rcx and ret_r11 are the values the
+ * user's RCX and R11 get back. After a syscall they equal RIP and RFLAGS and
+ * the stub leaves through SYSRET; when they differ (rt_sigreturn to a context
+ * an interrupt or fault saved, M1-07) it leaves through IRET. A fault or
+ * interrupt from user mode builds one from its own frame (arch). */
 typedef struct SyscallFrame {
+    uint64_t ret_rcx;   /* user RCX on return */
+    uint64_t ret_r11;   /* user R11 on return */
     uint64_t r9;
     uint64_t r8;
     uint64_t r10;
@@ -51,6 +57,9 @@ typedef struct {
     uint32_t sender_uid[NSIG];
     uint8_t restoring;          /* rt_sigreturn: restore at syscall exit */
     uint64_t restore_frame;      /* user address of that rt_sigframe */
+    uint8_t fault_signo;         /* a signal a CPU exception raised (M1-07), delivered first */
+    int32_t fault_code;          /* its si_code (SEGV_MAPERR, ...) */
+    uint64_t fault_addr;         /* its si_addr */
 } SigState;
 
 /* Initialize signal state to defaults (all SIG_DFL, nothing pending). */
@@ -88,6 +97,21 @@ uint64_t sig_frame_max_size(void);
  * user stack and a jump to the handler (RDI = signo, RSI = &info, RDX = &uc,
  * returning to sa_restorer). Returns the value for RAX. */
 int64_t sig_maybe_deliver(SyscallFrame *frame, int64_t syscall_ret);
+
+/* A CPU exception in user mode (M1-07): make signo pending on the current
+ * process with si_code code and si_addr addr, delivered before any other
+ * signal. If the process blocks or ignores signo, it is unblocked and reset to
+ * the default action (Linux force_sig_fault): a fault can't be skipped. Kernel
+ * lock held. */
+void sig_force_fault(int signo, int code, uint64_t addr);
+
+/* 1 if the current process may have a signal to deliver (a hint read without
+ * the kernel lock: the return-from-interrupt path checks it cheaply). */
+int sig_work_pending(void);
+
+/* Terminate the current process as killed by signo (a fault no handler can
+ * see). Kernel lock held. Does not return. */
+void sig_fatal(int signo) __attribute__((noreturn));
 
 /* Send a signal to all processes in a process group. Returns 0 or -ESRCH. */
 int sig_send_group(uint32_t pgid, int signo);

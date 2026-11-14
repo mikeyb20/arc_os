@@ -60,8 +60,10 @@ int fpu_signal_save(struct Thread *t, uint64_t user_dst);
  * without the magic numbers is taken as a plain FXSAVE image (x87 and SSE
  * only). Rejects anything XRSTOR would fault on: features outside XCR0, a
  * non-zero header or bad MXCSR bits. Returns 0, or -EFAULT for an unreadable
- * or corrupt image (the registers then hold an undefined mix: the caller kills
- * the process). user_src == 0 loads the clean image. */
+ * or corrupt image (the registers are left as they were: the caller kills the
+ * process). The image is built in a scratch area (one allocation per call),
+ * because reading it may sleep on a page fault. user_src == 0 loads the clean
+ * image. */
 int fpu_signal_restore(struct Thread *t, uint64_t user_src);
 
 /* Context-switch hook, called by the scheduler just before context_switch:

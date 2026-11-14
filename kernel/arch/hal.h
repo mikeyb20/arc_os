@@ -34,6 +34,9 @@
 #include "arch/x86_64/ipi.h"     /* halt the other CPUs on panic */
 #include "arch/x86_64/lapic.h"   /* APIC mode for the boot report */
 #include "arch/x86_64/irq_vector.h"   /* per-CPU device vectors, MSI format (M1-09) */
+#include "arch/x86_64/tlb.h"     /* TLB shootdown (M1-07) */
+#include "arch/x86_64/syscall.h"  /* syscall_register: subsystems add their handlers */
+#include "arch/x86_64/usermode.h" /* jump_to_usermode, fork_return_to_user */
 #include "arch/hal_lock.h"        /* irq_save/irq_restore, hal_cpu_relax, spinlock depth */
 
 /* ==================================================================
@@ -384,6 +387,39 @@ static inline uint64_t hal_get_address_space(void) {
 /* Invalidate TLB entry for a single virtual address. */
 static inline void hal_invalidate_page(uint64_t vaddr) {
     paging_invlpg(vaddr);
+}
+
+/* uaccess.asm: copy n bytes between kernel and user memory; a user page
+ * that can't be faulted in ends the copy. Returns the bytes not copied. */
+size_t arch_copy_user(void *dst, const void *src, size_t n);
+
+/* Copy with the exception-table fixup (mm/uaccess.c is the only caller).
+ * Returns the bytes not copied (0 = all). */
+static inline size_t hal_copy_user(void *dst, const void *src, size_t n) {
+    return arch_copy_user(dst, src, n);
+}
+
+/* Flush [start, end) of address space pgd here (if loaded) and on every CPU
+ * in cpus, and wait for them (tlb.h). No spinlock may be held. Returns how
+ * many other CPUs flushed. */
+static inline uint32_t hal_tlb_flush(const CpuMask *cpus, uint64_t pgd, uint64_t start, uint64_t end) {
+    return tlb_shootdown(cpus, pgd, start, end);
+}
+
+/* Flush a kernel mapping range on every CPU (kernel mappings are in every
+ * address space). No spinlock may be held. */
+static inline void hal_tlb_flush_kernel(uint64_t start, uint64_t end) {
+    (void)tlb_shootdown(NULL, 0, start, end);
+}
+
+/* The user address space this CPU has loaded (mm.c's bookkeeping), or NULL. */
+static inline void *hal_this_cpu_mm(void) {
+    return this_cpu()->mm;
+}
+
+/* Record the address space this CPU has loaded. Interrupts off. */
+static inline void hal_set_this_cpu_mm(void *mm) {
+    this_cpu()->mm = mm;
 }
 
 /* Kernel virtual window for device memory (MMIO helper, M1-09): 512 MiB at

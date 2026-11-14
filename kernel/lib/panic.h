@@ -28,14 +28,16 @@ typedef struct {
 int panic_begin(void);
 
 /* Write the report to the log, show the panic screen, then stop: in test mode
- * print "ARC_TEST PANIC" and exit QEMU, otherwise halt forever. */
+ * "ARC_TEST PANIC" is printed before the screen and QEMU exits after it,
+ * otherwise halt forever. */
 void panic_report(const PanicInfo *info) __attribute__((noreturn));
 
 /* Stop this CPU for good (interrupts off). */
 void panic_halt(void) __attribute__((noreturn));
 
 /* Register the screen view that panic_report calls after logging the report
- * (fb_console_panic_view): it shows the end of the log in panic colours. */
-void panic_set_screen(void (*show)(void));
+ * (diag_qr_panic_screen: the end of the log in panic colours plus a QR code of
+ * the report). It gets the same PanicInfo; it must not allocate or lock. */
+void panic_set_screen(void (*show)(const PanicInfo *info));
 
 #endif /* ARCHOS_LIB_PANIC_H */

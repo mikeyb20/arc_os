@@ -160,6 +160,7 @@ isr_common:
     swapgs
 .entry_kernel:
     PUSH_GPRS
+    cld                         ; the interrupted code's DF must not reach C (M1-07)
 
     ; Pass pointer to InterruptFrame (stack pointer) as first argument
     mov rdi, rsp
@@ -189,6 +190,7 @@ isr_common:
 
 isr_paranoid:
     PUSH_GPRS
+    cld
     xor ebx, ebx
     mov ecx, MSR_GS_BASE
     rdmsr                       ; EDX = high half of GS base

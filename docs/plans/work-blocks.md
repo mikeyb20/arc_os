@@ -123,14 +123,14 @@ Start every block with `/os/implement-block <ID>`. These rules are what keep ses
 | M1-03 | Per-CPU entry paths + x2APIC | M | D | K | M0-06 | `-smp 4` in xAPIC and x2APIC modes; no global syscall stack | done |
 | M1-04 | Hardware bring-up kit + first hardware boot | M | R | K+H | M1-01, M1-02, M1-03 | Both machines boot from USB; boot report photographed | done |
 | M1-04b | QR encoder (host-tested) | M | R | K | M1-04 | Plain-text QR codes round-trip through `zbarimg` on the host for every supported version; no allocation | done |
-| M1-04c | Report, log and panic as QR codes | S | R | KB | M1-04b, M1-05 | `arc.qr=1` pages decode from a QEMU screendump to the serial `[REPORT]` text; panic screen carries a code | todo |
+| M1-04c | Report, log and panic as QR codes | S | R | KB | M1-04b, M1-05 | `arc.qr=1` pages decode from a QEMU screendump to the serial `[REPORT]` text; panic screen carries a code | done |
 | M1-05 | SMP scheduler | L | D | K | M1-03, M1-02b | Threads run on all CPUs; lock order checked at runtime | done |
 | M1-06 | Clocks, timers, tickless idle | M | D | KB | M1-05 | `clock_gettime`, `nanosleep`; idle CPUs get no timer interrupts | todo |
-| M1-07 | VMAs, demand paging, anonymous mmap | L | D | KA | M1-02, M1-05 | musl malloc works; bad pointers give `-EFAULT`; TLB shootdown | todo |
+| M1-07 | VMAs, demand paging, anonymous mmap | L | D | KA | M1-02, M1-05 | musl malloc works; bad pointers give `-EFAULT`; TLB shootdown | done |
 | M1-08 | Copy-on-write fork + 2 MiB pages | M | D | KB | M1-07 | COW fork; huge pages for large anonymous memory | todo |
 | M1-09 | Driver model, MSI-X, DMA helpers | M | D | KB | M1-05 | virtio on the bus model with MSI-X | review (#39) |
 | M1-10 | Async block layer + GPT | M | D | KB | M1-09 | Many requests in flight; partitions found by label | todo |
-| M1-11 | VFS rework: inodes, 64-bit offsets | L | D | KA | M0-06 | Files past 4 GiB; every filesystem converted | todo |
+| M1-11 | VFS rework: inodes, 64-bit offsets | L | D | KA | M0-06 | Files past 4 GiB; every filesystem converted | done |
 | M1-12 | Page cache + file mmap | L | D | KA | M1-07, M1-10, M1-11 | `read`/`write` and `mmap` always agree | todo |
 | M1-13 | ext2 read + mount by label | M | R | KA | M1-10, M1-11, M1-12 | Reads `mke2fs` images incl. 5 GiB sparse files | todo |
 | M1-14 | Memory reclaim + writeback | M | D | KA | M1-12, M1-13 | 2 GiB file in 512 MB RAM; no flusher timer when clean | todo |
@@ -235,9 +235,13 @@ when its parent is in `review` with green CI and a clean independent review (§3
   - **Lane KA, memory and files:** M1-07 → M1-11 → M1-12 → M1-13 → M1-14 → M1-15 → M1-19; after M1-22, M4-01 →
     M4-02 → M4-04, M4-05, M4-06.
   - **Lane KB, CPU, time, devices and threads:** M1-09 → M1-10 → M1-04c → M1-06 → M1-21 → M1-16 → M1-17 → M1-18 →
-    M1-20 → M1-08; after M1-22, M3-05, M4-08, M4-10, M4-11, M4-12, then M4-07 and M4-03.
+    M1-20 → M1-08; after M1-22, M3-05, M4-08, M4-10, M4-11, M4-12, then M4-07 and M4-03. Exception (Michael,
+    2026-11-13): M1-04c was built beside M1-09 instead of after M1-10, so QR text covers the M1-05 and M1-09 smoke
+    boots; it takes lane KB's second PR slot, so M1-10 stacks on M1-09 only after a lane-KB PR merges.
   - Lane KA owns §7 lock levels 1–6 and lane KB levels 7–10; only the owning lane changes a level's rules.
-  - Two blocks that edit the same file never run at once (`fat32.c`: M1-10 merges before M1-11 starts; `vmm.c`:
+  - Two blocks that edit the same file never run at once (`fat32.c`: M1-11 went first and rewrote it read-only on
+    the new VFS, keeping its block reads as `dev->read` calls; M1-10 swaps those calls when it rebases on M1-11, or
+    M1-11 rebases if M1-10 merges first (Michael approved 2026-11-13); `vmm.c`:
     M1-07, M1-08, M1-12, M1-19 never at once; `fd.c`: M1-16 starts after M1-11 merges). Add-only shared lists
     (`hal.h`, `helpers.md`, `budgets.md`, `locking.md`, this file) are exempt: the second PR rebases.
   - A block that uses the other lane's interface starts only after the producing block has **merged** (M1-10 →
@@ -343,7 +347,10 @@ Parallel sessions shorten the calendar; they don't save compute.
 - **Lock order**, outermost first. Debug builds check it from M1-05; [`docs/kernel/locking.md`](../kernel/locking.md)
   holds the full table with each lock's level (`kernel/proc/lockdep.h`), including the interim big kernel lock
   (level 0, before everything) and the object locks M1-05 added between 7 and 8 (pipe, socket, tty, wait4 and
-  mutex guards; the socket table just above them). It follows the order Linux documents for the same structures.
+  mutex guards; the socket table just above them). M1-11 added, in lane KA's range: the open-file position and
+  per-filesystem rename locks before 1, rename's second-directory and child subkeys of 1, a filesystem I/O lock
+  (FAT32's device reads) between 4 and 5, and the VFS leaf spinlocks (mount table, dentry cache, inode cache, fd
+  table) between 6 and 7. It follows the order Linux documents for the same structures.
   1. inode lock (sleeping; write, truncate, rename, directory changes)
   2. mm lock (sleeping read-write; mmap, munmap, mprotect, page faults)
   3. page lock (sleeping, per page)
@@ -467,3 +474,6 @@ Secure Boot through a signed shim and our own key.
   virtio-net interrupt handlers; M1-07, M1-11 and M1-16 take their subsystems out from under it (their Notes and
   `docs/kernel/locking.md` list what it covers). §7's lock order gains the object locks (pipe, socket, tty,
   wait4, mutex guards) between the signal and wait-queue locks.
+- **2026-11-13** — M1-04c (QR screens) built out of lane order, beside M1-09, on Michael's card answer in its thread:
+  its spec needs only M1-04b and M1-05, and its one shared file with M1-09 (`report.c`) is split by function
+  (M1-09 rewrites `report_pci`, M1-04c touches the first line, the Features line and the pager).

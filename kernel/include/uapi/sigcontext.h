@@ -101,17 +101,35 @@ struct ucontext {
 };
 
 /* si_code values */
-#define SI_USER   0
-#define SI_KERNEL 0x80
+#define SI_USER     0
+#define SI_KERNEL   0x80
+#define SEGV_MAPERR 1   /* SIGSEGV: no mapping at the address */
+#define SEGV_ACCERR 2   /* SIGSEGV: mapped, but not for this access */
+#define ILL_ILLOPN  2   /* SIGILL: illegal operand (#UD) */
+#define FPE_INTDIV  1   /* SIGFPE: integer divide by zero (#DE) */
+#define FPE_FLTDIV  3   /* SIGFPE: floating-point divide by zero (#MF, #XM) */
+#define FPE_FLTOVF  4   /* SIGFPE: floating-point overflow */
+#define FPE_FLTUND  5   /* SIGFPE: floating-point underflow (or denormal) */
+#define FPE_FLTRES  6   /* SIGFPE: inexact result */
+#define FPE_FLTINV  7   /* SIGFPE: invalid operation */
+#define BUS_ADRALN  1   /* SIGBUS: alignment check (#AC) */
+#define TRAP_BRKPT  1   /* SIGTRAP: breakpoint (#BP) */
+#define TRAP_TRACE  2   /* SIGTRAP: single step (#DB) */
 
-/* siginfo_t: 128 bytes; arc_os fills the kill() fields (si_pid, si_uid) */
+/* siginfo_t: 128 bytes; arc_os fills the kill() fields (si_pid, si_uid) or,
+ * for a fault, the address (si_addr, M1-07); they share the same bytes */
 typedef struct {
     int32_t si_signo;
     int32_t si_errno;
     int32_t si_code;
     int32_t __pad0;
-    uint32_t si_pid;
-    uint32_t si_uid;
+    union {
+        struct {
+            uint32_t si_pid;
+            uint32_t si_uid;
+        };
+        uint64_t si_addr;
+    };
     uint8_t __rest[104];
 } siginfo_t;
 

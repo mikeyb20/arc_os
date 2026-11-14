@@ -34,8 +34,9 @@ void cpu_brand(char *buf, size_t size);
 /* Display family, model and stepping from CPUID 1. */
 void cpu_signature(uint32_t *family, uint32_t *model, uint32_t *stepping);
 
-/* Names of the notable features this CPU has (AVX2, AVX512F, x2APIC, HWP,
- * HYBRID, ...), space separated, for the boot report. */
+/* Names of the notable features this CPU has (AVX2, AVX512F, x2APIC,
+ * TSC-DEADLINE, ARAT, HWP, EPP, HYBRID, ...), space separated, for the boot
+ * report. A name that doesn't fit in buf is left out. */
 void cpu_feature_names(char *buf, size_t size);
 
 /* Core types from CPUID 0x1A EAX[31:24] (hybrid parts only) */

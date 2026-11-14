@@ -31,27 +31,28 @@ same PR that changes a syscall (the `add-syscall` skill does this). Since M0-06 
 |---|---|---|---|---|
 | 0 | read | done | 4 | all; inventory: musl, C++, SQLite, llama.cpp |
 | 1 | write | done | 1 | all; inventory: musl, C++ |
-| 2 | open | partial (mode, O_EXCL, O_CLOEXEC ignored) | 3 | libarc; inventory: musl, C++, SQLite, zstd, llama.cpp (M0-05) |
+| 2 | open | partial (no symlinks yet: O_NOFOLLOW is a no-op until M1-13) | 3 | libarc; inventory: musl, C++, SQLite, zstd, llama.cpp (M0-05, M1-11) |
 | 3 | close | done | 5 | all; inventory: musl, C++, SQLite, zstd, llama.cpp |
-| 4 | stat | partial (times and st_dev are 0) | 8 | libarc; inventory: musl, C++, SQLite, zstd, llama.cpp (M0-05) |
-| 5 | fstat | partial (times and st_dev are 0) | 12 | musl; inventory: musl, C++, SQLite, zstd (M0-05) |
-| 6 | lstat | missing | — | inventory: SQLite (M1-11) |
+| 4 | stat | done | 8 | libarc; inventory: musl, C++, SQLite, zstd, llama.cpp (M0-05, M1-11) |
+| 5 | fstat | done | 12 | musl; inventory: musl, C++, SQLite, zstd (M0-05, M1-11) |
+| 6 | lstat | partial (= stat until symlinks exist; M1-13) | — | inventory: SQLite (M1-11) |
 | 8 | lseek | done | 7 | all; inventory: musl, SQLite, llama.cpp |
-| 9 | mmap | missing | — | musl, llama.cpp; inventory: musl, musl threads, C++, SQLite, zstd, llama.cpp (M1-07) |
-| 10 | mprotect | missing | — | musl; inventory: musl, musl threads, C++, zstd, llama.cpp (M1-07) |
-| 11 | munmap | missing | — | musl; inventory: musl, musl threads, C++, SQLite, zstd, llama.cpp (M1-07) |
-| 12 | brk | done | 6 | musl; inventory: musl, C++, SQLite, zstd, llama.cpp (M1-07) |
+| 9 | mmap | partial (anonymous private only: MAP_FIXED, MAP_FIXED_NOREPLACE, MAP_NORESERVE, MAP_POPULATE, MAP_32BIT, MAP_GROWSDOWN; file mappings -ENODEV until M1-12, MAP_SHARED anonymous -EINVAL until M1-08) | — | musl, llama.cpp; inventory: musl, musl threads, C++, SQLite, zstd, llama.cpp (M1-07) |
+| 10 | mprotect | partial (a range with a hole fails whole with -ENOMEM; Linux changes the part before it; PROT_GROWSDOWN/UP -EINVAL) | — | musl; inventory: musl, musl threads, C++, zstd, llama.cpp (M1-07) |
+| 11 | munmap | done (splits VMAs, frees pages and emptied page tables after the TLB flush, M1-07) | — | musl; inventory: musl, musl threads, C++, SQLite, zstd, llama.cpp (M1-07) |
+| 12 | brk | done (a [heap] VMA, pages on first touch; one free page kept above, M1-07) | 6 | musl; inventory: musl, C++, SQLite, zstd, llama.cpp (M1-07) |
 | 13 | rt_sigaction | partial (SA_RESTORER, SA_NODEFER, SA_RESETHAND and sa_mask act; SA_RESTART, SA_ONSTACK, SA_NOCLD* stored, act in M1-17) | 20 | musl; inventory: musl, SQLite, zstd, llama.cpp (M1-01) |
 | 14 | rt_sigprocmask | missing | — | musl threads; inventory: musl, musl threads, C++, SQLite, zstd, llama.cpp (M1-01) |
 | 15 | rt_sigreturn | done (Linux rt_sigframe with XSAVE image, M1-01) | 22 | musl; inventory: musl (M1-01) |
 | 16 | ioctl | partial (terminal only: TIOCS/GPGRP, TCGETS, TCSETS/W/F, TIOCG/SWINSZ; termios stored, not applied until M5) | 33 | shell, fbdev, input; inventory: musl, musl threads, C++, SQLite, zstd, llama.cpp (M0-06) |
-| 17 | pread64 | missing | — | inventory: musl, SQLite (M1-11) |
-| 18 | pwrite64 | missing | — | inventory: SQLite (M1-11) |
+| 17 | pread64 | done | — | inventory: musl, SQLite (M1-11) |
+| 18 | pwrite64 | done | — | inventory: SQLite (M1-11) |
 | 19 | readv | done | — | inventory: zstd, llama.cpp (M0-06) |
 | 20 | writev | done | — | inventory: musl, musl threads, C++, SQLite, zstd, llama.cpp (M0-06) |
 | 21 | access | missing | — | inventory: musl, SQLite (M1-20) |
 | 22 | pipe | done | 19 | shell; inventory: musl |
-| 28 | madvise | missing | — | llama.cpp; inventory: llama.cpp (M1-07) |
+| 25 | mremap | partial (MREMAP_MAYMOVE, MREMAP_FIXED; MREMAP_DONTUNMAP and old_len 0 -EINVAL) | — | musl realloc; inventory: musl (M1-07) |
+| 28 | madvise | partial (MADV_DONTNEED and MADV_FREE drop the pages now; NORMAL, RANDOM, SEQUENTIAL, WILLNEED, HUGEPAGE, NOHUGEPAGE accepted, no effect yet) | — | llama.cpp; inventory: llama.cpp (M1-07) |
 | 32 | dup | done | 13 | shell; inventory: musl |
 | 33 | dup2 | done | 14 | shell |
 | 35 | nanosleep | missing | — | M1; inventory: musl, C++ (M1-06) |
@@ -72,14 +73,14 @@ same PR that changes a syscall (the `add-syscall` skill does this). Since M0-06 
 | 60 | exit | done | 0 | all; inventory: musl threads, C++, zstd, llama.cpp (M1-16) |
 | 61 | wait4 | partial (rusage zero-filled; WCONTINUED never reported) | 18 | shell; inventory: musl (M0-05) |
 | 62 | kill | partial (pid -1 and signal 0 not supported) | 21 | shell |
-| 72 | fcntl | missing | — | inventory: musl, C++, SQLite (M1-20) |
-| 74 | fsync | missing | — | inventory: musl, SQLite (M1-15) |
-| 77 | ftruncate | missing | — | inventory: musl (M1-11) |
+| 72 | fcntl | partial (F_DUPFD, F_DUPFD_CLOEXEC, F_GETFD/SETFD, F_GETFL/SETFL; record locks M1-20) | — | inventory: musl, C++, SQLite (M1-11, M1-20) |
+| 74 | fsync | partial (ramfs and read-only FAT32 have nothing to write back; disk write-back M1-15) | — | inventory: musl, SQLite (M1-11, M1-15) |
+| 77 | ftruncate | done | — | inventory: musl (M1-11) |
 | 79 | getcwd | done | 24 | shell; inventory: musl, SQLite |
 | 80 | chdir | done | 23 | shell; inventory: musl |
-| 82 | rename | missing | — | inventory: musl, C++ (M1-15) |
+| 82 | rename | done | — | inventory: musl, C++ (M1-11) |
 | 83 | mkdir | done | 9 | coreutils; inventory: musl, C++ |
-| 84 | rmdir | missing | — | inventory: musl, C++ (M1-15) |
+| 84 | rmdir | done | — | inventory: musl, C++ (M1-11) |
 | 87 | unlink | done | 11 | coreutils; inventory: musl, C++, SQLite |
 | 90 | chmod | done | 29 | coreutils; inventory: musl |
 | 91 | fchmod | missing | — | inventory: zstd (M1-20) |
@@ -100,17 +101,20 @@ same PR that changes a syscall (the `add-syscall` skill does this). Since M0-06 
 | 202 | futex | missing | — | musl threads; inventory: musl threads, C++, zstd, llama.cpp (M1-16) |
 | 203 | sched_setaffinity | missing | — | P-core pinning (M1) |
 | 204 | sched_getaffinity | missing | — | inventory: C++, llama.cpp (M1-17) |
-| 217 | getdents64 | partial (at most 256 entries per directory; M1-11) | 10 | musl, coreutils; inventory: musl, C++ (M0-05) |
+| 217 | getdents64 | done | 10 | musl, coreutils; inventory: musl, C++ (M0-05, M1-11) |
 | 218 | set_tid_address | partial (pointer stored; cleared on thread exit from M1-16) | — | musl; inventory: musl, musl threads, C++, SQLite, zstd, llama.cpp (M0-06) |
 | 221 | fadvise64 | missing | — | inventory: llama.cpp (M1-12) |
 | 228 | clock_gettime | missing | — | M1; inventory: zstd (M1-06) |
 | 231 | exit_group | partial (= exit while a process has one thread; M1-16) | — | musl; inventory: musl, musl threads, C++, SQLite, zstd, llama.cpp (M0-06) |
-| 257 | openat | missing | — | musl; inventory: C++ (M0-05) |
-| 262 | newfstatat | missing | — | musl |
-| 263 | unlinkat | missing | — | inventory: C++ (M1-15) |
+| 257 | openat | partial (as open) | — | musl; inventory: C++ (M0-05, M1-11) |
+| 258 | mkdirat | done | — | musl (M1-11) |
+| 262 | newfstatat | partial (AT_SYMLINK_NOFOLLOW is a no-op until M1-13) | — | musl (M1-11) |
+| 263 | unlinkat | done | — | inventory: C++ (M1-11) |
+| 264 | renameat | done | — | musl (M1-11) |
 | 280 | utimensat | missing | — | inventory: zstd (M1-20) |
 | 288 | accept4 | missing | — | arc-llm: AF_UNIX, SOCK_CLOEXEC, EINTR without SA_RESTART (M1-18) |
-| 293 | pipe2 | missing | — | musl |
+| 292 | dup3 | done | — | musl (M1-11) |
+| 293 | pipe2 | done | — | musl (M1-11) |
 
 Numbers verified against the archived Linux v6.12 `syscall_64.tbl` (M0-04). "inventory:" lists the programs
 that made the call in the M0-04 syscall inventory (`docs/plans/syscall-inventory.md`, musl static builds under

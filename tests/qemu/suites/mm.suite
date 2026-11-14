@@ -1,0 +1,3 @@
+# qemu.mm (M1-07): address spaces, page faults, user copies and the mmap
+# family, with stock musl's malloc. Exit status = failed checks.
+mmtest   /boot/mmtest

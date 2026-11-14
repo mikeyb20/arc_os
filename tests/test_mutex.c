@@ -68,6 +68,7 @@ int mutex_test_sched_wake(Thread *t) {
 #include "../kernel/proc/mutex.c"
 #include "../kernel/proc/semaphore.c"
 #include "../kernel/proc/condvar.c"
+#include "../kernel/proc/rwsem.c"
 
 /* Every host thread starts as a running kernel thread with its own id */
 static void thread_start(void) {
@@ -343,6 +344,116 @@ TEST(condvar_broadcast_wakes_all) {
     return 0;
 }
 
+/* --- Read-write lock tests (the mm lock, M1-07) --- */
+
+TEST(rwsem_readers_share) {
+    thread_start();
+    RwSem s;
+    rwsem_init(&s, LOCK_LEVEL_MM);
+    rwsem_down_read(&s);
+    ASSERT_EQ(rwsem_try_read(&s), 0);   /* a second reader gets in */
+    ASSERT_EQ(s.readers, 2);
+    ASSERT_EQ(rwsem_write_held(&s), 0);
+    rwsem_up_read(&s);
+    rwsem_up_read(&s);
+    ASSERT_EQ(s.readers, 0);
+    return 0;
+}
+
+TEST(rwsem_writer_excludes_readers) {
+    thread_start();
+    RwSem s;
+    rwsem_init(&s, LOCK_LEVEL_MM);
+    rwsem_down_write(&s);
+    ASSERT_EQ(rwsem_write_held(&s), 1);
+    ASSERT_EQ(s.readers, -1);
+    ASSERT_EQ(rwsem_try_read(&s), -1);
+    rwsem_up_write(&s);
+    ASSERT_EQ(rwsem_write_held(&s), 0);
+    ASSERT_EQ(rwsem_try_read(&s), 0);
+    rwsem_up_read(&s);
+    return 0;
+}
+
+static RwSem rw_sem;
+static volatile int rw_writer_done;
+static void *rw_writer(void *arg) {
+    (void)arg;
+    thread_start();
+    rwsem_down_write(&rw_sem);
+    rw_writer_done = 1;
+    rwsem_up_write(&rw_sem);
+    return NULL;
+}
+
+/* A waiting writer keeps new readers out, so faults can't starve munmap */
+TEST(rwsem_waiting_writer_blocks_new_readers) {
+    thread_start();
+    rwsem_init(&rw_sem, LOCK_LEVEL_MM);
+    rw_writer_done = 0;
+    rwsem_down_read(&rw_sem);
+    pthread_t w;
+    pthread_create(&w, NULL, rw_writer, NULL);
+    for (int i = 0; i < 2000 && __atomic_load_n(&rw_sem.writers_waiting, __ATOMIC_ACQUIRE) == 0; i++) usleep(500);
+    ASSERT_EQ(rw_sem.writers_waiting, 1);
+    ASSERT_EQ(rwsem_try_read(&rw_sem), -1);
+    ASSERT_EQ(rw_writer_done, 0);
+    rwsem_up_read(&rw_sem);   /* the writer goes now */
+    pthread_join(w, NULL);
+    ASSERT_EQ(rw_writer_done, 1);
+    ASSERT_EQ(rw_sem.readers, 0);
+    ASSERT_TRUE(rw_sem.waiters.head == NULL);
+    return 0;
+}
+
+/* Two writers keep a == b, two readers check it: readers never see a write
+ * in progress, and no update is lost */
+static volatile int rw_a, rw_b;
+static volatile int rw_torn;
+static void *rw_mixed_writer(void *arg) {
+    int n = *(int *)arg;
+    thread_start();
+    for (int i = 0; i < n; i++) {
+        rwsem_down_write(&rw_sem);
+        rw_a++;
+        for (volatile int d = 0; d < 20; d++) {
+        }
+        rw_b++;
+        rwsem_up_write(&rw_sem);
+    }
+    return NULL;
+}
+static void *rw_mixed_reader(void *arg) {
+    int n = *(int *)arg;
+    thread_start();
+    for (int i = 0; i < n; i++) {
+        rwsem_down_read(&rw_sem);
+        if (rw_a != rw_b) rw_torn = 1;
+        rwsem_up_read(&rw_sem);
+    }
+    return NULL;
+}
+
+TEST(rwsem_contended_correctness) {
+    rwsem_init(&rw_sem, LOCK_LEVEL_MM);
+    rw_a = rw_b = 0;
+    rw_torn = 0;
+    int iters = 5000;
+    pthread_t t[4];
+    pthread_create(&t[0], NULL, rw_mixed_writer, &iters);
+    pthread_create(&t[1], NULL, rw_mixed_reader, &iters);
+    pthread_create(&t[2], NULL, rw_mixed_writer, &iters);
+    pthread_create(&t[3], NULL, rw_mixed_reader, &iters);
+    for (int i = 0; i < 4; i++) pthread_join(t[i], NULL);
+    ASSERT_EQ(rw_a, 10000);
+    ASSERT_EQ(rw_b, 10000);
+    ASSERT_EQ(rw_torn, 0);
+    ASSERT_EQ(rw_sem.readers, 0);
+    ASSERT_EQ(rw_sem.writers_waiting, 0);
+    ASSERT_TRUE(rw_sem.waiters.head == NULL);
+    return 0;
+}
+
 /* --- Suite --- */
 
 TestCase mutex_tests[] = {
@@ -361,5 +472,9 @@ TestCase mutex_tests[] = {
     TEST_ENTRY(condvar_init_empty),
     TEST_ENTRY(condvar_signal_wakes_one),
     TEST_ENTRY(condvar_broadcast_wakes_all),
+    TEST_ENTRY(rwsem_readers_share),
+    TEST_ENTRY(rwsem_writer_excludes_readers),
+    TEST_ENTRY(rwsem_waiting_writer_blocks_new_readers),
+    TEST_ENTRY(rwsem_contended_correctness),
 };
 int mutex_test_count = sizeof(mutex_tests) / sizeof(mutex_tests[0]);

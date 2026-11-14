@@ -32,6 +32,7 @@ static inline int hal_irqs_enabled(void) {
 }
 static inline void hal_cpu_relax(void) {}
 static inline void hal_irq_window(void) {}
+static inline void hal_spin_poll(void) {}
 static inline void hal_lock_depth_inc(void) {
     hal_test_lock_depth++;
 }
@@ -45,6 +46,7 @@ static inline uint32_t hal_lock_depth(void) {
 #else
 
 #include "arch/x86_64/percpu.h"
+#include "arch/x86_64/tlb.h"
 
 /* Disable interrupts on this CPU and return the previous RFLAGS. */
 static inline uint64_t irq_save(void) {
@@ -74,6 +76,13 @@ static inline void hal_cpu_relax(void) {
  * turn them off again (STI holds them off until after the next instruction). */
 static inline void hal_irq_window(void) {
     __asm__ volatile("sti; nop; cli" ::: "memory");
+}
+
+/* In a loop that waits with interrupts off for another CPU: answer what other
+ * CPUs wait for from this one meanwhile (TLB shootdowns, M1-07), so the wait
+ * can't close a cycle. */
+static inline void hal_spin_poll(void) {
+    tlb_shootdown_poll();
 }
 
 /* This CPU's spinlock depth. One GS-relative instruction each, so an

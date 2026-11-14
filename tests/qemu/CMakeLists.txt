@@ -21,7 +21,7 @@ add_test(NAME qemu.smoke COMMAND ${_qemu_test} --suite smoke --memory 4G
     --module tests/qemu/suites/smoke.sh
     --expect "arc_os shell"
     --expect "(?s)\\]\\$ .*Hello from exec'd binary"
-    --expect "-rw-rw-rw- +[0-9]+ shell"
+    --expect "-rwxr-xr-x +[0-9]+ shell"
     --expect "Type: directory"
     --expect "\\[/boot\\]\\$ /boot"
     --expect "exited with status 0"
@@ -103,6 +103,45 @@ add_test(NAME qemu.lockorder COMMAND ${_qemu_test} --suite lockorder --expect-pa
     --expect "LOCK ORDER VIOLATION: taking test outer \\(page tables\\) \\(level 50\\)"
     --expect "held: test inner \\(wait queue\\) \\(level 80\\)")
 
+# Address spaces (M1-07): musl's malloc, the mmap family, SIGSEGV codes,
+# read()/write() on untouched and unmapped buffers, brk, stack growth,
+# /proc/self/maps, fork's private pages
+add_test(NAME qemu.mm COMMAND ${_qemu_test} --suite mm --module mmtest
+    --expect "mmtest: malloc ok"
+    --expect "mmtest: mmap ok"
+    --expect "mmtest: segv ok"
+    --expect "mmtest: copy ok"
+    --expect "mmtest: brk ok"
+    --expect "mmtest: stack ok"
+    --expect "mmtest: maps ok"
+    --expect "mmtest: fork ok"
+    --expect "mmtest: handler fault ok"
+    --expect "mmtest: 0 failures")
+# OOM (M1-07): on a 256 MiB machine an endless allocator gets SIGKILL; the
+# kernel says whom it killed and goes on
+add_test(NAME qemu.mm.oom COMMAND ${_qemu_test} --suite mmoom --module mmtest --memory 256M --timeout 300
+    --expect "\\[OOM\\] out of memory \\([0-9]+ pages free\\): killing pid [0-9]+"
+    --expect "mmtest: oom ok \\(child killed by signal 9\\)"
+    --expect "mmtest: 0 failures")
+
+# VFS (M1-11): open flags, 64-bit offsets on a sparse file, shared offsets after
+# dup and fork, fcntl/dup3/pipe2, *at calls, rename across directories,
+# getdents64, permissions, close-on-exec, /proc/mounts; and the FAT32 test disk
+# as a read-only virtio-blk disk at /disk. Exit status = failed checks.
+add_test(NAME qemu.vfs COMMAND ${_qemu_test} --suite vfs --module fstest --disk tests/fat32_test.img
+    --expect "\\[VFS\\] Mounted vfat at /disk"
+    --expect "fstest: open ok"
+    --expect "fstest: big ok"
+    --expect "fstest: share ok"
+    --expect "fstest: fcntl ok"
+    --expect "fstest: dirs ok"
+    --expect "fstest: perm ok"
+    --expect "fstest: cloexec ok"
+    --expect "fstest: review ok"
+    --expect "fstest: mounts ok"
+    --expect "fstest: fat ok"
+    --expect "fstest: 0 failures")
+
 # Harness self-checks: a failing program is reported by name and reason,
 # and a kernel panic ends the run within seconds instead of at the timeout.
 add_test(NAME qemu.selftest.fail COMMAND ${_qemu_test} --suite selftest --module testfail)
@@ -132,8 +171,35 @@ add_test(NAME qemu.diag COMMAND ${_qemu_test} --suite diag
     --expect "\\[REPORT\\] PCI +[0-9]+ devices"
     --expect "\\[REPORT\\] SELFTEST PASS avx2 +4 CPUs"
     --expect "\\[REPORT\\] SELFTEST PASS sched +4 of 4 CPUs ran a pinned thread"
+    --expect "\\[REPORT\\] SELFTEST PASS tlb +3 of 3 CPUs with the mm loaded answered; 3 read the new page, 0 a stale one"
     --expect "\\[REPORT\\] BENCH context switch"
-    --expect "ARC_TEST DONE pass=6 fail=0")
+    --expect "ARC_TEST DONE pass=7 fail=0")
+
+# QR screens (M1-04c): arc.qr=1 draws the report as ARC1 QR pages. The harness
+# takes a QEMU screendump on each "ARC_QR shown" line and presses a key for the
+# next page; tools/qr-check.py decodes every shot with zbarimg and compares it
+# with the [REPORT] lines on serial, CRCs included. arc.qr=log does the same
+# for the log tail. The panic code: arc.qrhold keeps the panic screen up
+# (test mode only) until the harness has its screendump, then it ends QEMU.
+set(_qr_check "${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/qr-check.py")
+add_test(NAME qemu.qr.report COMMAND ${_qemu_test} --suite diag --name qr-report
+    --cmdline arc.qr=1 --cmdline arc.selftest=1
+    --screendump "^ARC_QR shown report "
+    --check "${_qr_check} --kind report"
+    --expect "\\[REPORT\\] arc_os boot report, build ([0-9a-f]{12}(-dirty)?|unknown)"
+    --expect "\\[REPORT\\] SELFTEST PASS"
+    --expect "ARC_TEST DONE pass=[0-9]+ fail=0")
+add_test(NAME qemu.qr.log COMMAND ${_qemu_test} --suite diag --name qr-log
+    --cmdline arc.qr=log
+    --screendump "^ARC_QR shown log "
+    --check "${_qr_check} --kind log"
+    --expect "ARC_TEST DONE pass=[0-9]+ fail=0")
+add_test(NAME qemu.qr.panic COMMAND ${_qemu_test} --suite kpanic --name qr-panic
+    --cmdline arc.panic=fault --cmdline arc.qrhold=1
+    --expect-panic --timeout 90
+    --screendump "^ARC_QR shown panic " --after-shot quit
+    --check "${_qr_check} --kind panic"
+    --expect "PANIC: Page Fault on CPU 0")
 
 # Driver model (M1-09, ADR-0006): virtio-blk and virtio-net bound through the
 # PCI bus with MSI-X (config + queue vectors spread over the CPUs), QEMU's edu
@@ -160,7 +226,7 @@ add_test(NAME qemu.devices COMMAND ${_qemu_test} --suite devices ${_devices_qemu
     --expect "\\[DEVTEST\\] net: ARP reply from the gateway after [1-9][0-9]* RX interrupt\\(s\\) ok"
     --expect "\\[DEVTEST\\] net: rx interrupt moved cpu[0-9] -> cpu[0-9]"
     --expect "\\[DEVTEST\\] net: rx interrupt arrived on cpu[0-9] ok"
-    --expect "\\[FAT32\\] Mounted at /disk"
+    --expect "\\[VFS\\] Mounted vfat at /disk"
     --expect ":( +[0-9]+)* +[1-9][0-9]*( +[0-9]+)*  PCI-MSIX 0000:00:[0-9a-f.]+ 1 cpu[0-9]/0x[0-9a-f]+  virtio-blk-queue"
     --expect ":( +[0-9]+)* +[1-9][0-9]*( +[0-9]+)*  PCI-MSIX 0000:00:[0-9a-f.]+ 1 cpu[0-9]/0x[0-9a-f]+  virtio-net-rx"
     --expect "PCI-MSI +0000:00:[0-9a-f.]+ 0 cpu[0-9]/0x[0-9a-f]+  edu")
@@ -170,16 +236,19 @@ add_test(NAME qemu.devices.intx COMMAND ${_qemu_test} --suite devices --name dev
     --expect "\\[PCI\\] 0000:00:[0-9a-f.]+: WARNING: INTx on line [0-9]+ from the firmware's irq_line"
     --expect "\\[DEVTEST\\] edu: intx interrupt on cpu0 ok"
     --expect "\\[DEVTEST\\] edu: dma 4096 bytes round trip ok"
-    --expect "\\[FAT32\\] Mounted at /disk"
+    --expect "\\[VFS\\] Mounted vfat at /disk"
     --expect ":( +[0-9]+)* +[1-9][0-9]*( +[0-9]+)*  INTx +0000:00:[0-9a-f.]+ line [0-9]+  virtio-blk"
     --expect "INTx +0000:00:[0-9a-f.]+ line [0-9]+  edu")
 set_tests_properties(qemu.devices qemu.devices.intx PROPERTIES FIXTURES_REQUIRED devices_disk)
 
 set_tests_properties(qemu.smoke qemu.mem.buddy qemu.mem.cap qemu.userland qemu.abi qemu.musl qemu.fpu qemu.cpufloor
     qemu.smp.xapic qemu.smp.x2apic qemu.sched qemu.lockorder qemu.selftest.fail qemu.selftest.panic
-    qemu.panic.fault qemu.diag qemu.devices qemu.devices.intx
+    qemu.panic.fault qemu.diag qemu.mm qemu.mm.oom qemu.vfs qemu.qr.report qemu.qr.log qemu.qr.panic
+    qemu.devices qemu.devices.intx
     PROPERTIES LABELS qemu TIMEOUT 180 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     FIXTURES_SETUP qemu_logs)
+set_tests_properties(qemu.mm.oom PROPERTIES TIMEOUT 320)
+set_tests_properties(qemu.vfs PROPERTIES FIXTURES_REQUIRED fat32_image)
 
 # Budgets (ADR-0019, M0-08): sizes and counts from the build and from the
 # suites' `ARC_TEST budget` lines, against tests/budgets.txt. Runs after the

@@ -1,9 +1,11 @@
 /* arc_os libc — POSIX wrappers over Linux x86_64 syscalls (ADR-0001) */
 
 #include <unistd.h>
+#include <stdio.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
+#include <stdarg.h>
 #include "syscall_arch.h"
 
 int errno;
@@ -17,8 +19,15 @@ ssize_t write(int fd, const void *buf, size_t count) {
 }
 
 int open(const char *path, int flags, ...) {
-    /* mode (the optional third argument) is ignored by the kernel for now */
-    return (int)syscall_ret(syscall3(__NR_open, (uint64_t)path, (uint64_t)flags, 0));
+    /* mode, the third argument, is read only with O_CREAT (POSIX) */
+    unsigned mode = 0;
+    if (flags & O_CREAT) {
+        va_list ap;
+        va_start(ap, flags);
+        mode = va_arg(ap, unsigned);
+        va_end(ap);
+    }
+    return (int)syscall_ret(syscall3(__NR_open, (uint64_t)path, (uint64_t)flags, mode));
 }
 
 int close(int fd) {
@@ -39,6 +48,14 @@ int dup2(int oldfd, int newfd) {
 
 int unlink(const char *path) {
     return (int)syscall_ret(syscall1(__NR_unlink, (uint64_t)path));
+}
+
+int rename(const char *oldpath, const char *newpath) {
+    return (int)syscall_ret(syscall2(__NR_rename, (uint64_t)oldpath, (uint64_t)newpath));
+}
+
+int rmdir(const char *path) {
+    return (int)syscall_ret(syscall1(__NR_rmdir, (uint64_t)path));
 }
 
 int pipe(int pipefd[2]) {
