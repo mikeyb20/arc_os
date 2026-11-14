@@ -35,6 +35,7 @@
 #include <stdint.h>
 #include "drivers/gpt.h"
 #include "proc/spinlock.h"
+#include "time/timer.h"
 
 struct page;
 typedef struct BlockDevice BlockDevice;
@@ -89,7 +90,7 @@ struct BlkRequest {
     BlkRequest *merge_tail;    /* head only */
     uint32_t total_bytes;      /* head only: the whole chain */
     uint16_t total_segs;
-    uint64_t deadline;         /* TSC, set at dispatch */
+    uint64_t deadline;         /* clock ns (CLOCK_MONOTONIC), set at dispatch */
     BlkSeg seg[BLK_RQ_SEGS];
 };
 
@@ -141,7 +142,11 @@ typedef struct BlkQueue {
     BlkRequest **tags;                   /* tag -> request */
     uint16_t *free_tags;
     uint32_t nfree_tags;
-    uint64_t timeout_cycles;
+    uint64_t timeout_ns;
+    Timer timer;               /* timeout of the oldest request in flight (M1-06); a disk
+                                * that goes away must timer_cancel_sync it first */
+    uint64_t timer_expires;    /* when it is armed for */
+    uint8_t timer_armed;
     int dead;
     uint32_t drop_irqs;   /* test mode: interrupts to ignore (completion by timeout poll) */
     BlkStats stats;
@@ -189,16 +194,16 @@ void blk_complete(BlockDevice *disk);
  * status (0 or -errno). */
 void blk_rq_done(BlkRequest *rq, int status);
 
-/* Timeout check of every disk, at time now (TSC). Called from the timer
- * tick until M1-06's timer queue arms a one-shot per disk instead. O(1)
- * while nothing is in flight. Any context. */
-void blk_expire_all(uint64_t now);
+/* Timeout check of disk at clock time now (CLOCK_MONOTONIC ns): polls the
+ * driver for requests past their deadline, and resets the device if they
+ * are still there. Runs from the disk's timer (armed while requests are in
+ * flight, M1-06) and from polling waits. Any context. */
 void blk_expire(BlockDevice *disk, uint64_t now);
 
 /* Boot, before the scheduler can sleep (sched_can_block() == 0): reap and
  * time out what every disk has in flight, as blk_rw_sync's own wait does.
- * Callers loop on their own condition (page_wait_unlocked). O(disks) while
- * anything is in flight, O(1) otherwise. */
+ * Callers loop on their own condition (page_wait_unlocked). O(disks), boot
+ * only (M1-06 dropped the shared in-flight count the I/O path kept for it). */
 void blk_poll_all(void);
 
 /* --- Users: filesystems, page cache --- */

@@ -40,6 +40,8 @@ set(KERNEL_C_SOURCES
     arch/x86_64/pic.c
     arch/x86_64/pit.c
     arch/x86_64/tsc.c
+    arch/x86_64/hpet.c
+    arch/x86_64/rtc.c
     mm/pmm.c
     mm/vmm.c
     mm/uaccess.c
@@ -78,6 +80,9 @@ set(KERNEL_C_SOURCES
     proc/rwsem.c
     proc/semaphore.c
     proc/condvar.c
+    time/clock.c
+    time/timer.c
+    time/time_syscalls.c
     drivers/acpi.c
     drivers/pci.c
     drivers/pci_irq.c

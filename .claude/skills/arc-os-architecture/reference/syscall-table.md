@@ -56,7 +56,7 @@ same PR that changes a syscall (the `add-syscall` skill does this). Since M0-06 
 | 28 | madvise | partial (MADV_DONTNEED and MADV_FREE drop the pages now; NORMAL, RANDOM, SEQUENTIAL set file readahead, WILLNEED reads file pages in now (M1-12); HUGEPAGE, NOHUGEPAGE accepted, no effect yet) | — | llama.cpp; inventory: llama.cpp (M1-07, M1-12) |
 | 32 | dup | done | 13 | shell; inventory: musl |
 | 33 | dup2 | done | 14 | shell |
-| 35 | nanosleep | missing | — | M1; inventory: musl, C++ (M1-06) |
+| 35 | nanosleep | partial (signals don't interrupt a sleep until M1-17) | — | M1; inventory: musl, C++ (M1-06) |
 | 39 | getpid | done | 2 | all; inventory: musl, SQLite |
 | 41 | socket | partial (AF_INET only; SOCK_NONBLOCK/CLOEXEC ignored) | 35 | net, arc-llm (M1-18: AF_UNIX, SOCK_CLOEXEC) |
 | 42 | connect | done | 39 | net, arc-llm (M1-18: AF_UNIX) |
@@ -89,6 +89,7 @@ same PR that changes a syscall (the `add-syscall` skill does this). Since M0-06 
 | 92 | chown | done | 30 | coreutils |
 | 93 | fchown | missing | — | inventory: SQLite, zstd (M1-20) |
 | 95 | umask | done | 34 | shell |
+| 96 | gettimeofday | done | — | libarc (M1-06) |
 | 99 | sysinfo | missing | — | inventory: llama.cpp (M1-20) |
 | 102 | getuid | done | 25 | login; inventory: musl, SQLite |
 | 104 | getgid | done | 26 | login |
@@ -100,13 +101,16 @@ same PR that changes a syscall (the `add-syscall` skill does this). Since M0-06 
 | 121 | getpgid | done | 32 | shell |
 | 158 | arch_prctl | partial (ARCH_SET_FS / ARCH_GET_FS only) | — | musl TLS; inventory: musl, musl threads, C++, SQLite, zstd, llama.cpp (M0-06) |
 | 200 | tkill | missing | — | inventory: musl (M1-17) |
+| 201 | time | done | — | libarc (M1-06) |
 | 202 | futex | missing | — | musl threads; inventory: musl threads, C++, zstd, llama.cpp (M1-16) |
 | 203 | sched_setaffinity | missing | — | P-core pinning (M1) |
 | 204 | sched_getaffinity | missing | — | inventory: C++, llama.cpp (M1-17) |
 | 217 | getdents64 | done | 10 | musl, coreutils; inventory: musl, C++ (M0-05, M1-11) |
 | 218 | set_tid_address | partial (pointer stored; cleared on thread exit from M1-16) | — | musl; inventory: musl, musl threads, C++, SQLite, zstd, llama.cpp (M0-06) |
 | 221 | fadvise64 | missing | — | inventory: llama.cpp (M1-12) |
-| 228 | clock_gettime | missing | — | M1; inventory: zstd (M1-06) |
+| 228 | clock_gettime | partial (CLOCK_PROCESS_CPUTIME_ID counts the main thread until M1-16) | — | M1; inventory: zstd (M1-06) |
+| 229 | clock_getres | done | — | libarc (M1-06) |
+| 230 | clock_nanosleep | partial (signals don't interrupt a sleep until M1-17) | — | libarc (M1-06) |
 | 231 | exit_group | partial (= exit while a process has one thread; M1-16) | — | musl; inventory: musl, musl threads, C++, SQLite, zstd, llama.cpp (M0-06) |
 | 257 | openat | partial (as open) | — | musl; inventory: C++ (M0-05, M1-11) |
 | 258 | mkdirat | done | — | musl (M1-11) |

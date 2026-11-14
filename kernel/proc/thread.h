@@ -61,6 +61,7 @@ typedef struct Thread {
     struct Thread *rq_next;        /* run-queue links */
     struct Thread *rq_prev;
     CpuMask affinity;       /* CPUs it may run on (all by default; fork copies it) */
+    uint64_t run_cycles;     /* TSC cycles it has run, up to its last switch away (M1-06) */
     LockdepThread lockdep;        /* sleeping locks held (debug checks) */
 } Thread;
 

@@ -39,3 +39,8 @@ preference set by the power profile, and package energy can be read (ADR-0017).
 - From M1-05: the idle loop is `sched_idle_loop` (proc/sched.c): it halts through `hal_idle_wait` (`sti; hlt`)
   with interrupts off before the check, so a wakeup IPI is never missed. MWAIT and C-state choice go behind that
   call. The idle thread's time is counted per CPU (`/proc/sched_debug` `idle_ns`).
+- From M1-06: idle is `sti; hlt` with each CPU's clock event programmed only for its earliest timer (none
+  when its queue is empty). The LAPIC timer stops in deep C-states unless CPUID 6 EAX bit 2 (ARAT) is set:
+  before MWAIT into C3 or deeper on a CPU without ARAT, a pending timer needs another wake source, or the CPU
+  stays at C1. The clock-event and TSC code has no suspend/resume hooks yet (`lapic_timer_cpu_init` reprograms
+  the LVT; the queue reprograms on its next arm); add them here. `arc.timer=oneshot` forces LAPIC one-shot.

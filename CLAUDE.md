@@ -49,10 +49,11 @@ arc_os is a custom x86_64 operating system built from scratch. Monolithic kernel
 ```
 arc_os/
 ├── kernel/
-│   ├── arch/x86_64/      # Arch-specific (GDT, IDT, PIC, PIT, LAPIC, IOAPIC, SMP, paging, syscall)
+│   ├── arch/x86_64/      # Arch-specific (GDT, IDT, PIC, PIT, LAPIC, IOAPIC, SMP, paging, syscall, TSC, HPET, RTC)
 │   ├── boot/             # Boot protocol parsing (BootInfo, Limine)
 │   ├── mm/               # Memory management (page descriptors, buddy PMM, slab, VMM, kmalloc)
 │   ├── proc/             # Process & thread management, scheduler, signals, sync primitives, ELF loader
+│   ├── time/             # Clocks, per-CPU one-shot timers, time syscalls (M1-06)
 │   ├── fs/               # VFS layer, ramfs, devfs, procfs, pipe, fat32, path utils, passwd
 │   ├── drivers/          # Device drivers (pci, virtio, blkdev, tty, keyboard, fb_console, ansi, vt, acpi)
 │   ├── ipc/              # Empty placeholder

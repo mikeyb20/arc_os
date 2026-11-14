@@ -2,7 +2,8 @@
  *
  * Owns: interrupt descriptors (one per MSI-X entry, MSI message or INTx
  * hookup), handler binding, target-CPU choice, affinity moves, the INTx line
- * chains, interrupt counts and /proc/interrupts. Vectors come from the HAL
+ * chains, interrupt counts and /proc/interrupts (with the CPUs' own
+ * timer and IPI counts, M1-06). Vectors come from the HAL
  * (per-CPU tables, arch/x86_64/irq_vector.c); the bus programs the source
  * through the descriptor's IrqChip (drivers/pci_irq.c).
  * Invariants: a requested MSI descriptor owns `vector` on `cpu` and at most one
@@ -296,6 +297,17 @@ static void format_desc(char *buf, int size, int *pos, const IrqDesc *d) {
     PROC_APPEND("  %s\n", (d->handler != NULL && d->name != NULL) ? d->name : "(free)");
 }
 
+/* The CPUs' own interrupts, as Linux names them (M1-06) */
+static const struct {
+    const char *tag, *name;
+    int which;
+} cpu_irqs[] = {
+    {"LOC", "Local timer interrupts", HAL_IRQ_STAT_TIMER},
+    {"RES", "Rescheduling interrupts", HAL_IRQ_STAT_RESCHED},
+    {"CAL", "Function call interrupts", HAL_IRQ_STAT_CALL},
+    {"TLB", "TLB shootdowns", HAL_IRQ_STAT_TLB},
+};
+
 int irq_format_proc(char *buf, int size) {
     if (size <= 0) return 0;
     buf[0] = '\0';
@@ -310,6 +322,13 @@ int irq_format_proc(char *buf, int size) {
     spin_lock_irqsave(&irq_lock, &flags);
     for (const IrqDesc *d = all_head; d != NULL; d = d->next_all) format_desc(buf, size, pos, d);
     spin_unlock_irqrestore(&irq_lock, flags);
+    for (uint32_t i = 0; i < sizeof(cpu_irqs) / sizeof(cpu_irqs[0]); i++) {
+        PROC_APPEND("%4s:", cpu_irqs[i].tag);
+        for (uint32_t c = 0; c < cpu_slots; c++) {
+            if (hal_cpu_online(c)) PROC_APPEND(" %10lu", hal_cpu_irq_stat(c, cpu_irqs[i].which));
+        }
+        PROC_APPEND("  %s\n", cpu_irqs[i].name);
+    }
     PROC_APPEND(" ERR: %lu\n", hal_irq_spurious_count() + __atomic_load_n(&line_unhandled, __ATOMIC_RELAXED));
     return len < size ? len : size - 1;
 }

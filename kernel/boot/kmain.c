@@ -1,8 +1,5 @@
 #include "arch/hal.h"
-#include "arch/x86_64/serial.h"
 #include "uapi/termios.h"
-#include "arch/x86_64/pic.h"
-#include "arch/x86_64/pit.h"
 #include "mm/pmm.h"
 #include "mm/vmm.h"
 #include "mm/kmalloc.h"
@@ -15,6 +12,7 @@
 #include "proc/lockdep.h"
 #include "proc/process.h"
 #include "proc/init.h"
+#include "time/clock.h"
 #include "drivers/acpi.h"
 #include "drivers/pci.h"
 #include "drivers/virtio_blk.h"
@@ -115,7 +113,6 @@ static void fb_setup(const BootInfo *info) {
 static void diag_setup(const BootInfo *info) {
     diag_report(info);
     if (!diag_requested()) return;
-    hal_timer_init(100);
     hal_enable_interrupts();
     diag_run();
 }
@@ -128,7 +125,7 @@ static void report_end_budgets(void) {
 static void test_thread_entry(void *arg) {
     const char *label = (const char *)arg;
     for (;;) {
-        kprintf("[%s] running (tick=%lu)\n", label, pit_get_ticks());
+        kprintf("[%s] running (%lu ms)\n", label, clock_mono_ns() / NSEC_PER_MSEC);
         /* Busy loop — will be preempted by timer */
         for (volatile int j = 0; j < 500000; j++) {}
     }
@@ -348,11 +345,6 @@ static void disk_mount(void) {
     }
 }
 
-/* Request timeouts (ADR-0005): checked on the timer tick until M1-06 */
-static void blk_tick(void) {
-    blk_expire_all(hal_tsc_read());
-}
-
 /* Driver model (M1-09): IRQ layer, the PCI bus, then the drivers, which bind
  * as they register. After hal_smp_init: MSI needs the local APIC, and
  * interrupts are spread over every online CPU. Then mount the virtio disk and
@@ -470,6 +462,11 @@ void kmain(void) {
         }
     }
 
+    /* Clocks and timers (M1-06): every CPU's timer queue before any device
+     * interrupt can arm a timer; no periodic tick anywhere */
+    serial_puts("[BOOT] stage: clocks\n");
+    clock_init();
+
     serial_puts("[BOOT] stage: devices\n");
     devices_setup();
 
@@ -505,11 +502,6 @@ void kmain(void) {
             KERNEL_PANIC();
         }
     }
-
-    /* PIT at 100 Hz: uptime ticks (M1-06 replaces it). Slices come from each
-     * CPU's own timer, armed by the scheduler. */
-    hal_timer_set_tick_hook(blk_tick);
-    pit_init(100);
 
     /* The boot thread becomes CPU 0's idle thread, the APs join in */
     kprintf("[BOOT] Preemptive multitasking active.\n");

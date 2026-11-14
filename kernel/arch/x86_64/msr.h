@@ -12,6 +12,7 @@
 #define MSR_GS_BASE        0xC0000101  /* GS base: this CPU's PerCpu block while in the kernel */
 #define MSR_KERNEL_GS_BASE 0xC0000102  /* swapped with GS base by SWAPGS (user GS in the kernel) */
 #define MSR_APIC_BASE      0x0000001B  /* IA32_APIC_BASE: enable bits + xAPIC MMIO base */
+#define MSR_TSC_DEADLINE   0x000006E0  /* IA32_TSC_DEADLINE: local APIC timer fires at this TSC value; 0 disarms */
 #define MSR_X2APIC_FIRST   0x00000800  /* x2APIC register r is MSR 0x800 + (MMIO offset >> 4) */
 
 /* EFER bits */

@@ -39,6 +39,9 @@
 # 515584 -> 538274 after M1-10 (+22690): the async block layer (requests,
 # queues, plugging, timeouts), the GPT parser and partitions, virtio-blk with
 # many requests in flight, the test-mode block test, and their backtrace names.
+# 538274 -> 554652 after M1-06 (+16378, inside the limit): the timer queues,
+# clocks, RTC/HPET readers, time syscalls, clock-event setup and the tickless
+# slice (.text +12151, .rodata +1422, .ksyms +2387, .data/.bss +448).
 # Limit = measured + 5%)
 kernel_image_bytes     565000      max  bytes  M0-08  build
 
@@ -66,8 +69,11 @@ heap_leaked_bytes      0           max  bytes  M0-10  *
 # the most the code can take; more means a loop crept into the hot path.
 slab_steps_max         3           max  steps  M1-02b *
 
-# Timer interrupts on an idle CPU over 5 s: needs the tickless timer (M1-06)
-idle_timer_irqs_5s     0           max  irqs   M1-06  smoke     off
+# Timer interrupts on idle CPUs over a 5 s sleep (M1-06, ADR-0017): timetest's
+# idle part sums the /proc/interrupts LOC deltas of every CPU but the one it
+# slept on. Measured 0 (TCG, LAPIC one-shot and with the HPET fallback): an
+# idle CPU's timer queue is empty, so its timer is never programmed.
+idle_timer_irqs_5s     0           max  irqs   M1-06  time
 
 # Code hygiene (ADR-0020, M0-09): counts from tools/hygiene.py, frozen at the
 # counts measured on master 2026-11-08. These limits only go down: a block that
@@ -77,11 +83,12 @@ idle_timer_irqs_5s     0           max  irqs   M1-06  smoke     off
 # 26 -> 24 in M1-04 (kprintf.c, testmode.c); 24 -> 23 in M1-05 (proc_syscalls.c);
 # 23 -> 14 in M1-07 (syscall.h and usermode.h now come through arch/hal.h: the four
 # *_syscalls.c, process.c, init.c, kmain.c; vmm.c's paging.h); 14 -> 8 in M1-09
-# (pci.c, virtio.c, virtio_blk.c, three in virtio_net.c).
+# (pci.c, virtio.c, virtio_blk.c, three in virtio_net.c); 8 -> 5 in M1-06 (kmain.c's
+# serial.h, pic.h and pit.h: the clock bring-up goes through arch/hal.h).
 # dup_windows 12 -> 8 and long_functions 3 -> 2 in M1-11 (the old VFS, fat32.c and
 # fd code rewritten).
 dup_windows                 8    max  regions  M0-09  hygiene
 dup_static_names            2    max  copies   M0-09  hygiene
-arch_includes_outside_arch  8    max  includes M0-09  hygiene
+arch_includes_outside_arch  5    max  includes M0-09  hygiene
 long_functions              2    max  funcs    M0-09  hygiene
 untracked_todos             0    max  todos    M0-09  hygiene

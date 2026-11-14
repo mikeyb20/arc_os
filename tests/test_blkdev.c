@@ -25,6 +25,40 @@
 #define ARCHOS_LIB_KPRINTF_H
 #define ARCHOS_LIB_MEM_H
 #define ARCHOS_LIB_STRING_H
+#define ARCHOS_TIME_CLOCK_H
+#define ARCHOS_TIME_TIMER_H
+
+/* A fake timer queue (time/timer.h): the test runs due timers by hand */
+typedef void (*TimerFn)(void *arg);
+typedef struct Timer {
+    uint64_t expires;
+    TimerFn fn;
+    void *arg;
+    int pending;
+} Timer;
+static int timer_arms;
+static void timer_init(Timer *t, TimerFn fn, void *arg) {
+    t->fn = fn;
+    t->arg = arg;
+    t->pending = 0;
+}
+static void timer_arm(Timer *t, uint64_t expires) {
+    t->expires = expires;
+    t->pending = 1;
+    timer_arms++;
+}
+static int timer_cancel(Timer *t) {
+    int was = t->pending;
+    t->pending = 0;
+    return was;
+}
+
+/* Time (time/clock.h): a fake CLOCK_MONOTONIC in ns */
+#define NSEC_PER_MSEC ((uint64_t)1000000)
+static uint64_t fake_now;
+static uint64_t clock_mono_ns(void) {
+    return fake_now;
+}
 
 #include "mm/gfp.h"
 #include "arch/hal_lock.h"
@@ -122,15 +156,6 @@ static int sem_trywait(Semaphore *s) {
 }
 static int sched_can_block(void) {
     return 0;
-}
-
-/* Time: a fake TSC at 1000 cycles per ms */
-static uint64_t fake_now;
-static uint64_t hal_tsc_read(void) {
-    return fake_now;
-}
-static uint64_t diag_ms_to_cycles(uint32_t ms) {
-    return (uint64_t)ms * 1000;
 }
 
 static char last_log[256];
@@ -531,20 +556,32 @@ TEST(blk_submit_page_async) {
     return 0;
 }
 
+/* Advance the clock to now and run the disk's timer if it is due */
+static void run_disk_timer(BlockDevice *disk, uint64_t now) {
+    fake_now = now;
+    Timer *t = &disk->queue->timer;
+    if (t->pending && t->expires <= now) {
+        t->pending = 0;
+        t->fn(t->arg);
+    }
+}
+
 TEST(blk_lost_interrupt_completed_by_poll) {
     FakeDisk *fd = fake_disk(512, 8, 16, NULL);
     blk_test_set(&fd->disk, 100, 1);
     ended = 0;
-    fake_now = 1000000;
+    fake_now = 1000000000;
     blk_submit(read_rq(&fd->disk, 0, 0));
+    Timer *t = &fd->disk.queue->timer;
+    ASSERT_TRUE(t->pending); /* armed at the request's deadline */
+    ASSERT_EQ(t->expires, 1000000000 + 100 * NSEC_PER_MSEC);
     blk_complete(&fd->disk);   /* dropped */
     ASSERT_EQ(ended, 0);
-    fake_now += 99 * 1000;
-    blk_expire_all(fake_now);   /* not yet due */
+    run_disk_timer(&fd->disk, fake_now + 99 * NSEC_PER_MSEC); /* not yet due */
     ASSERT_EQ(ended, 0);
-    fake_now += 2 * 1000;
-    blk_expire_all(fake_now);
+    run_disk_timer(&fd->disk, fake_now + 2 * NSEC_PER_MSEC);
     ASSERT_EQ(ended, 1);
+    ASSERT_FALSE(t->pending); /* nothing in flight: no timer (ADR-0017) */
     BlkStats st;
     blk_get_stats(&fd->disk, &st);
     ASSERT_EQ(st.polled, 1);
@@ -554,16 +591,56 @@ TEST(blk_lost_interrupt_completed_by_poll) {
     return 0;
 }
 
+TEST(blk_timer_follows_oldest_request) {
+    FakeDisk *fd = fake_disk(512, 8, 16, NULL);
+    blk_test_set(&fd->disk, 100, 0);
+    Timer *t = &fd->disk.queue->timer;
+    ended = 0;
+    uint64_t t0 = 2000000000;
+    fake_now = t0;
+    blk_submit(read_rq(&fd->disk, 0, 0));
+    int arms = timer_arms;
+    fake_now = t0 + 10 * NSEC_PER_MSEC;
+    blk_submit(read_rq(&fd->disk, 64, 1));
+    ASSERT_EQ(timer_arms, arms); /* a later deadline leaves the timer alone */
+    ASSERT_EQ(t->expires, t0 + 100 * NSEC_PER_MSEC);
+    fd->budget = 1;
+    blk_complete(&fd->disk); /* the oldest ends; the timer stays (early is fine) */
+    ASSERT_EQ(ended, 1);
+    ASSERT_TRUE(t->pending);
+    fd->stuck = 1;
+    run_disk_timer(&fd->disk, t0 + 100 * NSEC_PER_MSEC); /* nothing due yet: armed for the next oldest */
+    ASSERT_EQ(ended, 1);
+    ASSERT_TRUE(t->pending);
+    ASSERT_EQ(t->expires, t0 + 110 * NSEC_PER_MSEC);
+    fd->stuck = 0;
+    blk_complete(&fd->disk);
+    ASSERT_EQ(ended, 2);
+    ASSERT_FALSE(t->pending); /* idle disk: no timer */
+    /* The next request arms it again from its own dispatch */
+    fake_now = t0 + 900 * NSEC_PER_MSEC;
+    blk_submit(read_rq(&fd->disk, 128, 2));
+    ASSERT_TRUE(t->pending);
+    ASSERT_EQ(t->expires, fake_now + 100 * NSEC_PER_MSEC);
+    blk_complete(&fd->disk);
+    ASSERT_EQ(ended, 3);
+    ASSERT_FALSE(t->pending);
+    BlkStats st;
+    blk_get_stats(&fd->disk, &st);
+    ASSERT_EQ(st.timeouts, 0);
+    ASSERT_EQ(rq_live, 0);
+    return 0;
+}
+
 TEST(blk_hung_device_reset_fails_everything) {
     FakeDisk *fd = fake_disk(512, 2, 16, NULL);
     blk_test_set(&fd->disk, 100, 0);
     fd->stuck = 1;
     ended = end_status = 0;
-    fake_now = 5000000;
+    fake_now = 5000000000;
     for (unsigned i = 0; i < 5; i++) blk_submit(read_rq(&fd->disk, (uint64_t)i * 64, i));
     ASSERT_EQ(fd->disk.queue->in_flight, 2);
-    fake_now += 101 * 1000;
-    blk_expire_all(fake_now);
+    run_disk_timer(&fd->disk, fake_now + 101 * NSEC_PER_MSEC);
     ASSERT_EQ(fd->resets, 1);
     ASSERT_EQ(ended, 5);   /* flying and waiting alike */
     ASSERT_EQ(end_status, -EIO);
@@ -602,6 +679,7 @@ TestCase blkdev_tests[] = {
     TEST_ENTRY(blk_refusals_and_flush),
     TEST_ENTRY(blk_submit_page_async),
     TEST_ENTRY(blk_lost_interrupt_completed_by_poll),
+    TEST_ENTRY(blk_timer_follows_oldest_request),
     TEST_ENTRY(blk_hung_device_reset_fails_everything),
     TEST_ENTRY(blk_names),
 };

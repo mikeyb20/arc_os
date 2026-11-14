@@ -22,6 +22,8 @@
 #include "drivers/keyboard.h"
 #include "mm/pmm.h"
 #include "mm/kmalloc.h"
+#include "time/clock.h"
+#include "time/timer.h"
 #include "lib/kprintf.h"
 #include "lib/cmdline.h"
 #include "lib/testmode.h"
@@ -65,17 +67,6 @@ void diag_line(const char *fmt, ...) {
     va_end(ap);
     kprintf("[REPORT] %s\n", buf);
     if (lines != NULL && line_count < DIAG_MAX_LINES) memcpy(lines[line_count++], buf, DIAG_LINE_MAX);
-}
-
-uint64_t diag_ms_to_cycles(uint32_t ms) {
-    uint64_t khz = hal_tsc_info()->khz;
-    return khz != 0 ? khz * ms : (uint64_t)ms * 3000000;   /* unknown: assume 3 GHz */
-}
-
-void diag_delay_ms(uint32_t ms) {
-    uint64_t cycles = diag_ms_to_cycles(ms);
-    uint64_t start = hal_tsc_read();
-    while (hal_tsc_read() - start < cycles) hal_cpu_relax();
 }
 
 static const char *firmware_name(uint32_t fw) {
@@ -156,6 +147,11 @@ static void report_cpu(const BootInfo *info, const AcpiInfo *acpi) {
     diag_line("TSC        %lu kHz from %s (CPUID 0x15 %lu kHz, PIT %lu kHz, base %lu MHz)%s%s", t->khz, t->source,
               t->cpuid_khz, t->pit_khz, t->base_mhz, t->invariant ? ", invariant" : ", NOT invariant",
               t->deadline ? ", deadline timer" : "");
+    /* M1-06: what the hardware-sensitive clock choices came to on this machine */
+    const ClockInfo *ci = clock_info();
+    diag_line("Clock      %s timers; TSCs %s on %u CPUs (worst step back %lu cycles)%s", ci->event_mode,
+              ci->clamped ? "OUT OF STEP" : "in step", t->sync_cpus, t->max_warp,
+              ci->rtc_ok ? "; wall clock from the RTC" : "; RTC unreadable: wall clock at 1970");
 }
 
 static void report_memory(const BootInfo *info) {
@@ -304,23 +300,35 @@ static void pager_draw(uint32_t page, uint32_t pages, uint32_t per_page) {
     }
 }
 
+static void wake_noop(void *arg) {
+    (void)arg;   /* the interrupt itself ends the halt */
+}
+
 int diag_wait_key(uint32_t seconds, int can_halt) {
     uint32_t keys = keyboard_key_count();
-    uint64_t khz = hal_tsc_info()->khz ? hal_tsc_info()->khz : 3000000;
-    uint64_t cycles = khz * 1000 * seconds;
-    uint64_t start = hal_tsc_read();
-    while (hal_tsc_read() - start < cycles && keyboard_key_count() == keys) {
-        if (can_halt)
-            hal_halt();
-        else
+    uint64_t end = clock_mono_ns() + (uint64_t)seconds * NSEC_PER_SEC;
+    Timer wake;
+    timer_init(&wake, wake_noop, NULL);
+    while (clock_mono_ns() < end && keyboard_key_count() == keys) {
+        if (!can_halt) {
             hal_cpu_relax();
+            continue;
+        }
+        /* Arm on this CPU with interrupts off, check again, then halt until
+         * the key or the timer: no wake-up can slip in between */
+        hal_disable_interrupts();
+        timer_arm(&wake, end);
+        if (keyboard_key_count() == keys)
+            hal_idle_wait();
+        else
+            hal_enable_interrupts();
     }
+    timer_cancel_sync(&wake);
     return keyboard_key_count() != keys;
 }
 
 void diag_run(void) {
     keyboard_grab(1);   /* keys turn pages; nothing reads the TTY in this mode */
-    uint64_t ticks = hal_timer_ticks();
 
     int passes = 0, fails = 0;
     if (diag_flag_on("arc.selftest")) diag_selftest(&passes, &fails);
@@ -334,11 +342,7 @@ void diag_run(void) {
         testmode_exit(fails == 0 ? 0 : 1);
     }
 
-    int can_halt = hal_timer_ticks() != ticks;   /* the PIT woke us during the tests */
-    if (!can_halt) {
-        diag_delay_ms(100);
-        can_halt = hal_timer_ticks() != ticks;
-    }
+    int can_halt = timer_cpu_ready();   /* a timer can end each halt */
     if (qr) diag_qr_run(can_halt, passes, fails);   /* returns only if it can't draw */
     if (fb_console_cols() == 0 || lines == NULL || fb_console_rows() < 2) {
         for (;;) hal_halt();   /* no screen: the report went to serial */

@@ -27,16 +27,16 @@
 #include "arch/x86_64/cpuid.h"
 #include "arch/x86_64/paging.h"
 #include "mm/vmm.h"
+#include "arch/x86_64/tsc.h"
 #include "proc/sched.h"
 #include "lib/kprintf.h"
 
 _Static_assert(ACPI_MAX_CPUS == MAX_CPUS, "MADT CPU list and per-CPU table sizes");
 _Static_assert(BOOTINFO_MAX_CPUS == MAX_CPUS, "boot CPU list and per-CPU table sizes");
 
-/* How long the BSP waits for the APs: 2^32 TSC cycles, about 1-4 s at the TSC
- * rates of real and emulated CPUs. Bounded by time, not by a loop count, so
- * TCG (slow) and KVM (fast) wait alike. */
-#define AP_WAIT_TSC_CYCLES (1ULL << 32)
+/* How long the BSP waits for the APs. Bounded by time on the TSC clock, not
+ * by a loop count, so TCG (slow) and KVM (fast) wait alike. */
+#define AP_WAIT_NS 2000000000ULL   /* 2 s */
 
 static volatile uint32_t aps_online;
 static volatile int aps_released;   /* set once by smp_release_aps */
@@ -149,7 +149,8 @@ uint32_t smp_init(const BootInfo *info, const AcpiInfo *acpi) {
 
     /* Wait for the started APs to come online, bounded by time */
     uint64_t start = cpu_rdtsc();
-    while (__atomic_load_n(&aps_online, __ATOMIC_SEQ_CST) < started && cpu_rdtsc() - start < AP_WAIT_TSC_CYCLES) {
+    uint64_t wait = tsc_ns_to_cycles(AP_WAIT_NS);
+    while (__atomic_load_n(&aps_online, __ATOMIC_SEQ_CST) < started && cpu_rdtsc() - start < wait) {
         __asm__ volatile ("pause");
     }
 

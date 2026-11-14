@@ -17,6 +17,8 @@
 #define ARCHOS_MM_VMM_H
 #define ARCHOS_MM_MM_H
 #define ARCHOS_ARCH_HAL_H
+#define ARCHOS_TIME_TIMER_H
+#define ARCHOS_TIME_CLOCK_H
 
 /* Unique names: test_thread.c links the real thread.c and its own switch stub */
 #define thread_current     sched_test_thread_current
@@ -144,16 +146,38 @@ static void mm_switch(Mm *next) {
     cpu_mm[test_cpu] = next;
     hal_switch_address_space(next != NULL ? next->pgd : 0x1000);
 }
+/* time/timer.h and time/clock.h: a recorder for the slice timer (its own
+ * tests are in test_timer.c); the clock is the fake TSC (1 GHz) */
+typedef void (*TimerFn)(void *arg);
+typedef struct Timer {
+    uint64_t expires;
+    TimerFn fn;
+    void *arg;
+    int pending;
+} Timer;
+static int timers_ready;   /* timer_cpu_ready(): 0 until clock_init */
 static int timer_starts, timer_stops;
-static inline void hal_slice_timer_start(uint64_t ns) {
-    (void)ns;
+static void timer_init(Timer *t, TimerFn fn, void *arg) {
+    t->fn = fn;
+    t->arg = arg;
+    t->pending = 0;
+}
+static void timer_arm(Timer *t, uint64_t expires) {
+    t->expires = expires;
+    t->pending = 1;
     timer_starts++;
 }
-static inline void hal_slice_timer_stop(void) {
+static int timer_cancel(Timer *t) {
+    int was = t->pending;
+    t->pending = 0;
     timer_stops++;
+    return was;
 }
-static inline void hal_slice_timer_init(void (*fn)(void)) {
-    (void)fn;
+static int timer_cpu_ready(void) {
+    return timers_ready;
+}
+static uint64_t clock_mono_ns(void) {
+    return fake_tsc;
 }
 static inline void hal_release_aps(void) {}
 static inline void hal_idle_wait(void) {}
@@ -211,7 +235,7 @@ static void reset_sched_state(void) {
     cpumask_clear(&online_mask);
     memset(core_masks, 0, sizeof(core_masks));
     sched_cpu_limit = 0;
-    slice_timer_ready = 0;
+    timers_ready = 0;
     test_cpu = 0;
     memset(cpu_sched_ptr, 0, sizeof(cpu_sched_ptr));
     memset(cpu_current, 0, sizeof(cpu_current));
@@ -511,38 +535,143 @@ static int test_sched_kernel_lock_across_switch(void) {
     return 0;
 }
 
-/* The slice timer runs only while a real thread runs */
-static int test_sched_slice_timer_only_when_busy(void) {
+/* Tickless (M1-06): a slice timer only while a real thread runs and another
+ * waits for the CPU */
+static int test_sched_slice_timer_only_when_needed(void) {
     reset_sched_state();
     Thread *idle = make_thread(0, 0, THREAD_RUNNING);
     Thread *a = make_thread(1, 1, THREAD_CREATED);
+    Thread *b = make_thread(2, 2, THREAD_CREATED);
     boot_cpu(idle);
     bsp_rq.idle = idle;
-    slice_timer_ready = 1;
+    timers_ready = 1;
     sched_add_thread(a);
-    sched_schedule();          /* idle -> a */
+    sched_schedule();          /* idle -> a, nothing else waits */
+    ASSERT_EQ(timer_starts, 0);
+    ASSERT_FALSE(bsp_rq.slice_armed);
+    sched_add_thread(b);       /* b waits behind a: a slice starts */
     ASSERT_EQ(timer_starts, 1);
-    ASSERT_EQ(timer_stops, 0);
+    ASSERT_TRUE(bsp_rq.slice_armed);
+    ASSERT_TRUE(bsp_rq.slice.pending);
+    ASSERT_EQ(bsp_rq.slice.expires, fake_tsc + SCHED_SLICE_NS);
     a->state = THREAD_BLOCKED;
-    sched_schedule();          /* a -> idle */
-    ASSERT_EQ(timer_stops, 1);
+    sched_schedule();          /* a -> b, nobody waits: the timer stops */
+    ASSERT_TRUE(sched_test_thread_current() == b);
+    ASSERT_FALSE(bsp_rq.slice_armed);
+    ASSERT_FALSE(bsp_rq.slice.pending);
+    b->state = THREAD_BLOCKED;
+    sched_schedule();          /* b -> idle: no timer either */
+    ASSERT_FALSE(bsp_rq.slice.pending);
+    ASSERT_EQ(timer_starts, 1);
+    ASSERT_UNLOCKED(&bsp_rq);
     return 0;
 }
 
-/* Never preempt a CPU that holds a spinlock */
-static int test_sched_preempt_skips_lock_holder(void) {
+/* Before clock_init there is no timer queue: the scheduler arms nothing */
+static int test_sched_no_slice_before_timers(void) {
     reset_sched_state();
     Thread *a = make_thread(0, 1, THREAD_RUNNING);
     Thread *b = make_thread(1, 2, THREAD_CREATED);
     boot_cpu(a);
     sched_add_thread(b);
-    hal_test_lock_depth = 1;
-    sched_preempt();
-    ASSERT_EQ(ctx_switch_count, 0);
-    hal_test_lock_depth = 0;
-    sched_preempt();
+    ASSERT_EQ(timer_starts, 0);
+    ASSERT_FALSE(bsp_rq.slice_armed);
+    return 0;
+}
+
+/* The slice ends in the timer interrupt: the callback asks for a switch and
+ * sched_timer_exit makes it, after the timer queue is done */
+static int test_sched_slice_expiry_switches(void) {
+    reset_sched_state();
+    Thread *a = make_thread(0, 1, THREAD_RUNNING);
+    Thread *b = make_thread(1, 2, THREAD_CREATED);
+    boot_cpu(a);
+    timers_ready = 1;
+    sched_add_thread(b);
+    ASSERT_TRUE(bsp_rq.slice.pending);
+    bsp_rq.slice.pending = 0;
+    bsp_rq.slice.fn(bsp_rq.slice.arg);   /* the slice timer fires */
+    ASSERT_EQ(ctx_switch_count, 0);      /* not inside the timer queue */
+    ASSERT_TRUE(bsp_rq.need_resched);
+    ASSERT_FALSE(bsp_rq.slice_armed);
+    sched_timer_exit();
     ASSERT_EQ(ctx_switch_count, 1);
     ASSERT_TRUE(sched_test_thread_current() == b);
+    ASSERT_FALSE(bsp_rq.need_resched);
+    /* a waits behind b now: b gets a fresh slice of its own */
+    ASSERT_TRUE(bsp_rq.slice.pending);
+    ASSERT_EQ(bsp_rq.slice.expires, fake_tsc + SCHED_SLICE_NS);
+    ASSERT_UNLOCKED(&bsp_rq);
+    return 0;
+}
+
+/* A thread queued behind a busy CPU that runs no slice timer: that CPU gets
+ * an IPI (it programs its own timer), and the IPI arms the slice */
+static int test_sched_remote_enqueue_kicks_busy_cpu(void) {
+    reset_sched_state();
+    Thread *a = make_thread(0, 1, THREAD_RUNNING);
+    Thread *idle1 = make_thread(1, 0, THREAD_RUNNING);
+    Thread *c = make_thread(2, 3, THREAD_RUNNING);
+    Thread *d = make_thread(3, 4, THREAD_CREATED);
+    boot_cpu(a);
+    timers_ready = 1;
+    RunQueue *rq1 = start_cpu(1, idle1);
+    rq1->curr = c;   /* CPU 1 runs c alone: no slice */
+    c->cpu = 1;
+    cpu_current[1] = c;
+    sched_enqueue_on(1, d);   /* from CPU 0 */
+    ASSERT_EQ(resched_ipis[1], 1);
+    ASSERT_FALSE(rq1->slice_armed);
+    test_cpu = 1;
+    sched_ipi();   /* CPU 1: c keeps running until its slice ends */
+    ASSERT_EQ(ctx_switch_count, 0);
+    ASSERT_TRUE(rq1->slice_armed);
+    ASSERT_TRUE(rq1->slice.pending);
+    test_cpu = 0;
+    Thread *e = make_thread(4, 5, THREAD_CREATED);
+    sched_enqueue_on(1, e);   /* the slice runs already: no second IPI */
+    ASSERT_EQ(resched_ipis[1], 1);
+    return 0;
+}
+
+/* Never preempt a CPU that holds a spinlock: try again in SCHED_RETRY_NS */
+static int test_sched_preempt_skips_lock_holder(void) {
+    reset_sched_state();
+    Thread *a = make_thread(0, 1, THREAD_RUNNING);
+    Thread *b = make_thread(1, 2, THREAD_CREATED);
+    boot_cpu(a);
+    timers_ready = 1;
+    sched_add_thread(b);
+    bsp_rq.need_resched = 1;
+    hal_test_lock_depth = 1;
+    sched_timer_exit();
+    ASSERT_EQ(ctx_switch_count, 0);
+    ASSERT_TRUE(bsp_rq.need_resched);
+    ASSERT_TRUE(bsp_rq.slice.pending);
+    ASSERT_EQ(bsp_rq.slice.expires, fake_tsc + SCHED_RETRY_NS);
+    hal_test_lock_depth = 0;
+    sched_timer_exit();
+    ASSERT_EQ(ctx_switch_count, 1);
+    ASSERT_TRUE(sched_test_thread_current() == b);
+    return 0;
+}
+
+/* CLOCK_THREAD_CPUTIME_ID: time on the CPU, the running stretch included */
+static int test_sched_thread_cpu_time(void) {
+    reset_sched_state();
+    Thread *idle = make_thread(0, 0, THREAD_RUNNING);
+    Thread *a = make_thread(1, 1, THREAD_CREATED);
+    boot_cpu(idle);
+    bsp_rq.idle = idle;
+    fake_tsc = 1000;
+    sched_add_thread(a);
+    sched_schedule();   /* idle -> a at 1000 */
+    fake_tsc = 1700;
+    ASSERT_EQ(sched_thread_cpu_ns(a), 700);   /* running now */
+    a->state = THREAD_BLOCKED;
+    sched_schedule();   /* a -> idle at 1700 */
+    fake_tsc = 5000;
+    ASSERT_EQ(sched_thread_cpu_ns(a), 700);   /* not running: no more */
     return 0;
 }
 
@@ -802,8 +931,12 @@ TestCase sched_tests[] = {
     {"cr3_after_exec", test_sched_cr3_after_exec},
     {"kernel_stack_follows_thread", test_sched_kernel_stack_follows_thread},
     {"kernel_lock_across_switch", test_sched_kernel_lock_across_switch},
-    {"slice_timer_only_when_busy", test_sched_slice_timer_only_when_busy},
+    {"slice_timer_only_when_needed", test_sched_slice_timer_only_when_needed},
+    {"no_slice_before_timers", test_sched_no_slice_before_timers},
+    {"slice_expiry_switches", test_sched_slice_expiry_switches},
+    {"remote_enqueue_kicks_busy_cpu", test_sched_remote_enqueue_kicks_busy_cpu},
     {"preempt_skips_lock_holder", test_sched_preempt_skips_lock_holder},
+    {"thread_cpu_time", test_sched_thread_cpu_time},
     {"time_accounting", test_sched_time_accounting},
     {"wake_picks_idle_cpu", test_sched_wake_picks_idle_cpu},
     {"wake_prefers_last_idle_cpu", test_sched_wake_prefers_last_idle_cpu},

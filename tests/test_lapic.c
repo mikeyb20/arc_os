@@ -17,13 +17,16 @@ static inline void kprintf(const char *fmt, ...) {
 static uint64_t vmm_get_hhdm_offset(void) {
     return 0;
 }   /* MMIO "phys" = host address */
-/* tsc.h / isr.h stubs: the slice timer's calibration and vector */
+/* tsc.h / isr.h stubs: the APIC timer's calibration and vector */
 typedef struct {
     uint64_t khz;
 } TscInfo;
 static TscInfo fake_tsc;
 static const TscInfo *tsc_info(void) {
     return &fake_tsc;
+}
+static uint64_t tsc_ns_to_cycles(uint64_t ns) {
+    return ns * fake_tsc.khz / 1000000;
 }
 typedef struct InterruptFrame InterruptFrame;
 typedef void (*isr_handler_t)(InterruptFrame *frame);

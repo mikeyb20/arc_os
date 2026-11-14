@@ -45,6 +45,13 @@ typedef struct TlbRequest {
 
 struct Thread;
 
+/* Per-CPU interrupt counts kept by the arch handlers (M1-06) */
+#define PERCPU_STAT_TIMER   0   /* local APIC timer */
+#define PERCPU_STAT_RESCHED 1   /* reschedule IPIs */
+#define PERCPU_STAT_TLB     2   /* TLB shootdown IPIs */
+#define PERCPU_STAT_CALL    3   /* function-call IPIs */
+#define PERCPU_STATS        4
+
 /* One per CPU. The fields the entry paths and this_cpu() touch come first and
  * share one cache line that no other CPU writes. */
 typedef struct __attribute__((aligned(64))) PerCpu {
@@ -60,6 +67,8 @@ typedef struct __attribute__((aligned(64))) PerCpu {
     TSS *tss;                         /* this CPU's TSS (tss_storage) */
     void *sched;                      /* this CPU's run queue (proc/sched.c) */
     void *mm;                         /* user address space loaded here, or NULL (mm/mm.c) */
+    void *timers;                     /* this CPU's timer queue (time/timer.c), NULL until set */
+    uint64_t irq_stat[PERCPU_STATS];  /* per-CPU interrupt counts (PERCPU_STAT_*, /proc/interrupts) */
     TlbRequest tlb_req;               /* this CPU's TLB shootdown request (tlb.c) */
     CpuMask tlb_from;                 /* CPUs whose request this CPU still has to run (tlb.c) */
 

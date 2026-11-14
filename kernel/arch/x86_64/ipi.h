@@ -24,4 +24,9 @@ void ipi_halt_all(void);
  * (M1-04 self-test) until M1-05 brings a general cross-CPU call. */
 uint32_t ipi_call_others(void (*fn)(void *arg), void *arg, uint64_t max_cycles);
 
+/* The same, and this CPU runs fn(arg) too (interrupts off), at the same time
+ * as the others: for checks that need every CPU at once (the TSC sync check,
+ * M1-06). Returns how many other CPUs ran it. */
+uint32_t ipi_call_all(void (*fn)(void *arg), void *arg, uint64_t max_cycles);
+
 #endif /* ARCHOS_ARCH_X86_64_IPI_H */

@@ -29,7 +29,8 @@
 #include "arch/x86_64/cpu.h"     /* CPU features, floor, core types */
 #include "arch/x86_64/percpu.h"  /* this_cpu(), per-CPU kernel stacks */
 #include "arch/x86_64/smp.h"     /* APIC switch-over, AP start */
-#include "arch/x86_64/tsc.h"     /* TSC frequency (M1-04) */
+#include "arch/x86_64/tsc.h"     /* TSC frequency (M1-04), clocksource (M1-06) */
+#include "arch/x86_64/rtc.h"     /* CMOS real-time clock (M1-06) */
 #include "arch/x86_64/debug_exit.h"   /* hal_debug_exit: QEMU test-mode exit */
 #include "arch/x86_64/ipi.h"     /* halt the other CPUs on panic */
 #include "arch/x86_64/lapic.h"   /* APIC mode for the boot report */
@@ -211,19 +212,6 @@ static inline void hal_release_aps(void) {
     smp_release_aps();
 }
 
-/* Slice timer: this CPU's local APIC timer (TSC-deadline mode comes with
- * M1-06). hal_slice_timer_init measures it once on the BSP and sets fn as the
- * handler on every CPU; start/stop act on the calling CPU. */
-static inline void hal_slice_timer_init(void (*fn)(void)) {
-    lapic_timer_setup(fn);
-}
-static inline void hal_slice_timer_start(uint64_t period_ns) {
-    lapic_timer_periodic(period_ns);
-}
-static inline void hal_slice_timer_stop(void) {
-    lapic_timer_stop();
-}
-
 /* Self-test only (arc.selftest=1, no user thread exists): AVX2 sum of buf on
  * this CPU after checking XCR0; see fpu_avx2_selftest. */
 static inline int hal_avx2_selftest(const uint32_t *buf, uint64_t count, uint32_t *sum, uint64_t *xcr0) {
@@ -332,49 +320,133 @@ static inline void hal_irq_line_enable(uint8_t line) {
 }
 
 /* ==================================================================
- * Timer
+ * Clocks and timers (M1-06)
  * ================================================================== */
 
-/* Initialize periodic timer at the given frequency in Hz. */
-static inline void hal_timer_init(uint32_t freq_hz) {
-    pit_init(freq_hz);
-}
-
-/* Run fn on every tick of the periodic timer (interrupt context, one CPU).
- * Interim: M1-06's per-CPU timer queue replaces the tick and its users arm
- * one-shot timers instead (the block layer's request timeouts). */
-static inline void hal_timer_set_tick_hook(void (*fn)(void)) {
-    pit_set_tick_hook(fn);
-}
-
-/* Get total tick count since timer initialization. */
-static inline uint64_t hal_timer_ticks(void) {
-    return pit_get_ticks();
-}
-
-/* Get approximate uptime in milliseconds. */
-static inline uint64_t hal_timer_uptime_ms(void) {
-    return pit_get_uptime_ms();
-}
-
-/* Measure the TSC frequency (boot, BSP, after the CPU features are read). */
+/* Measure the TSC frequency (boot, BSP, after the CPU features are read).
+ * The clock (hal_clock_ns) counts from here. */
 static inline void hal_tsc_calibrate(void) {
     tsc_calibrate();
 }
 
-/* The TSC frequency and where it came from. */
+/* The TSC frequency, where it came from, and the boot sync check's result. */
 static inline const TscInfo *hal_tsc_info(void) {
     return tsc_info();
 }
 
-/* Raw time-stamp counter. */
+/* Raw time-stamp counter (benchmarks; time goes through hal_clock_ns). */
 static inline uint64_t hal_tsc_read(void) {
     return cpu_rdtsc();
 }
 
-/* TSC cycles to nanoseconds (0 when the frequency is unknown). */
+/* TSC cycles to nanoseconds. */
 static inline uint64_t hal_tsc_to_ns(uint64_t cycles) {
     return tsc_cycles_to_ns(cycles);
+}
+
+/* The clocksource: nanoseconds since boot (time/clock.c builds
+ * CLOCK_MONOTONIC on it). Any CPU, any context. */
+static inline uint64_t hal_clock_ns(void) {
+    return tsc_clock_ns();
+}
+
+/* Nanoseconds to TSC cycles (time limits on boot-time polls). */
+static inline uint64_t hal_clock_ns_to_cycles(uint64_t ns) {
+    return tsc_ns_to_cycles(ns);
+}
+
+/* Finish the calibration once ACPI is read: the HPET at hpet_phys (0 =
+ * none) when no better reference worked, or when force (test mode). */
+static inline void hal_clock_calibrate_late(uint64_t hpet_phys, bool force) {
+    tsc_calibrate_late(hpet_phys, force);
+}
+
+/* Check that the clocksource runs in step on every online CPU (ms each,
+ * interrupts off). Returns the largest step back seen, in cycles. */
+static inline uint64_t hal_clock_check_sync(uint32_t ms) {
+    return tsc_check_sync(ms);
+}
+
+/* Clock events: one programmable interrupt per CPU (the local APIC timer). */
+static inline int hal_clockevent_available(void) {
+    return lapic_active();
+}
+
+/* BSP, once: fn becomes every CPU's clock-event handler (interrupt context,
+ * after the EOI). TSC-deadline mode when the CPU has it, unless one_shot. */
+static inline void hal_clockevent_init(void (*fn)(void), int one_shot) {
+    lapic_timer_setup(fn, tsc_info()->deadline && !one_shot);
+}
+
+/* This CPU: put its timer in the chosen mode, stopped. */
+static inline void hal_clockevent_cpu_init(void) {
+    lapic_timer_cpu_init();
+}
+
+/* This CPU: one interrupt when hal_clock_ns() reaches ns (at once if it has;
+ * may come early, then the caller reprograms). */
+static inline void hal_clockevent_program(uint64_t ns) {
+    lapic_timer_program(tsc_clock_to_tsc(ns));
+}
+
+/* This CPU: no clock-event interrupt until programmed again. */
+static inline void hal_clockevent_stop(void) {
+    lapic_timer_stop();
+}
+
+/* "TSC-deadline" or "LAPIC one-shot". */
+static inline const char *hal_clockevent_mode(void) {
+    return lapic_timer_mode();
+}
+
+/* Silence the legacy periodic timer (PIT channel 0): nothing ticks. */
+static inline void hal_legacy_timer_stop(void) {
+    pit_stop();
+}
+
+/* This CPU's timer queue (time/timer.c), NULL before it is set. */
+static inline void *hal_this_cpu_timers(void) {
+    return this_cpu()->timers;
+}
+
+/* Timer queue of CPU index cpu, or NULL. */
+static inline void *hal_cpu_timers(uint32_t cpu) {
+    PerCpu *c = percpu_get(cpu);
+    return c != NULL ? c->timers : NULL;
+}
+
+/* Attach a timer queue to CPU index cpu (boot). */
+static inline void hal_cpu_set_timers(uint32_t cpu, void *timers) {
+    PerCpu *c = percpu_get(cpu);
+    if (c != NULL) c->timers = timers;
+}
+
+/* Run fn(arg) on every online CPU at once, this one included (interrupts
+ * off on each), and wait up to max_cycles. Returns how many other CPUs ran
+ * it. Boot only, from the BSP. */
+static inline uint32_t hal_run_on_all_cpus(void (*fn)(void *), void *arg, uint64_t max_cycles) {
+    return ipi_call_all(fn, arg, max_cycles);
+}
+
+/* Read the battery-backed real-time clock (UTC). century_reg from the ACPI
+ * FADT (0 = none). Returns 0, or -1 when it gives no valid date within
+ * max_cycles TSC cycles. */
+static inline int hal_rtc_read(uint8_t century_reg, uint64_t max_cycles, RtcTime *out) {
+    return rtc_read(century_reg, max_cycles, out);
+}
+
+/* Per-CPU interrupt counts for /proc/interrupts */
+#define HAL_IRQ_STAT_TIMER   PERCPU_STAT_TIMER     /* clock-event interrupts */
+#define HAL_IRQ_STAT_RESCHED PERCPU_STAT_RESCHED   /* reschedule IPIs */
+#define HAL_IRQ_STAT_TLB     PERCPU_STAT_TLB       /* TLB shootdown IPIs */
+#define HAL_IRQ_STAT_CALL    PERCPU_STAT_CALL      /* function-call IPIs */
+#define HAL_IRQ_STATS        PERCPU_STATS
+
+/* Count `which` (HAL_IRQ_STAT_*) of CPU index cpu, 0 if it is not online. */
+static inline uint64_t hal_cpu_irq_stat(uint32_t cpu, int which) {
+    PerCpu *c = percpu_get(cpu);
+    if (c == NULL || !c->online || which < 0 || which >= PERCPU_STATS) return 0;
+    return __atomic_load_n(&c->irq_stat[which], __ATOMIC_RELAXED);
 }
 
 /* ==================================================================

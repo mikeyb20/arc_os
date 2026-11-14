@@ -58,11 +58,18 @@ if(EXISTS "${ARC_MUSL_PREFIX}gcc")
                 ${CMAKE_CURRENT_SOURCE_DIR}/bigexec_data.S
         DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/bigexec.c ${CMAKE_CURRENT_SOURCE_DIR}/bigexec_data.S
         COMMENT "musl -static bigexec")
+    # M1-06: clocks, sleeps, preemption under load and tickless idle (qemu.time)
+    add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/timetest
+        COMMAND ${MUSL_CC} -static -O2 -Wall -Wextra -Werror -std=gnu11
+                -o ${CMAKE_BINARY_DIR}/timetest ${CMAKE_CURRENT_SOURCE_DIR}/timetest.c
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/timetest.c
+        COMMENT "musl -static timetest")
     list(APPEND _musl_outputs ${CMAKE_BINARY_DIR}/start_musl ${CMAKE_BINARY_DIR}/sig_fpu ${CMAKE_BINARY_DIR}/fpu_avx
-         ${CMAKE_BINARY_DIR}/mmtest ${CMAKE_BINARY_DIR}/fstest ${CMAKE_BINARY_DIR}/pctest ${CMAKE_BINARY_DIR}/bigexec)
+         ${CMAKE_BINARY_DIR}/mmtest ${CMAKE_BINARY_DIR}/fstest ${CMAKE_BINARY_DIR}/pctest ${CMAKE_BINARY_DIR}/bigexec
+         ${CMAKE_BINARY_DIR}/timetest)
 else()
     message(WARNING "musl toolchain not found at ${ARC_MUSL_PREFIX}gcc (tools/dev-setup.sh musl): "
-                    "qemu.musl, qemu.fpu, qemu.mm, qemu.vfs and qemu.pagecache will fail")
+                    "qemu.musl, qemu.fpu, qemu.mm, qemu.vfs, qemu.pagecache and qemu.time will fail")
 endif()
 
 find_program(MUSL_GCC musl-gcc)

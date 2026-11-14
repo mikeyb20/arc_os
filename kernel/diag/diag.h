@@ -46,12 +46,6 @@ void devtest_register(void);
  * flush, a lost interrupt, refused requests); logs "[BLKTEST]" lines. */
 void blktest_run(void);
 
-/* Busy-wait ms milliseconds by the TSC (diagnostics only). */
-void diag_delay_ms(uint32_t ms);
-
-/* TSC cycles in ms milliseconds (3 GHz assumed when the TSC rate is unknown);
- * for loops that wait for a condition at most that long. */
-uint64_t diag_ms_to_cycles(uint32_t ms);
 /* Command-line flag "key=1": any value but 0 counts, a bare key too. */
 int diag_flag_on(const char *key);
 
@@ -59,9 +53,9 @@ int diag_flag_on(const char *key);
 uint32_t diag_line_count(void);
 const char *diag_line_text(uint32_t i);
 
-/* Wait up to `seconds` (TSC time) or until a key is pressed; returns 1 for a
- * key. Halts between interrupts when can_halt (the timer is known to tick),
- * otherwise polls. */
+/* Wait up to `seconds` or until a key is pressed; returns 1 for a key.
+ * Halts between interrupts when can_halt (this CPU has a timer queue, which
+ * wakes it at the end), otherwise polls. */
 int diag_wait_key(uint32_t seconds, int can_halt);
 
 /* ---- QR screens (diag/qr_mode.c, M1-04c) ---- */

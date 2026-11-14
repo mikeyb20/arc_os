@@ -9,8 +9,11 @@
 #include "proc/cpumask.h"
 #include "proc/lockdep.h"
 
-/* Length of a time slice */
-#define SCHED_SLICE_NS 100000000ULL   /* 100 ms, the old 10 PIT ticks */
+/* Length of a time slice. The slice timer runs only while a CPU has more
+ * than one runnable thread (tickless, M1-06). */
+#define SCHED_SLICE_NS 100000000ULL   /* 100 ms */
+/* A slice that ended while the CPU held a spinlock tries again this soon */
+#define SCHED_RETRY_NS 1000000ULL     /* 1 ms */
 
 /* The boot CPU's run queue, with the running boot thread as its current
  * thread. Call once after thread_init(). */
@@ -41,16 +44,26 @@ void sched_yield(void);
  * across the switch (proc/kernel_lock.h). */
 void sched_schedule(void);
 
-/* Slice timer and reschedule IPI: schedule now unless this CPU holds a
- * spinlock (then the next slice end tries again). Interrupt context. */
-void sched_preempt(void);
+/* Reschedule IPI handler: switch if this CPU idles or was asked to move its
+ * thread; otherwise start the slice timer for a thread queued here from
+ * another CPU. Interrupt context. */
+void sched_ipi(void);
+
+/* End of the timer interrupt (time/timer.c): if this CPU's slice ended,
+ * switch threads now, or, when it holds a spinlock, try again in
+ * SCHED_RETRY_NS. Interrupt context. */
+void sched_timer_exit(void);
+
+/* CPU time thread t has used, in ns (CLOCK_THREAD_CPUTIME_ID). Includes the
+ * time since its last switch when t is the calling thread. */
+uint64_t sched_thread_cpu_ns(Thread *t);
 
 /* First thing a thread runs after it is switched to for the first time
  * (thread_trampoline): finishes the switch that started it. */
 void sched_finish_switch(void);
 
-/* BSP: run queues and idle threads for the other online CPUs, the slice
- * timer, then the APs are let into their schedulers. The boot thread stays
+/* BSP: run queues and idle threads for the other online CPUs, then the APs
+ * are let into their schedulers. The boot thread stays
  * pinned to CPU 0. Runs once (later calls return at once): sched_start calls
  * it, and the diagnostic self-test calls it earlier to put threads on every
  * CPU. */
