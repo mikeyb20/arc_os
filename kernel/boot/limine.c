@@ -82,6 +82,15 @@ static void bootinfo_firmware(BootInfo *info) {
     }
 }
 
+/* A Limine UUID (fields in host order) as GPT stores it: the first three
+ * fields little-endian, then the 8 bytes as they are */
+static void uuid_to_gpt(const struct limine_uuid *u, uint8_t out[16]) {
+    for (int i = 0; i < 4; i++) out[i] = (uint8_t)(u->a >> (8 * i));
+    for (int i = 0; i < 2; i++) out[4 + i] = (uint8_t)(u->b >> (8 * i));
+    for (int i = 0; i < 2; i++) out[6 + i] = (uint8_t)(u->c >> (8 * i));
+    for (int i = 0; i < 8; i++) out[8 + i] = u->d[i];
+}
+
 const BootInfo *bootinfo_init(void) {
     memset(&g_boot_info, 0, sizeof(g_boot_info));
 
@@ -173,6 +182,18 @@ const BootInfo *bootinfo_init(void) {
         strncpy(g_boot_info.cmdline, kf->kernel_file->cmdline,
                 sizeof(g_boot_info.cmdline) - 1);
         g_boot_info.cmdline[sizeof(g_boot_info.cmdline) - 1] = '\0';
+    }
+
+    /* The boot disk and partition (GPT GUIDs; zero when not GPT) */
+    g_boot_info.boot_gpt = false;
+    memset(g_boot_info.boot_disk_guid, 0, sizeof(g_boot_info.boot_disk_guid));
+    memset(g_boot_info.boot_part_guid, 0, sizeof(g_boot_info.boot_part_guid));
+    if (kf != NULL && kf->kernel_file != NULL) {
+        uuid_to_gpt(&kf->kernel_file->gpt_disk_uuid, g_boot_info.boot_disk_guid);
+        uuid_to_gpt(&kf->kernel_file->gpt_part_uuid, g_boot_info.boot_part_guid);
+        for (int i = 0; i < 16; i++) {
+            if (g_boot_info.boot_disk_guid[i] != 0) g_boot_info.boot_gpt = true;
+        }
     }
 
     return &g_boot_info;

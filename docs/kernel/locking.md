@@ -18,9 +18,11 @@ of that level (a lock without a subkey counts as 0). Give every lock of a nestab
 | 8 | `LOCK_LEVEL_RENAME` | sleeping | `rename_mutex` (vfs.c): one rename at a time, held from before either path is resolved | M1-11 |
 | 10 | `LOCK_LEVEL_INODE` | sleeping, read-write | `Inode.lock` (`RwSem`): a directory's entries (lookup shared, changes exclusive), a regular file's data and size (read shared, write and truncate exclusive); a pipe's reader and writer mutexes | M1-11 |
 | 11 | `LOCK_LEVEL_INODE_2` | sleeping, read-write | rename's second directory | M1-11 |
-| 12 | `LOCK_LEVEL_INODE_CHILD` | sleeping, read-write | a directory being removed or replaced (rmdir, rename) | M1-11 |
+| 12 | `LOCK_LEVEL_INODE_CHILD` | sleeping, read-write | a directory being removed (rmdir) or moved (rename: its `..` changes) | M1-11, M1-13 |
+| 13 | `LOCK_LEVEL_INODE_CHILD_2` | sleeping, read-write | a directory a rename replaces (under the moved one) | M1-13 |
 | 20 | `LOCK_LEVEL_MM` | sleeping, read-write | `Mm.lock` (`RwSem`), per address space: VMA changes write, page faults and fork read | M1-07 |
 | 30 | `LOCK_LEVEL_PAGE` | sleeping, per page | page lock: the `PG_LOCKED` bit of a `struct page`, waiters on hashed wait queues (`mm/filemap.c`): read in, truncate, mapping a cache page into a page table, write-back | M1-12 |
+| 35 | `LOCK_LEVEL_META_PAGE` | sleeping, per page | page lock of a block-device mapping's page (filesystem metadata: ext2's superblock, group descriptors, inodes, indirect blocks, directories), taken while a file page is locked for its read | M1-13 |
 | 40 | `LOCK_LEVEL_MAPPING` | sleeping | `AddressSpace.map_lock`: the list of VMAs mapping a file (mmap, munmap, fork, truncate's unmap, write-back's write-protect) | M1-12 |
 | 45 | `LOCK_LEVEL_FS_IO` | sleeping | a filesystem's device reads: the FAT32 volume's `io_lock` (cluster buffer, chain cursors) | M1-11 |
 | 50 | `LOCK_LEVEL_PAGE_TABLE` | spinlock | `Mm.pt_lock`, per address space (inside `Mm.lock`); the kernel page tables (`vmm.c`) | M1-05, M1-07 |
@@ -123,7 +125,8 @@ the process list (the process row, M1-16); the tty line discipline (the TTY row)
 ## VFS locks (M1-11)
 
 - Order, outermost first: `File.pos_lock` (7) → `rename_mutex` (8) → directory or file `Inode.lock`
-  (10, then 11 and 12 in rename and rmdir) → `Mm.lock` (20, a page fault in a user copy) → FAT32 `io_lock` (45)
+  (10, then 11, 12 and 13 in rename and rmdir) → `Mm.lock` (20, a page fault in a user copy) → file page lock
+  (30) → metadata page lock (35, ext2) → FAT32 `io_lock` (45)
   → the VFS spinlocks (62–65), which are leaves apart from the slab allocator.
 - User memory may be touched under the sleeping VFS locks (a fault takes only mm locks, which come after them),
   never under the spinlocks. FAT32 copies to the user outside `io_lock` (it reads a cluster into a kernel buffer
@@ -131,11 +134,21 @@ the process list (the process row, M1-16); the tty line discipline (the TTY row)
 - Path lookup holds one directory lock at a time, shared; a component found in the dentry cache takes no
   directory lock at all. Directory changes take the parent exclusive and remove the affected dentry before the
   filesystem changes anything, so lookups never cache a name being removed.
-- Rename takes `rename_mutex` before it resolves either path. Only rename moves a directory, so the resolved
-  paths stay true while it is held, and their text gives the exact ancestry (one mount, no directory hard
-  links): the ancestor parent is locked first (10, then 11), then a replaced directory (12), and a directory
-  can't be moved into itself. Resolving first and locking after would let another rename change the tree in
-  between (a detached cycle, or an ABBA with rmdir that the level checks can't see).
+- Rename takes `rename_mutex` before it resolves either path. Only rename moves a directory, so the tree stays
+  as resolved while it is held. Since M1-13 the ancestry comes from the tree, not path text: each parent walks
+  `..` up (each filesystem's own `..` lookup, no directory lock held) to see whether the other is above it
+  (one mount, no directory hard links). The ancestor parent is locked first (10, then 11), then the moved
+  directory (12) and a replaced directory (13). A directory can't move into its own subtree (`-EINVAL`), and a
+  directory that holds the source can't be replaced (`-ENOTEMPTY`). Resolving first and locking after would let
+  another rename change the tree in between (a detached cycle, or an ABBA with rmdir that the level checks
+  can't see).
+- The path walk (M1-13) follows symlinks (at most 40 per walk) and `..` itself: one directory lock at a time,
+  shared, as before; a symlink's target is read with no lock held. A process's working directory is an inode
+  reference touched only by its own thread (under the process row of the kernel lock until M1-16, which adds a
+  lock for `CLONE_FS`).
+- ext2 (M1-13) has no volume lock: its metadata lives in a block-device page cache, and a file page's read
+  (file page locked, 30) locks the metadata pages it needs (35) one at a time. Block-device mappings are never
+  mapped into a process, so no mm lock is ever taken under a metadata page.
 - `iput` that frees an inode runs its filesystem's `evict_inode` with no lock held; `fput` never runs under a
   spinlock. Pipes: `rd_mutex` and `wr_mutex` (level 10) serialise readers and writers and are held across user
   copies but dropped while waiting; `pipe->lock` (75) guards head, tail and the counts and is the wait-queue
