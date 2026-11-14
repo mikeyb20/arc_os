@@ -154,6 +154,7 @@ add_library(arc_vfs_host STATIC
     ${CMAKE_SOURCE_DIR}/kernel/fs/devfs.c
     ${CMAKE_SOURCE_DIR}/kernel/fs/procfs.c
     ${CMAKE_SOURCE_DIR}/kernel/fs/fat32.c
+    ${CMAKE_SOURCE_DIR}/kernel/fs/ext2.c
     ${CMAKE_SOURCE_DIR}/kernel/proc/fd.c
     ${CMAKE_SOURCE_DIR}/kernel/lib/rbtree.c
     ${CMAKE_SOURCE_DIR}/kernel/mm/radix.c
