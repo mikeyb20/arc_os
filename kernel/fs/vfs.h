@@ -388,8 +388,7 @@ void loc_put(PathLoc *loc);
  * reference), name its last component (".", ".." included: callers refuse
  * them as Linux does), *slash 1 when the path ends in '/'. -EINVAL for "/"
  * itself, -ENOENT, -ENOTDIR, -ENAMETOOLONG, -ELOOP. */
-int vfs_resolve_parent_at(const PathLoc *base, const char *path, PathLoc *dir, char name[VFS_NAME_MAX + 1],
-                          int *slash);
+int vfs_resolve_parent_at(const PathLoc *base, const char *path, PathLoc *dir, char name[VFS_NAME_MAX + 1], int *slash);
 
 /* The absolute path of a directory (getcwd): from loc up to "/" through
  * "..", each name found by a scan of its parent; a mount root takes its

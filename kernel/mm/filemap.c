@@ -527,7 +527,7 @@ static struct page *write_begin(AddressSpace *as, uint64_t index, size_t in_page
                 if (*err == -EEXIST) continue;
                 return NULL;
             }
-            lockdep_sleep_acquire(page_level(pg), "page");   /* this thread holds the new page's lock */
+            lockdep_sleep_acquire(page_level(pg), "page"); /* this thread holds the new page's lock */
             if (!whole && ((as->flags & AS_MEMBACKED) || index >= size_pages(size))) {
                 memset(page_to_virt(pg), 0, PAGE_SIZE);   /* a hole, or past the end: zeros */
                 page_set(pg, PG_UPTODATE);

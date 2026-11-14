@@ -138,8 +138,8 @@ typedef struct Process {
     Thread         *main_thread;
     struct Mm *mm;
     FdTable *fd_table;
-    struct Inode   *cwd;
-    struct Mount   *cwd_mnt;
+    struct Inode *cwd;
+    struct Mount *cwd_mnt;
     uint32_t        uid;
     uint32_t        gid;
     uint32_t        euid;

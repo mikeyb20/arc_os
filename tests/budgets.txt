@@ -36,8 +36,11 @@
 # readahead, read/write through the cache, write-back, truncate, block-device
 # mapping), file mmap (fault, copy on write, msync, madvise), exec from any ELF
 # source, and their backtrace names.
+# 515584 -> 532883 after M1-13 before the boot mount (+17299): the path walk on the
+# tree (symlinks, "..", cwd by inode, readlink), ext2 read-only, and their
+# backtrace names. The boot mount (+M1-10) is measured when it lands.
 # Limit = measured + 5%)
-kernel_image_bytes     541000      max  bytes  M0-08  build
+kernel_image_bytes     560000      max  bytes  M0-08  build
 
 # Free memory when init starts, booted with -m 4G (qemu.smoke; measured 4251873280)
 boot_free_bytes        3830000000  min  bytes  M0-08  smoke

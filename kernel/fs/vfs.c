@@ -609,8 +609,7 @@ static int open_create_in(Inode *dir, const char *name, int slash, uint32_t flag
     return err;
 }
 
-int vfs_open_locate(const PathLoc *base, const char *path, uint32_t flags, uint32_t mode, PathLoc *out,
-                    int *created) {
+int vfs_open_locate(const PathLoc *base, const char *path, uint32_t flags, uint32_t mode, PathLoc *out, int *created) {
     *created = 0;
     if (!(flags & O_CREAT)) {
         int err = vfs_resolve_at(base, path, (flags & O_NOFOLLOW) ? 0 : WALK_FOLLOW, out);

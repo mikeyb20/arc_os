@@ -495,7 +495,8 @@ static uint64_t root_dir_block_offset(const Disk *d, uint32_t *bs_out) {
     uint32_t itable = *(const uint32_t *)(d->data + (uint64_t)(first + 1) * bs + 8);
     const uint8_t *ino2 = d->data + (uint64_t)itable * bs + isz;   /* inode 2: index 1 */
     *bs_out = bs;
-    return (uint64_t)*(const uint32_t *)(ino2 + 40) * bs;   /* i_block[0] */
+    uint32_t block0 = *(const uint32_t *)(ino2 + 40);   /* i_block[0] */
+    return (uint64_t)block0 * bs;
 }
 
 TEST(rejects_bad_superblocks) {

@@ -33,8 +33,7 @@ int vfs_create_locked(Inode *dir, const char *name, uint32_t mode, Inode **out);
 /* The inode open() works on: path resolved from base (symlinks followed
  * unless O_NOFOLLOW, which makes a final one -ELOOP), or with O_CREAT
  * created when missing (*created = 1) or refused when present with O_EXCL. */
-int vfs_open_locate(const PathLoc *base, const char *path, uint32_t flags, uint32_t mode, PathLoc *out,
-                    int *created);
+int vfs_open_locate(const PathLoc *base, const char *path, uint32_t flags, uint32_t mode, PathLoc *out, int *created);
 
 /* Entries cached now (tests, /proc/meminfo-style counters). */
 uint32_t dcache_count(void);

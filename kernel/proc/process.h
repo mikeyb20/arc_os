@@ -51,8 +51,8 @@ typedef struct Process {
     Thread         *main_thread;
     struct Mm *mm;             /* user address space (mm/mm.h); NULL: kernel only, or exited */
     FdTable *fd_table;       /* Per-process file descriptor table */
-    struct Inode   *cwd;            /* Working directory (a reference; NULL: "/"); fs/vfs.c vfs_cwd_* */
-    struct Mount   *cwd_mnt;        /* the mount cwd is in */
+    struct Inode *cwd;            /* Working directory (a reference; NULL: "/"); fs/vfs.c vfs_cwd_* */
+    struct Mount *cwd_mnt;        /* the mount cwd is in */
     uid_t           uid;            /* Real user ID */
     gid_t           gid;            /* Real group ID */
     uid_t           euid;           /* Effective user ID */

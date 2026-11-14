@@ -388,7 +388,7 @@ static void test_review(const char *self) {
     CHECK(chdir("../../..") == 0 && getcwd(cwd, sizeof(cwd)) != NULL && strcmp(cwd, "/") == 0);
     CHECK(chdir("/tmp/fst_r3") == 0 && rmdir("/tmp/fst_r3") == 0);
     errno = 0;
-    CHECK(getcwd(cwd, sizeof(cwd)) == NULL && errno == ENOENT);   /* Linux: the cwd was removed */
+    CHECK(getcwd(cwd, sizeof(cwd)) == NULL && errno == ENOENT); /* Linux: the cwd was removed */
     errno = 0;
     CHECK(open("newfile", O_WRONLY | O_CREAT, 0644) == -1 && errno == ENOENT);
     CHECK(chdir("/") == 0 && rmdir("/tmp/fst_r1") == 0);
