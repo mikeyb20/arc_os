@@ -56,7 +56,7 @@
 #define PG_ACTIVE     (1u << 24)   /* on the active list (else the inactive one), while PG_LRU */
 #define PG_REFERENCED (1u << 25)   /* used again since the last scan (read hits; PTE accessed bits are separate) */
 #define PG_LOCK_META  (1u << 26)   /* page lock held at the block-device page level (filemap.c's lock-order record) */
-/* Bits 26-31 are free for later blocks.
+/* Bits 27-31 are free for later blocks.
  * free_pages() clears every flag of the head page; owners of a multi-page
  * block clear what they set on its other pages before freeing it. */
 

@@ -19,6 +19,7 @@
 
 int blk_mem_fail;
 int blk_mem_requests;
+int blk_mem_flushes;
 int blk_mem_defer;
 static BlkRequest *deferred;   /* LIFO; order does not matter here */
 static BlockDevice **mem_devs;   /* the registry stand-in (blk_mem_devices) */
@@ -35,7 +36,10 @@ BlockDevice *blk_get(unsigned index) {
 
 /* bytes at 512-byte sector of dev, to or from buf. 0 or -errno. */
 static int mem_io(BlockDevice *dev, int op, uint64_t sector, uint8_t *buf, size_t bytes) {
-    if (op == BLK_OP_FLUSH) return 0;
+    if (op == BLK_OP_FLUSH) {
+        blk_mem_flushes++;
+        return 0;
+    }
     if (bytes == 0 || bytes % BLK_SECTOR_SIZE != 0 || sector > dev->nr_sectors ||
         bytes / BLK_SECTOR_SIZE > dev->nr_sectors - sector) {
         return -EINVAL;

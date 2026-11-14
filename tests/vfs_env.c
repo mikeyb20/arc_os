@@ -190,9 +190,11 @@ struct page *alloc_pages(unsigned order, uint32_t flags) {
     return pg;
 }
 
+int vfs_env_arena_full;
+
 struct page *pmm_alloc_block(unsigned order, uint32_t flags) {
     arena_init();
-    if (order != 0 || should_fail()) return NULL;
+    if (order != 0 || should_fail() || vfs_env_arena_full) return NULL;
     for (uint32_t i = 0; i < ARENA_PAGES; i++) {
         if (page_used[i]) continue;
         page_used[i] = 1;
@@ -220,6 +222,7 @@ void free_pages(struct page *page, unsigned order) {
     page->flags = 0;
     page_used[pfn] = 0;
     live_pages--;
+    vfs_env_arena_full = 0;   /* a page came back */
 }
 
 uint64_t pmm_get_total_pages(void) {
@@ -395,6 +398,13 @@ uint64_t mm_zap_range(Mm *mm, uint64_t start, uint64_t end, int flush) {
     return n;
 }
 
+/* As mm.c's: only an entry that maps phys */
+int mm_zap_page_if(Mm *mm, uint64_t addr, uint64_t phys) {
+    int i = env_pte_find(mm->pgd, addr);
+    if (i < 0 || env_ptes[i].phys != phys) return 0;
+    return mm_zap_range(mm, addr, addr + PAGE_SIZE, MM_ZAP_FLUSH) != 0;
+}
+
 /* --- Sleeping locks: single-threaded, so they only check pairing --- */
 static void lock_fail(const char *what) {
     fprintf(stderr, "vfs_env: %s\n", what);
@@ -562,6 +572,11 @@ Thread *thread_create(thread_entry_t entry, void *arg) {
 
 void sched_add_thread(Thread *t) {
     (void)t;
+}
+
+/* No kernel thread exists: the caller is never kswapd or the flusher */
+Thread *thread_current(void) {
+    return NULL;
 }
 
 int sched_cpu_stats(uint32_t cpu, SchedCpuStats *out) {

@@ -71,8 +71,9 @@ reach the disk without periodic polling (ADR-0004, ADR-0016, ADR-0017).
   `timer_arm_locked` becomes `if (!timer_pending(&wb_timer)) { timer_arm(&wb_timer, clock_mono_ns() + WB_DELAY_MS
   * 1000000ull); count }`, `timer_cancel_locked` becomes `timer_cancel(&wb_timer)`, `wb_timer_armed` reads
   `timer_pending`; `wb_timer_fn` is today's `wb_tick` body without the deadline test (it runs with no lock held,
-  so it may take `wb_lock`; `wb_lock` is the timer's one owner, as M1-06's rules ask). Delete `wb_tick`, its
-  declaration and its call. qemu.writeback checks the result (timer armed once, written about 5 s later, then
+  so it may take `wb_lock`; `wb_lock` is the timer's one owner, as M1-06's rules ask). The throttling wait's
+  deadline (`wake_at_ms`) becomes a second Timer the same way: armed in `wb_wait_progress` for the earliest
+  waiter, its callback wakes `progress_wq`. Delete `wb_tick`, its declaration and its call. qemu.writeback checks the result (timer armed once, written about 5 s later, then
   disarmed; idle: no arms). The idle budget `idle_timer_irqs_5s` then covers write-back too.
 - **Found and fixed:** a page lock taken on a block-device page and released after the page left its mapping
   (unmount's `drop_pages_from`, and now reclaim) ended the checker's record at the wrong level, so the next
@@ -92,7 +93,38 @@ reach the disk without periodic polling (ADR-0004, ADR-0016, ADR-0017).
   kswapd, sync, fsync and evict then write them with nothing else to add. `writepage` is called with the page
   locked (sometimes trylocked by reclaim) and no inode lock; block allocation needs its own lock. Unmount must
   call `filemap_bdev_release` (it writes back). Direct reclaim takes the mapping lock (40) inside whatever the
-  allocating thread holds; the checker allows 4 sleeping locks per thread, and a read on ext2 can already reach 4
-  (file position, inode, metadata page, mapping lock), so a write path that adds one must count. ETXTBSY
-  (writing a running program's file) still has no owner.
+  allocating thread holds; the checker allows 6 sleeping locks per thread (`LOCKDEP_MAX_SLEEP_HELD`), and a fault
+  inside a read on ext2 can already reach 6 by the review's count (file position, inode, mm, page, metadata page,
+  mapping lock), so a write path that adds one must count. ETXTBSY (writing a running program's file) still has
+  no owner. Also from the D3 review (below): ext2's `fsync` must end with `BLK_OP_FLUSH` on its device and
+  report the mapping's kept error; its `writepage` must not wait for the inode lock (a writer over the dirty
+  limit holds it while it waits for write-back).
+- **D3 review fixes (#47).**
+  - *Private copies survive reclaim (was HIGH).* `filemap_unmap_page` zapped the entry at the page's index in
+    every VMA, and in a written `MAP_PRIVATE` VMA that entry is the process's own copy. Now it takes an entry out
+    only if it maps the page (`mm_zap_page_if`: checked and removed under one `pt_lock` hold, so `cow_install`
+    swapping the entry cannot slip between). Truncate still takes private copies past the end (`filemap_unmap_from`,
+    as Linux). Host `private_copies_survive_reclaim` and `zap_page_if_checks_the_frame`; qemu.reclaim writes a
+    private copy of the big file's first page and checks it after 2 GiB of pressure.
+  - *Dirty memory no longer means OOM.* Direct reclaim that frees nothing but met dirty pages waits for
+    write-back (`wb_wait_progress`: the flusher starts at once; the wait ends when a page write or a pass
+    finishes, or after `WB_THROTTLE_MS` = 100 ms) and retries; after 3 waits without progress it gives up as
+    before. Writers (`filemap_write`) above `WB_DIRTY_BACKGROUND_PCT` (10%) of RAM in dirty pages for disks
+    start the flusher; above `WB_DIRTY_LIMIT_PCT` (20%) they wait the same way (Linux's dirty ratios, of total RAM
+    rather than Linux's "available"). `FilemapStats.dirty_wb` counts those pages (ramfs excluded). Not
+    throttled: stores through shared mappings (only direct reclaim waits for them). kswapd never reclaims
+    directly (a `writepage` reading metadata would recurse; Linux's `PF_MEMALLOC`). The wait's time limit is a
+    second deadline (`wake_at_ms`) the interim tick checks: the M1-06 swap turns it into a second `Timer` too.
+  - *Durability.* `sync(2)` flushes every writable disk with a volatile write cache (`BLK_CACHE`, `BLK_OP_FLUSH`)
+    after its pass, as Linux's sync does (a flush changes no data, so foreign disks are safe under ADR-0018);
+    releasing a block-device mapping (unmount) flushes its disk; `filemap_fsync` flushes a block-device
+    mapping's disk. File systems flush their own device in `fsync` (M1-15).
+  - *Failing writes stop.* A failed page stays dirty and is retried; once a mapping's writes have failed for
+    `WB_GIVE_UP_MS` (30 s) with none getting through, failed pages are dropped clean, one `[WB]` log line says so,
+    the error is kept in `as->wb_err` for the next `fsync`, and the flusher stops waking for them. A write that
+    works resets the clock. Linux drops a failed page at once; 30 s rides out a short glitch.
+  - *kswapd's gate.* A page losing its last mapping bumps `lru_gen` while kswapd sleeps after a failed run
+    (`reclaim_note_freeable`), so it tries again.
+  - /proc/vmstat: `wb_dirty_for_disks`, `wb_throttled`, `wb_dropped`, `wb_device_flushes`. qemu.writeback adds a
+    waiter that starts the flusher before its timer, a wait that ends on time, and the flushes (15 checks).
 

@@ -45,6 +45,7 @@ static FilemapStats stats;
 void filemap_stats(FilemapStats *out) {
     out->file_pages = __atomic_load_n(&stats.file_pages, __ATOMIC_RELAXED);
     out->dirty = __atomic_load_n(&stats.dirty, __ATOMIC_RELAXED);
+    out->dirty_wb = __atomic_load_n(&stats.dirty_wb, __ATOMIC_RELAXED);
     out->mapped = __atomic_load_n(&stats.mapped, __ATOMIC_RELAXED);
     out->pgpgin = __atomic_load_n(&stats.pgpgin, __ATOMIC_RELAXED);
     out->ra_pages = __atomic_load_n(&stats.ra_pages, __ATOMIC_RELAXED);
@@ -74,6 +75,8 @@ static void as_init(AddressSpace *as, const AddressSpaceOps *ops, uint32_t flags
     as->vmas = NULL;
     as->wb_next = as->wb_prev = NULL;
     as->wb_state = 0;
+    as->wb_fail_since = 0;
+    as->wb_err = 0;
 }
 
 int filemap_inode_init(Inode *inode, const AddressSpaceOps *ops, uint32_t flags) {
@@ -266,6 +269,19 @@ static struct page *add_new_page(AddressSpace *as, uint64_t index, int *err) {
     return pg;
 }
 
+/* The mapping's pages go to a disk (a writepage): its dirty pages count
+ * toward the dirty limit and wait for the flusher */
+static int writes_back(const AddressSpace *as) {
+    return as != NULL && as->ops != NULL && as->ops->writepage != NULL;
+}
+
+/* Clear PG_DIRTY of a locked page of as, keeping the counts */
+static void clear_dirty(const AddressSpace *as, struct page *pg) {
+    if (!page_test_and_clear(pg, PG_DIRTY)) return;
+    STAT_SUB(dirty, 1);
+    if (writes_back(as)) STAT_SUB(dirty_wb, 1);
+}
+
 /* Take a locked page out of its tree; drops the tree's reference (the
  * caller still holds its own). */
 static void remove_page(AddressSpace *as, struct page *pg) {
@@ -275,7 +291,7 @@ static void remove_page(AddressSpace *as, struct page *pg) {
     spin_unlock(&as->tree_lock);
     if (was != pg) return;   /* not there: never happens while the caller holds the lock and mapping == as */
     lru_del_page(pg);
-    if (page_test_and_clear(pg, PG_DIRTY)) STAT_SUB(dirty, 1);
+    clear_dirty(as, pg);
     pg->mapping = NULL;
     STAT_SUB(file_pages, 1);
     blocks_add(as, -1);
@@ -293,8 +309,10 @@ void filemap_set_dirty(struct page *pg) {
     if (page_test_and_set(pg, PG_DIRTY)) return;
     STAT_ADD(dirty, 1);
     /* Locked with mapping checked by every caller: as is alive */
-    const AddressSpace *as = pg->mapping;
-    if (as != NULL && as->ops != NULL && as->ops->writepage != NULL) wb_mapping_dirtied(pg->mapping);
+    if (writes_back(pg->mapping)) {
+        STAT_ADD(dirty_wb, 1);
+        wb_mapping_dirtied(pg->mapping);
+    }
 }
 
 void filemap_page_mapped(struct page *pg) {
@@ -302,7 +320,10 @@ void filemap_page_mapped(struct page *pg) {
 }
 
 void filemap_page_unmapped(struct page *pg) {
-    if (__atomic_sub_fetch(&pg->mapcount, 1, __ATOMIC_RELAXED) == 0) STAT_SUB(mapped, 1);
+    if (__atomic_sub_fetch(&pg->mapcount, 1, __ATOMIC_RELAXED) == 0) {
+        STAT_SUB(mapped, 1);
+        reclaim_note_freeable();   /* kswapd may free it now */
+    }
     page_put(pg);
 }
 
@@ -658,6 +679,7 @@ int64_t filemap_write(File *file, const IoBuf *buf, loff_t *pos) {
             break;
         }
     }
+    if (done > 0 && writes_back(as)) wb_balance_dirty(); /* over the dirty limit: wait for write-back */
     if (done == 0 && err != 0) return err;
     *pos += (loff_t)done;
     return (int64_t)done;
@@ -726,12 +748,12 @@ void filemap_inode_evict(Inode *inode) {
 int filemap_writepage_locked(AddressSpace *as, struct page *pg) {
     /* Write-protect first, so a store after the copy faults and dirties it again */
     if (as->vmas != NULL) filemap_mkclean(as, pg);
-    if (page_test_and_clear(pg, PG_DIRTY)) STAT_SUB(dirty, 1);
-    if (as->ops == NULL || as->ops->writepage == NULL) return 0; /* the pages are the storage */
+    clear_dirty(as, pg);
+    if (!writes_back(as)) return 0; /* the pages are the storage */
     wb_page_write_begin();
     int e = as->ops->writepage(as, pg);
     wb_page_write_end(e);
-    if (e != 0) filemap_set_dirty(pg);
+    if (wb_write_result(as, e)) filemap_set_dirty(pg); /* tried again later, unless as keeps failing */
     return e;
 }
 
@@ -767,7 +789,17 @@ int filemap_write_range(AddressSpace *as, uint64_t first, uint64_t last) {
 
 int filemap_fsync(File *file) {
     AddressSpace *as = filemap_of(file->inode);
-    return as != NULL ? filemap_write_range(as, 0, UINT64_MAX) : 0;
+    if (as == NULL) return 0;
+    int e = filemap_write_range(as, 0, UINT64_MAX);
+    int f = filemap_flush_device(as);
+    int kept = __atomic_exchange_n(&as->wb_err, 0, __ATOMIC_RELAXED); /* a page given up since the last fsync */
+    return e != 0 ? e : f != 0 ? f : kept;
+}
+
+int filemap_flush_device(AddressSpace *as) {
+    if (as->host != NULL || as->bdev == NULL) return 0; /* a file's own fsync flushes its disk (M1-15) */
+    wb_device_flushed();
+    return blk_rw_sync(as->bdev, BLK_OP_FLUSH, 0, NULL, 0) != 0 ? -EIO : 0;
 }
 
 /* --- Taking unused pages out (reclaim, drop_caches) --- */
@@ -880,6 +912,7 @@ void filemap_bdev_init(AddressSpace *as, struct BlockDevice *dev, loff_t size) {
 
 void filemap_bdev_release(AddressSpace *as) {
     int e = filemap_write_range(as, 0, UINT64_MAX); /* unmount: the metadata reaches the disk */
+    if (e == 0) e = filemap_flush_device(as); /* and the medium, past the disk's write cache */
     if (e != 0) kprintf("[FILEMAP] %s: write-back at release failed (%d)\n", as->bdev->name, e);
     drop_pages_from(as, 0);
     wb_mapping_forget(as);

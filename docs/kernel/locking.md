@@ -37,7 +37,7 @@ of that level (a lock without a subkey counts as 0). Give every lock of a nestab
 | 70 | `LOCK_LEVEL_SIGNAL` | spinlock | thread-group and signal lock | M1-16 |
 | 75 | `LOCK_LEVEL_OBJECT` | spinlock | one object's state, the lock handed to `wq_sleep`: pipe, socket, tty, wait4, mutex and semaphore guards | M1-05 |
 | 76 | `LOCK_LEVEL_OBJECT_TABLE` | spinlock | a table looked up under an object lock: the socket table | M1-05 |
-| 78 | `LOCK_LEVEL_WB_LIST` | spinlock, IRQ-safe | `wb_lock` (`mm/writeback.c`): the list of mappings with dirty pages, their `WB_*` flags, the flusher's timer and wake-up; taken when a page becomes dirty and in the timer interrupt, so it sits above every lock a thread holds with interrupts on (75–76) | M1-14 |
+| 78 | `LOCK_LEVEL_WB_LIST` | spinlock, IRQ-safe | `wb_lock` (`mm/writeback.c`): the list of mappings with dirty pages, their `WB_*` flags, the flusher's timer and wake-up, the write-back progress count and the throttled waiters' deadline; taken when a page becomes dirty and in the timer interrupt, so it sits above every lock a thread holds with interrupts on (75–76) | M1-14 |
 | 80 | `LOCK_LEVEL_WAITQUEUE` | spinlock | wait-queue locks | M1-05 |
 | 85 | `LOCK_LEVEL_BLK_QUEUE` | spinlock, IRQ-safe | one disk's request queue (`BlkQueue.lock`): pending and flight lists, tags, every `BlockOps` call; taken in the disk's interrupt and by the timeout tick | M1-10 |
 | 90 | `LOCK_LEVEL_RUNQUEUE` | spinlock, interrupts off | per-CPU run queues; two at once only in CPU-index order (subkey = index + 1) | M1-05 |

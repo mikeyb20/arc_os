@@ -343,8 +343,10 @@ set_tests_properties(qemu.reclaim PROPERTIES FIXTURES_REQUIRED big_disk RESOURCE
 # Write-back (M1-14): the kernel's write-back test (kernel/diag/wbtest.c) on
 # partition "wbtest" of a fresh writable disk, through a block-device mapping:
 # with nothing dirty no flusher timer is armed; dirtied pages wait, the
-# flusher writes them about 5 s later in one pass and its timer is gone; sync
-# and releasing the mapping write too. qemu.writeback.verify then boots a new
+# flusher writes them about 5 s later in one pass and its timer is gone; a
+# thread waiting for write-back starts the flusher at once, and with nothing to
+# write its wait ends on time; sync and releasing the mapping write and flush
+# the disk's write cache. qemu.writeback.verify then boots a new
 # QEMU on the same image and reads the partition straight from the disk.
 set(_wb_disk ${CMAKE_BINARY_DIR}/wb-disk.img)
 add_test(NAME qemu.writeback.disk COMMAND bash ${CMAKE_SOURCE_DIR}/tools/make-gpt-test-disk.sh writeback ${_wb_disk})
@@ -360,9 +362,12 @@ add_test(NAME qemu.writeback COMMAND ${_qemu_test} --suite writeback ${_wb_qemu}
     --expect "\\[WBTEST\\] still dirty after 2 s \\(the flusher waits 5 s\\) ok"
     --expect "\\[WBTEST\\] flusher wrote the 64 pages in one pass ok"
     --expect "\\[WBTEST\\] after the flush: flusher timer not armed ok"
-    --expect "\\[WBTEST\\] sync wrote 32 pages, timer disarmed ok"
-    --expect "\\[WBTEST\\] release wrote 32 pages, timer disarmed ok"
-    --expect "ARC_TEST DONE pass=11 fail=0")
+    --expect "\\[WBTEST\\] a waiter starts the flusher at once \\(before its 5 s timer\\) ok"
+    --expect "\\[WBTEST\\] the flusher wrote the 16 pages, timer disarmed ok"
+    --expect "\\[WBTEST\\] with nothing to write, a wait ends after its time \\(300 ms\\) ok"
+    --expect "\\[WBTEST\\] sync wrote 32 pages and flushed the disk cache, timer disarmed ok"
+    --expect "\\[WBTEST\\] release wrote 32 pages and flushed the disk cache, timer disarmed ok"
+    --expect "ARC_TEST DONE pass=15 fail=0")
 set_tests_properties(qemu.writeback PROPERTIES FIXTURES_REQUIRED wb_disk FIXTURES_SETUP wb_written RESOURCE_LOCK wb_disk)
 add_test(NAME qemu.writeback.verify COMMAND ${_qemu_test} --suite writeback --name writeback-verify ${_wb_qemu}
     --cmdline arc.wbtest=verify --timeout 60

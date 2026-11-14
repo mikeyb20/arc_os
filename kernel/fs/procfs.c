@@ -173,6 +173,10 @@ static int gen_vmstat(char *buf, int bufsz, void *ctx) {
         {"wb_flushes ", wb.flushes},
         {"wb_written ", wb.written},
         {"wb_listed ", wb.listed},
+        {"wb_dirty_for_disks ", fs.dirty_wb},
+        {"wb_throttled ", wb.throttled},
+        {"wb_dropped ", wb.dropped},
+        {"wb_device_flushes ", wb.device_flushes},
     };
     int pos = 0;
     for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {

@@ -23,7 +23,8 @@
 
 /* --- A file over memory: its "disk" is mf_disk --- */
 
-#define MF_PAGES 64
+#define MF_PAGES 256   /* more than the host arena's dirty limit (204 of 1024 pages) */
+#define MF_LIST  64    /* pages the aging tests put on the lists (two batches) */
 static uint8_t mf_disk[MF_PAGES * PAGE_SIZE];
 static int mf_reads, mf_writes, mf_write_fail;
 
@@ -326,7 +327,7 @@ TEST(mapped_pages_need_two_idle_looks) {
     Map m;
     mf_map(&m);
     ASSERT_EQ(mf_fault(&m, 0, 0), 0);   /* page 0: mapped and used, the oldest */
-    for (uint64_t i = 1; i < MF_PAGES; i++) ASSERT_EQ(mf_get(as, i), 0);
+    for (uint64_t i = 1; i < MF_LIST; i++) ASSERT_EQ(mf_get(as, i), 0);
     struct page *p0 = mf_cached(as, 0);
     ASSERT_EQ(filemap_page_young(as, p0), 1);   /* the fault's access */
     ASSERT_EQ(filemap_page_young(as, p0), 0);   /* cleared by the look */
@@ -363,7 +364,7 @@ TEST(mapped_pages_in_use_activate) {
     ASSERT_EQ(mf_fault(&a, 0, 0), 0);
     ASSERT_EQ(mf_fault(&a, 1, 0), 0);
     ASSERT_EQ(mf_fault(&b, 1, 0), 0);   /* page 1: two mappings use it */
-    for (uint64_t i = 2; i < MF_PAGES; i++) ASSERT_EQ(mf_get(as, i), 0);
+    for (uint64_t i = 2; i < MF_LIST; i++) ASSERT_EQ(mf_get(as, i), 0);
     ReclaimStats r0, r;
     reclaim_stats(&r0);
     ASSERT_EQ(reclaim_pages(32, 0), 62);
@@ -376,7 +377,7 @@ TEST(mapped_pages_in_use_activate) {
     ASSERT_EQ(r.activate - r0.activate, 1);
     /* Page 0 is now the oldest inactive page, behind 62 newer ones; used
      * since its first look, it goes active, the others go */
-    for (uint64_t i = 2; i < MF_PAGES; i++) ASSERT_EQ(mf_get(as, i), 0);
+    for (uint64_t i = 2; i < MF_LIST; i++) ASSERT_EQ(mf_get(as, i), 0);
     ASSERT_EQ(reclaim_pages(32, 0), 62);
     ASSERT_TRUE(mf_cached(as, 0) == p0 && page_test(p0, PG_ACTIVE) && mf_mapped(&a, 0));
     reclaim_stats(&r);
@@ -617,6 +618,184 @@ TEST(evicting_a_linked_inode_writes_it) {
     return 0;
 }
 
+/* --- Waiting for write-back (review of #47) --- */
+
+/* While the allocator waits, the flusher writes everything listed */
+static void sleep_flusher(void) {
+    wb_sync_all();
+}
+
+/* While the allocator waits, nothing gets written: its time runs out */
+static void sleep_tick(void) {
+    vfs_env_uptime_ms += WB_THROTTLE_MS;
+    wb_tick();
+}
+
+TEST(dirty_limits_follow_ram) {
+    uint64_t bg, limit;
+    wb_dirty_limits_for(1024, &bg, &limit);
+    ASSERT_EQ(bg, 102);
+    ASSERT_EQ(limit, 204);
+    wb_dirty_limits_for(1ull << 20, &bg, &limit);   /* 4 GiB */
+    ASSERT_EQ(bg, 104857);
+    ASSERT_EQ(limit, 209715);
+    return 0;
+}
+
+TEST(direct_reclaim_waits_for_write_back) {
+    AddressSpace *as = mf_setup();
+    ASSERT_TRUE(as != NULL);
+    for (uint64_t i = 0; i < 8; i++) ASSERT_EQ(mf_dirty(as, i, (uint8_t)(0x30 + i)), 0);
+    reclaim_init();
+    PmmWatermarks wm = {0, 0, 0};
+    pmm_set_watermarks(&wm);
+    ReclaimStats r0, r;
+    WbStats w0, w;
+    reclaim_stats(&r0);
+    wb_stats(&w0);
+    int sleeps0 = vfs_env_sleeps;
+    vfs_env_sleep_hook = sleep_flusher;
+    vfs_env_arena_full = 1;   /* only dirty cache pages are left */
+    struct page *pg = alloc_pages(0, GFP_RECLAIM);
+    vfs_env_arena_full = 0;
+    vfs_env_sleep_hook = NULL;
+    reclaim_stats(&r);
+    wb_stats(&w);
+    ASSERT_TRUE(pg != NULL);   /* written meanwhile, then reclaimed: no OOM */
+    ASSERT_EQ(vfs_env_sleeps - sleeps0, 1);
+    ASSERT_EQ(w.throttled - w0.throttled, 1);
+    ASSERT_EQ(mf_writes, 8);
+    ASSERT_TRUE(r.steal_direct > r0.steal_direct);
+    free_pages(pg, 0);
+    pmm_set_pressure_hook(NULL);
+    return 0;
+}
+
+TEST(direct_reclaim_gives_up_when_write_back_is_stuck) {
+    AddressSpace *as = mf_setup();
+    ASSERT_TRUE(as != NULL);
+    for (uint64_t i = 0; i < 4; i++) ASSERT_EQ(mf_dirty(as, i, 0x41), 0);
+    reclaim_init();
+    PmmWatermarks wm = {0, 0, 0};
+    pmm_set_watermarks(&wm);
+    WbStats w0, w;
+    wb_stats(&w0);
+    int sleeps0 = vfs_env_sleeps;
+    uint64_t t0 = vfs_env_uptime_ms;
+    vfs_env_sleep_hook = sleep_tick;
+    vfs_env_arena_full = 1;
+    struct page *pg = alloc_pages(0, GFP_RECLAIM);
+    vfs_env_arena_full = 0;
+    vfs_env_sleep_hook = NULL;
+    wb_stats(&w);
+    ASSERT_TRUE(pg == NULL);   /* bounded: the caller copes (a fault OOM-kills) */
+    ASSERT_EQ(vfs_env_sleeps - sleeps0, WB_THROTTLE_STALLS);
+    ASSERT_EQ(w.throttled - w0.throttled, WB_THROTTLE_STALLS);
+    ASSERT_EQ(vfs_env_uptime_ms - t0, (uint64_t)WB_THROTTLE_STALLS * WB_THROTTLE_MS);
+    ASSERT_EQ(mf_writes, 0);
+    pmm_set_pressure_hook(NULL);
+    wb_sync_all();
+    return 0;
+}
+
+/* One whole page through write() */
+static int64_t mf_write_page(uint64_t i, uint8_t byte) {
+    static char buf[PAGE_SIZE];
+    memset(buf, byte, sizeof(buf));
+    IoBuf b = iob_kernel(buf, sizeof(buf));
+    loff_t pos = (loff_t)(i * PAGE_SIZE);
+    return filemap_write(&mf_file, &b, &pos);
+}
+
+TEST(writers_wait_above_the_dirty_limit) {
+    AddressSpace *as = mf_setup();
+    ASSERT_TRUE(as != NULL);
+    uint64_t bg, limit;
+    wb_dirty_limits_for(pmm_get_total_pages(), &bg, &limit);
+    ASSERT_TRUE(limit + 1 <= MF_PAGES);
+    FilemapStats f0, f;
+    filemap_stats(&f0);
+    WbStats w0, w;
+    wb_stats(&w0);
+    int sleeps0 = vfs_env_sleeps;
+    vfs_env_sleep_hook = sleep_flusher;
+    for (uint64_t i = 0; i < limit; i++) ASSERT_EQ(mf_write_page(i, 0x66), PAGE_SIZE);
+    filemap_stats(&f);
+    ASSERT_EQ(f.dirty_wb - f0.dirty_wb, limit);   /* up to the limit: nobody waits */
+    ASSERT_EQ(f.dirty - f0.dirty, limit);
+    ASSERT_EQ(vfs_env_sleeps, sleeps0);
+    ASSERT_EQ(mf_write_page(limit, 0x66), PAGE_SIZE);   /* one more: the writer waits for write-back */
+    vfs_env_sleep_hook = NULL;
+    filemap_stats(&f);
+    wb_stats(&w);
+    ASSERT_EQ(vfs_env_sleeps - sleeps0, 1);
+    ASSERT_EQ(w.throttled - w0.throttled, 1);
+    ASSERT_EQ(f.dirty_wb, f0.dirty_wb);
+    ASSERT_EQ(mf_writes, (int)limit + 1);
+    ASSERT_EQ(mf_disk[limit * PAGE_SIZE], 0x66);
+    return 0;
+}
+
+TEST(write_back_gives_up_after_failing_for_a_while) {
+    AddressSpace *as = mf_setup();
+    ASSERT_TRUE(as != NULL);
+    mf_write_fail = 1;
+    ASSERT_EQ(mf_dirty(as, 0, 0x77), 0);
+    wb_sync_all();   /* fails: dirty again, listed again */
+    ASSERT_TRUE(page_test(mf_cached(as, 0), PG_DIRTY));
+    ASSERT_EQ(as->wb_state, WB_LISTED);
+    vfs_env_uptime_ms += WB_GIVE_UP_MS - 1;
+    wb_sync_all();   /* still within the time: tried again */
+    ASSERT_TRUE(page_test(mf_cached(as, 0), PG_DIRTY));
+    vfs_env_uptime_ms += 1;
+    WbStats w0, w;
+    wb_stats(&w0);
+    wb_sync_all();   /* failing for WB_GIVE_UP_MS: dropped */
+    wb_stats(&w);
+    ASSERT_FALSE(page_test(mf_cached(as, 0), PG_DIRTY));
+    ASSERT_EQ(w.dropped - w0.dropped, 1);
+    ASSERT_EQ(w.listed, 0);
+    ASSERT_FALSE(wb_timer_armed());   /* the flusher stops waking for it */
+    ASSERT_EQ(filemap_fsync(&mf_file), -EIO);   /* the kept error, once */
+    ASSERT_EQ(filemap_fsync(&mf_file), 0);
+    mf_write_fail = 0;   /* the disk works again: so does write-back */
+    ASSERT_EQ(mf_dirty(as, 1, 0x78), 0);
+    ASSERT_EQ(filemap_fsync(&mf_file), 0);
+    ASSERT_EQ(mf_disk[PAGE_SIZE], 0x78);
+    ASSERT_EQ(as->wb_fail_since, 0);
+    return 0;
+}
+
+/* Review of #47: reclaiming a cache page leaves a private mapping's own
+ * copy of it (copy on write) where it is */
+TEST(private_copies_survive_reclaim) {
+    AddressSpace *as = mf_setup();
+    ASSERT_TRUE(as != NULL);
+    Map a, b;
+    mf_map(&a);   /* shared, read */
+    mf_map(&b);
+    b.v.flags = 0;   /* private, writable */
+    b.v.prot = VMA_READ | VMA_WRITE;
+    ASSERT_EQ(mf_fault(&b, 0, 1), 0);   /* private write: an anonymous copy */
+    struct page *anon = NULL;
+    ASSERT_TRUE(vfs_env_pte(b.mm.pgd, MAP_AT, &anon, NULL));
+    ASSERT_TRUE(!(anon->flags & PG_FILE));
+    memset(page_to_virt(anon), 0xAB, PAGE_SIZE);   /* the process's own data */
+    ASSERT_EQ(mf_fault(&a, 0, 0), 0);              /* the cache page, mapped elsewhere */
+    for (uint64_t i = 1; i < MF_PAGES; i++) ASSERT_EQ(mf_get(as, i), 0);
+    (void)reclaim_pages(MF_PAGES, 0);   /* first look: accessed bits cleared */
+    (void)reclaim_pages(MF_PAGES, 0);   /* second: freed */
+    ASSERT_TRUE(mf_cached(as, 0) == NULL);
+    ASSERT_TRUE(!mf_mapped(&a, 0));
+    struct page *now = NULL;
+    ASSERT_TRUE(vfs_env_pte(b.mm.pgd, MAP_AT, &now, NULL));
+    ASSERT_TRUE(now == anon);
+    ASSERT_EQ(((uint8_t *)page_to_virt(now))[PAGE_SIZE - 1], 0xAB);
+    mf_unmap(&a);
+    mf_unmap(&b);
+    return 0;
+}
+
 /* Last: leave no file, hook or watermarks behind for later suites */
 TEST(cleanup) {
     vfs_env_setup();
@@ -649,6 +828,12 @@ TestCase reclaim_tests[] = {
     TEST_ENTRY(failed_write_back_is_listed_again),
     TEST_ENTRY(fsync_writes_through_the_list),
     TEST_ENTRY(evicting_a_linked_inode_writes_it),
+    TEST_ENTRY(dirty_limits_follow_ram),
+    TEST_ENTRY(direct_reclaim_waits_for_write_back),
+    TEST_ENTRY(direct_reclaim_gives_up_when_write_back_is_stuck),
+    TEST_ENTRY(writers_wait_above_the_dirty_limit),
+    TEST_ENTRY(write_back_gives_up_after_failing_for_a_while),
+    TEST_ENTRY(private_copies_survive_reclaim),
     TEST_ENTRY(cleanup),
 };
 int reclaim_test_count = sizeof(reclaim_tests) / sizeof(reclaim_tests[0]);

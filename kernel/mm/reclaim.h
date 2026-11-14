@@ -17,7 +17,9 @@
  * wakes the reclaim thread (kswapd), which reclaims until high. A GFP_RECLAIM
  * allocation that finds fewer than min reclaims directly before it returns.
  * Dirty pages are written by kswapd when it meets them (and by the flusher,
- * mm/writeback.h); direct reclaim skips them and wakes the flusher.
+ * mm/writeback.h); direct reclaim skips them and wakes the flusher, and when
+ * they are all it found, waits for write-back (WB_THROTTLE_MS at a time, at
+ * most WB_THROTTLE_STALLS waits without progress) before it gives up.
  *
  * Locks: the LRU lock (LOCK_LEVEL_PAGE_LRU, spinlock) guards both lists and
  * PG_LRU/PG_ACTIVE. Reclaim takes pages off a list with page_trylock under
@@ -81,6 +83,10 @@ void mark_page_accessed(struct page *pg);
 /* Write-back cleaned pages: kswapd may find work again after a run that
  * freed nothing. */
 void reclaim_note_cleaned(void);
+
+/* A cache page lost its last page-table entry: if kswapd sleeps after a run
+ * that freed nothing, it may free this page now. */
+void reclaim_note_freeable(void);
 
 /* --- Reclaim --- */
 

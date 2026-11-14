@@ -16,6 +16,22 @@
  * Mappings whose pages are the storage (ramfs: no writepage) never wait for
  * the flusher; their pages still count as dirty in /proc/meminfo.
  *
+ * Dirty pages that wait for a disk are limited (Linux's dirty ratios): above
+ * WB_DIRTY_BACKGROUND_PCT of RAM the flusher starts at once; above
+ * WB_DIRTY_LIMIT_PCT a writer waits for write-back before write() returns.
+ * Direct reclaim that finds only dirty pages also waits for write-back
+ * (wb_wait_progress) before the allocation fails and a fault OOM-kills.
+ *
+ * sync(2) also flushes the volatile write cache (BLK_OP_FLUSH) of every
+ * writable disk that has one, and releasing a block-device mapping (unmount)
+ * flushes its disk: the data is on the medium when they return. A file
+ * system's fsync flushes its own device (M1-15).
+ *
+ * A page whose write fails stays dirty and is tried again by the next pass;
+ * once its mapping has failed for WB_GIVE_UP_MS without one write getting
+ * through (a pulled USB key), failed pages are dropped clean, the error is
+ * kept for the mapping's next fsync, and the flusher stops waking for them.
+ *
  * A mapping with dirty pages is on the write-back list (WB_LISTED) until the
  * flusher or sync takes it off to write it (WB_BUSY while it does). A page
  * dirtied after that puts the mapping back on the list.
@@ -36,6 +52,12 @@ typedef struct AddressSpace AddressSpace;
 
 #define WB_DELAY_MS 5000   /* a dirty page waits at most this long for the flusher */
 
+#define WB_DIRTY_BACKGROUND_PCT 10   /* dirty pages for a disk above this share of RAM: flush now */
+#define WB_DIRTY_LIMIT_PCT      20   /* above this, a writer waits for write-back */
+#define WB_THROTTLE_MS          100  /* one wait for write-back progress (Linux's reclaim_throttle) */
+#define WB_THROTTLE_STALLS      3    /* waits that saw no progress before a writer or reclaim gives up */
+#define WB_GIVE_UP_MS           30000 /* a mapping failing this long: its failed pages are dropped */
+
 /* AddressSpace.wb_state */
 #define WB_LISTED 0x1   /* on the write-back list */
 #define WB_BUSY   0x2   /* the flusher or sync is writing it now */
@@ -47,6 +69,9 @@ typedef struct WbStats {
     uint64_t writeback;     /* pages being written now (/proc/meminfo Writeback) */
     uint64_t written;       /* pages written by any write-back path */
     uint64_t listed;        /* mappings on the list now */
+    uint64_t throttled;     /* waits for write-back progress (direct reclaim, writers over the limit) */
+    uint64_t dropped;       /* dirty pages given up after WB_GIVE_UP_MS of failed writes */
+    uint64_t device_flushes; /* BLK_OP_FLUSH sent by sync and release */
 } WbStats;
 
 /* Boot: the locks (before any page can become dirty). */
@@ -67,18 +92,44 @@ void wb_mapping_forget(AddressSpace *as);
 void wb_wake(void);
 
 /* sync(2): write every listed mapping and wait, including a flusher pass
- * already running. */
+ * already running, then flush every writable disk's write cache. */
 void wb_sync_all(void);
+
+/* Wait until write-back writes a page, at most max_ms; wakes the flusher first. Thread context, no spinlock held; sleeping
+ * locks may be held (the wait is bounded, so a lock the flusher needs only
+ * costs the time). 1 if write-back made progress, 0 if the time ran out. The
+ * flusher itself returns 0 at once. */
+int wb_wait_progress(uint32_t max_ms);
+
+/* A write dirtied pages of a mapping that is written back (filemap_write;
+ * no page lock held): above the background share the flusher starts now,
+ * above the limit the writer waits for write-back (giving up after
+ * WB_THROTTLE_STALLS waits without progress). */
+void wb_balance_dirty(void);
+
+/* The dirty thresholds in pages for total pages of RAM. Pure. */
+void wb_dirty_limits_for(uint64_t total_pages, uint64_t *background, uint64_t *limit);
 
 /* 1 while the flusher's timer is armed. */
 int wb_timer_armed(void);
 
-/* Count a page write: begin before writepage, end after. */
+/* Count a page write: begin before writepage, end after (a page written
+ * wakes wb_wait_progress waiters). */
 void wb_page_write_begin(void);
 void wb_page_write_end(int err);
 
+/* A write of as failed (err) or worked (0); with an error, returns 1 while
+ * the page should stay dirty for another try, 0 once as has failed for
+ * WB_GIVE_UP_MS (the page is dropped clean, the error kept for fsync).
+ * Page locked. */
+int wb_write_result(AddressSpace *as, int err);
+
+/* Count a BLK_OP_FLUSH sent for write-back (filemap_flush_device). */
+void wb_device_flushed(void);
+
 /* The timer tick (interim until M1-06's one-shot timers): fires the
- * flusher's timer once its time has come. Interrupt context. */
+ * flusher's timer once its time has come, and ends wb_wait_progress waits
+ * whose time ran out. Interrupt context. */
 void wb_tick(void);
 
 /* Counters. */

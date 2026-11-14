@@ -51,6 +51,10 @@ int vfs_env_no_leak(const VfsEnvUsage *a, const VfsEnvUsage *b);
  * next one); 0 turns it off. */
 void vfs_env_fail_alloc_in(int n);
 
+/* Nonzero: page allocations fail until a page is freed (memory ran out and
+ * only reclaim can bring some back). */
+extern int vfs_env_arena_full;
+
 /* Called when the code under test would sleep on a wait queue. The hook may
  * change state (write to a pipe, close an end) and return; with no hook the
  * test fails (it would block forever). */

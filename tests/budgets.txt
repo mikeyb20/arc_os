@@ -44,8 +44,10 @@
 # blk_lookup) and their backtrace names.
 # 558053 -> 574833 after M1-14 (+16780): LRU lists, kswapd and direct reclaim,
 # the write-back list, flusher and sync(2), the test-mode write-back test, and
-# their backtrace names. With M1-06 (#45) in the same image, the second of the
-# two to merge measures again.
+# their backtrace names. 574833 -> 579487 with the D3 review fixes (+4654:
+# waiting for write-back, the dirty limit, disk flushes, the phys-checked
+# unmap). With M1-06 (#45) in the same image, the second of the two to merge
+# measures again.
 # Limit = measured + 5%)
 kernel_image_bytes     604000      max  bytes  M0-08  build
 

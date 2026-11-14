@@ -83,6 +83,14 @@ void reclaim_note_cleaned(void) {
     __atomic_add_fetch(&lru_gen, 1, __ATOMIC_RELAXED);
 }
 
+static uint64_t kswapd_failed_gen = UINT64_MAX;   /* lru_gen when a kswapd run freed nothing */
+
+void reclaim_note_freeable(void) {
+    /* Only while kswapd sleeps on a failed run: one shared write, not one per unmap */
+    if (__atomic_load_n(&lru_gen, __ATOMIC_RELAXED) == __atomic_load_n(&kswapd_failed_gen, __ATOMIC_RELAXED))
+        __atomic_add_fetch(&lru_gen, 1, __ATOMIC_RELAXED);
+}
+
 void lru_del_page(struct page *pg) {
     spin_lock(&lru_lock);
     if (page_test_and_clear(pg, PG_LRU)) list_unlink(which_list(pg), pg);
@@ -235,7 +243,8 @@ static uint64_t nr_on_lists(void) {
 
 #define RECLAIM_PRIORITIES 12   /* first round scans 1/4096 of the lists, each next one twice as much */
 
-uint64_t reclaim_pages(uint64_t target, int kswapd) {
+/* reclaim_pages, also telling how many dirty pages it had to leave */
+static uint64_t reclaim_run(uint64_t target, int kswapd, uint64_t *dirty) {
     ScanCtx sc = {kswapd, 1, 0, 0, 0};
     for (int prio = RECLAIM_PRIORITIES; prio >= 0 && sc.freed < target; prio--) {
         uint64_t want = nr_on_lists() >> prio;
@@ -258,7 +267,13 @@ uint64_t reclaim_pages(uint64_t target, int kswapd) {
         STAT_ADD(steal_direct, sc.freed);
     }
     if (sc.dirty_seen != 0) wb_wake();   /* write them, so the next round can free them */
+    *dirty = sc.dirty_seen;
     return sc.freed;
+}
+
+uint64_t reclaim_pages(uint64_t target, int kswapd) {
+    uint64_t dirty;
+    return reclaim_run(target, kswapd, &dirty);
 }
 
 uint64_t reclaim_drop_clean(void) {
@@ -321,7 +336,6 @@ static Spinlock kswapd_lock = SPINLOCK_INIT(LOCK_LEVEL_OBJECT, "kswapd");
 static WaitQueue kswapd_wq;
 static int kswapd_wanted;
 static Thread *kswapd_thread;
-static uint64_t kswapd_failed_gen = UINT64_MAX;   /* lru_gen when a run freed nothing */
 
 /* Wake kswapd unless it is awake already or has nothing new to try. Only
  * with no spinlock held (its locks rank above any caller's). */
@@ -380,13 +394,22 @@ static struct page *on_pressure(struct page *got, unsigned order, uint32_t flags
     if (free < wm.low) kswapd_wake();
     if (!(flags & GFP_RECLAIM) || hal_lock_depth() != 0 || !sched_can_block()) return got;
     if (got != NULL && free >= wm.min) return got;
+    /* kswapd's own allocations (a writepage reading metadata) never reclaim:
+     * reclaim would recurse into the pages it holds */
+    if (kswapd_thread != NULL && thread_current() == kswapd_thread) return got;
     /* Below min: this thread reclaims before it goes on */
     STAT_ADD(allocstall, 1);
+    int stalls = 0;
     for (int i = 0; i < DIRECT_TRIES; i++) {
-        uint64_t n = reclaim_pages((uint64_t)RECLAIM_BATCH << order, 0);
+        uint64_t dirty = 0;
+        uint64_t n = reclaim_run((uint64_t)RECLAIM_BATCH << order, 0, &dirty);
         if (got == NULL) got = pmm_alloc_block(order, flags);
         if (got != NULL && pmm_get_free_pages() >= wm.min) break;
-        if (n == 0) break;   /* nothing reclaimable: the caller copes (fault: OOM kill) */
+        if (n != 0) continue;
+        /* Nothing freed. Dirty pages become freeable once written: wait for
+         * write-back (bounded) before the caller copes (fault: OOM kill) */
+        if (got != NULL || dirty == 0 || stalls == WB_THROTTLE_STALLS) break;
+        if (!wb_wait_progress(WB_THROTTLE_MS)) stalls++;
     }
     return got;
 }

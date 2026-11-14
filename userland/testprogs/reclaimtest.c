@@ -10,6 +10,7 @@
  *   mmap   the same through one shared mapping: reclaim unmaps the pages it
  *          frees (each mapping's entry, with a TLB shootdown) and a later
  *          access faults them back in (direct reclaim may help kswapd here);
+ *          a private copy of the file's first page keeps its written word;
  *   meminfo  /proc/meminfo shows Cached, Dirty, Writeback, Active, Inactive.
  * Prints the reclaim counters, one FAIL line per failed check; exit status =
  * number of failures. */
@@ -132,6 +133,16 @@ static void test_mmap(void) {
     CHECK(m != MAP_FAILED);
     close(fd);
     if (m == MAP_FAILED) return;
+    /* A private writable mapping of the same file, written: its first page
+     * is now the process's own copy, which reclaiming the cache page must
+     * leave alone (review of #47) */
+    fd = open(BIG, O_RDONLY);
+    CHECK(fd >= 0);
+    uint64_t *pv = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+    close(fd);
+    CHECK(pv != MAP_FAILED);
+    if (pv == MAP_FAILED) return;
+    pv[0] = 0xC0FFEEull;
     uint64_t bad = 0;
     for (uint64_t off = 0; off < SIZE; off += CHUNK) bad += check_piece(m + off / 8, off, CHUNK);
     counters("after mmap");
@@ -143,6 +154,10 @@ static void test_mmap(void) {
      * and the reader then reclaims for itself below min (allocstall). */
     /* The first pages were unmapped and freed long ago: they fault back in */
     CHECK(check_piece(m, 0, CHUNK) == 0);
+    printf("reclaimtest: private copy after the pressure: %#llx %#llx\n", (unsigned long long)pv[0],
+           (unsigned long long)pv[1]);
+    CHECK(pv[0] == 0xC0FFEEull && pv[1] == 1);   /* the written word, and the file's word 1 */
+    CHECK(munmap(pv, 4096) == 0);
     CHECK(munmap((void *)m, SIZE) == 0);
     if (failures == f0) printf("reclaimtest: mmap ok\n");
 }

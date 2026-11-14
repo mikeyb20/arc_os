@@ -112,27 +112,44 @@ static void zap_free(ZapList *z) {
     for (uint32_t i = 0; i < z->nfile; i++) filemap_page_unmapped(z->file[i]);
 }
 
+/* One round over [a, end): take the entries out under pt_lock (only if a
+ * maps the frame `only`, when that is not 0: checked and taken in one hold,
+ * so a copy-on-write replacing the entry meanwhile is never hit), flush,
+ * then free. *next: where the round stopped. */
+static uint64_t zap_round(Mm *mm, uint64_t a, uint64_t end, int flush, uint64_t only, uint64_t *next) {
+    ZapList z = {PAGE_LIST_INIT, PAGE_LIST_INIT, {NULL}, 0};
+    uint64_t n = 0;
+    uint64_t cur;
+    *next = end;
+    spin_lock(&mm->pt_lock);
+    if (only == 0 || (vmm_lookup_in(mm->pgd, a, &cur) && cur == only))
+        n = vmm_unmap_range_in(mm->pgd, a, end, zap_defer, &z, next);
+    spin_unlock(&mm->pt_lock);
+    if (n != 0) {
+        rss_add(mm, -(int64_t)(n - z.nfile));
+        mm_rss_account(mm, 0, -(int64_t)z.nfile);
+    }
+    if (flush == MM_ZAP_FLUSH_ALWAYS || (flush == MM_ZAP_FLUSH && (n != 0 || !page_list_empty(&z.tables))))
+        mm_flush_tlb_range(mm, a, *next);
+    zap_free(&z);
+    return n;
+}
+
 uint64_t mm_zap_range(Mm *mm, uint64_t start, uint64_t end, int flush) {
     uint64_t total = 0;
     uint64_t a = start;
     while (a < end) {
-        ZapList z = {PAGE_LIST_INIT, PAGE_LIST_INIT, {NULL}, 0};
-        uint64_t next = end;
-        spin_lock(&mm->pt_lock);
-        uint64_t n = vmm_unmap_range_in(mm->pgd, a, end, zap_defer, &z, &next);
-        spin_unlock(&mm->pt_lock);
-        if (n != 0) {
-            rss_add(mm, -(int64_t)(n - z.nfile));
-            mm_rss_account(mm, 0, -(int64_t)z.nfile);
-        }
-        if (flush == MM_ZAP_FLUSH_ALWAYS || (flush == MM_ZAP_FLUSH && (n != 0 || !page_list_empty(&z.tables))))
-            mm_flush_tlb_range(mm, a, next);
-        zap_free(&z);
-        total += n;
+        uint64_t next;
+        total += zap_round(mm, a, end, flush, 0, &next);
         if (next <= a) break;
         a = next;
     }
     return total;
+}
+
+int mm_zap_page_if(Mm *mm, uint64_t addr, uint64_t phys) {
+    uint64_t next;
+    return zap_round(mm, addr, addr + PAGE_SIZE, MM_ZAP_FLUSH, phys, &next) != 0;
 }
 
 static uint64_t zap_range(Mm *mm, uint64_t start, uint64_t end, int force) {

@@ -443,7 +443,7 @@ static void pmm_init_with_cap(const BootInfo *info, uint64_t cap_bytes) {
     free_page_count = 0;
     for (unsigned z = 0; z < NR_ZONES; z++) {
         for (unsigned o = 0; o <= PAGE_MAX_ORDER; o++) {
-            zones[z].free[o].head = PFN_NONE;
+            zones[z].free[o] = (struct page_list)PAGE_LIST_INIT;
             zones[z].count[o] = 0;
         }
         zones[z].nonempty = 0;

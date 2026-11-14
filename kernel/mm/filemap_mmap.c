@@ -78,11 +78,13 @@ void filemap_unmap_from(AddressSpace *as, uint64_t first) {
 
 void filemap_unmap_page(AddressSpace *as, struct page *pg) {
     uint64_t index = pg->index;
+    uint64_t phys = page_to_phys(pg);
     mutex_lock(&as->map_lock);
     for (Vma *v = as->vmas; v != NULL; v = v->as_next) {
         if (index < vma_first(v) || index >= vma_end(v)) continue;
-        uint64_t addr = v->start + ((index - v->pgoff) << PAGE_SHIFT);
-        mm_zap_range(v->mm, addr, addr + PAGE_SIZE, MM_ZAP_FLUSH);
+        /* Only entries that map pg: in a private mapping the entry may be the
+         * process's own copy (copy on write), which is not pg's to take */
+        (void)mm_zap_page_if(v->mm, v->start + ((index - v->pgoff) << PAGE_SHIFT), phys);
     }
     mutex_unlock(&as->map_lock);
 }

@@ -10,7 +10,11 @@
  *     not armed and the flusher stays asleep;
  *   - pages dirtied: the timer is armed, the pages wait (no write in the
  *     first seconds), then the flusher writes them and the timer is gone;
- *   - sync writes at once; releasing the mapping (unmount) writes too.
+ *   - a thread waiting for write-back (short of memory, or a writer over the
+ *     dirty limit) starts the flusher at once, not after 5 s; with nothing
+ *     to write its wait ends when its time runs out;
+ *   - sync writes at once and flushes the disk's write cache; releasing the
+ *     mapping (unmount) writes and flushes too.
  * With arc.wbtest=verify (the second boot, a new QEMU on the same disk
  * image) it reads the partition straight from the disk, bypassing the cache,
  * and checks every page the first boot wrote. Results are "[WBTEST] ..."
@@ -35,7 +39,9 @@
 #define WB_FLUSH_PAGES 64    /* written by the flusher: pages 0-63 */
 #define WB_SYNC_FIRST  64    /* by sync: 64-95 */
 #define WB_SYNC_PAGES  32
-#define WB_REL_FIRST   128   /* when the mapping is released: 128-159 (96-127 stay zero) */
+#define WB_WAIT_FIRST  96    /* for a thread waiting for write-back: 96-111 (112-127 stay zero) */
+#define WB_WAIT_PAGES  16
+#define WB_REL_FIRST   128   /* when the mapping is released: 128-159 */
 #define WB_REL_PAGES   32
 #define WB_LAST_PAGE   160
 #define WB_WAIT_MS     20000
@@ -52,7 +58,7 @@ static void wb_result(int ok, const char *what) {
         fails++;
 }
 
-/* Word w of page index i as written by round gen (1, 2, 3) */
+/* Word w of page index i as written by round gen (1 to 4) */
 static uint64_t wb_pattern(uint64_t i, uint64_t w, uint64_t gen) {
     return 0xA5C3000000000000ull | (gen << 40) | (i << 12) | w;
 }
@@ -61,6 +67,7 @@ static uint64_t gen_of(uint64_t i) {
     if (i < WB_FLUSH_PAGES) return 1;
     if (i >= WB_SYNC_FIRST && i < WB_SYNC_FIRST + WB_SYNC_PAGES) return 2;
     if (i >= WB_REL_FIRST && i < WB_REL_FIRST + WB_REL_PAGES) return 3;
+    if (i >= WB_WAIT_FIRST && i < WB_WAIT_FIRST + WB_WAIT_PAGES) return 4;
     return 0;   /* never written: zeros */
 }
 
@@ -139,14 +146,41 @@ static void run_write(BlockDevice *dev) {
               "flusher wrote the 64 pages in one pass");
     wb_result(!wb_timer_armed() && s.listed == 0, "after the flush: flusher timer not armed");
 
-    /* sync writes at once and leaves no timer */
+    /* A thread waiting for write-back starts the flusher now */
+    wb_stats(&s0);
+    wb_result(dirty_range(&as, WB_WAIT_FIRST, WB_WAIT_PAGES) == 0 && wb_timer_armed(), "16 more dirtied, timer armed");
+    t0 = hal_tsc_read();
+    int moved = wb_wait_progress(WB_DELAY_MS / 2);
+    uint64_t waited = ms_since(t0);
+    kprintf("[WBTEST] waiter: write-back progress after %lu ms\n", waited);
+    wb_result(moved && waited < WB_DELAY_MS / 2, "a waiter starts the flusher at once (before its 5 s timer)");
+    for (;;) {
+        wb_stats(&s);
+        if (s.written >= s0.written + WB_WAIT_PAGES || ms_since(t0) > WB_WAIT_MS) break;
+        sched_yield();
+    }
+    diag_delay_ms(100);   /* the pass ends after its last write */
+    filemap_stats(&fs);
+    wb_stats(&s);
+    wb_result(fs.dirty == dirty0 && s.written == s0.written + WB_WAIT_PAGES && !wb_timer_armed() && s.listed == 0,
+              "the flusher wrote the 16 pages, timer disarmed");
+    t0 = hal_tsc_read();
+    moved = wb_wait_progress(300);
+    waited = ms_since(t0);
+    kprintf("[WBTEST] waiter with nothing to write: woke after %lu ms\n", waited);
+    wb_result(!moved && waited >= 250 && waited < 2000, "with nothing to write, a wait ends after its time (300 ms)");
+
+    /* sync writes at once, flushes the disk's write cache, and leaves no timer */
+    int cached = (dev->disk->flags & (BLK_CACHE | BLK_RDONLY)) == BLK_CACHE;
+    kprintf("[WBTEST] disk %s: %s\n", dev->disk->name, cached ? "volatile write cache" : "no write cache");
     wb_stats(&s0);
     wb_result(dirty_range(&as, WB_SYNC_FIRST, WB_SYNC_PAGES) == 0 && wb_timer_armed(), "32 more dirtied, timer armed");
     wb_sync_all();
     filemap_stats(&fs);
     wb_stats(&s);
-    wb_result(fs.dirty == dirty0 && s.written == s0.written + WB_SYNC_PAGES && !wb_timer_armed() && s.listed == 0,
-              "sync wrote 32 pages, timer disarmed");
+    wb_result(fs.dirty == dirty0 && s.written == s0.written + WB_SYNC_PAGES && !wb_timer_armed() && s.listed == 0 &&
+                  (!cached || s.device_flushes > s0.device_flushes),
+              "sync wrote 32 pages and flushed the disk cache, timer disarmed");
 
     /* Releasing the mapping (what unmount does) writes the rest */
     wb_stats(&s0);
@@ -154,8 +188,9 @@ static void run_write(BlockDevice *dev) {
     filemap_bdev_release(&as);
     filemap_stats(&fs);
     wb_stats(&s);
-    wb_result(fs.dirty == dirty0 && s.written == s0.written + WB_REL_PAGES && !wb_timer_armed() && s.listed == 0,
-              "release wrote 32 pages, timer disarmed");
+    wb_result(fs.dirty == dirty0 && s.written == s0.written + WB_REL_PAGES && !wb_timer_armed() && s.listed == 0 &&
+                  s.device_flushes == s0.device_flushes + 1,
+              "release wrote 32 pages and flushed the disk cache, timer disarmed");
 }
 
 /* Second boot: the disk itself, not the cache */
