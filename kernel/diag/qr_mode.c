@@ -25,6 +25,7 @@
 #include "lib/string.h"
 #include "lib/testmode.h"
 #include "mm/kmalloc.h"
+#include "time/clock.h"
 
 #define QR_PAGE_SECONDS  10      /* as the text pager */
 #define QR_TEST_WAIT_S   60      /* test mode: the harness presses a key per page */
@@ -153,6 +154,6 @@ void diag_qr_panic_screen(const PanicInfo *info) {
     if (panic_hold) {
         /* The qr suite takes a screendump on this line and then ends QEMU */
         kprintf_level(KLOG_EMERG, "ARC_QR shown panic 1/1\n");
-        diag_delay_ms(QR_PANIC_HOLD_MS);
+        clock_spin_ns(QR_PANIC_HOLD_MS * NSEC_PER_MSEC);
     }
 }

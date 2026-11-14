@@ -72,6 +72,11 @@ void vfs_env_tty_input(const char *s);
 /* Uptime the VFS stamps times with (ms). */
 extern uint64_t vfs_env_uptime_ms;
 
+/* One-shot timers (time/timer.h) over that clock: armed timers are kept here
+ * and fire only when a test calls this, each whose time has come (in expiry
+ * order is not promised; tests arm few). Returns how many fired. */
+int vfs_env_run_timers(void);
+
 /* Read a whole file into buf (NUL-terminated). Returns bytes or -errno. */
 int64_t vfs_env_read_file(const char *path, char *buf, size_t size);
 

@@ -53,3 +53,10 @@ threads, per-thread masks, CPU affinity and the CPU description files llama.cpp 
   `sched_select_cpu` reads the 32-byte `t->affinity` without the run-queue lock while `sched_set_affinity`
   writes it under the lock; once user space can change a running thread's mask, a torn read can pick CPU 0
   outside the mask until the next schedule fixes it. Take a consistent snapshot there (M1-05 review, item 6).
+- From M1-06: sleeps are not woken for signals yet. `timer_sleep_until` returns 1 when anything else wakes the
+  thread, and nanosleep/clock_nanosleep already return `-EINTR` (with the time left for relative sleeps) when
+  `sig_work_pending()` is set; delivering a signal to a sleeping thread only has to `sched_wake` it. Futex
+  timeouts: arm a `Timer` (`time/timer.h`) under the waiter's lock or use `timer_sleep_until`; rules in
+  `docs/kernel/locking.md` ("Timer locks"). `fpu_avx` forks 8 CPU-bound spinners so its two workers share CPUs
+  (tickless: a lone thread is never preempted); pin both workers to one CPU instead once `sched_setaffinity`
+  exists.

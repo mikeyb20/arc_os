@@ -72,18 +72,25 @@ void lapic_send_ipi(uint32_t apic_id, uint32_t vector);
 /* Send a fixed IPI to all CPUs except self. */
 void lapic_send_ipi_all_excluding_self(uint32_t vector);
 
-/* Vector of the local APIC timer (the scheduler's slice timer, M1-05) */
+/* Vector of the local APIC timer: each CPU's clock-event interrupt (M1-06) */
 #define LAPIC_TIMER_VEC 0xEF
 
-/* BSP, once: measure the APIC timer against the TSC and make fn the timer
- * handler (called after EOI, interrupts off) on every CPU. */
-void lapic_timer_setup(void (*fn)(void));
-
-/* This CPU: fire the timer every period_ns, starting period_ns from now. */
-void lapic_timer_periodic(uint64_t period_ns);
-
-/* This CPU: stop the timer. */
+/* Clock events (M1-06): one interrupt per CPU at a programmed TSC value.
+ * TSC-deadline mode when the CPU has it, else one-shot mode with the count
+ * worked out from the TSC (the APIC timer is measured against it once).
+ * lapic_timer_setup: BSP, once, after the TSC is calibrated: measures the
+ * timer if needed and makes fn the handler on every CPU (interrupts off,
+ * after the EOI). The rest act on the calling CPU, interrupts off. */
+void lapic_timer_setup(void (*fn)(void), int use_deadline);
+void lapic_timer_cpu_init(void);
+/* Interrupt once the TSC reaches tsc (at once if it already has). A one-shot
+ * timer that can't reach that far fires early; the caller reprograms. */
+void lapic_timer_program(uint64_t tsc);
 void lapic_timer_stop(void);
+/* "TSC-deadline" or "LAPIC one-shot" (after lapic_timer_setup). */
+const char *lapic_timer_mode(void);
+/* Timer ticks per second at divide 16 (0 in TSC-deadline mode: not measured). */
+uint64_t lapic_timer_hz(void);
 
 /* Read a LAPIC register (xAPIC MMIO offset). */
 uint32_t lapic_read(uint32_t reg);

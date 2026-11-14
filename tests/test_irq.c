@@ -94,6 +94,15 @@ static uint64_t hal_irq_spurious_count(void) {
     return 0;
 }
 
+/* The CPUs' own interrupt counts (HAL_IRQ_STAT_*): CPU c, kind k = 10c + k */
+#define HAL_IRQ_STAT_TIMER   0
+#define HAL_IRQ_STAT_RESCHED 1
+#define HAL_IRQ_STAT_TLB     2
+#define HAL_IRQ_STAT_CALL    3
+static uint64_t hal_cpu_irq_stat(uint32_t cpu, int which) {
+    return hal_cpu_online(cpu) ? cpu * 10 + (uint64_t)which : 0;
+}
+
 static isr_handler_t hal_irq_line_handler(uint8_t line) {
     return line_handler[line];
 }
@@ -433,6 +442,10 @@ static int test_irq_proc_format(void) {
     ASSERT_TRUE(strstr(buf, "   1:          0          1  FAKE     0000:00:04.0 1 cpu1/0x30  virtio-blk queue\n") !=
                 NULL);
     ASSERT_TRUE(strstr(buf, "   2:          0          0  FAKE     0000:00:05.0 line 11  edu\n") != NULL);
+    ASSERT_TRUE(strstr(buf, " LOC:          0         10  Local timer interrupts\n") != NULL);
+    ASSERT_TRUE(strstr(buf, " RES:          1         11  Rescheduling interrupts\n") != NULL);
+    ASSERT_TRUE(strstr(buf, " CAL:          3         13  Function call interrupts\n") != NULL);
+    ASSERT_TRUE(strstr(buf, " TLB:          2         12  TLB shootdowns\n") != NULL);
     ASSERT_TRUE(strstr(buf, " ERR: 0\n") != NULL);
     /* a small buffer truncates and stays terminated */
     char small[16];

@@ -6,10 +6,12 @@
  * block layer: 64 requests in flight at once, adjacent reads merged, a sync
  * read into an unaligned buffer, a write + flush + read back, requests the
  * layer must refuse, and one request whose interrupt is dropped so that the
- * timeout path's poll completes it. Results are "[BLKTEST] ..." lines.
+ * disk's timeout timer (M1-06) polls it to completion. Results are
+ * "[BLKTEST] ..." lines.
  * Invariants: runs on the BSP during boot, before the scheduler; async
  * requests complete by interrupt (the wait loop never polls the device),
- * sync ones poll (blk_rw_sync before the scheduler). Waits are TSC-bounded.
+ * sync ones poll (blk_rw_sync before the scheduler). Waits are bounded by
+ * the clock.
  * Locks: none of its own. Cost: test mode only. */
 
 #include "diag/diag.h"
@@ -19,9 +21,12 @@
 #include "mm/page.h"
 #include "mm/kmalloc.h"
 #include "lib/kprintf.h"
+#include "time/clock.h"
 #include "lib/mem.h"
 #include "uapi/errno.h"
 #include "arc_disk.h"
+
+#define LOST_TIMEOUT_MS 100   /* the lost-interrupt request's deadline */
 
 #define BT_READS        64
 #define BT_ORDER        6   /* 64 pages */
@@ -39,11 +44,10 @@ static void bt_end_io(void *priv, int status) {
 
 /* Wait with interrupts on until want requests ended, at most ms. */
 static int bt_wait(uint32_t want, uint32_t ms) {
-    uint64_t limit = diag_ms_to_cycles(ms);
+    uint64_t end = clock_mono_ns() + (uint64_t)ms * NSEC_PER_MSEC;
     uint64_t flags = irq_save();
     hal_enable_interrupts();
-    uint64_t start = hal_tsc_read();
-    while (__atomic_load_n(&bt_done, __ATOMIC_ACQUIRE) < want && hal_tsc_read() - start < limit) hal_cpu_relax();
+    while (__atomic_load_n(&bt_done, __ATOMIC_ACQUIRE) < want && clock_mono_ns() < end) hal_cpu_relax();
     irq_restore(flags);
     return __atomic_load_n(&bt_done, __ATOMIC_ACQUIRE) >= want && bt_err == 0;
 }
@@ -127,23 +131,23 @@ static void test_sync(BlockDevice *part) {
     kfree(buf);
 }
 
-/* The device finishes but its interrupt is dropped: the timeout path polls */
+/* The device finishes but its interrupt is dropped: the disk's timeout timer
+ * fires at the request's deadline and its poll completes it */
 static void test_lost_irq(BlockDevice *part, struct page *blk) {
     BlkStats before, after;
     /* Interrupts the sync tests left pending (they poll, with this CPU's
      * interrupts off) arrive first, so the one dropped is this request's */
     bt_wait(UINT32_MAX, 20);
     blk_get_stats(part, &before);
-    blk_test_set(part, 100, 1);
+    blk_test_set(part, LOST_TIMEOUT_MS, 1);
     bt_done = 0;
     bt_err = 0;
     BlkPlug plug;
     blk_plug_init(&plug);
     plug_read(&plug, part, 512, nth(blk, 0));
     blk_plug_flush(&plug);
-    int early = bt_wait(1, 300);   /* the dropped interrupt must not end it */
-    blk_expire(part->disk, hal_tsc_read());
-    int ok = !early && bt_wait(1, 10) && pattern_ok(page_to_virt(nth(blk, 0)), 512, PAGE_SIZE);
+    int early = bt_wait(1, LOST_TIMEOUT_MS / 2);   /* the dropped interrupt must not end it */
+    int ok = !early && bt_wait(1, 2000) && pattern_ok(page_to_virt(nth(blk, 0)), 512, PAGE_SIZE);
     blk_get_stats(part, &after);
     blk_test_set(part, BLK_TIMEOUT_MS, 0);
     kprintf("[BLKTEST] lost interrupt: completed by the timeout poll %s\n",

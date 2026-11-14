@@ -27,6 +27,7 @@
 #include "mm/page.h"
 #include "mm/gfp.h"
 #include "lib/kprintf.h"
+#include "time/clock.h"
 #include "lib/cmdline.h"
 #include "lib/string.h"
 #include "lib/mem.h"
@@ -85,13 +86,12 @@ static int edu_irq(void *arg) {
 }
 
 /* Wait with interrupts on until *counter differs from before, at most
- * WAIT_MS of TSC time. Returns 1 if it changed. */
+ * WAIT_MS. Returns 1 if it changed. */
 static int wait_change(const volatile uint64_t *counter, uint64_t before) {
-    uint64_t limit = diag_ms_to_cycles(WAIT_MS);
+    uint64_t end = clock_mono_ns() + WAIT_MS * NSEC_PER_MSEC;
     uint64_t flags = irq_save();
     hal_enable_interrupts();
-    uint64_t start = hal_tsc_read();
-    while (__atomic_load_n(counter, __ATOMIC_ACQUIRE) == before && hal_tsc_read() - start < limit) {
+    while (__atomic_load_n(counter, __ATOMIC_ACQUIRE) == before && clock_mono_ns() < end) {
         hal_cpu_relax();
     }
     irq_restore(flags);
@@ -276,10 +276,9 @@ static void test_net(void) {
     }
     /* The RX interrupt only counts and wakes the worker, which isn't running
      * yet: receive by hand each time the count moves */
-    uint64_t limit = diag_ms_to_cycles(WAIT_MS);
-    uint64_t start = hal_tsc_read();
+    uint64_t end = clock_mono_ns() + WAIT_MS * NSEC_PER_MSEC;
     int got = 0;
-    while (!got && hal_tsc_read() - start < limit) {
+    while (!got && clock_mono_ns() < end) {
         uint64_t flags = irq_save();
         hal_enable_interrupts();
         hal_cpu_relax();

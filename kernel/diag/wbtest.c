@@ -20,7 +20,7 @@
  * and checks every page the first boot wrote. Results are "[WBTEST] ..."
  * lines (with ARC_TEST PASS/FAIL wbtest-N), then ARC_TEST DONE; the thread
  * ends the run.
- * Invariants: waits are bounded by the TSC. Locks: none of its own.
+ * Invariants: waits are bounded by the monotonic clock. Locks: none of its own.
  * Cost: test mode only. */
 
 #include "diag/diag.h"
@@ -29,6 +29,8 @@
 #include "mm/writeback.h"
 #include "mm/kmalloc.h"
 #include "proc/sched.h"
+#include "time/clock.h"
+#include "time/timer.h"
 #include "proc/thread.h"
 #include "arch/hal.h"
 #include "lib/kprintf.h"
@@ -94,8 +96,14 @@ static int dirty_range(AddressSpace *as, uint64_t first, uint64_t n) {
 }
 
 static uint64_t ms_since(uint64_t t0) {
-    uint64_t per_ms = diag_ms_to_cycles(1);
-    return per_ms != 0 ? (hal_tsc_read() - t0) / per_ms : 0;
+    return (clock_mono_ns() - t0) / NSEC_PER_MSEC;
+}
+
+/* Sleep ms milliseconds (the flusher and the disk run meanwhile) */
+static void wb_sleep_ms(uint32_t ms) {
+    uint64_t until = clock_mono_ns() + (uint64_t)ms * NSEC_PER_MSEC;
+    while (timer_sleep_until(until) != 0) {
+    }
 }
 
 static void run_write(BlockDevice *dev) {
@@ -108,7 +116,7 @@ static void run_write(BlockDevice *dev) {
     uint64_t dirty0 = fs.dirty;   /* ramfs pages: never written back */
     wb_result(s0.listed == 0 && s0.writeback == 0 && !wb_timer_armed(),
               "clean: nothing listed for write-back, flusher timer not armed");
-    diag_delay_ms(2000);
+    wb_sleep_ms(2000);
     wb_stats(&s);
     wb_result(s.flushes == s0.flushes && s.timer_arms == s0.timer_arms && !wb_timer_armed(),
               "idle 2 s: no flusher pass, no timer");
@@ -123,8 +131,8 @@ static void run_write(BlockDevice *dev) {
     wb_result(fs.dirty == dirty0 + WB_FLUSH_PAGES && s.listed == 1 && wb_timer_armed() &&
                   s.timer_arms == s0.timer_arms + 1,
               "flusher timer armed once for the dirty mapping");
-    uint64_t t0 = hal_tsc_read();
-    diag_delay_ms(2000);
+    uint64_t t0 = clock_mono_ns();
+    wb_sleep_ms(2000);
     filemap_stats(&fs);
     wb_stats(&s);
     wb_result(fs.dirty == dirty0 + WB_FLUSH_PAGES && s.flushes == s0.flushes,
@@ -139,7 +147,7 @@ static void run_write(BlockDevice *dev) {
     }
     kprintf("[WBTEST] flusher: %lu pages written %lu ms after they were dirtied\n", s.written - s0.written,
             ms_since(t0));
-    diag_delay_ms(100);   /* the pass is counted after its last write */
+    wb_sleep_ms(100);   /* the pass is counted after its last write */
     filemap_stats(&fs);
     wb_stats(&s);
     wb_result(fs.dirty == dirty0 && s.written == s0.written + WB_FLUSH_PAGES && s.flushes == s0.flushes + 1,
@@ -149,7 +157,7 @@ static void run_write(BlockDevice *dev) {
     /* A thread waiting for write-back starts the flusher now */
     wb_stats(&s0);
     wb_result(dirty_range(&as, WB_WAIT_FIRST, WB_WAIT_PAGES) == 0 && wb_timer_armed(), "16 more dirtied, timer armed");
-    t0 = hal_tsc_read();
+    t0 = clock_mono_ns();
     int moved = wb_wait_progress(WB_DELAY_MS / 2);
     uint64_t waited = ms_since(t0);
     kprintf("[WBTEST] waiter: write-back progress after %lu ms\n", waited);
@@ -159,12 +167,12 @@ static void run_write(BlockDevice *dev) {
         if (s.written >= s0.written + WB_WAIT_PAGES || ms_since(t0) > WB_WAIT_MS) break;
         sched_yield();
     }
-    diag_delay_ms(100);   /* the pass ends after its last write */
+    wb_sleep_ms(100);   /* the pass ends after its last write */
     filemap_stats(&fs);
     wb_stats(&s);
     wb_result(fs.dirty == dirty0 && s.written == s0.written + WB_WAIT_PAGES && !wb_timer_armed() && s.listed == 0,
               "the flusher wrote the 16 pages, timer disarmed");
-    t0 = hal_tsc_read();
+    t0 = clock_mono_ns();
     moved = wb_wait_progress(300);
     waited = ms_since(t0);
     kprintf("[WBTEST] waiter with nothing to write: woke after %lu ms\n", waited);

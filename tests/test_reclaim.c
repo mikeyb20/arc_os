@@ -506,13 +506,13 @@ TEST(flusher_timer_armed_only_while_dirty) {
     ASSERT_EQ(w.listed, 1);
     ASSERT_EQ(w.timer_arms - w0.timer_arms, 1);
     ASSERT_EQ(as->wb_state, WB_LISTED);
-    /* Not yet: the tick before the deadline does nothing */
+    /* Not yet: the timer has not fired 1 ms before its time */
     vfs_env_uptime_ms += WB_DELAY_MS - 1;
-    wb_tick();
+    vfs_env_run_timers();
     ASSERT_TRUE(wb_timer_armed());
     /* Its time: the timer fires (and is gone), the flusher is kicked */
     vfs_env_uptime_ms += 1;
-    wb_tick();
+    vfs_env_run_timers();
     ASSERT_FALSE(wb_timer_armed());
     ASSERT_EQ(mf_writes, 0);   /* the flusher thread writes; here, sync stands in */
     wb_sync_all();
@@ -525,9 +525,9 @@ TEST(flusher_timer_armed_only_while_dirty) {
     ASSERT_FALSE(wb_timer_armed());
     ASSERT_EQ(mf_disk[0], 0x11);
     ASSERT_EQ(mf_disk[PAGE_SIZE], 0x22);
-    /* Clean and idle: ticks do nothing, sync writes nothing */
+    /* Clean and idle: no timer fires, sync writes nothing */
     vfs_env_uptime_ms += 60000;
-    wb_tick();
+    vfs_env_run_timers();
     wb_sync_all();
     ASSERT_EQ(mf_writes, 2);
     ASSERT_FALSE(wb_timer_armed());
@@ -629,7 +629,7 @@ static void sleep_flusher(void) {
 /* While the allocator waits, nothing gets written: its time runs out */
 static void sleep_tick(void) {
     vfs_env_uptime_ms += WB_THROTTLE_MS;
-    wb_tick();
+    vfs_env_run_timers();
 }
 
 TEST(dirty_limits_follow_ram) {

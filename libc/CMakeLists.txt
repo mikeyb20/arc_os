@@ -24,6 +24,7 @@ set(LIBC_SOURCES
     src/stat.c
     src/wait.c
     src/auxv.c
+    src/time.c
 )
 
 add_library(arc STATIC ${LIBC_SOURCES})

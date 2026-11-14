@@ -10,6 +10,7 @@
 #include <linux/stat.h>
 #include <asm/stat.h>
 #include <linux/time_types.h>
+#include <linux/time.h>
 #include <asm/signal.h>
 #include <asm/sigcontext.h>
 #include <asm/ucontext.h>
@@ -31,6 +32,8 @@
 
 typedef struct stat               abi_stat;       /* asm/stat.h: the kernel's */
 typedef struct __kernel_timespec  abi_timespec;
+typedef struct timeval abi_timeval;
+typedef struct timezone abi_timezone;
 typedef struct sigaction          abi_sigaction;  /* asm/signal.h: the kernel's */
 typedef struct _fpx_sw_bytes abi_fpx_sw_bytes;
 typedef struct _fpstate abi_fpstate;    /* _fpstate_64 */

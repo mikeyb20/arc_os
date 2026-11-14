@@ -27,6 +27,7 @@
 #include "proc/sched.h"
 #include "proc/thread.h"
 #include "proc/waitqueue.h"
+#include "time/timer.h"
 #include "user_access.h"
 #include "arch/x86_64/cpu.h"
 #include "uapi/errno.h"
@@ -526,8 +527,67 @@ void vfs_env_as(uint32_t uid, uint32_t gid) {
 /* --- Data sources procfs prints --- */
 uint64_t vfs_env_uptime_ms = 1000;
 
-uint64_t pit_get_uptime_ms(void) {
-    return vfs_env_uptime_ms;
+/* Both clocks (time/clock.h) read the test's time: wall time = uptime here */
+uint64_t clock_mono_ns(void) {
+    return vfs_env_uptime_ms * 1000000;
+}
+
+uint64_t clock_real_ns(void) {
+    return vfs_env_uptime_ms * 1000000;
+}
+
+/* time/timer.h: a fixed table of armed timers, fired by vfs_env_run_timers */
+#define ENV_TIMERS 8
+static Timer *env_timers[ENV_TIMERS];
+
+void timer_init(Timer *t, TimerFn fn, void *arg) {
+    memset(t, 0, sizeof(*t));
+    t->expires = TIMER_NEVER;
+    t->fn = fn;
+    t->arg = arg;
+}
+
+void timer_arm(Timer *t, uint64_t expires) {
+    t->pending = expires != TIMER_NEVER;
+    t->expires = expires;
+    for (int i = 0; i < ENV_TIMERS; i++) {
+        if (env_timers[i] == t) return;
+    }
+    for (int i = 0; i < ENV_TIMERS; i++) {
+        if (env_timers[i] == NULL) {
+            env_timers[i] = t;
+            return;
+        }
+    }
+    fprintf(stderr, "vfs_env: more than %d timers\n", ENV_TIMERS);
+    abort();
+}
+
+int timer_cancel(Timer *t) {
+    int was = t->pending;
+    t->pending = 0;
+    return was;
+}
+
+void timer_cancel_sync(Timer *t) {
+    timer_cancel(t);
+}
+
+int timer_pending(const Timer *t) {
+    return t->pending;
+}
+
+int vfs_env_run_timers(void) {
+    int fired = 0;
+    for (int i = 0; i < ENV_TIMERS; i++) {
+        Timer *t = env_timers[i];
+        if (t != NULL && t->pending && t->expires <= clock_mono_ns()) {
+            t->pending = 0;   /* dequeued before the callback, as timer_interrupt does */
+            t->fn(t->arg);
+            fired++;
+        }
+    }
+    return fired;
 }
 
 uint64_t mm_anon_pages(void) {

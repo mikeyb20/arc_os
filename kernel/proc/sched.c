@@ -2,7 +2,7 @@
  *
  * Owns: one run queue per CPU (FIFO round robin with SCHED_SLICE_NS slices),
  * each CPU's idle thread, the CPU a woken thread runs on, idle-pull
- * balancing, affinity masks and the per-CPU statistics.
+ * balancing, affinity masks, CPU time per thread and the per-CPU statistics.
  *
  * Invariants:
  *  - A READY thread is on exactly one run queue (on_rq, cpu = that queue's
@@ -20,6 +20,10 @@
  *    thread not yet switched away just sets it RUNNING again, and an affinity
  *    change moves a running thread at its next schedule.
  *  - The idle thread never sits on a queue; it runs when the queue is empty.
+ *  - Tickless (M1-06, ADR-0017): a CPU's slice timer is armed only while it
+ *    runs a real thread and another waits in its queue (slice_armed). A
+ *    thread queued on a busy CPU whose slice timer is off gets that CPU to
+ *    arm it: directly on this CPU, by reschedule IPI on another.
  *
  * Locks: rq->lock (LOCK_LEVEL_RUNQUEUE), always with interrupts off; two at
  * once only in CPU-index order (subkey = index + 1). Wakeups take it under
@@ -30,7 +34,8 @@
  * at each online CPU once (O(CPUs)); an idle CPU's pull looks at each online
  * CPU once and at no more than SCHED_PULL_SCAN threads of the busiest queue.
  * No global lock in schedule; a switch does no lookup by ID (a thread points
- * to its process). Time accounting reads the TSC once per switch. */
+ * to its process). Time accounting reads the TSC once per switch. A switch
+ * between two real threads re-arms the slice timer (O(log timers)). */
 
 #include "proc/sched.h"
 #include "proc/process.h"
@@ -39,6 +44,8 @@
 #include "mm/kmalloc.h"
 #include "mm/vmm.h"
 #include "mm/mm.h"
+#include "time/clock.h"
+#include "time/timer.h"
 #include "arch/hal.h"
 #include "lib/kprintf.h"
 
@@ -63,16 +70,18 @@ typedef struct RunQueue {
     uint64_t nr_switches;
     uint64_t nr_migrations;
     int core;                   /* HAL_CORE_* */
+    uint8_t slice_armed;        /* the slice timer is queued (rq->lock) */
+    uint8_t need_resched;       /* switch at the next chance: slice ended, or asked by another CPU */
+    Timer slice;                /* this CPU's slice timer (on this CPU's timer queue) */
     LockdepCpu lockdep;
 } RunQueue;
 
-_Static_assert(sizeof(RunQueue) <= 320, "run queue: a few cache lines per CPU");
+_Static_assert(sizeof(RunQueue) <= 384, "run queue: a few cache lines per CPU");
 
 static RunQueue bsp_rq __attribute__((aligned(64)));
 static CpuMask online_mask;          /* CPUs whose run queue takes threads */
 static uint32_t sched_cpu_limit;     /* highest such CPU index + 1 */
 static CpuMask core_masks[3];        /* by HAL_CORE_* */
-static int slice_timer_ready;
 
 static inline RunQueue *this_rq(void) {
     return (RunQueue *)hal_this_cpu_sched();
@@ -82,11 +91,14 @@ static inline RunQueue *cpu_rq(uint32_t cpu) {
     return (RunQueue *)hal_cpu_sched(cpu);
 }
 
+static void sched_slice_expired(void *arg);
+
 static void rq_init(RunQueue *rq, uint32_t cpu) {
     spin_lock_init(&rq->lock, LOCK_LEVEL_RUNQUEUE, "run queue");
     rq->lock.subkey = (uint16_t)(cpu + 1);
     rq->cpu = cpu;
     rq->core = HAL_CORE_OTHER;
+    timer_init(&rq->slice, sched_slice_expired, rq);
 }
 
 /* Make rq take threads (after it is fully set up). */
@@ -141,6 +153,39 @@ static void rq_lock_two(RunQueue *a, RunQueue *b) {
     }
 }
 
+/* --- The slice timer (tickless, M1-06) --- */
+
+/* Does rq's CPU need a slice timer: a real thread runs and another waits */
+static int rq_wants_slice(const RunQueue *rq) {
+    return rq->curr != NULL && rq->curr != rq->idle && rq->nr_queued > 0;
+}
+
+/* Arm or stop the slice timer to match the queue (rq->lock held, on rq's
+ * own CPU, interrupts off). restart: a new thread got the CPU, so its slice
+ * starts now even if one was running. */
+static void rq_slice_update(RunQueue *rq, int restart) {
+    if (!timer_cpu_ready()) return;   /* boot, before clock_init */
+    if (rq_wants_slice(rq)) {
+        if (!rq->slice_armed || restart) {
+            timer_arm(&rq->slice, clock_mono_ns() + SCHED_SLICE_NS);
+            rq->slice_armed = 1;
+        }
+    } else if (rq->slice_armed) {
+        timer_cancel(&rq->slice);   /* own CPU: its callback can't be running */
+        rq->slice_armed = 0;
+    }
+}
+
+/* Slice timer callback (rq's CPU, interrupt context): ask for a switch;
+ * sched_timer_exit makes it once the timer queue is done */
+static void sched_slice_expired(void *arg) {
+    RunQueue *rq = arg;
+    spin_lock(&rq->lock);
+    rq->slice_armed = 0;
+    rq->need_resched = 1;
+    spin_unlock(&rq->lock);
+}
+
 /* --- Choosing a CPU --- */
 
 /* Threads queued or running there (the idle thread doesn't count). Read
@@ -176,11 +221,20 @@ static void sched_enqueue_on(uint32_t cpu, Thread *t) {
     uint64_t flags;
     spin_lock_irqsave(&rq->lock, &flags);
     rq_enqueue(rq, t);
-    int kick = rq->curr != NULL && rq->curr == rq->idle && cpu != hal_cpu_index();
+    int self = cpu == hal_cpu_index();
+    int kick = 0;
+    if (rq->curr != NULL && rq->curr == rq->idle) {
+        kick = !self;   /* an idle self is in an interrupt handler: its idle loop looks again */
+    } else if (rq->curr != NULL && !rq->slice_armed) {
+        /* A busy CPU picks the thread up at its slice end: it needs a slice
+         * timer now (a CPU's timer is programmed only by that CPU) */
+        if (self)
+            rq_slice_update(rq, 0);
+        else
+            kick = 1;
+    }
     spin_unlock_irqrestore(&rq->lock, flags);
-    /* An idle CPU otherwise sleeps until its next interrupt. A busy one picks
-     * the thread up at its slice end; an idle self is in an interrupt handler
-     * and its idle loop looks again on the way out. */
+    /* An idle CPU otherwise sleeps until its next interrupt */
     if (kick) hal_send_resched(cpu);
 }
 
@@ -232,10 +286,11 @@ static Mm *thread_mm(const Thread *t) {
 }
 
 /* Account the time since the last switch to the thread that had the CPU. */
-static void rq_account(RunQueue *rq, const Thread *prev) {
+static void rq_account(RunQueue *rq, Thread *prev) {
     uint64_t now = hal_tsc_read();
     uint64_t delta = now - rq->last_switch_tsc;
     rq->last_switch_tsc = now;
+    __atomic_store_n(&prev->run_cycles, prev->run_cycles + delta, __ATOMIC_RELAXED);
     if (prev == rq->idle)
         rq->idle_cycles += delta;
     else
@@ -252,6 +307,7 @@ void sched_schedule(void) {
     int had_kernel_lock = kernel_lock_suspend();
 
     spin_lock(&rq->lock);   /* interrupts are off (caller) */
+    rq->need_resched = 0;
     if (prev->state == THREAD_RUNNING && prev != rq->idle) {
         if (cpumask_test(&prev->affinity, rq->cpu)) {
             rq_enqueue(rq, prev);
@@ -276,6 +332,7 @@ void sched_schedule(void) {
     next->state = THREAD_RUNNING;
 
     if (next == prev) {
+        rq_slice_update(rq, 0);   /* e.g. the slice ended and nobody else waits any more */
         spin_unlock(&rq->lock);
         kernel_lock_resume(had_kernel_lock);
         return;
@@ -296,13 +353,9 @@ void sched_schedule(void) {
      * loaded-on set right for TLB shootdowns (M1-07) */
     mm_switch(thread_mm(next));
 
-    /* Slices only while a real thread runs: idle CPUs get no timer interrupts */
-    if (slice_timer_ready) {
-        if (next == rq->idle)
-            hal_slice_timer_stop();
-        else
-            hal_slice_timer_start(SCHED_SLICE_NS);
-    }
+    /* A slice only while others wait: idle CPUs and lone threads get no
+     * timer interrupt (ADR-0017) */
+    rq_slice_update(rq, 1);
 
     /* User FPU/SSE state and FS base (TLS), eagerly (fpu.h) */
     arch_thread_switch(prev, next);
@@ -336,11 +389,47 @@ void sched_yield(void) {
     irq_restore(flags);
 }
 
-void sched_preempt(void) {
+/* Switch now from interrupt context, unless this CPU holds a spinlock:
+ * then keep need_resched and try again in SCHED_RETRY_NS */
+static void sched_preempt(RunQueue *rq) {
+    if (hal_lock_depth() != 0) {
+        spin_lock(&rq->lock);
+        rq->need_resched = 1;
+        if (timer_cpu_ready()) {   /* always after clock_init; before it, the next switch clears it */
+            timer_arm(&rq->slice, clock_mono_ns() + SCHED_RETRY_NS);
+            rq->slice_armed = 1;
+        }
+        spin_unlock(&rq->lock);
+        return;
+    }
+    sched_schedule();
+}
+
+void sched_ipi(void) {
     RunQueue *rq = this_rq();
     if (rq == NULL || rq->curr == NULL) return;   /* this AP isn't scheduling yet */
-    if (hal_lock_depth() != 0) return;            /* never preempt a spinlock holder */
-    sched_schedule();
+    if (rq->curr == rq->idle || __atomic_load_n(&rq->need_resched, __ATOMIC_RELAXED)) {
+        sched_preempt(rq);
+        return;
+    }
+    spin_lock(&rq->lock);   /* a thread was queued here behind a running one */
+    rq_slice_update(rq, 0);
+    spin_unlock(&rq->lock);
+}
+
+void sched_timer_exit(void) {
+    RunQueue *rq = this_rq();
+    if (rq == NULL || rq->curr == NULL) return;
+    if (__atomic_load_n(&rq->need_resched, __ATOMIC_RELAXED)) sched_preempt(rq);
+}
+
+uint64_t sched_thread_cpu_ns(Thread *t) {
+    uint64_t flags = irq_save();   /* stay on this CPU between the two reads */
+    uint64_t cycles = __atomic_load_n(&t->run_cycles, __ATOMIC_RELAXED);
+    RunQueue *rq = this_rq();
+    if (rq != NULL && t == thread_current()) cycles += hal_tsc_read() - rq->last_switch_tsc;
+    irq_restore(flags);
+    return hal_tsc_to_ns(cycles);
 }
 
 void sched_wait_off_cpu(Thread *t) {
@@ -441,8 +530,6 @@ void sched_start_aps(void) {
         online++;
     }
 
-    hal_slice_timer_init(sched_preempt);
-    slice_timer_ready = 1;
     kprintf("[SCHED] %u CPUs scheduling (P-cores, E-cores split where the CPU is hybrid)\n", online);
     hal_release_aps();
 }
@@ -496,6 +583,7 @@ int sched_set_affinity(Thread *t, const CpuMask *mask) {
                 move = 1;
             } else if (rq->curr == t) {
                 kick = 1;   /* running there: it moves itself at its next schedule */
+                rq->need_resched = 1;
             }
         }
         spin_unlock_irqrestore(&rq->lock, flags);

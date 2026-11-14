@@ -64,7 +64,11 @@ reach the disk without periodic polling (ADR-0004, ADR-0016, ADR-0017).
   mapping. `sync(2)` (162) waits for a running pass and does one. Evicting a still-linked inode and releasing a
   block-device mapping (unmount) write back first. ramfs has no `writepage`: its pages count as dirty in
   /proc/meminfo but never wait for the flusher.
-- **Interim timer (to swap).** M1-06 (#45) brings one-shot timers and removes the PIT tick, `blk_tick` with it.
+- **Interim timer: swapped by M1-06 (#45, the second to merge).** `wb_timer` and `wake_timer` are now
+  `Timer`s under `wb_lock`; `wb_tick` and `blk_tick` are gone. Each callback re-checks under `wb_lock` that its
+  timer is still meant to fire (`wb_timer_set`, `wake_at_ns`, not re-armed), since a cancel doesn't wait for a
+  callback already running. The original plan, kept for the record:
+  M1-06 (#45) brings one-shot timers and removes the PIT tick, `blk_tick` with it.
   Until then the flusher's timer is a deadline in uptime ms (`deadline_ms`) that `wb_tick()` checks from the tick
   (`blk_tick` in kmain.c). **Whichever of M1-06 and M1-14 merges second** replaces it, about 15 lines in
   `writeback.c`: a `static Timer wb_timer` with `timer_init(&wb_timer, wb_timer_fn, NULL)` in `wb_init`;

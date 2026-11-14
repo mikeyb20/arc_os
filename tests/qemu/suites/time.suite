@@ -1,0 +1,9 @@
+# qemu.time (M1-06): clocks, sleeps and tickless idle on 4 CPUs. Built with
+# stock musl; exit status = failed checks. Idle runs last, alone: its 5 s
+# sleep reports budget idle_timer_irqs_5s (timer interrupts on idle CPUs).
+clocks    /boot/timetest clocks
+sleep     /boot/timetest sleep
+cputime   /boot/timetest cputime
+crosscpu  /boot/timetest crosscpu
+load      /boot/timetest load
+idle      /boot/timetest idle

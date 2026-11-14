@@ -3,14 +3,15 @@
  * Owns: the bring-up checks, one PASS/FAIL report line each: every MADT CPU
  * came online; an AVX2 checksum on every CPU matches the scalar one (XCR0
  * checked first); a 256 MB memory pattern test; the TSC rate against the PIT;
- * the PIT interrupt rate against the TSC; a kernel thread pinned to each CPU
+ * the TSCs in step on every CPU and a one-shot kernel timer firing on time
+ * (M1-06); a kernel thread pinned to each CPU
  * runs there (M1-05: this starts the other CPUs' schedulers early); a TLB
  * range flush reaches every CPU that has the address space loaded (M1-07).
  * Invariants: runs only in diagnostic mode, where init never starts, so no
  * user thread exists on any CPU while the AVX2 routine runs (ADR-0003 note);
  * the scheduler check runs last, after it. Every wait is bounded by TSC time.
  * Locks: none of its own (boot thread, pinned to the BSP).
- * Cost: about 1 s of memory traffic plus 300 ms of timed waits; two 16 KiB
+ * Cost: about 1 s of memory traffic plus 150 ms of timed waits; two 16 KiB
  * kernel threads per CPU that are never freed (diagnostic mode only). */
 
 #include "diag/diag.h"
@@ -23,6 +24,8 @@
 #include "mm/page.h"
 #include "proc/thread.h"
 #include "proc/sched.h"
+#include "time/clock.h"
+#include "time/timer.h"
 #include "lib/kprintf.h"
 #include "lib/testmode.h"
 #include "lib/mem.h"
@@ -32,8 +35,9 @@
 #define AVX_WORDS       ((4096u << AVX_ORDER) / 4)
 #define CALL_MAX_CYCLES (1ULL << 32)                  /* 1-4 s for every CPU to answer */
 #define MEMTEST_BLOCKS  64                             /* x 4 MiB = 256 MB */
-#define TIMER_CHECK_MS  200
-#define TIMER_HZ        100                                  /* kmain starts the PIT at 100 Hz */
+#define TIMER_CHECK_MS  50                                 /* one-shot timer due this far ahead */
+#define TIMER_WAIT_MS   1000                               /* ... and given this long to fire */
+#define TIMER_LATE_MS   10                                 /* TCG runs timers a few ms late */
 #define SCHED_CHECK_MS  2000 /* every pinned thread has run by then */
 #define TLB_CHECK_MS    2000 /* each step of the TLB check */
 #define TLB_TEST_ADDR   0x40000000ULL
@@ -207,19 +211,51 @@ static void check_tsc(void) {
     }
 }
 
-static void check_timer_irq(void) {
-    if (hal_tsc_info()->khz == 0) {
-        result("timer", 0, "TSC frequency unknown: cannot time the PIT");
+/* ---- Clocks and timers (M1-06) ---- */
+
+static void check_tsc_sync(void) {
+    const TscInfo *t = hal_tsc_info();
+    if (clock_info()->clamped) {
+        result("tscsync", 0, "TSCs out of step on %u CPUs, up to %lu cycles: clock reads are clamped", t->sync_cpus,
+               t->max_warp);
+    } else {
+        result("tscsync", 1, "TSCs in step on %u CPUs, %s", t->sync_cpus,
+               t->invariant ? "invariant" : "NOT invariant (may drift with power states)");
+    }
+}
+
+static volatile uint64_t timer_fired_ns;
+
+static void timer_check_fn(void *arg) {
+    (void)arg;
+    timer_fired_ns = clock_mono_ns();
+}
+
+static void check_timer(void) {
+    Timer t;
+    timer_init(&t, timer_check_fn, NULL);
+    timer_fired_ns = 0;
+    uint32_t cpu = hal_cpu_index();
+    uint64_t irqs = hal_cpu_irq_stat(cpu, HAL_IRQ_STAT_TIMER);
+    uint64_t flags = irq_save();
+    uint64_t due = clock_mono_ns() + TIMER_CHECK_MS * NSEC_PER_MSEC;
+    timer_arm(&t, due);
+    hal_enable_interrupts();
+    uint64_t give_up = due + TIMER_WAIT_MS * NSEC_PER_MSEC;
+    while (timer_fired_ns == 0 && clock_mono_ns() < give_up) hal_cpu_relax();
+    irq_restore(flags);
+    timer_cancel_sync(&t);
+    uint64_t fired = timer_fired_ns;
+    irqs = hal_cpu_irq_stat(cpu, HAL_IRQ_STAT_TIMER) - irqs;
+    if (fired == 0) {
+        result("timer", 0, "%s timer due in %u ms never fired (%lu timer interrupts)", clock_info()->event_mode,
+               TIMER_CHECK_MS, irqs);
         return;
     }
-    uint64_t start = hal_timer_ticks();
-    diag_delay_ms(TIMER_CHECK_MS);
-    uint64_t ticks = hal_timer_ticks() - start;
-    uint64_t want = TIMER_HZ * TIMER_CHECK_MS / 1000;
-    /* +-25%: emulators deliver timer interrupts late under load */
-    int ok = ticks * 4 >= want * 3 && ticks * 4 <= want * 5;
-    result("timer", ok, "%lu PIT interrupts in %u ms by the TSC (want %lu)%s", ticks, TIMER_CHECK_MS, want,
-           ticks == 0 ? ": IRQ0 never fired" : "");
+    uint64_t late_us = fired > due ? (fired - due) / NSEC_PER_USEC : 0;
+    result("timer", fired >= due && late_us <= TIMER_LATE_MS * 1000,
+           "%s timer due in %u ms fired %lu us late (%lu timer interrupts)%s", clock_info()->event_mode, TIMER_CHECK_MS,
+           late_us, irqs, fired < due ? ": EARLY" : "");
 }
 
 /* ---- SMP scheduler (M1-05): a thread pinned to each CPU runs there ---- */
@@ -380,7 +416,8 @@ void diag_selftest(int *passes, int *fails) {
     check_avx2();
     check_memory();
     check_tsc();
-    check_timer_irq();
+    check_tsc_sync();
+    check_timer();
     check_sched(); /* starts the other CPUs' schedulers */
     check_tlb(); /* needs them */
     diag_line("Self-test: %d PASS, %d FAIL", passed, failed);

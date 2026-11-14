@@ -2,6 +2,7 @@
  * kernel/fs sources over vfs_env.c (M1-11) */
 
 #include "test_framework.h"
+#include "mm/writeback.h"
 
 extern TestCase vfs_tests[];
 extern int vfs_test_count;
@@ -27,6 +28,7 @@ extern TestCase reclaim_tests[];
 extern int reclaim_test_count;
 
 int main(int argc, char **argv) {
+    wb_init();   /* as kmain does before any page is dirty: the flusher's timers */
     TestSuite suites[] = {
         {"vfs", vfs_tests, &vfs_test_count},
         {"fd", fd_tests, &fd_test_count},

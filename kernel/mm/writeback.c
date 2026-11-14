@@ -13,8 +13,12 @@
  * makes passes one at a time. A mapping is written with neither held except
  * wb_mutex (page locks, the mapping lock, the device below them).
  * Throttling: wb_wait_progress sleeps on progress_wq until a page is
- * written (`progress` moves) or its time runs out (the tick ends waits at
- * wake_at_ms); both under wb_lock.
+ * written (`progress` moves) or its time runs out (wake_timer, armed for the
+ * earliest waiter's wake_at_ns); both under wb_lock.
+ * Timers (M1-06): wb_timer (the flusher's 5 s) and wake_timer; wb_lock is
+ * the one owner of both (armed and cancelled under it). Their callbacks run
+ * in the timer interrupt with no lock held and take wb_lock, so a callback
+ * that raced a cancel or re-arm checks its timer is still meant to fire.
  * Cost: listing a mapping is O(1); a pass takes the mappings listed when it
  * started, so a mapping dirtied again and again cannot keep it going; a
  * page written takes wb_lock once; the dirty check of a write is two
@@ -32,6 +36,8 @@
 #include "proc/thread.h"
 #include "arch/hal.h"
 #include "drivers/blkdev.h"
+#include "time/clock.h"
+#include "time/timer.h"
 #include "lib/kprintf.h"
 #include "uapi/errno.h"
 
@@ -56,13 +62,15 @@ static int wb_kick;
 static Thread *flusher_thread;
 static WaitQueue progress_wq;   /* wb_wait_progress waiters */
 static uint64_t progress;       /* pages written (under wb_lock) */
-static uint64_t wake_at_ms;     /* the earliest waiter's time limit; 0 = nobody waits */
+static uint64_t wake_at_ns;     /* the earliest waiter's time limit (clock ns); 0 = nobody waits */
+static Timer wake_timer;        /* fires at wake_at_ns */
 
 /* Write-back got somewhere: wake the waiters (wb_lock held) */
 static void progress_locked(void) {
     progress++;
-    if (wake_at_ms != 0) {
-        __atomic_store_n(&wake_at_ms, 0, __ATOMIC_RELAXED);   /* each waiter still waiting sets its own again */
+    if (wake_at_ns != 0) {
+        wake_at_ns = 0;   /* each waiter still waiting sets its own again */
+        timer_cancel(&wake_timer);
         wq_wake_all(&progress_wq);
     }
 }
@@ -92,7 +100,7 @@ int wb_write_result(AddressSpace *as, int err) {
         return 0;
     }
     if (err != -EIO) return 1;   /* no memory and the like: not the disk failing, so no clock and no loss */
-    uint64_t now = hal_timer_uptime_ms();
+    uint64_t now = clock_mono_ns() / NSEC_PER_MSEC;
     uint64_t since = 0;
     if (__atomic_compare_exchange_n(&as->wb_fail_since, &since, now != 0 ? now : 1, 0, __ATOMIC_RELAXED,
                                     __ATOMIC_RELAXED))
@@ -108,10 +116,10 @@ int wb_write_result(AddressSpace *as, int err) {
     return 0;
 }
 
-/* --- The timer (interim: the PIT tick checks a deadline; M1-06 brings
- * one-shot timers, and then this becomes a Timer armed with timer_arm) --- */
+/* --- The flusher's timer --- */
 
-static uint64_t deadline_ms;   /* uptime at which the flusher runs; 0 = not armed */
+static Timer wb_timer;
+static int wb_timer_set;   /* armed and not cancelled since (wb_lock): the callback acts only then */
 
 static void kick_locked(void) {
     wb_kick = 1;
@@ -119,34 +127,43 @@ static void kick_locked(void) {
 }
 
 static void timer_arm_locked(void) {
-    if (__atomic_load_n(&deadline_ms, __ATOMIC_RELAXED) != 0) return;
-    uint64_t d = hal_timer_uptime_ms() + WB_DELAY_MS;
-    __atomic_store_n(&deadline_ms, d != 0 ? d : 1, __ATOMIC_RELEASE);
+    if (wb_timer_set) return;
+    __atomic_store_n(&wb_timer_set, 1, __ATOMIC_RELAXED);
+    timer_arm(&wb_timer, clock_mono_ns() + (uint64_t)WB_DELAY_MS * NSEC_PER_MSEC);
     STAT_ADD(timer_arms, 1);
 }
 
 static void timer_cancel_locked(void) {
-    __atomic_store_n(&deadline_ms, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&wb_timer_set, 0, __ATOMIC_RELAXED);
+    timer_cancel(&wb_timer);
 }
 
 int wb_timer_armed(void) {
-    return __atomic_load_n(&deadline_ms, __ATOMIC_ACQUIRE) != 0;
+    return __atomic_load_n(&wb_timer_set, __ATOMIC_RELAXED);
 }
 
-void wb_tick(void) {
-    uint64_t d = __atomic_load_n(&deadline_ms, __ATOMIC_ACQUIRE);
-    uint64_t w = __atomic_load_n(&wake_at_ms, __ATOMIC_ACQUIRE);
-    if (d == 0 && w == 0) return;
-    uint64_t now = hal_timer_uptime_ms();
-    if ((d == 0 || now < d) && (w == 0 || now < w)) return;
-    spin_lock(&wb_lock);   /* interrupt context: interrupts are off */
-    if (d != 0 && now >= d && __atomic_load_n(&deadline_ms, __ATOMIC_RELAXED) == d) {
-        timer_cancel_locked();
+/* Timer interrupt, no lock held */
+static void wb_timer_fn(void *arg) {
+    (void)arg;
+    spin_lock(&wb_lock);   /* interrupts are off */
+    if (wb_timer_set && !timer_pending(&wb_timer)) {   /* not cancelled or re-armed meanwhile */
+        __atomic_store_n(&wb_timer_set, 0, __ATOMIC_RELAXED);
         kick_locked();
     }
-    if (wake_at_ms != 0 && now >= wake_at_ms) {   /* a waiter's time ran out */
-        __atomic_store_n(&wake_at_ms, 0, __ATOMIC_RELAXED);
-        wq_wake_all(&progress_wq);
+    spin_unlock(&wb_lock);
+}
+
+/* A waiter's time ran out (timer interrupt, no lock held) */
+static void wake_timer_fn(void *arg) {
+    (void)arg;
+    spin_lock(&wb_lock);
+    if (wake_at_ns != 0 && !timer_pending(&wake_timer)) {
+        if (clock_mono_ns() >= wake_at_ns) {
+            wake_at_ns = 0;
+            wq_wake_all(&progress_wq);
+        } else {
+            timer_arm(&wake_timer, wake_at_ns);   /* fired for an older, later limit */
+        }
     }
     spin_unlock(&wb_lock);
 }
@@ -294,13 +311,16 @@ void wb_sync_all(void) {
 int wb_wait_progress(uint32_t max_ms) {
     if (flusher_thread != NULL && thread_current() == flusher_thread) return 0;   /* it would wait for itself */
     STAT_ADD(throttled, 1);
-    uint64_t until = hal_timer_uptime_ms() + max_ms;
+    uint64_t until = clock_mono_ns() + (uint64_t)max_ms * NSEC_PER_MSEC;
     uint64_t f;
     spin_lock_irqsave(&wb_lock, &f);
     uint64_t seen = progress;
     if (wb_head != NULL) kick_locked();   /* now, not when the 5 s timer fires */
-    while (progress == seen && hal_timer_uptime_ms() < until) {
-        if (wake_at_ms == 0 || until < wake_at_ms) __atomic_store_n(&wake_at_ms, until, __ATOMIC_RELEASE);
+    while (progress == seen && clock_mono_ns() < until) {
+        if (wake_at_ns == 0 || until < wake_at_ns) {
+            wake_at_ns = until;
+            timer_arm(&wake_timer, until);
+        }
         wq_sleep(&progress_wq, &wb_lock, f);
         spin_lock_irqsave(&wb_lock, &f);
     }
@@ -335,6 +355,8 @@ void wb_init(void) {
     wq_init(&flusher_wq);
     wq_init(&busy_wq);
     wq_init(&progress_wq);
+    timer_init(&wb_timer, wb_timer_fn, NULL);
+    timer_init(&wake_timer, wake_timer_fn, NULL);
 }
 
 void wb_start(void) {

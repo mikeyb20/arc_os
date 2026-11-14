@@ -22,7 +22,7 @@
 #include "mm/kmalloc.h"
 #include "mm/slab.h"
 #include "lib/mem.h"
-#include "arch/hal.h"
+#include "time/clock.h"
 #include "proc/process.h"
 #include "fs/vfs_internal.h"
 #include "uapi/dirent.h"
@@ -61,9 +61,7 @@ uint64_t vfs_anon_ino(void) {
 }
 
 void vfs_now(struct timespec *ts) {
-    uint64_t ms = hal_timer_uptime_ms();
-    ts->tv_sec = (int64_t)(ms / 1000);
-    ts->tv_nsec = (int64_t)(ms % 1000) * 1000000;
+    clock_ns_to_timespec(clock_real_ns(), ts);   /* file times are wall-clock times (M1-06) */
 }
 
 static void inode_setup(Inode *inode, SuperBlock *sb, uint64_t ino, uint32_t mode) {

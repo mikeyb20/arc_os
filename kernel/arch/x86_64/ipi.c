@@ -10,14 +10,16 @@
 #include "arch/x86_64/percpu.h"
 #include "arch/x86_64/cpuid.h"
 #include "arch/x86_64/tlb.h"
+#include "arch/hal_lock.h"
 #include "proc/sched.h"
 #include "lib/kprintf.h"
 
 /* Reschedule handler: another CPU queued a thread here (or moved one away) */
 static void ipi_schedule_handler(InterruptFrame *frame) {
     (void)frame;
-    lapic_eoi();   /* first: sched_preempt may switch threads */
-    sched_preempt();
+    this_cpu()->irq_stat[PERCPU_STAT_RESCHED]++;
+    lapic_eoi();   /* first: sched_ipi may switch threads */
+    sched_ipi();
 }
 
 /* Halt handler — stop this CPU */
@@ -35,6 +37,7 @@ static uint32_t call_done;
 
 static void ipi_call_handler(InterruptFrame *frame) {
     (void)frame;
+    this_cpu()->irq_stat[PERCPU_STAT_CALL]++;
     void (*fn)(void *) = __atomic_load_n(&call_fn, __ATOMIC_ACQUIRE);
     if (fn != NULL) {
         fn(call_arg);
@@ -43,12 +46,17 @@ static void ipi_call_handler(InterruptFrame *frame) {
     lapic_eoi();
 }
 
-uint32_t ipi_call_others(void (*fn)(void *arg), void *arg, uint64_t max_cycles) {
+static uint32_t ipi_call(void (*fn)(void *arg), void *arg, uint64_t max_cycles, int self) {
     if (cpu_count <= 1) return 0;
     call_arg = arg;
     __atomic_store_n(&call_done, 0, __ATOMIC_SEQ_CST);
     __atomic_store_n(&call_fn, fn, __ATOMIC_RELEASE);   /* publishes call_arg */
     lapic_send_ipi_all_excluding_self(IPI_VEC_CALL);
+    if (self) {
+        uint64_t flags = irq_save();
+        fn(arg);
+        irq_restore(flags);
+    }
 
     uint64_t start = cpu_rdtsc();
     while (__atomic_load_n(&call_done, __ATOMIC_SEQ_CST) < cpu_count - 1 && cpu_rdtsc() - start < max_cycles) {
@@ -56,6 +64,14 @@ uint32_t ipi_call_others(void (*fn)(void *arg), void *arg, uint64_t max_cycles) 
     }
     __atomic_store_n(&call_fn, NULL, __ATOMIC_RELEASE);   /* a late CPU runs nothing */
     return __atomic_load_n(&call_done, __ATOMIC_SEQ_CST);
+}
+
+uint32_t ipi_call_others(void (*fn)(void *arg), void *arg, uint64_t max_cycles) {
+    return ipi_call(fn, arg, max_cycles, 0);
+}
+
+uint32_t ipi_call_all(void (*fn)(void *arg), void *arg, uint64_t max_cycles) {
+    return ipi_call(fn, arg, max_cycles, 1);
 }
 
 void ipi_init(void) {

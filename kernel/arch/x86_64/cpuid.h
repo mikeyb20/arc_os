@@ -13,10 +13,19 @@ static inline void cpuid(uint32_t leaf, uint32_t sub, uint32_t *a, uint32_t *b,
                       : "a"(leaf), "c"(sub));
 }
 
-/* Read the time-stamp counter (raw cycles; calibration comes with M1-06). */
+/* Read the time-stamp counter (raw cycles; tsc.c turns them into time). */
 static inline uint64_t cpu_rdtsc(void) {
     uint32_t lo, hi;
     __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+/* The TSC, read only after every earlier instruction (LFENCE): a clock read
+ * after a load of another CPU's timestamp can't be taken before that load
+ * (tsc_clock_ns; Linux's rdtsc_ordered). */
+static inline uint64_t cpu_rdtsc_ordered(void) {
+    uint32_t lo, hi;
+    __asm__ volatile("lfence; rdtsc" : "=a"(lo), "=d"(hi) : : "memory");
     return ((uint64_t)hi << 32) | lo;
 }
 

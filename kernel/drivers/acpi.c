@@ -4,6 +4,9 @@
 #include "lib/mem.h"
 
 #define ACPI_DMAR_FLAGS_OFFSET 37   /* after the header and the host address width */
+#define ACPI_HPET_GAS_OFFSET     40   /* HPET table: base address (Generic Address Structure) */
+#define ACPI_HPET_MIN_LEN        56
+#define ACPI_FADT_CENTURY_OFFSET 108  /* FADT: CMOS index of the RTC century register */
 
 static AcpiInfo acpi_info;
 static int acpi_initialized;
@@ -136,8 +139,15 @@ static void process_sdt(uint64_t phys) {
         kprintf("[ACPI] DMAR: interrupt remapping %s, x2APIC opt-out %s\n",
                 (acpi_info.dmar_flags & ACPI_DMAR_INTR_REMAP) ? "supported" : "no",
                 (acpi_info.dmar_flags & ACPI_DMAR_X2APIC_OPT_OUT) ? "SET" : "no");
+    } else if (memcmp(header->signature, "HPET", 4) == 0 && header->length >= ACPI_HPET_MIN_LEN) {
+        /* Generic Address Structure at 40: address space ID 0 = memory, address at 44 */
+        const uint8_t *t = (const uint8_t *)header;
+        if (t[ACPI_HPET_GAS_OFFSET] == 0) memcpy(&acpi_info.hpet_address, t + ACPI_HPET_GAS_OFFSET + 4, 8);
+        kprintf("[ACPI] HPET at 0x%lx\n", acpi_info.hpet_address);
+    } else if (memcmp(header->signature, "FACP", 4) == 0 && header->length > ACPI_FADT_CENTURY_OFFSET) {
+        acpi_info.century_reg = ((const uint8_t *)header)[ACPI_FADT_CENTURY_OFFSET];
     }
-    /* Future: FACP (FADT), HPET, MCFG, etc. */
+    /* Future: MCFG, etc. */
 }
 
 int acpi_init(uint64_t rsdp_phys) {

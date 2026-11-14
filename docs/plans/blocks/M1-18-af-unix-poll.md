@@ -36,3 +36,5 @@ file uses.
 
 **Notes.**
 -
+- From M1-06: poll/select timeouts arm a `Timer` (`time/timer.h`) or sleep with `timer_sleep_until`; convert
+  user timeouts with `clock_timespec_to_ns` (`time/clock.h`). No polling loops (ADR-0017).

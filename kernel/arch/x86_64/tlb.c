@@ -61,6 +61,7 @@ void tlb_shootdown_poll(void) {
 
 static void tlb_ipi_handler(InterruptFrame *frame) {
     (void)frame;
+    this_cpu()->irq_stat[PERCPU_STAT_TLB]++;
     tlb_shootdown_poll();
     lapic_eoi();
 }

@@ -128,11 +128,6 @@ int wb_write_result(AddressSpace *as, int err);
 /* Count a BLK_OP_FLUSH sent for write-back (filemap_flush_device). */
 void wb_device_flushed(void);
 
-/* The timer tick (interim until M1-06's one-shot timers): fires the
- * flusher's timer once its time has come, and ends wb_wait_progress waits
- * whose time ran out. Interrupt context. */
-void wb_tick(void);
-
 /* Counters. */
 void wb_stats(WbStats *out);
 

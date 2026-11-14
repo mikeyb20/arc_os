@@ -20,9 +20,10 @@
 #include <sys/wait.h>
 
 #define PREEMPTIONS_WANTED 20
-#define GIVE_UP_TSC        30000000000ULL   /* ~10 s of TSC: preemption isn't happening */
+#define GIVE_UP_TSC        60000000000ULL   /* ~20 s of TSC: preemption isn't happening */
 #define SPIN               2000     /* general-register loop per round */
 #define GAP_FACTOR         50       /* a round this many times the fastest = switched out */
+#define SPINNERS           8        /* CPU-bound neighbours: two or more threads per CPU */
 
 /* clang-format off */
 struct round {
@@ -103,7 +104,23 @@ static int worker(int id, pid_t child) {
     return failures;
 }
 
+/* A CPU-bound neighbour; the syscall each lap lets SIGKILL in, and it stops
+ * by itself if the test dies first */
+static void spinner(void) {
+    pid_t parent = getppid();
+    for (;;) {
+        for (volatile int i = 0; i < 100000; i++) {
+        }
+        if (getppid() != parent) _exit(0);
+    }
+}
+
 int main(void) {
+    pid_t spinners[SPINNERS];
+    for (int i = 0; i < SPINNERS; i++) {
+        spinners[i] = fork();
+        if (spinners[i] == 0) spinner();
+    }
     signal(SIGUSR1, on_usr1);   /* before fork: the child inherits it */
     pid_t pid = fork();
     if (pid < 0) {
@@ -120,6 +137,11 @@ int main(void) {
         failures++;
     } else {
         failures += WEXITSTATUS(status);
+    }
+    for (int i = 0; i < SPINNERS; i++) {
+        if (spinners[i] <= 0) continue;
+        kill(spinners[i], SIGKILL);
+        waitpid(spinners[i], NULL, 0);
     }
     printf("fpu_avx: %d failures\n", failures);
     return failures;
