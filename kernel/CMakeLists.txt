@@ -169,6 +169,10 @@ if(KERNEL_SOURCES)
         $<$<COMPILE_LANGUAGE:ASM_NASM>:-f elf64>
         $<$<COMPILE_LANGUAGE:ASM_NASM>:-I${CMAKE_CURRENT_SOURCE_DIR}/arch/x86_64/>   # smap.inc (M1-19)
     )
+    # CMake doesn't scan NASM %include lines: name the include so a change to it
+    # rebuilds the stubs that expand it
+    set_source_files_properties(arch/x86_64/uaccess.asm arch/x86_64/isr_stubs.asm
+        PROPERTIES OBJECT_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/arch/x86_64/smap.inc)
 
     # Kernel C never touches x87/SSE/AVX registers: they hold the running
     # thread's user state, saved only at context switch (ADR-0003, fpu.h).

@@ -219,28 +219,34 @@ enum {
     KUSER_COPY,      /* the copy routine: resolve the page or take the fixup */
     KUSER_MISSING,   /* elsewhere, on a missing page (a NULL pointer): an ordinary page fault */
     KUSER_EXEC,      /* the kernel jumped into a user page: SMEP */
+    KUSER_EXEC_NX,   /* the same without SMEP: the page was no-execute */
     KUSER_DIRECT,    /* the kernel touched a user page outside the copy routine: SMAP */
+    KUSER_RO_WRITE,  /* the same without SMAP: a write to a read-only page (CR0.WP) */
     KUSER_NO_STAC,   /* the copy routine ran without RFLAGS.AC under SMAP */
 };
 
 static const char *const kuser_reasons[] = {
-    [KUSER_EXEC] = "SMEP: kernel ran user code",
-    [KUSER_DIRECT] = "SMAP: kernel touched user memory",
+    [KUSER_EXEC] = "SMEP: kernel ran user code",                 /* any user page */
+    [KUSER_EXEC_NX] = "NX: kernel ran user code",                /* no SMEP: a no-execute page */
+    [KUSER_DIRECT] = "SMAP: kernel touched user memory",         /* read or write */
+    [KUSER_RO_WRITE] = "WP: kernel wrote a read-only user page", /* no SMAP: only this faults */
     [KUSER_NO_STAC] = "SMAP: user copy without STAC",
 };
 
 /* Sort a kernel-mode fault at a user address. in_copy: RIP is in the
  * exception table. smap: SMAP is on. Present pages fault here only through
- * a protection: SMEP for an instruction fetch; SMAP (or a write to a
- * read-only page) for data. Without SMAP a direct read of a present user
- * page doesn't fault at all, which is why SMAP is wanted. */
+ * a protection: SMEP (or NX) for an instruction fetch; SMAP (or, without it,
+ * a write to a read-only page) for data. Without SMAP a direct read of a
+ * present user page doesn't fault at all, which is why SMAP is wanted.
+ * KUSER_EXEC becomes KUSER_EXEC_NX in kuser_fault_panic when SMEP is off. */
 static int kuser_fault_kind(uint64_t err, uint64_t rflags, int in_copy, int smap) {
     if (in_copy && !(err & PF_INSN)) {
         if (smap && !(rflags & RFLAGS_AC)) return KUSER_NO_STAC;   /* it would fault again forever */
         return KUSER_COPY;
     }
     if (!(err & PF_PRESENT)) return KUSER_MISSING;
-    return (err & PF_INSN) ? KUSER_EXEC : KUSER_DIRECT;
+    if (err & PF_INSN) return KUSER_EXEC;
+    return smap ? KUSER_DIRECT : KUSER_RO_WRITE;
 }
 
 /* Kernel bug: panic, naming the function that did it. For a jump into user
@@ -248,7 +254,8 @@ static int kuser_fault_kind(uint64_t err, uint64_t rflags, int in_copy, int smap
  * left its return address on top of the kernel stack. */
 static void kuser_fault_panic(InterruptFrame *frame, uint64_t addr, int kind) {
     uint64_t at = frame->rip, off = 0;
-    if (kind == KUSER_EXEC && frame->rsp >= KERNEL_HALF_START && (frame->rsp & 7) == 0) {
+    if (kind == KUSER_EXEC && !(protect_cpu_flags() & PROTECT_SMEP)) kind = KUSER_EXEC_NX;
+    if ((kind == KUSER_EXEC || kind == KUSER_EXEC_NX) && frame->rsp >= KERNEL_HALF_START && (frame->rsp & 7) == 0) {
         at = *(const uint64_t *)frame->rsp;
     }
     const char *fn = ksym_lookup(at, &off);
@@ -438,16 +445,10 @@ static int vector_may_deliver(uint64_t vector) {
  * switches to; user mode can set AC, so a stub that forgot CLAC shows here
  * on the first fault or interrupt from such a program (mmtest "ac"). */
 static void check_ac_clear(const InterruptFrame *frame) {
-#if defined(ARC_DEBUG) && ARC_DEBUG
-    uint64_t rflags;
-    __asm__ volatile("pushfq; pop %0" : "=r"(rflags));
-    if (protect_smap_on && (rflags & RFLAGS_AC)) {
+    if (protect_ac_leaked()) {
         kprintf("[SECURITY] RFLAGS.AC still set in the kernel after vector %lu\n", frame->vector);
         exception_panic((InterruptFrame *)frame, "SMAP: AC leaked into the kernel");
     }
-#else
-    (void)frame;
-#endif
 }
 
 void isr_dispatch(InterruptFrame *frame) {

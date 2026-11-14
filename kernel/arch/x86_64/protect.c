@@ -49,8 +49,11 @@ void protect_cpu_init(void) {
      * Limine sets it; this makes it ours. */
     write_cr0(read_cr0() | CR0_WP);
     /* The page tables use the NX bit everywhere (the HHDM, kernel data, user
-     * pages); with EFER.NXE off it would be a reserved bit. Limine sets it,
-     * this makes sure. The floor check (cpu.c) stops a CPU without NX. */
+     * pages); with EFER.NXE off it would be a reserved bit, and the CR3 load
+     * before this call would already have faulted. So this write can't be
+     * what makes NX work: Limine sets NXE on every CPU it starts, and the
+     * floor check (cpu.c) stops a CPU without NX before the VMM runs. It only
+     * states that the bit is ours (protect_cpu_flags reports it). */
     if (f->ext1_edx & CPUID_EXT1_EDX_NX) wrmsr(MSR_EFER, rdmsr(MSR_EFER) | EFER_NXE);
     uint64_t cr4 = read_cr4();
     if (f->l7_ebx & CPUID7_EBX_SMEP) cr4 |= CR4_SMEP;

@@ -25,6 +25,20 @@
  * (smap.inc). Set once on the BSP, before any AP starts; never cleared. */
 extern uint8_t protect_smap_on;
 
+/* Debug builds: 1 when RFLAGS.AC is set here while SMAP is on, i.e. AC leaked
+ * into kernel C code and SMAP is off for it without anything breaking. Every
+ * kernel entry checks it (isr_dispatch; syscall entry and exit). Release
+ * builds: always 0, no cost. Cost: one PUSHF per entry in debug builds. */
+static inline int protect_ac_leaked(void) {
+#if defined(ARC_DEBUG) && ARC_DEBUG
+    uint64_t rflags;
+    __asm__ volatile("pushfq; pop %0" : "=r"(rflags));
+    return protect_smap_on && (rflags & RFLAGS_AC);
+#else
+    return 0;
+#endif
+}
+
 /* Turn on WP, NX, SMEP and SMAP on this CPU (each when the CPU has it). Call on
  * every CPU with interrupts off, once the kernel's page tables are loaded
  * (Limine's may map low memory as user pages). */

@@ -590,6 +590,24 @@ static uint64_t kernel_effective_pte(uint64_t virt) {
     return 0;
 }
 
+/* Count executable leaves under entry e (a table entry at level, 0 = PML4,
+ * mapping from va) that lie outside the code part. NX at any level covers
+ * everything below it, so those subtrees are skipped. */
+static void wx_walk_exec(uint64_t e, int level, uint64_t va, const KernelImage *k, VmmWxCheck *out) {
+    static const int shift[4] = {39, 30, 21, 12};
+    if (!(e & PTE_PRESENT) || (e & PTE_NX)) return;
+    if (level == 3 || (level > 0 && (e & PTE_HUGE))) {
+        uint64_t end = va + (1ULL << shift[level]);
+        if (va >= k->text && end <= k->rodata) return;
+        if (out->stray_exec++ == 0) out->first_stray = va;
+        return;
+    }
+    const uint64_t *t = (const uint64_t *)phys_to_virt(e & PTE_ADDR_MASK);
+    for (uint64_t i = 0; i < 512; i++) {
+        wx_walk_exec(t[i], level + 1, va | (i << shift[level + 1]), k, out);
+    }
+}
+
 int vmm_kernel_wx_check(VmmWxCheck *out) {
     memset(out, 0, sizeof(*out));
     const KernelImage *k = &kimage;
@@ -611,7 +629,11 @@ int vmm_kernel_wx_check(VmmWxCheck *out) {
     }
     uint64_t hhdm = kernel_effective_pte(hhdm_offset);   /* physical page 0 through the HHDM */
     out->hhdm_ok = (hhdm & PTE_PRESENT) && (hhdm & PTE_WRITABLE) && (hhdm & PTE_NX);
-    return (out->wx_pages == 0 && out->wrong_pages == 0 && out->hhdm_ok) ? 0 : -1;
+    const uint64_t *pml4 = (const uint64_t *)phys_to_virt(kernel_pml4_phys);
+    for (uint64_t i = 256; i < 512; i++) {   /* the kernel half: sign-extended addresses */
+        wx_walk_exec(pml4[i], 0, 0xFFFF000000000000ULL | (i << 39), k, out);
+    }
+    return (out->wx_pages == 0 && out->wrong_pages == 0 && out->stray_exec == 0 && out->hhdm_ok) ? 0 : -1;
 }
 
 /* --- Initialization --- */

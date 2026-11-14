@@ -163,7 +163,7 @@ static char _kernel_end[1];
 
 /* W^X check result (from vmm.h) */
 typedef struct VmmWxCheck {
-    uint64_t text_pages, ro_pages, data_pages, wx_pages, wrong_pages, first_wrong;
+    uint64_t text_pages, ro_pages, data_pages, wx_pages, wrong_pages, first_wrong, stray_exec, first_stray;
     int hhdm_ok;
 } VmmWxCheck;
 int vmm_kernel_wx_check(VmmWxCheck *out);
@@ -796,6 +796,7 @@ TEST(kernel_image_mapped_wx) {
     ASSERT_EQ(wx.data_pages, 2);
     ASSERT_EQ(wx.wx_pages, 0);
     ASSERT_EQ(wx.wrong_pages, 0);
+    ASSERT_EQ(wx.stray_exec, 0); /* the code pages are the only executable ones */
     ASSERT_TRUE(wx.hhdm_ok);
     return 0;
 }
@@ -815,6 +816,7 @@ TEST(kernel_wx_check_catches_bad_pages) {
     *wx_pte(KI_START + 0x6000) &= ~PTE_NX;
     ASSERT_EQ(vmm_kernel_wx_check(&wx), -1);
     ASSERT_EQ(wx.wx_pages, 1);
+    ASSERT_EQ(wx.stray_exec, 1);
     ASSERT_EQ(wx.first_wrong, KI_START + 0x6000);
 
     wx_setup(); /* writable read-only data: not W+X, still wrong */
@@ -836,6 +838,23 @@ TEST(kernel_wx_check_catches_bad_pages) {
     ASSERT_EQ(vmm_kernel_wx_check(&wx), -1);
     ASSERT_EQ(wx.wrong_pages, 3); /* the three code pages */
     ASSERT_EQ(wx.first_wrong, KI_START + 0x1000);
+
+    wx_setup(); /* an executable page elsewhere in the kernel half */
+    kernel_map_page(0xFFFF900000003000ULL, 0x300000, 0);
+    ASSERT_EQ(vmm_kernel_wx_check(&wx), -1);
+    ASSERT_EQ(wx.wrong_pages, 0);
+    ASSERT_EQ(wx.stray_exec, 1);
+    ASSERT_EQ(wx.first_stray, 0xFFFF900000003000ULL);
+
+    wx_setup(); /* an executable 2 MiB page counts once; NX above a table hides it */
+    map_range_2mb(0xFFFFA00000000000ULL, 0, 0x200000, VMM_FLAG_WRITABLE);
+    ASSERT_EQ(vmm_kernel_wx_check(&wx), -1);
+    ASSERT_EQ(wx.stray_exec, 1);
+    ASSERT_EQ(wx.first_stray, 0xFFFFA00000000000ULL);
+    uint64_t *pml4x = (uint64_t *)phys_to_virt(kernel_pml4_phys);
+    pml4x[PML4_INDEX(0xFFFFA00000000000ULL)] |= PTE_NX;
+    ASSERT_EQ(vmm_kernel_wx_check(&wx), 0);
+    ASSERT_EQ(wx.stray_exec, 0);
 
     wx_setup(); /* an HHDM that is executable */
     kernel_map_page(hhdm_offset, 0, VMM_FLAG_WRITABLE);

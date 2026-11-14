@@ -166,8 +166,14 @@ void isr_test_irq_vector_dispatch(uint8_t vector) {
     vector_seen = vector;
 }
 
+#include "../kernel/arch/x86_64/protect.h"
+
 /* SMAP present (M1-19): the tests set it; the kernel's lives in protect.c */
 uint8_t protect_smap_on;
+static uint32_t stub_protect_flags = PROTECT_NX | PROTECT_SMEP | PROTECT_SMAP | PROTECT_WP;
+uint32_t protect_cpu_flags(void) {
+    return stub_protect_flags;
+}
 
 #include "../kernel/arch/x86_64/isr.c"
 
@@ -595,6 +601,13 @@ static int test_kernel_pf_smap_smep(void) {
     /* A missing page outside the copy routine (a NULL pointer): plain */
     ASSERT_STR_EQ(kernel_user_pf(0x3000, 0, 0, 0x10), "Page Fault");
     ASSERT_STR_EQ(kernel_user_pf(0x10, PF_INSN, 0, 0x10), "Page Fault");
+    /* Without SMAP and SMEP the reason says which protection caught it */
+    protect_smap_on = 0;
+    stub_protect_flags = PROTECT_NX | PROTECT_WP;
+    ASSERT_STR_EQ(kernel_user_pf(0x3000, PF_PRESENT | PF_WRITE, 0, 0x500000), "WP: kernel wrote a read-only user page");
+    ASSERT_STR_EQ(kernel_user_pf(0x500000, PF_PRESENT | PF_INSN, 0, 0x500000), "NX: kernel ran user code");
+    stub_protect_flags = PROTECT_NX | PROTECT_SMEP | PROTECT_SMAP | PROTECT_WP;
+    protect_smap_on = 1;
     /* A kernel address: plain too (a write to .text under W^X) */
     ASSERT_STR_EQ(kernel_user_pf(0x3000, PF_PRESENT | PF_WRITE, 0, 0xFFFFFFFF80001000ULL), "Page Fault");
     ASSERT_EQ(stub_fault_calls, 0);   /* none of them tried to resolve the page */
@@ -622,7 +635,7 @@ static int test_kuser_fault_kind(void) {
     ASSERT_EQ(kuser_fault_kind(0, 0, 1, 0), KUSER_COPY);
     ASSERT_EQ(kuser_fault_kind(0, 0, 1, 1), KUSER_NO_STAC);
     ASSERT_EQ(kuser_fault_kind(PF_PRESENT, 0, 0, 1), KUSER_DIRECT);
-    ASSERT_EQ(kuser_fault_kind(PF_PRESENT | PF_WRITE, 0, 0, 0), KUSER_DIRECT);   /* CR0.WP */
+    ASSERT_EQ(kuser_fault_kind(PF_PRESENT | PF_WRITE, 0, 0, 0), KUSER_RO_WRITE);   /* CR0.WP */
     ASSERT_EQ(kuser_fault_kind(PF_PRESENT | PF_INSN, 0, 0, 1), KUSER_EXEC);
     ASSERT_EQ(kuser_fault_kind(0, 0, 0, 1), KUSER_MISSING);
     ASSERT_EQ(kuser_fault_kind(PF_INSN, 0, 0, 1), KUSER_MISSING);

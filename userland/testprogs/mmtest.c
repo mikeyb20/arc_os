@@ -300,6 +300,30 @@ static void test_ac(void) {
     CHECK(*p == 1);
     CHECK(flags_after & 0x40000);   /* the fault's return gave AC back */
     munmap((void *)p, PG);
+
+    /* A syscall made with AC set: SFMASK must clear it (debug kernels check
+     * at syscall entry and exit) */
+    __asm__ volatile("pushfq; orq $0x40000, (%%rsp); popfq" ::: "memory", "cc");
+    (void)getpid();
+    __asm__ volatile("pushfq; andq $~0x40000, (%%rsp); popfq" ::: "memory", "cc");
+
+    /* A #GP (a paranoid vector) taken with AC set: CLI at CPL 3. The stub must
+     * clear AC before C runs (debug kernels check in isr_dispatch). */
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_sigaction = on_segv;
+    sa.sa_flags = SA_SIGINFO | SA_NODEFER;
+    CHECK(sigaction(SIGSEGV, &sa, NULL) == 0);
+    segv_code = -1;
+    if (sigsetjmp(segv_jmp, 0) == 0) {
+        __asm__ volatile("sub $128, %%rsp; pushfq; orq $0x40000, (%%rsp); popfq;"
+                         "cli; add $128, %%rsp" ::
+                             : "memory", "cc");
+        CHECK(0 && "cli ran in user mode");
+    }
+    CHECK(segv_code != -1);   /* the handler ran */
+    __asm__ volatile("pushfq; andq $~0x40000, (%%rsp); popfq" ::: "memory", "cc");
+    signal(SIGSEGV, SIG_DFL);
     printf("mmtest: ac ok\n");
 }
 

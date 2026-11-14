@@ -133,6 +133,7 @@ add_test(NAME qemu.lockorder COMMAND ${_qemu_test} --suite lockorder --expect-pa
 # read()/write() on untouched and unmapped buffers, brk, stack growth,
 # /proc/self/maps, fork's private pages
 add_test(NAME qemu.mm COMMAND ${_qemu_test} --suite mm --module mmtest
+    --expect "\\[SECURITY\\] NX on, SMEP on, SMAP on"
     --expect "mmtest: malloc ok"
     --expect "mmtest: mmap ok"
     --expect "mmtest: segv ok"
@@ -218,12 +219,14 @@ add_test(NAME qemu.hardening.smep COMMAND ${_qemu_test} --suite kpanic --name ha
     --expect "\\[SECURITY\\] SMEP: kernel ran user code: hardening_test_smep\\+0x[0-9a-f]+ \\(RIP 400000\\)"
     --expect "PANIC: SMEP: kernel ran user code on CPU 0")
 
-# The x86-64-v3 floor (Haswell) has no SMAP: STAC and CLAC would raise #UD,
-# so the copy routine and the entry stubs skip them (M1-19). The mm suite
-# exercises every user-copy path on a CPU without SMAP or SMEP.
+# The x86-64-v3 floor (Haswell) has SMEP but no SMAP: STAC and CLAC would
+# raise #UD, so the copy routine and the entry stubs skip them (M1-19). The mm
+# suite exercises every user-copy path on QEMU's Haswell model. --cpu forces
+# TCG: under KVM, hiding SMAP from CPUID leaves STAC/CLAC working in hardware,
+# so a missing skip wouldn't show.
 add_test(NAME qemu.mm.nosmap COMMAND ${_qemu_test} --suite mm --name mm-nosmap --module mmtest
-    --cpu-flags=-smap,-smep
-    --expect "\\[SECURITY\\] NX on, SMEP off \\(CPU lacks it\\), SMAP off \\(CPU lacks it\\)"
+    --cpu Haswell
+    --expect "\\[SECURITY\\] NX on, SMEP on, SMAP off \\(CPU lacks it\\)"
     --expect "mmtest: copy ok"
     --expect "mmtest: 0 failures")
 

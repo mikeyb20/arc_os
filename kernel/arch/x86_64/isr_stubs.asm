@@ -223,9 +223,10 @@ isr_paranoid:
     iretq
 
 ; --- ISR stub table ---
-; Array of 256 function pointers, exported for IDT setup in C
+; Array of 256 function pointers, exported for IDT setup in C. Only read
+; (idt_init), so read-only: a stray write can't redirect a vector (M1-19).
 
-section .data
+section .rodata
 global isr_stub_table
 
 isr_stub_table:

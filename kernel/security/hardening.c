@@ -58,9 +58,9 @@ void hardening_protect_boot_cpu(void) {
             (f & HAL_PROTECT_SMAP) ? "on" : "off (CPU lacks it)", wx.text_pages, wx.ro_pages, wx.data_pages);
     if (rc != 0 || !(f & HAL_PROTECT_NX) || !(f & HAL_PROTECT_WP)) {
         kprintf("[SECURITY] FATAL: kernel mappings wrong: %lu writable+executable, %lu not as their part says "
-                "(first at 0x%lx), HHDM %s, CR0.WP %s\n",
-                wx.wx_pages, wx.wrong_pages, wx.first_wrong, wx.hhdm_ok ? "ok" : "not rw-/NX",
-                (f & HAL_PROTECT_WP) ? "on" : "OFF");
+                "(first at 0x%lx), %lu executable outside the code (first at 0x%lx), HHDM %s, CR0.WP %s\n",
+                wx.wx_pages, wx.wrong_pages, wx.first_wrong, wx.stray_exec, wx.first_stray,
+                wx.hhdm_ok ? "ok" : "not rw-/NX", (f & HAL_PROTECT_WP) ? "on" : "OFF");
         KERNEL_PANIC();
     }
 }

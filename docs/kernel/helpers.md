@@ -22,7 +22,7 @@ Kernel and user space are separate worlds: the same function in `kernel/lib` and
 | Budget metric (CI) | `ARC_BUDGET(name, value)` | `kernel/lib/budget.h` |
 | Physical ↔ virtual (HHDM) | `vmm_get_hhdm_offset()` (+ phys) | `kernel/mm/vmm.h` |
 | Page mapping, address spaces | `vmm_map_page[_in]`, `vmm_get_phys[_in]`, `vmm_create_user_pml4`, ... | `kernel/mm/vmm.h` |
-| Check the kernel's mappings are W^X (image parts, HHDM NX) | `vmm_kernel_wx_check` | `kernel/mm/vmm.h` |
+| Check the kernel's mappings are W^X (image parts, HHDM NX, nothing else in the kernel half executable) | `vmm_kernel_wx_check` | `kernel/mm/vmm.h` |
 | Physical pages (buddy, 4 KiB-4 MiB blocks, `GFP_DMA32`) | `alloc_pages`, `free_pages`; wrappers `pmm_alloc_page`, `pmm_free_page`, `pmm_alloc_contiguous` | `kernel/mm/pmm.h` |
 | Buddy order for a byte size | `page_order_for` | `kernel/mm/page.h` |
 | Page descriptors (`struct page`), PFN / phys / HHDM conversions | `pfn_to_page`, `page_to_pfn`, `page_to_phys`, `page_to_virt`, `virt_to_page`, `pfn_valid` | `kernel/mm/page.h` |
@@ -72,7 +72,7 @@ Kernel and user space are separate worlds: the same function in `kernel/lib` and
 | Busy-wait hint in a time-bounded loop | `hal_cpu_relax` | `kernel/arch/hal_lock.h` (via `arch/hal.h`) |
 | Run a function on every other CPU, or on every CPU (bounded wait) | `hal_run_on_other_cpus` (`ipi_call_others`), `hal_run_on_all_cpus` (`ipi_call_all`) | `kernel/arch/hal.h` (`arch/x86_64/ipi.h`) |
 | CPU brand, signature, feature names | `hal_cpu_brand`, `hal_cpu_signature`, `hal_cpu_feature_names` (`cpu_brand`, `cpu_feature_names`) | `kernel/arch/hal.h` |
-| NX, SMEP, SMAP: turn on for a CPU, read back | `hal_protect_cpu_init`, `hal_protect_flags`, `HAL_PROTECT_*` (`protect_cpu_init`, `protect_cpu_flags`) | `kernel/arch/hal.h` (`arch/x86_64/protect.h`) |
+| NX, SMEP, SMAP: turn on for a CPU, read back | `hal_protect_cpu_init`, `hal_protect_flags`, `HAL_PROTECT_*` (`protect_cpu_init`, `protect_cpu_flags`); debug check that RFLAGS.AC didn't leak into kernel C: `protect_ac_leaked` (x86 entry code only) | `kernel/arch/hal.h` (`arch/x86_64/protect.h`) |
 | STAC / CLAC in assembly (skipped on CPUs without SMAP, where they are #UD) | `SMAP_STAC`, `SMAP_CLAC` | `kernel/arch/x86_64/smap.inc` |
 | Machine maker and model (SMBIOS) | `smbios_read` | `kernel/drivers/smbios.h` |
 | Driver model: buses, devices, drivers, binding, system/runtime suspend and resume; struct from a member | `bus_register`, `bus_add_device`, `driver_register`, `device_unbind`, `bus_suspend_all`, `bus_resume_all`, `device_driver_name`, `container_of` | `kernel/drivers/bus.h` |

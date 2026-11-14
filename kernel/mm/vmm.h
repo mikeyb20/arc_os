@@ -31,13 +31,21 @@ typedef struct VmmWxCheck {
     uint64_t wx_pages;      /* image pages both writable and executable */
     uint64_t wrong_pages;   /* image pages whose permissions differ from their part's */
     uint64_t first_wrong;   /* the first of them */
+    uint64_t stray_exec;    /* executable kernel-half mappings outside the code part */
+    uint64_t first_stray;   /* the first of them */
     int hhdm_ok;            /* the HHDM is read-write and NX */
 } VmmWxCheck;
 
 /* Walk the kernel's page tables over the whole image and the start of the
  * HHDM: code read + execute, read-only data read-only + NX, data read-write +
- * NX, no page writable and executable. Fills out; returns 0 if all hold, -1
- * if not. Cost: one walk per image page (about 150). */
+ * NX, no page writable and executable; then the whole kernel half (PML4
+ * entries 256-511): nothing outside the code part may be executable. Fills
+ * out; returns 0 if all hold, -1 if not. Reads the tables without vmm_lock:
+ * boot and self-test only, and the image and HHDM entries never change after
+ * vmm_init (a mapping added meanwhile is seen or not, never torn). Cost: one
+ * walk per image page (about 150) plus one visit per kernel page-table entry
+ * that isn't NX at a higher level (the HHDM's 2 MiB entries: about 2,000 at
+ * 4 GB, 16,000 at 32 GB). */
 int vmm_kernel_wx_check(VmmWxCheck *out);
 
 /* Unmap a single 4K page. */

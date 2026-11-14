@@ -170,10 +170,11 @@ static void check_protect(void) {
     VmmWxCheck wx;
     int wx_rc = vmm_kernel_wx_check(&wx);
     int ok = bad == 0 && (want & HAL_PROTECT_NX) && (want & HAL_PROTECT_WP) && wx_rc == 0;
-    result("protect", ok, "NX %s, SMEP %s, SMAP %s; %u CPUs, %u differ; kernel W^X %s (%lu W+X, %lu wrong pages)",
+    result("protect", ok,
+           "NX %s, SMEP %s, SMAP %s; %u CPUs, %u differ; kernel W^X %s (%lu W+X, %lu wrong, %lu stray exec)",
            (want & HAL_PROTECT_NX) ? "on" : "OFF", (want & HAL_PROTECT_SMEP) ? "on" : "off",
            (want & HAL_PROTECT_SMAP) ? "on" : "off", cpus, bad, wx_rc == 0 ? "ok" : "BROKEN", wx.wx_pages,
-           wx.wrong_pages);
+           wx.wrong_pages, wx.stray_exec);
     if (bad)
         diag_line("           first differing CPU %u: flags %x, boot CPU %x", first_bad, protect_seen[first_bad], want);
 }
