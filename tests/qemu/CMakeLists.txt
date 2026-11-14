@@ -333,7 +333,7 @@ add_test(NAME qemu.pagecache COMMAND ${_qemu_test} --suite pagecache --module pc
 set_tests_properties(qemu.smoke qemu.mem.buddy qemu.mem.cap qemu.userland qemu.abi qemu.musl qemu.fpu qemu.cpufloor
     qemu.smp.xapic qemu.smp.x2apic qemu.sched qemu.lockorder qemu.selftest.fail qemu.selftest.panic
     qemu.panic.fault qemu.diag qemu.mm qemu.mm.oom qemu.vfs qemu.pagecache qemu.qr.report qemu.qr.log qemu.qr.panic
-    qemu.devices qemu.devices.intx qemu.time qemu.time.fallback qemu.time.deadline
+    qemu.devices qemu.devices.intx qemu.time qemu.time.fallback qemu.time.deadline qemu.power qemu.power.msr
     PROPERTIES LABELS qemu TIMEOUT 180 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     FIXTURES_SETUP qemu_logs)
 set_tests_properties(qemu.mm.oom qemu.pagecache PROPERTIES TIMEOUT 320)
