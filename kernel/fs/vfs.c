@@ -585,6 +585,7 @@ static int may_delete(const Inode *dir, const Inode *victim, const Cred *c) {
 static void touch_dir(Inode *dir) {
     vfs_now(&dir->mtime);
     dir->ctime = dir->mtime;
+    vfs_inode_dirty(dir);
 }
 
 int vfs_create_locked(Inode *dir, const char *name, uint32_t mode, Inode **out) {
@@ -710,6 +711,41 @@ int vfs_mkdir_at(const PathLoc *base, const char *path, uint32_t mode) {
     return err;
 }
 
+int vfs_symlink_at(const PathLoc *base, const char *path, const char *target) {
+    size_t tlen = strlen(target);
+    if (tlen == 0) return -ENOENT;
+    if (tlen >= PATH_MAX) return -ENAMETOOLONG;
+    char name[VFS_NAME_MAX + 1];
+    int slash;
+    PathLoc dir;
+    int err = vfs_resolve_parent_at(base, path, &dir, name, &slash);
+    if (err == -EINVAL) err = -EEXIST; /* "/" */
+    if (err != 0) return err;
+    Inode *d = dir.inode;
+    if (is_dots(name) || slash) {
+        loc_put(&dir);
+        return is_dots(name) ? -EEXIST : -ENOENT;
+    }
+    rwsem_down_write(&d->lock);
+    Inode *existing;
+    err = lookup_locked(d, name, &existing);
+    if (err == 0) {
+        iput(existing);
+        err = -EEXIST;
+    } else if (err == -ENOENT) {
+        err = (d->flags & I_DEAD) ? -ENOENT : may_change_dir(d);
+        if (err == 0 && (d->iop == NULL || d->iop->symlink == NULL)) err = -EPERM;
+        if (err == 0) {
+            Cred c = current_cred();
+            err = d->iop->symlink(d, name, target, c.uid, c.gid);
+        }
+        if (err == 0) touch_dir(d);
+    }
+    rwsem_up_write(&d->lock);
+    loc_put(&dir);
+    return err;
+}
+
 int vfs_unlink_at(const PathLoc *base, const char *path) {
     char name[VFS_NAME_MAX + 1];
     int slash;
@@ -737,6 +773,7 @@ int vfs_unlink_at(const PathLoc *base, const char *path) {
         if (err == 0) {
             touch_dir(d);
             victim->ctime = d->mtime;
+            if (victim->nlink != 0) vfs_inode_dirty(victim); /* a file with no name left keeps its last times */
         }
     }
     rwsem_up_write(&d->lock);
@@ -891,6 +928,7 @@ static int rename_locked(Inode *odir, const char *oname, Inode *ndir, const char
             touch_dir(odir);
             if (ndir != odir) touch_dir(ndir);
             src->ctime = odir->mtime;
+            vfs_inode_dirty(src);
         }
     }
     if (locked_victim) rwsem_up_write(&victim->lock);
@@ -990,7 +1028,10 @@ int vfs_setattr(Inode *inode, const InodeAttr *attr) {
         if (attr->valid & ATTR_UID) inode->uid = attr->uid;
         if (attr->valid & ATTR_GID) inode->gid = attr->gid;
     }
-    if (err == 0) vfs_now(&inode->ctime);
+    if (err == 0) {
+        vfs_now(&inode->ctime);
+        vfs_inode_dirty(inode);
+    }
     rwsem_up_write(&inode->lock);
     return err;
 }

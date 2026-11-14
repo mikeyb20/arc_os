@@ -103,7 +103,7 @@ static void dev_setup(void) {
     }
     blk_mem_fail = 0;
     (void)reclaim_drop_clean();   /* other suites' clean pages: the counts below are this test's */
-    filemap_bdev_init(&dev_as, &mem_dev, (loff_t)DEV_PAGES * PAGE_SIZE);
+    filemap_bdev_init(&dev_as, &mem_dev, (loff_t)DEV_PAGES * PAGE_SIZE, NULL);
 }
 
 /* Get page index (reading it in as a reader with ra would), check its bytes, put it */

@@ -122,7 +122,7 @@ static void run_write(BlockDevice *dev) {
               "idle 2 s: no flusher pass, no timer");
 
     static AddressSpace as;   /* lives past release: write-back may still name it until forget */
-    filemap_bdev_init(&as, dev, (loff_t)dev->nr_sectors * 512);
+    filemap_bdev_init(&as, dev, (loff_t)dev->nr_sectors * 512, NULL);
 
     /* Dirtied: the timer arms, the pages wait for it */
     wb_result(dirty_range(&as, 0, WB_FLUSH_PAGES) == 0, "64 pages dirtied in the block-device cache");

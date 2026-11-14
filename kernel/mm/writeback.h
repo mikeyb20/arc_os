@@ -32,9 +32,13 @@
  * through (a pulled USB key), failed pages are dropped clean, the error is
  * kept for the mapping's next fsync, and the flusher stops waking for them.
  *
- * A mapping with dirty pages is on the write-back list (WB_LISTED) until the
+ * A mapping with dirty pages is on a write-back list (WB_LISTED) until the
  * flusher or sync takes it off to write it (WB_BUSY while it does). A page
- * dirtied after that puts the mapping back on the list.
+ * dirtied after that puts the mapping back on the list. File data and
+ * filesystem metadata (block-device mappings) have a list each: a pass
+ * writes the data, flushes the disks' caches, then writes the metadata
+ * (M1-15). Page writes are asynchronous (filemap.h): a pass starts a batch
+ * of mappings, then waits for their writes.
  *
  * Locks: wb_lock (LOCK_LEVEL_WB_LIST, spinlock, IRQ-safe: the timer runs in
  * an interrupt) guards the list, the WB_* flags and the timer; it is taken

@@ -17,6 +17,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "time/timer.h"
 
 #include "fs/vfs.h"
 #include "proc/process.h"
@@ -30,6 +31,11 @@ extern Process vfs_env_proc;
 
 /* Run as uid/gid (euid/egid too). */
 void vfs_env_as(uint32_t uid, uint32_t gid);
+
+/* Pages in the host's page arena (default 1024, 4 MiB): call before
+ * anything allocates a page (a runner's main). Pages are handed out next
+ * fit. */
+void vfs_env_arena_size(uint32_t pages);
 
 /* Live allocations: kmalloc bytes, slab objects, arena pages, and entries in
  * the dentry cache (slab objects too; at its limit an add evicts one, so
@@ -76,6 +82,10 @@ extern uint64_t vfs_env_uptime_ms;
  * and fire only when a test calls this, each whose time has come (in expiry
  * order is not promised; tests arm few). Returns how many fired. */
 int vfs_env_run_timers(void);
+
+/* Take up to max expired timers off the table without running them (their
+ * callbacks are "in flight" on another CPU): the test runs them later. */
+int vfs_env_take_timers(Timer **out, int max);
 
 /* Read a whole file into buf (NUL-terminated). Returns bytes or -errno. */
 int64_t vfs_env_read_file(const char *path, char *buf, size_t size);

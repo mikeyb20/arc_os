@@ -46,8 +46,10 @@
 #define PG_LOCKED     (1u << 13)   /* page lock (LOCK_LEVEL_PAGE): I/O, truncate, mapping */
 #define PG_ERROR      (1u << 14)   /* the last read failed */
 #define PG_LRU        (1u << 15)   /* on the evictable-page list (filemap.c) */
-/* Bits 16-23: pieces of a page-cache read still in flight, plus one for the
- * reader while it is still adding pieces (filemap_io_begin / _end). */
+/* Bits 16-23: pieces of a page-cache read or write still in flight, plus one
+ * for the reader or writer while it is still adding pieces (filemap.c). A
+ * read runs only on a page not up to date and a write only on one that is,
+ * so the two never share the count. */
 #define PG_IO_SHIFT   16
 #define PG_IO_ONE     (1u << PG_IO_SHIFT)
 #define PG_IO_MASK    (0xFFu << PG_IO_SHIFT)
@@ -56,7 +58,8 @@
 #define PG_ACTIVE     (1u << 24)   /* on the active list (else the inactive one), while PG_LRU */
 #define PG_REFERENCED (1u << 25)   /* used again since the last scan (read hits; PTE accessed bits are separate) */
 #define PG_LOCK_META  (1u << 26)   /* page lock held at the block-device page level (filemap.c's lock-order record) */
-/* Bits 27-31 are free for later blocks.
+#define PG_WRITEBACK  (1u << 27) /* a write to its disk is in flight (M1-15, filemap.c) */
+/* Bits 28-31 are free for later blocks.
  * free_pages() clears every flag of the head page; owners of a multi-page
  * block clear what they set on its other pages before freeing it. */
 

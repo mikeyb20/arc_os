@@ -1,0 +1,4 @@
+# qemu.ext2w.verify (M1-15): a second boot on the disk qemu.ext2w wrote:
+# every word of the 1 GiB file and the tree read back, then the file freed.
+# Exit status = failed checks.
+ext2wtest /boot/ext2wtest verify

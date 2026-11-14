@@ -24,9 +24,18 @@
  * filemap_end_read: PG_UPTODATE (PG_ERROR if any piece failed), page
  * unlocked, waiters woken. A piece is one block-layer request (M1-10); its
  * completion calls filemap_bdev_read_done, usually from the disk interrupt,
- * sometimes at once in the submitter (drivers/blkdev.h lists when). Writes
- * are synchronous (filemap_bdev_write waits): write-back's callers rely on
- * that.
+ * sometimes at once in the submitter (drivers/blkdev.h lists when).
+ *
+ * Writing a page back runs the same way (M1-15): the writer locks the page,
+ * clears PG_DIRTY, sets PG_WRITEBACK and calls writepage, which adds pieces
+ * (filemap_write_piece) and returns; the page is unlocked at once and
+ * PG_WRITEBACK clears when the last piece ends. Whoever needs the bytes on
+ * the disk waits for that (filemap_wait_range_if, filemap_write_range).
+ * Removing a page from its mapping waits for its write first, and a page is
+ * never under two writes at once. A page's bytes may change while it is
+ * written (write(2), a store through a mapping): it is dirty again then, and
+ * written again (a filesystem that needs a page to hold still, ext2's
+ * metadata, waits for PG_WRITEBACK before changing it).
  *
  * Locks, outermost first (docs/kernel/locking.md):
  *   inode lock (10)      held by read/write/truncate callers
@@ -70,10 +79,31 @@ typedef struct AddressSpaceOps {
      * adjacent pieces can reach the device as one request. NULL: readpage for
      * each. */
     void (*readpages)(AddressSpace *as, struct page **pages, uint32_t n);
-    /* Write pg (locked; PG_DIRTY already cleared) back and wait. 0 or
-     * -errno (the page is dirtied again). NULL: nothing to write to (ramfs:
+    /* Start writing pg back (locked, up to date, PG_DIRTY cleared,
+     * PG_WRITEBACK set; the caller holds a share of the write): add pieces
+     * with filemap_write_piece, or none (nothing to write, or written
+     * synchronously), and return without waiting. The write ends when the
+     * caller's share and every piece have. 0, or -errno: the write failed
+     * (the page is dirtied again, or given up: mm/writeback.h). Must not
+     * wait for the inode lock (see M1-14). NULL: nothing to write to (ramfs:
      * the pages are the storage). */
     int (*writepage)(AddressSpace *as, struct page *pg);
+    /* Before write(2) copies into bytes [from, from + len) of pg (locked,
+     * up to date or about to be overwritten whole): give those bytes a place
+     * on the disk (a filesystem allocates blocks for holes there, M1-15).
+     * Returns 0; 1 when it allocated, and then the page is up to date (a
+     * page that wasn't is filled, zeros for the hole) and must reach the
+     * disk even if the copy fails, since a new block holds stale bytes until
+     * it is written; or -errno (-ENOSPC, -EFBIG): the write stops before this
+     * page. NULL: nothing to do. */
+    int (*prepare_write)(AddressSpace *as, struct page *pg, size_t from, size_t len);
+    /* Start writing every dirty page, in place of a walk in index order
+     * (the flusher, sync, releasing a block-device mapping): a filesystem
+     * that must order its metadata writes provides it, waiting inside for
+     * the writes that must land first (ext2, M1-15); the caller waits for
+     * the rest. 0 or the first error. NULL: every dirty page, in index
+     * order. */
+    int (*writepages)(AddressSpace *as);
 } AddressSpaceOps;
 
 /* AddressSpace.flags */
@@ -137,9 +167,16 @@ void filemap_inode_evict(Inode *inode);
 /* A block-device mapping (the raw device as one file of `size` bytes,
  * 8 sectors per page): for filesystem metadata (ext2, M1-13). Its clean
  * pages can be dropped like a file's; the mapping lives until
- * filemap_bdev_release. */
-void filemap_bdev_init(AddressSpace *as, struct BlockDevice *dev, loff_t size);
+ * filemap_bdev_release. ops NULL: the plain device operations; a filesystem
+ * that orders its metadata writes passes its own, built on
+ * filemap_bdev_readpage and filemap_bdev_writepage (ext2, M1-15). */
+void filemap_bdev_init(AddressSpace *as, struct BlockDevice *dev, loff_t size, const AddressSpaceOps *ops);
 void filemap_bdev_release(AddressSpace *as);
+
+/* The plain device operations of a block-device mapping, for a filesystem's
+ * own table: read a page from the device; start writing one back. */
+int filemap_bdev_readpage(AddressSpace *as, struct page *pg);
+int filemap_bdev_writepage(AddressSpace *as, struct page *pg);
 
 /* Bytes in the mapping (the file's size, or the device's). */
 loff_t filemap_size(const AddressSpace *as);
@@ -158,6 +195,10 @@ int page_trylock(struct page *pg);
 void page_unlock(struct page *pg);
 /* Sleep until the page is unlocked (I/O done). */
 void page_wait_unlocked(struct page *pg);
+
+/* Sleep until no write of the page is in flight (PG_WRITEBACK clear). Any
+ * thread; before the scheduler runs it polls the disks. */
+void filemap_wait_writeback(struct page *pg);
 
 /* End a readpage: PG_UPTODATE on success, PG_ERROR on failure, then unlock
  * and wake waiters. Any context (an I/O completion runs in an interrupt). */
@@ -193,14 +234,52 @@ void filemap_truncate(Inode *inode, loff_t size);
 
 /* Write back the dirty pages with index in [first, last] and wait, also for
  * writes of them already under way (the flusher's, kswapd's). 0 or the first
- * error. */
+ * error (-EIO for a write that failed on the disk). */
 int filemap_write_range(AddressSpace *as, uint64_t first, uint64_t last);
+
+/* The same for the indices want(ctx, index) says yes to (a filesystem
+ * writing its metadata in an order, ext2). want is called with no lock held,
+ * for cached pages only. */
+int filemap_write_range_if(AddressSpace *as, uint64_t first, uint64_t last, int (*want)(void *ctx, uint64_t index),
+                           void *ctx);
+
+/* Start writing the dirty pages in [first, last] that want(ctx, index)
+ * says yes to (NULL: all; asked only about dirty or locked pages), without
+ * waiting. 0 or the first error a writepage returned. */
+int filemap_start_range_if(AddressSpace *as, uint64_t first, uint64_t last, int (*want)(void *ctx, uint64_t index),
+                           void *ctx);
+
+/* Wait for the writes in flight of the cached pages in [first, last] that
+ * want(ctx, index) says yes to (NULL: all). -EIO if one of them failed
+ * since it was last waited for (told once; -ENOSPC when the mapping's kept
+ * error says the file system had no block for it), else 0. */
+int filemap_wait_range_if(AddressSpace *as, uint64_t first, uint64_t last, int (*want)(void *ctx, uint64_t index),
+                          void *ctx);
+
+/* Start writing every dirty page of the mapping, the way its owner writes
+ * them (AddressSpaceOps.writepages, else in index order); wait for every
+ * write in flight; both. 0 or the first error. */
+int filemap_start_all(AddressSpace *as);
+int filemap_wait_all(AddressSpace *as);
+int filemap_write_all(AddressSpace *as);
+
+/* The page for index made new: locked (recorded for the lock checker),
+ * zeroed, up to date, with a reference; whatever it held is gone (a block a
+ * filesystem just allocated holds nothing worth reading). NULL with *err
+ * (-ENOMEM, -EFBIG). Release with page_unlock and page_put. */
+struct page *filemap_grab_zeroed(AddressSpace *as, uint64_t index, int *err);
+
+/* Take the cached page for index out of the mapping, dirty or not (a
+ * filesystem freed the block it caches: its bytes must never be written
+ * there again). Waits for its lock. Nothing if it isn't cached. */
+void filemap_drop_page(AddressSpace *as, uint64_t index);
 
 /* --- For reclaim (mm/reclaim.c): pages it took with page_trylock --- */
 
-/* Write one dirty page now: write-protect it in every shared mapping, clear
- * PG_DIRTY, writepage (it is dirty again if that fails). pg locked. 0 or
- * -errno. */
+/* Start writing one dirty page now: wait for a write of it still in
+ * flight, write-protect it in every shared mapping, clear PG_DIRTY, set
+ * PG_WRITEBACK, writepage (it is dirty again if that fails). pg locked; the
+ * caller unlocks it and need not wait. 0 or writepage's -errno. */
 int filemap_writepage_locked(AddressSpace *as, struct page *pg);
 
 /* Take a locked page out of its tree if nothing but the tree and the
@@ -259,7 +338,30 @@ void filemap_unmap_from(AddressSpace *as, uint64_t first);
 void filemap_unmap_page(AddressSpace *as, struct page *pg);
 void filemap_mkclean(AddressSpace *as, struct page *pg);
 
-/* --- Page-cache I/O on a block device (the only two calls that reach one) --- */
+/* --- Files kept as a list of blocks (filemap_block.c, M1-15) --- */
+
+/* A filesystem's block map, for readpage and writepage. */
+typedef struct FilemapBlocks {
+    struct BlockDevice *dev;   /* the volume's device; block b starts at sector b << (blkbits - 9) */
+    uint32_t blkbits;          /* log2 of the block size: 9 to 16 */
+    /* The disk block holding file block lblk of inode: > 0, 0 for a hole,
+     * or -errno. With create, a hole gets a block (never 0 then). Called
+     * with the page locked and no inode lock. */
+    int64_t (*get_block)(Inode *inode, uint64_t lblk, int create);
+} FilemapBlocks;
+
+/* readpage / readpages: start filling pg from its blocks (holes and bytes
+ * past the end zeros; runs of blocks contiguous on the disk one piece each,
+ * on plug, NULL: submitted at once; the block holding the end of the file
+ * read synchronously, then its tail zeroed). */
+void filemap_blocks_read(AddressSpace *as, struct page *pg, struct BlkPlug *plug, const FilemapBlocks *fb);
+
+/* writepage: start writing pg to its blocks, giving holes a block
+ * (get_block with create), one piece per run; blocks past the end of the
+ * file are left alone. 0 or -errno (-ENOSPC: no block for a hole). */
+int filemap_blocks_write(AddressSpace *as, struct page *pg, const FilemapBlocks *fb);
+
+/* --- Page-cache I/O on a block device (the only calls that reach one) --- */
 
 /* A read of pg in pieces: begin (pg locked, not up to date: no pieces yet,
  * PG_ERROR cleared), any number of filemap_bdev_read, then end. err != 0
@@ -281,8 +383,10 @@ int filemap_bdev_read(struct BlkPlug *plug, struct BlockDevice *dev, uint64_t se
  * read; the last piece ends it. */
 void filemap_bdev_read_done(struct page *pg, int err);
 
-/* Write count sectors at sector from pg at byte_off and wait for the device.
- * 0 or -EIO. */
-int filemap_bdev_write(struct BlockDevice *dev, uint64_t sector, uint32_t count, struct page *pg, size_t byte_off);
+/* One piece of a page's write (inside writepage): count sectors at sector
+ * from pg at byte_off, submitted at once. Its completion counts it off the
+ * write. Returns 0 when started (a refusal arrives through the completion),
+ * -ENOMEM when it never was. */
+int filemap_write_piece(struct BlockDevice *dev, uint64_t sector, uint32_t count, struct page *pg, size_t byte_off);
 
 #endif /* ARCHOS_MM_FILEMAP_H */

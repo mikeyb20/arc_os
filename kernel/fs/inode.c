@@ -64,6 +64,11 @@ void vfs_now(struct timespec *ts) {
     clock_ns_to_timespec(clock_real_ns(), ts);   /* file times are wall-clock times (M1-06) */
 }
 
+void vfs_inode_dirty(Inode *inode) {
+    if (inode->sb != NULL && inode->sb->sop != NULL && inode->sb->sop->write_inode != NULL)
+        inode->sb->sop->write_inode(inode);
+}
+
 static void inode_setup(Inode *inode, SuperBlock *sb, uint64_t ino, uint32_t mode) {
     inode->ino = ino;
     inode->mode = mode;
