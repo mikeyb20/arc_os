@@ -64,6 +64,12 @@ if(EXISTS "${ARC_MUSL_PREFIX}gcc")
                 -o ${CMAKE_BINARY_DIR}/reclaimtest ${CMAKE_CURRENT_SOURCE_DIR}/reclaimtest.c
         DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/reclaimtest.c
         COMMENT "musl -static reclaimtest")
+    # M1-15: ext2 writing across a reboot (qemu.ext2w, qemu.ext2w.verify)
+    add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/ext2wtest
+        COMMAND ${MUSL_CC} -static -O2 -Wall -Wextra -Werror -std=gnu11
+                -o ${CMAKE_BINARY_DIR}/ext2wtest ${CMAKE_CURRENT_SOURCE_DIR}/ext2wtest.c
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/ext2wtest.c
+        COMMENT "musl -static ext2wtest")
     add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/bigexec
         COMMAND ${MUSL_CC} -static -O2 -Wall -Wextra -Werror -std=gnu11
                 -o ${CMAKE_BINARY_DIR}/bigexec ${CMAKE_CURRENT_SOURCE_DIR}/bigexec.c
@@ -78,10 +84,11 @@ if(EXISTS "${ARC_MUSL_PREFIX}gcc")
         COMMENT "musl -static timetest")
     list(APPEND _musl_outputs ${CMAKE_BINARY_DIR}/start_musl ${CMAKE_BINARY_DIR}/sig_fpu ${CMAKE_BINARY_DIR}/fpu_avx
          ${CMAKE_BINARY_DIR}/mmtest ${CMAKE_BINARY_DIR}/fstest ${CMAKE_BINARY_DIR}/pctest ${CMAKE_BINARY_DIR}/bigexec
-         ${CMAKE_BINARY_DIR}/ext2test ${CMAKE_BINARY_DIR}/reclaimtest ${CMAKE_BINARY_DIR}/timetest)
+         ${CMAKE_BINARY_DIR}/ext2test ${CMAKE_BINARY_DIR}/ext2wtest ${CMAKE_BINARY_DIR}/reclaimtest
+         ${CMAKE_BINARY_DIR}/timetest)
 else()
     message(WARNING "musl toolchain not found at ${ARC_MUSL_PREFIX}gcc (tools/dev-setup.sh musl): "
-                    "qemu.musl, qemu.fpu, qemu.mm, qemu.vfs, qemu.pagecache, qemu.ext2, qemu.reclaim and qemu.time "
+                    "qemu.musl, qemu.fpu, qemu.mm, qemu.vfs, qemu.pagecache, qemu.ext2, qemu.ext2w, qemu.reclaim and qemu.time "
                     "will fail")
 endif()
 

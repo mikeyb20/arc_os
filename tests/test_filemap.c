@@ -103,7 +103,7 @@ static void dev_setup(void) {
     }
     blk_mem_fail = 0;
     (void)reclaim_drop_clean();   /* other suites' clean pages: the counts below are this test's */
-    filemap_bdev_init(&dev_as, &mem_dev, (loff_t)DEV_PAGES * PAGE_SIZE);
+    filemap_bdev_init(&dev_as, &mem_dev, (loff_t)DEV_PAGES * PAGE_SIZE, NULL);
 }
 
 /* Get page index (reading it in as a reader with ra would), check its bytes, put it */
@@ -195,6 +195,7 @@ TEST(sync_and_release_flush_the_disk_cache) {
     mem_dev.disk = &mem_dev;
     mem_dev.flags = BLK_CACHE;
     blk_mem_devices(devs, 1);
+    wb_sync_all();   /* writes earlier tests made: flushed now (a pass would flush them before metadata) */
     unsigned off;
     int err = 0;
     struct page *pg = filemap_get_page(&dev_as, 3, NULL, 0, &off, &err);

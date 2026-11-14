@@ -18,6 +18,8 @@
  *     disk. Labels only choose the disk; the type must still match.
  *   - `arc.data=PARTUUID=<guid>` on the command line names the data partition
  *     on another arc_os disk; it must have the data type, or no data is mounted.
+ * The data partition is writable only when the boot disk or arc.data chose
+ * it (data_rw), never when a label did.
  * Mount-time only: O(devices). */
 
 #include <stdint.h>
@@ -28,6 +30,7 @@ typedef struct {
     struct BlockDevice *system;   /* NULL: none found */
     struct BlockDevice *data;
     struct BlockDevice *disk;     /* the arc_os disk chosen (boot disk or by label), NULL: none */
+    int data_rw;                  /* data was chosen through the boot disk or arc.data: writable (M1-15) */
 } SysmountPick;
 
 /* Choose the partitions (rules above) without mounting anything.
@@ -35,9 +38,17 @@ typedef struct {
  * the kernel command line (may be NULL). Logs each choice and refusal. */
 void sysmount_pick(const uint8_t *boot_disk_guid, const char *cmdline, SysmountPick *out);
 
-/* Pick and mount (ext2, read-only until M1-15). Returns how many of the six
- * mounts succeeded. A failure is logged and the rest go on. The pick is
- * copied to *out unless out is NULL (kmain mounts that disk's ESP). */
+/* Pick and mount (ext2): the system partition read-only; the data
+ * partition read-write when data_rw (ADR-0018: only a partition chosen
+ * through the boot disk or named by arc.data is ever written; one found by
+ * label alone may sit on another disk) and the volume allows it, else
+ * read-only. Returns how many of the six mounts succeeded. A failure is
+ * logged and the rest go on. The pick is copied to *out unless out is NULL
+ * (kmain mounts that disk's ESP). */
 int sysmount_boot(const uint8_t *boot_disk_guid, const char *cmdline, SysmountPick *out);
+
+/* Before power-off: write every volume sysmount_boot mounted read-write back
+ * and mark it clean (ext2_shutdown). Thread context; sleeps. */
+void sysmount_shutdown(void);
 
 #endif /* ARCHOS_FS_SYSMOUNT_H */

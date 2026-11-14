@@ -49,7 +49,9 @@ void sysmount_pick(const uint8_t *boot_disk_guid, const char *cmdline, SysmountP
     gpt_guid_parse(ARC_PART_TYPE_SYSTEM, &sys_type);
     gpt_guid_parse(ARC_PART_TYPE_DATA, &data_type);
     out->system = out->data = out->disk = NULL;
+    out->data_rw = 0;
     BlockDevice *disk = NULL;
+    int by_boot = 0;   /* the disk is the one Limine booted from */
     Guid boot;
     char text[GUID_STR_LEN];
     if (boot_disk_guid != NULL) {
@@ -60,6 +62,7 @@ void sysmount_pick(const uint8_t *boot_disk_guid, const char *cmdline, SysmountP
         if (d != NULL && (sys != NULL || blk_find_part(d, &data_type) != NULL)) {
             kprintf("[MOUNT] boot disk %s is %s\n", text, d->name);
             disk = d;
+            by_boot = 1;
             out->system = sys;
         } else if (d != NULL) {   /* an ISO image written to a stick: no arc_os partitions on it */
             kprintf("[MOUNT] boot disk %s (%s) has no arc_os partitions: by label\n", text, d->name);
@@ -84,17 +87,30 @@ void sysmount_pick(const uint8_t *boot_disk_guid, const char *cmdline, SysmountP
     BlockDevice *named;
     if (named_data(cmdline, &data_type, &named)) {
         out->data = named;
+        out->data_rw = named != NULL;
     } else if (out->data == NULL && disk != NULL) {
         out->data = blk_find_part(disk, &data_type);
+        out->data_rw = out->data != NULL && by_boot;
     }
     out->disk = disk;
 }
 
+/* The volumes mounted read-write, for sysmount_shutdown (boot: one thread) */
+static SuperBlock *rw_volumes[2];
+
 /* ext2 on dev: its superblock, or NULL (logged) */
-static SuperBlock *mount_ext2(BlockDevice *dev, const char *what) {
+static SuperBlock *mount_ext2(BlockDevice *dev, const char *what, uint32_t flags) {
     int err;
-    SuperBlock *sb = ext2_mount(dev, dev->nr_sectors * 512, dev->name, &err);
+    SuperBlock *sb = ext2_mount(dev, dev->nr_sectors * 512, dev->name, flags, &err);
     if (sb == NULL) kprintf("[MOUNT] %s partition %s: not mountable (%d)\n", what, dev->name, err);
+    if (sb != NULL && ext2_writable(sb)) {
+        for (unsigned i = 0; i < sizeof(rw_volumes) / sizeof(rw_volumes[0]); i++) {
+            if (rw_volumes[i] == NULL) {
+                rw_volumes[i] = sb;
+                break;
+            }
+        }
+    }
     return sb;
 }
 
@@ -106,8 +122,8 @@ static int mount_at(const char *target, SuperBlock *sb, const char *name, BlockD
         kprintf("[MOUNT] %s from %s: failed (%d)\n", target, dev->name, err);
         return 0;
     }
-    kprintf("[MOUNT] %s: %s%s%s (ext2, read-only)\n", target, dev->name, name != NULL ? " /" : "",
-            name != NULL ? name : "");
+    kprintf("[MOUNT] %s: %s%s%s (ext2, %s)\n", target, dev->name, name != NULL ? " /" : "", name != NULL ? name : "",
+            (sb->flags & SB_RDONLY) ? "read-only" : "read-write");
     return 1;
 }
 
@@ -117,9 +133,9 @@ int sysmount_boot(const uint8_t *boot_disk_guid, const char *cmdline, SysmountPi
     if (out != NULL) *out = p;
     int mounted = 0;
     SuperBlock *sb;
-    if (p.system != NULL && (sb = mount_ext2(p.system, "system")) != NULL)
+    if (p.system != NULL && (sb = mount_ext2(p.system, "system", 0)) != NULL)
         mounted += mount_at("/system", sb, NULL, p.system);
-    if (p.data != NULL && (sb = mount_ext2(p.data, "data")) != NULL) {
+    if (p.data != NULL && (sb = mount_ext2(p.data, "data", p.data_rw ? EXT2_MOUNT_RW : 0)) != NULL) {
         for (unsigned i = 0; i < sizeof(data_dirs) / sizeof(data_dirs[0]); i++) {
             char target[16] = "/";
             strncpy(target + 1, data_dirs[i], sizeof(target) - 2);
@@ -127,4 +143,10 @@ int sysmount_boot(const uint8_t *boot_disk_guid, const char *cmdline, SysmountPi
         }
     }
     return mounted;
+}
+
+void sysmount_shutdown(void) {
+    for (unsigned i = 0; i < sizeof(rw_volumes) / sizeof(rw_volumes[0]); i++) {
+        if (rw_volumes[i] != NULL) (void)ext2_shutdown(rw_volumes[i]);
+    }
 }

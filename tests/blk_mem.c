@@ -8,12 +8,17 @@
  * blk_mem_fail makes every request fail with -EIO; blk_mem_requests counts
  * the requests that reached the "device". With blk_mem_defer, requests wait
  * until blk_mem_run (as if their interrupts came later) and a read then fills
- * its bytes with BLK_MEM_POISON, marking what an async read wrote. */
+ * its bytes with BLK_MEM_POISON, marking what an async read wrote. A write's
+ * bytes are copied when it ends, as a DMA engine reading the page late would
+ * (a page changed while its write is in flight shows). The write-order
+ * audit is in blk_mem.h. */
 
 #include <stdlib.h>
 #include <string.h>
 #include "drivers/blkdev.h"
 #include "mm/page.h"
+#include "mm/filemap.h"
+#include <stdio.h>
 #include "uapi/errno.h"
 #include "blk_mem.h"
 
@@ -24,6 +29,65 @@ int blk_mem_defer;
 static BlkRequest *deferred;   /* LIFO; order does not matter here */
 static BlockDevice **mem_devs;   /* the registry stand-in (blk_mem_devices) */
 static unsigned mem_ndevs;
+
+int (*blk_mem_classify)(const BlockDevice *dev, uint64_t sector, int file_page);
+unsigned blk_mem_before[BLK_MEM_CLASSES];
+int blk_mem_audit;
+int blk_mem_order_errors;
+char blk_mem_order_error[200];
+
+/* Per device: writes of each class in flight, and done but not flushed */
+typedef struct {
+    const BlockDevice *dev;
+    int pending[BLK_MEM_CLASSES];
+    int unflushed[BLK_MEM_CLASSES];
+} OrderState;
+static OrderState order[16];
+
+static OrderState *order_of(const BlockDevice *dev) {
+    for (unsigned i = 0; i < sizeof(order) / sizeof(order[0]); i++) {
+        if (order[i].dev == dev) return &order[i];
+        if (order[i].dev == NULL) {
+            order[i].dev = dev;
+            return &order[i];
+        }
+    }
+    return NULL;   /* more devices than the audit follows: not counted */
+}
+
+/* The class of a write (< 0: none) */
+static int order_class(const BlockDevice *dev, uint64_t sector, struct page *pg) {
+    if (blk_mem_classify == NULL) return -1;
+    int file_page = pg != NULL && pg->mapping != NULL && ((AddressSpace *)pg->mapping)->host != NULL;
+    int c = blk_mem_classify(dev, sector, file_page);
+    return c < BLK_MEM_CLASSES ? c : -1;
+}
+
+/* A write starts: checked against the classes that must be on the medium first */
+static void order_start(const BlockDevice *dev, int c, uint64_t sector) {
+    OrderState *st = c >= 0 ? order_of(dev) : NULL;
+    if (st == NULL) return;
+    for (int l = 0; blk_mem_audit && l < BLK_MEM_CLASSES; l++) {
+        if (!(blk_mem_before[c] & (1u << l)) || st->pending[l] + st->unflushed[l] == 0) continue;
+        if (blk_mem_order_errors++ == 0)
+            snprintf(blk_mem_order_error, sizeof(blk_mem_order_error),
+                     "class %d write at sector %llu with %d class-%d writes in flight and %d not flushed", c,
+                     (unsigned long long)sector, st->pending[l], l, st->unflushed[l]);
+    }
+    st->pending[c]++;
+}
+
+static void order_end(const BlockDevice *dev, int c) {
+    OrderState *st = c >= 0 ? order_of(dev) : NULL;
+    if (st == NULL) return;
+    st->pending[c]--;
+    if (dev->flags & BLK_CACHE) st->unflushed[c]++;   /* else on the medium once done */
+}
+
+static void order_flush(const BlockDevice *dev) {
+    OrderState *st = blk_mem_classify != NULL ? order_of(dev) : NULL;
+    if (st != NULL) memset(st->unflushed, 0, sizeof(st->unflushed));
+}
 
 void blk_mem_devices(BlockDevice **devs, unsigned n) {
     mem_devs = devs;
@@ -38,6 +102,7 @@ BlockDevice *blk_get(unsigned index) {
 static int mem_io(BlockDevice *dev, int op, uint64_t sector, uint8_t *buf, size_t bytes) {
     if (op == BLK_OP_FLUSH) {
         blk_mem_flushes++;
+        order_flush(dev);   /* what completed before it is on the medium */
         return 0;
     }
     if (bytes == 0 || bytes % BLK_SECTOR_SIZE != 0 || sector > dev->nr_sectors ||
@@ -83,7 +148,15 @@ int blk_rq_add_page(BlkRequest *rq, struct page *pg, uint32_t offset, uint32_t l
 
 static void run_one(BlkRequest *rq, int poison);
 
+/* A request's write class, from its first page (no merging here: one
+ * request is one mapping's run) */
+static int rq_class(const BlkRequest *rq) {
+    if (rq->op != BLK_OP_WRITE || rq->nsegs == 0) return -1;
+    return order_class(rq->disk, rq->sector, rq->seg[0].page);
+}
+
 void blk_submit(BlkRequest *rq) {
+    order_start(rq->disk, rq_class(rq), rq->sector);
     if (blk_mem_defer) {
         rq->next = deferred;
         deferred = rq;
@@ -111,6 +184,7 @@ static void run_one(BlkRequest *rq, int poison) {
         sector += s->len / BLK_SECTOR_SIZE;
     }
     if (rq->nsegs == 0) status = mem_io(rq->disk, rq->op, sector, NULL, 0);
+    order_end(rq->disk, rq_class(rq));
     rq->end_io(rq->priv, status);
     free(rq);
 }
@@ -143,5 +217,9 @@ void blk_poll_all(void) {
 }
 
 int blk_rw_sync(BlockDevice *dev, int op, uint64_t sector, void *buf, size_t bytes) {
-    return mem_io(dev, op, sector, buf, bytes);
+    int c = op == BLK_OP_WRITE ? order_class(dev, sector, NULL) : -1;
+    order_start(dev, c, sector);
+    int err = mem_io(dev, op, sector, buf, bytes);
+    order_end(dev, c);
+    return err;
 }

@@ -23,6 +23,7 @@ of that level (a lock without a subkey counts as 0). Give every lock of a nestab
 | 13 | `LOCK_LEVEL_INODE_CHILD_2` | sleeping, read-write | a directory a rename replaces (under the moved one) | M1-13 |
 | 20 | `LOCK_LEVEL_MM` | sleeping, read-write | `Mm.lock` (`RwSem`), per address space: VMA changes write, page faults and fork read | M1-07 |
 | 30 | `LOCK_LEVEL_PAGE` | sleeping, per page | page lock: the `PG_LOCKED` bit of a `struct page`, waiters on hashed wait queues (`mm/filemap.c`): read in, truncate, mapping a cache page into a page table, write-back | M1-12 |
+| 32 | `LOCK_LEVEL_FS_ALLOC` | sleeping | `Ext2Vol.alloc_lock`, per ext2 volume: block and inode bitmaps, free counts, every block-map change (allocation, truncate), committing the group descriptors and superblock; taken with a file page locked (`prepare_write`, `writepage`) and before any metadata page lock | M1-15 |
 | 35 | `LOCK_LEVEL_META_PAGE` | sleeping, per page | page lock of a block-device mapping's page (filesystem metadata: ext2's superblock, group descriptors, inodes, indirect blocks, directories), taken while a file page is locked for its read | M1-13 |
 | 40 | `LOCK_LEVEL_MAPPING` | sleeping | `AddressSpace.map_lock`: the list of VMAs mapping a file (mmap, munmap, fork, truncate's unmap, write-back's write-protect) | M1-12 |
 | 45 | `LOCK_LEVEL_FS_IO` | sleeping | a filesystem's device reads: the FAT32 volume's `io_lock` (cluster buffer, chain cursors) | M1-11 |
@@ -71,6 +72,18 @@ outermost apart from the kernel lock, so `sync` and the flusher take page locks 
 under it; `wb_lock` (78) is a leaf apart from wait-queue wake-ups (80, 90). A page lock records its level in the page
 (`PG_LOCK_META`), so unlocking a block-device page that left its mapping (unmount, reclaim) ends the right record.
 
+M1-15 adds ext2 writing (32) and makes page writes asynchronous. `writepage` marks the page `PG_WRITEBACK`,
+starts its pieces (`filemap_write_piece`, or a synchronous write) and returns with the page unlocked; the last
+piece's `end_io` ends the write in any context, interrupt included (no lock but the page's wait queue, 80, and
+`wb_lock`, 78, through the write-back counters). Waiting for a write (`filemap_wait_writeback`) takes no lock;
+a page under write-back is never written twice at once (the writer waits first), never removed from its mapping
+(removal waits) and never freed by reclaim (put back on its list). Metadata must hold still while it is written:
+`ext2_meta_lock` waits for the page's write before handing it over; file data need not (a page changed during
+its write is dirty again and written again). ext2 takes `alloc_lock` (32) under a file page (30) and before a
+metadata page (35); it holds at most one metadata page lock at a time and never takes `alloc_lock` while holding
+one. The deepest chain of sleeping locks is a rename that grows a directory: `rename_mutex`, four inode
+levels, `alloc_lock` and one metadata page (7).
+
 Levels 7, 8, 11, 12, 45 and 62–65 are M1-11's additions (see "VFS locks" below). Levels 75 and 76 are additions to §7's list: the pipe, socket and tty locks are the "condition" locks passed to
 `wq_sleep`, so they sit just above the signal lock and below the wait-queue locks; the socket table is looked up
 while one socket's lock is held. The timer-queue lock (105, M1-06) sits above everything that arms a timer (see
@@ -94,7 +107,8 @@ Each rule panics with `LOCK ORDER VIOLATION`, the lock being taken and the locks
 4. The kernel lock is taken at syscall entry while any other lock is held. Taking it back after a sleep
    (`kernel_lock_resume`) only rules out spinlocks: a mutex may be held across the sleep, because anyone waiting
    for that mutex sleeps too, and sleeping gives the kernel lock up.
-5. More than 16 spinlocks are held on one CPU, or more than 4 sleeping locks by one thread.
+5. More than 16 spinlocks are held on one CPU, or more than 8 sleeping locks by one thread
+   (`LOCKDEP_MAX_SLEEP_HELD`).
 
 Release builds compile the checks away. QEMU suite `lockorder` takes a wait-queue-level lock and then a
 page-table-level lock on purpose and expects the panic; host tests check `lockdep_check_order` itself.
@@ -165,11 +179,14 @@ the process list (the process row, M1-16); the tty line discipline (the TTY row)
   shared, as before; a symlink's target is read with no lock held. A process's working directory is an inode
   reference touched only by its own thread (under the process row of the kernel lock until M1-16, which adds a
   lock for `CLONE_FS`).
-- ext2 (M1-13) has no volume lock: its metadata lives in a block-device page cache, and a file page's read
-  (file page locked, 30) locks the metadata pages it needs (35) one at a time. Block-device mappings are never
-  mapped into a process, so no mm lock is ever taken under a metadata page.
-- `iput` that frees an inode runs its filesystem's `evict_inode` with no lock held; `fput` never runs under a
-  spinlock. Pipes: `rd_mutex` and `wr_mutex` (level 10) serialise readers and writers and are held across user
+- ext2 (M1-13) keeps its metadata in a block-device page cache, and a file page's read (file page locked, 30)
+  locks the metadata pages it needs (35) one at a time. Block-device mappings are never mapped into a process,
+  so no mm lock is ever taken under a metadata page. Writing (M1-15) adds one volume lock, `alloc_lock` (32):
+  allocation in `prepare_write` and `writepage` (file page locked), directory changes (inode locks held) and
+  truncate take it, then lock metadata pages one at a time under it. Readers of the block map take neither.
+- `iput` that frees an inode runs its filesystem's `evict_inode` with no lock held; for a linked file it first
+  writes the dirty pages back and waits (`filemap_inode_flush`, `icache_lock` dropped), so like evict it may
+  sleep and must not run under a spinlock or a page lock. `fput` never runs under a spinlock. Pipes: `rd_mutex` and `wr_mutex` (level 10) serialise readers and writers and are held across user
   copies but dropped while waiting; `pipe->lock` (75) guards head, tail and the counts and is the wait-queue
   condition lock. A release wakes the other side before dropping `pipe->lock` (after it, the other end's last
   release may free the pipe).

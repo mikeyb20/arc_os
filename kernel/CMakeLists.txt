@@ -47,6 +47,7 @@ set(KERNEL_C_SOURCES
     mm/uaccess.c
     mm/radix.c
     mm/filemap.c
+    mm/filemap_block.c
     mm/filemap_mmap.c
     mm/reclaim.c
     mm/writeback.c
@@ -114,6 +115,9 @@ set(KERNEL_C_SOURCES
     fs/pipe.c
     fs/fat32.c
     fs/ext2.c
+    fs/ext2_alloc.c
+    fs/ext2_map.c
+    fs/ext2_dir.c
     fs/sysmount.c
     fs/devfs.c
     fs/procfs.c

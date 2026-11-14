@@ -202,8 +202,14 @@ static void shrink_inactive(ScanCtx *sc) {
             }
             continue;
         }
+        if (page_test(pg, PG_WRITEBACK)) {
+            putback(pg, LRU_INACTIVE);   /* its write is in flight: freed in a later scan, once clean */
+            continue;
+        }
         if (page_test(pg, PG_DIRTY)) {
-            if (!sc->kswapd || filemap_writepage_locked(as, pg) != 0 || page_test(pg, PG_DIRTY)) {
+            /* kswapd starts the write; a write that ends at once (a
+             * synchronous writepage) leaves the page free to go now */
+            if (!sc->kswapd || filemap_writepage_locked(as, pg) != 0 || page_test(pg, PG_DIRTY | PG_WRITEBACK)) {
                 sc->dirty_seen++;
                 putback(pg, LRU_INACTIVE);
                 continue;
