@@ -7,31 +7,30 @@
  * name (lookup) and by a sequence number given at insertion (iteration). A
  * getdents cookie is "the entry with sequence >= cookie - 3", so iteration
  * resumes in O(log n) and is not confused by entries removed in between.
- * Files: sparse; 4 KiB pages in a red-black tree by page index (holes read as
- * zeros), so a file may end far beyond 4 GiB while using only the pages
- * written. M1-12 moves file data into the page cache (inode->mapping).
+ * Files: their data is their page-cache pages (inode->mapping, M1-12), so
+ * read, write and mmap share them; sparse (a missing page reads as zeros), so
+ * a file may end far beyond 4 GiB while using only the pages written.
  *
  * Invariants: a directory entry holds one inode reference, so a linked inode
  * lives at least as long as its entry; an unlinked one lives until its last
  * File or lookup reference goes (then evict frees its pages). nlink counts
  * entries naming the inode, plus "." and each subdirectory's ".." for
- * directories. Data beyond `size` inside the last page is always zero.
+ * directories. Data beyond `size` inside the last page is always zero
+ * (filemap.c keeps it so).
  *
  * Locks: the VFS holds the inode lock around every call (vfs.h); ramfs adds
  * none. inode_seq is atomic.
  *
  * Cost: lookup O(log n) name compares; create/unlink/rename O(log n);
- * read/write O(log pages) to find the first page, then O(1) per page. */
+ * read/write one page-cache lookup per page. */
 
 #include "fs/ramfs.h"
 #include "mm/kmalloc.h"
-#include "mm/pmm.h"
-#include "mm/page.h"
+#include "mm/filemap.h"
 #include "lib/mem.h"
 #include "lib/string.h"
 #include "lib/rbtree.h"
 
-#define RAMFS_PAGE    4096u
 #define RAMFS_COOKIE0 3   /* cookie of sequence 0: after ".", "..", and 2 = "end of dots" */
 
 typedef struct RamfsDirent {
@@ -43,14 +42,8 @@ typedef struct RamfsDirent {
     char name[];
 } RamfsDirent;
 
-typedef struct RamfsPage {
-    RbNode node;
-    uint64_t index;
-    struct page *page;
-} RamfsPage;
-
 typedef struct RamfsInfo {
-    RbRoot a;             /* directory: entries by name; file: pages by index */
+    RbRoot a;             /* directory: entries by name */
     RbRoot b;             /* directory: entries by sequence */
     uint64_t next_seq;    /* directory */
     uint32_t count;       /* directory: entries */
@@ -71,139 +64,14 @@ static RamfsInfo *info(const Inode *inode) {
     return (RamfsInfo *)inode->priv;
 }
 
-/* --- Pages --- */
-
-static RamfsPage *page_find_ge(const RamfsInfo *ri, uint64_t index) {
-    RbNode *n = ri->a.node;
-    RamfsPage *best = NULL;
-    while (n != NULL) {
-        RamfsPage *p = rb_entry(n, RamfsPage, node);
-        if (p->index >= index) {
-            best = p;
-            n = n->left;
-        } else {
-            n = n->right;
-        }
-    }
-    return best;
-}
-
-static RamfsPage *page_get(RamfsInfo *ri, uint64_t index, Inode *inode) {
-    RbNode **link = &ri->a.node, *parent = NULL;
-    while (*link != NULL) {
-        RamfsPage *p = rb_entry(*link, RamfsPage, node);
-        if (p->index == index) return p;
-        parent = *link;
-        link = index < p->index ? &(*link)->left : &(*link)->right;
-    }
-    RamfsPage *p = kmalloc(sizeof(*p), 0);
-    if (p == NULL) return NULL;
-    p->page = alloc_pages(0, GFP_KERNEL | GFP_ZERO);
-    if (p->page == NULL) {
-        kfree(p);
-        return NULL;
-    }
-    p->index = index;
-    rb_link_node(&p->node, parent, link);
-    rb_insert_color(&p->node, &ri->a);
-    inode->blocks += RAMFS_PAGE / 512;
-    return p;
-}
-
-static void page_drop(RamfsInfo *ri, RamfsPage *p, Inode *inode) {
-    rb_erase(&p->node, &ri->a);
-    free_pages(p->page, 0);
-    kfree(p);
-    inode->blocks -= RAMFS_PAGE / 512;
-}
-
-static int64_t ramfs_read(File *file, const IoBuf *buf, loff_t *pos) {
-    Inode *inode = file->inode;
-    RamfsInfo *ri = info(inode);
-    if (*pos >= inode->size) return 0;
-    uint64_t start = (uint64_t)*pos;
-    uint64_t avail = (uint64_t)inode->size - start;
-    size_t total = buf->len < avail ? buf->len : (size_t)avail;
-    size_t done = 0;
-    RamfsPage *p = page_find_ge(ri, start / RAMFS_PAGE);
-    while (done < total) {
-        uint64_t at = start + done;
-        uint64_t index = at / RAMFS_PAGE;
-        size_t in_page = (size_t)(at % RAMFS_PAGE);
-        size_t n = RAMFS_PAGE - in_page;
-        if (n > total - done) n = total - done;
-        while (p != NULL && p->index < index) {
-            RbNode *next = rb_next(&p->node);
-            p = next != NULL ? rb_entry(next, RamfsPage, node) : NULL;
-        }
-        int err = (p != NULL && p->index == index)
-                      ? iob_copy_out(buf, done, (uint8_t *)page_to_virt(p->page) + in_page, n)
-                      : iob_zero(buf, done, n);   /* a hole */
-        if (err != 0) {
-            if (done == 0) return err;
-            break;
-        }
-        done += n;
-    }
-    *pos += (loff_t)done;
-    return (int64_t)done;
-}
-
-static int64_t ramfs_write(File *file, const IoBuf *buf, loff_t *pos) {
-    Inode *inode = file->inode;
-    RamfsInfo *ri = info(inode);
-    uint64_t start = (uint64_t)*pos;
-    size_t done = 0;
-    while (done < buf->len) {
-        uint64_t at = start + done;
-        size_t in_page = (size_t)(at % RAMFS_PAGE);
-        size_t n = RAMFS_PAGE - in_page;
-        if (n > buf->len - done) n = buf->len - done;
-        RamfsPage *p = page_get(ri, at / RAMFS_PAGE, inode);
-        if (p == NULL) {
-            if (done == 0) return -ENOMEM;
-            break;
-        }
-        /* A faulting user buffer: keep the bytes copied, leave the rest of
-         * the file as it was */
-        size_t got = iob_copy_in_partial((uint8_t *)page_to_virt(p->page) + in_page, buf, done, n);
-        done += got;
-        if ((loff_t)(start + done) > inode->size) inode->size = (loff_t)(start + done);
-        if (got < n) {
-            if (done == 0) return -EFAULT;
-            break;
-        }
-    }
-    *pos += (loff_t)done;
-    return (int64_t)done;
-}
-
-/* Cut the file to size: free whole pages past it, zero the rest of the
- * last page (so growing again reads zeros there). */
-static void ramfs_truncate(Inode *inode, loff_t size) {
-    RamfsInfo *ri = info(inode);
-    if (size < inode->size) {
-        uint64_t keep = ((uint64_t)size + RAMFS_PAGE - 1) / RAMFS_PAGE;   /* pages [0, keep) stay */
-        RamfsPage *p = page_find_ge(ri, keep);
-        while (p != NULL) {
-            RbNode *next = rb_next(&p->node);
-            page_drop(ri, p, inode);
-            p = next != NULL ? rb_entry(next, RamfsPage, node) : NULL;
-        }
-        size_t tail = (size_t)((uint64_t)size % RAMFS_PAGE);
-        if (tail != 0) {
-            p = page_find_ge(ri, (uint64_t)size / RAMFS_PAGE);
-            if (p != NULL && p->index == (uint64_t)size / RAMFS_PAGE) {
-                memset((uint8_t *)page_to_virt(p->page) + tail, 0, RAMFS_PAGE - tail);
-            }
-        }
-    }
-    inode->size = size;
-    vfs_now(&inode->mtime);
-}
+/* --- Files: the data lives in the page cache (mm/filemap.h); its pages
+ * are the storage (AS_MEMBACKED: never evicted, holes read as zeros) --- */
 
 static int ramfs_setattr(Inode *inode, const InodeAttr *attr) {
-    if (attr->valid & ATTR_SIZE) ramfs_truncate(inode, attr->size);
+    if (attr->valid & ATTR_SIZE) {
+        filemap_truncate(inode, attr->size);
+        vfs_now(&inode->mtime);
+    }
     if (attr->valid & ATTR_MODE) inode->mode = (inode->mode & S_IFMT) | (attr->mode & 07777);
     if (attr->valid & ATTR_UID) inode->uid = attr->uid;
     if (attr->valid & ATTR_GID) inode->gid = attr->gid;
@@ -283,6 +151,10 @@ static Inode *ramfs_new_inode(SuperBlock *sb, uint32_t mode, uint32_t uid, uint3
     } else {
         inode->iop = &ramfs_file_iops;
         inode->fop = &ramfs_file_fops;
+        if (filemap_inode_init(inode, NULL, AS_MEMBACKED) != 0) {
+            iput(inode);
+            return NULL;
+        }
     }
     return inode;
 }
@@ -397,16 +269,9 @@ static int ramfs_iterate(File *file, DirContext *ctx) {
 }
 
 static void ramfs_evict(Inode *inode) {
+    filemap_inode_evict(inode);   /* a regular file's pages (nothing for others) */
     RamfsInfo *ri = info(inode);
     if (ri == NULL) return;
-    if (S_ISREG(inode->mode)) {
-        RamfsPage *p = page_find_ge(ri, 0);
-        while (p != NULL) {
-            RbNode *next = rb_next(&p->node);
-            page_drop(ri, p, inode);
-            p = next != NULL ? rb_entry(next, RamfsPage, node) : NULL;
-        }
-    }
     /* A directory is evicted only once empty (rmdir) or never (the root) */
     kfree(ri);
     inode->priv = NULL;
@@ -431,8 +296,10 @@ static const FileOps ramfs_dir_fops = {
 };
 
 static const FileOps ramfs_file_fops = {
-    .read = ramfs_read,
-    .write = ramfs_write,
+    .read = filemap_read,
+    .write = filemap_write,
+    .mmap_ops = &filemap_vma_ops,
+    .fsync = filemap_fsync,
 };
 
 static const SuperOps ramfs_sops = {

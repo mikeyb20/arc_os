@@ -165,11 +165,12 @@ static long meminfo_field(const char *text, const char *key) {
 }
 
 static int mem_snap(MemSnap *m) {
-    /* Empty the dentry cache first (M1-11): the entries and the disk inodes
-     * they hold are a cache, not a leak */
+    /* Empty the dentry cache (M1-11) and the clean page cache (M1-12) first:
+     * the entries, the disk inodes they hold and cached file pages are a
+     * cache, not a leak */
     int dc = open("/proc/sys/vm/drop_caches", O_WRONLY);
     if (dc >= 0) {
-        write(dc, "2\n", 2);
+        write(dc, "3\n", 2);
         close(dc);
     }
     char text[512];

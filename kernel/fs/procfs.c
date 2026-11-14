@@ -1,8 +1,8 @@
 /* arc_os — procfs (procfs.h; M0, inodes M1-11)
  *
  * Owns: /proc. Fixed files (meminfo, uptime, cmdline, cpuinfo, slabinfo,
- * kmsg, sched_debug, mounts) and sys/vm/drop_caches are static inodes; /proc/<pid> directories and
- * their files are inodes made per lookup and freed with their last
+ * kmsg, sched_debug, mounts, interrupts, vmstat) and sys/vm/drop_caches are
+ * static inodes; /proc/<pid> directories and their files are inodes made per lookup and freed with their last
  * reference, so nothing is shared between lookups and no pool can be
  * overrun. A file's text is generated whole at each read.
  *
@@ -21,6 +21,7 @@
 #include "mm/kmalloc.h"
 #include "mm/slab.h"
 #include "mm/mm.h"
+#include "mm/filemap.h"
 #include "mm/vmm.h"
 #include "arch/hal.h"
 #include "proc/process.h"
@@ -87,6 +88,14 @@ static int gen_meminfo(char *buf, int bufsz, void *ctx) {
     pos = procfs_append_u64(buf, pos, bufsz, free_kb);
     pos = procfs_append_str(buf, pos, bufsz, " kB\nAnonPages: ");
     pos = procfs_append_u64(buf, pos, bufsz, mm_anon_pages() * (PAGE_SIZE / 1024));
+    FilemapStats fs;
+    filemap_stats(&fs);
+    pos = procfs_append_str(buf, pos, bufsz, " kB\nCached: ");
+    pos = procfs_append_u64(buf, pos, bufsz, fs.file_pages * (PAGE_SIZE / 1024));
+    pos = procfs_append_str(buf, pos, bufsz, " kB\nDirty: ");
+    pos = procfs_append_u64(buf, pos, bufsz, fs.dirty * (PAGE_SIZE / 1024));
+    pos = procfs_append_str(buf, pos, bufsz, " kB\nMapped: ");
+    pos = procfs_append_u64(buf, pos, bufsz, fs.mapped * (PAGE_SIZE / 1024));
     pos = procfs_append_str(buf, pos, bufsz, " kB\nPageTables: ");
     pos = procfs_append_u64(buf, pos, bufsz, vmm_user_table_pages() * (PAGE_SIZE / 1024));
     pos = procfs_append_str(buf, pos, bufsz, " kB\nPageDescriptors: ");
@@ -101,6 +110,31 @@ static int gen_meminfo(char *buf, int bufsz, void *ctx) {
     pos = procfs_append_u64(buf, pos, bufsz, hs.large_bytes);
     pos = procfs_append_str(buf, pos, bufsz, " B\n");
 
+    return pos;
+}
+
+/* Page-cache counters, Linux /proc/vmstat names where Linux has them
+ * (nr_file_pages, nr_dirty, nr_mapped, pgpgin in pages here, not KiB);
+ * the readahead and drop counters are arc_os's own. */
+static int gen_vmstat(char *buf, int bufsz, void *ctx) {
+    (void)ctx;
+    FilemapStats fs;
+    filemap_stats(&fs);
+    const struct {
+        const char *name;
+        uint64_t v;
+    } rows[] = {
+        {"nr_file_pages ", fs.file_pages}, {"nr_dirty ", fs.dirty},
+        {"nr_mapped ", fs.mapped},         {"pgpgin ", fs.pgpgin},
+        {"ra_pages ", fs.ra_pages},        {"ra_batches ", fs.ra_batches},
+        {"pages_dropped ", fs.dropped},
+    };
+    int pos = 0;
+    for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+        pos = procfs_append_str(buf, pos, bufsz, rows[i].name);
+        pos = procfs_append_u64(buf, pos, bufsz, rows[i].v);
+        pos = procfs_append_str(buf, pos, bufsz, "\n");
+    }
     return pos;
 }
 
@@ -336,10 +370,10 @@ static ProcGen fixed_gen[] = {
     {gen_cmdline, NULL, 0},     {gen_cpuinfo, NULL, 0},
     {gen_slabinfo, NULL, 0},    {NULL, NULL, 0},
     {gen_sched_debug, NULL, 0}, {gen_mounts, NULL, PROCFS_MOUNTS_SIZE},
-    {gen_interrupts, NULL, 0},
+    {gen_interrupts, NULL, 0},  {gen_vmstat, NULL, 0},
 };
-static const char *const fixed_names[] = {"meminfo", "uptime",      "cmdline", "cpuinfo",   "slabinfo",
-                                          "kmsg",    "sched_debug", "mounts",  "interrupts"};
+static const char *const fixed_names[] = {"meminfo", "uptime",      "cmdline", "cpuinfo",    "slabinfo",
+                                          "kmsg",    "sched_debug", "mounts",  "interrupts", "vmstat"};
 #define FIXED_COUNT (sizeof(fixed_names) / sizeof(fixed_names[0]))
 #define FIXED_KMSG  5
 _Static_assert(sizeof(fixed_gen) / sizeof(fixed_gen[0]) == FIXED_COUNT, "one generator per fixed file");
@@ -414,9 +448,10 @@ static int procfs_parse_uint(const char *s, uint32_t *out) {
     return 0;
 }
 
-/* --- /proc/sys/vm/drop_caches (Linux): writing 2 or 3 empties the dentry
- * cache and frees the disk inodes only it held; 1 (the page cache) has
- * nothing to free until M1-12. Root only (mode 0200, as on Linux). --- */
+/* --- /proc/sys/vm/drop_caches (Linux): 2 empties the dentry cache and
+ * frees the disk inodes only it held (with their pages); 1 frees every clean,
+ * unmapped page-cache page; 3 does both. Root only (mode 0200, as on
+ * Linux). --- */
 
 #define PROC_INO_SYS         0x100
 #define PROC_INO_SYS_VM      0x101
@@ -458,7 +493,8 @@ static int64_t procfs_drop_caches_write(File *file, const IoBuf *buf, loff_t *po
     text[n] = '\0';
     uint32_t v;
     if (procfs_parse_uint(text, &v) != 0 || v < 1 || v > 4) return -EINVAL;   /* 4: Linux's "stay quiet" bit */
-    if (v & 2) vfs_drop_caches();
+    if (v & 2) vfs_drop_caches();   /* first: inodes it frees take their pages along */
+    if (v & 1) (void)filemap_drop_clean();
     *pos += (loff_t)buf->len;
     return (int64_t)buf->len;
 }

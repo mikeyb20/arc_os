@@ -29,9 +29,6 @@
 #include "fs/path.h"
 #include "arch/hal.h"
 
-/* Maximum ELF binary size for execve */
-#define MAX_ELF_SIZE  (16 * 1024 * 1024)  /* 16 MB */
-
 /* Linux struct rusage size (wait4 zero-fills it: there is no accounting yet) */
 #define RUSAGE_SIZE 144
 
@@ -159,42 +156,43 @@ static int64_t sys_fork(uint64_t a0, uint64_t a1, uint64_t a2,
     return (int64_t)child->pid;
 }
 
-/* What execve needs from the program file, read through one open File so
- * the setuid bits belong to the bytes loaded. */
-typedef struct ExecImage {
-    void *buf;   /* kmalloc'd; the caller frees it */
-    uint64_t size;
-    uint32_t mode, uid, gid;
-} ExecImage;
+/* ElfSource.read of a file: pread until done (a file that shrank meanwhile
+ * is not an executable any more) */
+static int exec_file_read(const ElfSource *src, uint64_t off, void *dst, size_t len) {
+    size_t done = 0;
+    while (done < len) {
+        IoBuf b = iob_kernel((uint8_t *)dst + done, len - done);
+        int64_t n = vfs_pread((File *)src->file, &b, (loff_t)(off + done));
+        if (n < 0) return (int)n;
+        if (n == 0) return -ENOEXEC;
+        done += (size_t)n;
+    }
+    return 0;
+}
 
-/* Read the ELF at path. -EACCES unless a regular file with execute
- * permission, -ENOEXEC when empty or over MAX_ELF_SIZE. */
-static int exec_read_elf(const char *path, ExecImage *img) {
+int exec_load(const char *path, Mm *mm, ElfLoadResult *result, ExecFileInfo *info) {
     File *file;
     int err = vfs_open_exec(path, &file);   /* regular, executable (read permission not needed) */
     if (err != 0) return err;
     Inode *inode = file->inode;
-    loff_t size = inode->size;
-    if (err == 0 && (size <= 0 || size > MAX_ELF_SIZE)) err = -ENOEXEC;
-    uint8_t *buf = err == 0 ? kmalloc((size_t)size, 0) : NULL;
-    if (err == 0 && buf == NULL) err = -ENOMEM;
-    for (loff_t done = 0; err == 0 && done < size;) {
-        IoBuf b = iob_kernel(buf + done, (size_t)(size - done));
-        int64_t n = vfs_pread(file, &b, done);
-        if (n <= 0) err = n < 0 ? (int)n : -EIO;
-        done += n > 0 ? n : 0;
+    if (inode->size <= 0) err = -ENOEXEC;
+    if (err == 0) {
+        /* Read through the page cache; whole pages are mapped from it */
+        ElfSource src = {
+            .size = (uint64_t)inode->size,
+            .read = exec_file_read,
+            .file = file,
+            .ops = file->fop != NULL ? file->fop->mmap_ops : NULL,
+        };
+        err = elf_load_from(&src, mm, result);
     }
-    img->mode = inode->mode;
-    img->uid = inode->uid;
-    img->gid = inode->gid;
-    fput(file);
-    if (err != 0) {
-        kfree(buf);
-        return err;
+    if (info != NULL) {
+        info->mode = inode->mode;
+        info->uid = inode->uid;
+        info->gid = inode->gid;
     }
-    img->buf = buf;
-    img->size = (uint64_t)size;
-    return 0;
+    fput(file);   /* the file VMAs hold their own references */
+    return err;
 }
 
 /* Copy one NULL-terminated user vector (argv or envp) into s, string by
@@ -296,19 +294,16 @@ static int64_t sys_execve(uint64_t path_addr, uint64_t argv_addr, uint64_t envp_
     }
     if (err == 0) err = exec_copy_vector(envp_addr, strings, 1);
 
-    /* 2. Read ELF binary from VFS */
-    ExecImage img = {0};
-    if (err == 0) err = exec_read_elf(abs, &img);
-
-    /* 3. Fresh user address space with the ELF segments and the stack */
+    /* 2-3. Fresh user address space with the ELF segments (through the page
+     * cache) and the stack */
+    ExecFileInfo img = {0};
     Mm *new_mm = NULL;
     ElfLoadResult result;
     if (err == 0) {
         new_mm = mm_create();
         if (new_mm == NULL) err = -ENOMEM;
     }
-    if (err == 0) err = elf_load(img.buf, img.size, new_mm, &result);
-    kfree(img.buf);
+    if (err == 0) err = exec_load(abs, new_mm, &result, &img);
     if (err == 0) err = mm_setup_stack(new_mm, result.stack_exec, result.brk_start);
     if (err != 0) {
         mm_put(new_mm);

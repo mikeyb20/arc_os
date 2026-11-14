@@ -27,6 +27,7 @@ Vma *vma_alloc(void) {
 }
 
 void vma_free(Vma *vma) {
+    if (vma->ops != NULL && vma->ops->close != NULL) vma->ops->close(vma);
     kmem_cache_free(vma_cache, vma);
 }
 
@@ -126,7 +127,12 @@ Vma *vma_split(VmaSet *set, Vma *vma, uint64_t addr) {
     if (upper == NULL) return NULL;
     *upper = *vma;   /* attributes; links are set by vma_insert */
     upper->start = addr;
+    upper->as_next = upper->as_prev = NULL;
     if (upper->file != NULL) upper->pgoff += vma_pages(vma->start, addr);
+    /* List the upper half with its file before the lower one shrinks: a
+     * truncate or write-back walking the file's VMAs (no mm lock) must find
+     * every entry; for a moment both cover [addr, end), which is harmless */
+    if (upper->ops != NULL && upper->ops->open != NULL) upper->ops->open(upper);
     vma_set_bounds(set, vma, vma->start, addr);
     vma_insert(set, upper);
     return upper;

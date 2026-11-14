@@ -63,13 +63,18 @@ int vmm_get_flags_in(uint64_t pml4, uint64_t virt);
 int vmm_lookup_in(uint64_t pml4, uint64_t virt, uint64_t *phys);
 
 /* Receives each frame an unmap took out: a user page (table 0) or an emptied
- * page-table page (table 1). It must not free it before the TLB flush. */
-typedef void (*vmm_defer_free_t)(uint64_t phys, int table, void *ctx);
+ * page-table page (table 1). It must not free it before the TLB flush. A
+ * non-zero return for a user page stops the walk after it (the caller's
+ * batch is full). */
+typedef int (*vmm_defer_free_t)(uint64_t phys, int table, void *ctx);
 
 /* Clear every leaf entry in [start, end) (page aligned) and free the page
  * tables that leaves empty, handing each frame to defer. Returns the number
- * of user pages taken out. No TLB flush. */
-uint64_t vmm_unmap_range_in(uint64_t pml4, uint64_t start, uint64_t end, vmm_defer_free_t defer, void *ctx);
+ * of user pages taken out; *next (if not NULL) is where the walk stopped (end,
+ * or the page after the one defer stopped it at: defer returned nonzero for a
+ * page). No TLB flush. */
+uint64_t vmm_unmap_range_in(uint64_t pml4, uint64_t start, uint64_t end, vmm_defer_free_t defer, void *ctx,
+                            uint64_t *next);
 
 /* Free a page-table page an unmap handed to its defer callback (keeps the
  * PageTables count right). */
@@ -79,10 +84,13 @@ void vmm_release_table(uint64_t phys);
  * included). Unmapped pages stay unmapped. No TLB flush. */
 void vmm_protect_range_in(uint64_t pml4, uint64_t start, uint64_t end, uint32_t flags);
 
-/* Fork: copy every page mapped in [start, end) of src into a new page at the
- * same address in dst, same flags; adds the pages copied to *copied. Returns
- * 0, or -ENOMEM (dst keeps what was copied; the caller destroys it). */
-int vmm_copy_range_in(uint64_t src, uint64_t dst, uint64_t start, uint64_t end, uint64_t *copied);
+/* Fork: copy every page mapped in [start, end) of src into a new page at
+ * the same address in dst, same flags, except the frames skip (may be NULL)
+ * returns nonzero for (the caller's page-cache pages: the child faults them
+ * in); adds the pages copied to *copied. Returns 0, or -ENOMEM (dst keeps
+ * what was copied; the caller destroys it). */
+int vmm_copy_range_in(uint64_t src, uint64_t dst, uint64_t start, uint64_t end, int (*skip)(uint64_t phys),
+                      uint64_t *copied);
 
 /* mremap: move the entries of [from, from + len) to [to, to + len) (empty)
  * without copying pages. Returns 0, or -ENOMEM with the pages not yet moved

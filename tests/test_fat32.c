@@ -8,6 +8,7 @@
 
 #include "drivers/blkdev.h"
 #include "fs/fat32.h"
+#include "mm/filemap.h"
 #include "uapi/errno.h"
 #include "uapi/fcntl.h"
 
@@ -243,9 +244,58 @@ TEST(inodes_are_shared_and_leak_free) {
     return 0;
 }
 
+/* M1-12: file data lives in the page cache; drop_caches frees it and the
+ * next read fills it again from the disk (pages span several clusters) */
+TEST(reads_through_the_page_cache) {
+    if (fat_ready() != 0) return 0;
+    static char expect[16384];
+    size_t len = 0;
+    for (int i = 1; i <= 3000; i++) len += (size_t)snprintf(expect + len, sizeof(expect) - len, "%d\n", i);
+    File *f;
+    ASSERT_EQ(vfs_open("/fat/big.txt", O_RDONLY, 0, &f), 0);
+    (void)filemap_drop_clean();
+    FilemapStats s0, s;
+    filemap_stats(&s0);
+    IoBuf b = iob_kernel(text, sizeof(text));
+    ASSERT_EQ(vfs_pread(f, &b, 0), (int64_t)len);
+    ASSERT_MEM_EQ(text, expect, len);
+    filemap_stats(&s);
+    uint64_t pages = (len + 4095) / 4096;
+    ASSERT_EQ(s.pgpgin - s0.pgpgin, pages);   /* one readahead window covers the file */
+    ASSERT_EQ(s.file_pages - s0.file_pages, pages);
+    ASSERT_EQ(filemap_of(f->inode)->nrpages, pages);
+    b = iob_kernel(text, sizeof(text));
+    ASSERT_EQ(vfs_pread(f, &b, 0), (int64_t)len);   /* cached: no disk read */
+    filemap_stats(&s);
+    ASSERT_EQ(s.pgpgin - s0.pgpgin, pages);
+    ASSERT_EQ(filemap_drop_clean(), pages);
+    ASSERT_EQ(filemap_of(f->inode)->nrpages, 0);
+    memset(text, 0, sizeof(text));
+    b = iob_kernel(text, sizeof(text));
+    ASSERT_EQ(vfs_pread(f, &b, 0), (int64_t)len);
+    ASSERT_MEM_EQ(text, expect, len);
+    filemap_stats(&s);
+    ASSERT_EQ(s.pgpgin - s0.pgpgin, 2 * pages);
+    /* The bytes past the end in the last page are zeros */
+    unsigned off;
+    struct page *last = filemap_find(filemap_of(f->inode), pages - 1, &off);
+    ASSERT_TRUE(last != NULL);
+    ASSERT_EQ(((char *)page_to_virt(last))[len % 4096], 0);
+    page_put(last);
+    fput(f);
+    return 0;
+}
+
 TestCase fat32_tests[] = {
-    TEST_ENTRY(rejects_bad_boot_sectors), TEST_ENTRY(mounted_read_only), TEST_ENTRY(root_listing),
-    TEST_ENTRY(lookup_ignores_case),      TEST_ENTRY(attributes),        TEST_ENTRY(reads),
-    TEST_ENTRY(reads_across_clusters),    TEST_ENTRY(changes_get_erofs), TEST_ENTRY(inodes_are_shared_and_leak_free),
+    TEST_ENTRY(rejects_bad_boot_sectors),
+    TEST_ENTRY(mounted_read_only),
+    TEST_ENTRY(root_listing),
+    TEST_ENTRY(lookup_ignores_case),
+    TEST_ENTRY(attributes),
+    TEST_ENTRY(reads),
+    TEST_ENTRY(reads_across_clusters),
+    TEST_ENTRY(changes_get_erofs),
+    TEST_ENTRY(inodes_are_shared_and_leak_free),
+    TEST_ENTRY(reads_through_the_page_cache),
 };
 int fat32_test_count = sizeof(fat32_tests) / sizeof(fat32_tests[0]);

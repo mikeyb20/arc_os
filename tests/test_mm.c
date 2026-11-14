@@ -17,6 +17,7 @@
 #define ARCHOS_MM_PMM_H
 #define ARCHOS_MM_SLAB_H
 #define ARCHOS_MM_PAGE_H
+#define ARCHOS_MM_FILEMAP_H
 #define ARCHOS_ARCH_HAL_H
 #define ARCHOS_LIB_KPRINTF_H
 #define ARCHOS_PROC_RWSEM_H
@@ -42,7 +43,7 @@ int ksnprintf(char *buf, size_t size, const char *fmt, ...) __attribute__((forma
 #define VMM_FLAG_USER      (1 << 1)
 #define VMM_FLAG_NOEXEC    (1 << 2)
 #define VMM_FLAG_PROTNONE  (1 << 3)
-typedef void (*vmm_defer_free_t)(uint64_t phys, int table, void *ctx);
+typedef int (*vmm_defer_free_t)(uint64_t phys, int table, void *ctx);
 
 /* --- Frames --- */
 #define POOL_PAGES 256
@@ -52,7 +53,10 @@ struct page {
     struct page *next;
     int allocated;
     int unmapped_at;   /* flush count when it left the page tables; -1 if mapped */
+    uint32_t flags;    /* PG_FILE: a page-cache page (M1-12) */
+    int file_maps;     /* page-cache page: entries mapping it (filemap_page_mapped/unmapped) */
 };
+#define PG_FILE (1u << 10)
 struct page_list {
     struct page *head;
 };
@@ -157,15 +161,28 @@ static int vmm_lookup_in(uint64_t pml4, uint64_t virt, uint64_t *phys) {
     if (phys != NULL) *phys = ptes[i].phys;
     return 1;
 }
-static uint64_t vmm_unmap_range_in(uint64_t pml4, uint64_t start, uint64_t end, vmm_defer_free_t defer, void *ctx) {
+/* Like the real walker: in address order, and stops after a page when defer
+ * asks (the zap's page-cache batch is full) */
+static uint64_t vmm_unmap_range_in(uint64_t pml4, uint64_t start, uint64_t end, vmm_defer_free_t defer, void *ctx,
+                                   uint64_t *next) {
     uint64_t n = 0;
-    for (int i = 0; i < MAX_PTES; i++) {
-        if (!ptes[i].used || ptes[i].pml4 != pml4 || ptes[i].virt < start || ptes[i].virt >= end) continue;
-        ptes[i].used = 0;
-        pfn_to_page(ptes[i].phys >> PAGE_SHIFT)->unmapped_at = tlb_flushes;
-        defer(ptes[i].phys, 0, ctx);
+    for (uint64_t a = start; a < end;) {
+        int best = -1;
+        for (int i = 0; i < MAX_PTES; i++) {
+            if (!ptes[i].used || ptes[i].pml4 != pml4 || ptes[i].virt < a || ptes[i].virt >= end) continue;
+            if (best < 0 || ptes[i].virt < ptes[best].virt) best = i;
+        }
+        if (best < 0) break;
+        ptes[best].used = 0;
+        pfn_to_page(ptes[best].phys >> PAGE_SHIFT)->unmapped_at = tlb_flushes;
         n++;
+        a = ptes[best].virt + PAGE_SIZE;
+        if (defer(ptes[best].phys, 0, ctx) != 0) {
+            if (next != NULL) *next = a;
+            return n;
+        }
     }
+    if (next != NULL) *next = end;
     return n;
 }
 static void vmm_release_table(uint64_t phys) {
@@ -176,9 +193,11 @@ static void vmm_protect_range_in(uint64_t pml4, uint64_t start, uint64_t end, ui
         if (ptes[i].used && ptes[i].pml4 == pml4 && ptes[i].virt >= start && ptes[i].virt < end) ptes[i].flags = flags;
     }
 }
-static int vmm_copy_range_in(uint64_t src, uint64_t dst, uint64_t start, uint64_t end, uint64_t *copied) {
+static int vmm_copy_range_in(uint64_t src, uint64_t dst, uint64_t start, uint64_t end, int (*skip)(uint64_t phys),
+                             uint64_t *copied) {
     for (int i = 0; i < MAX_PTES; i++) {
         if (!ptes[i].used || ptes[i].pml4 != src || ptes[i].virt < start || ptes[i].virt >= end) continue;
+        if (skip != NULL && skip(ptes[i].phys)) continue;
         struct page *pg = alloc_pages(0, 0);
         if (pg == NULL) return -ENOMEM;
         memcpy(frame(page_to_phys(pg)), frame(ptes[i].phys), PAGE_SIZE);
@@ -291,6 +310,15 @@ static void *kmem_cache_alloc(struct kmem_cache *c, uint32_t flags) {
 static void kmem_cache_free(struct kmem_cache *c, void *p) {
     c->live--;
     free(p);
+}
+
+/* --- Page cache (filemap.h): the entries' bookkeeping --- */
+static int file_unmaps, file_unmap_errors;
+static void filemap_page_unmapped(struct page *pg) {
+    if (!(pg->flags & PG_FILE) || pg->file_maps <= 0) file_unmap_errors++;
+    if (pg->unmapped_at >= 0 && pg->unmapped_at == tlb_flushes) file_unmap_errors++; /* before the flush */
+    pg->file_maps--;
+    file_unmaps++;
 }
 
 #include "../kernel/mm/mm.c"

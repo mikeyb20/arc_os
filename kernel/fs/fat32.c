@@ -8,14 +8,18 @@
  * get one too; the root is FAT32_ROOT_INO. Inodes live in the inode cache and
  * the dentry cache (M1-11 fixed the old node cache, which never freed one).
  *
+ * File data lives in the page cache (M1-12): fat32_readpage reads one page's
+ * clusters straight into it; read() and mmap() are the cache's.
+ *
  * Locking: the FAT is read once at mount and never changes. vol->io_lock
- * (LOCK_LEVEL_FS_IO, above the page lock for M1-12's readpage) serializes the
+ * (LOCK_LEVEL_FS_IO, inside the page lock readpage runs under) serializes the
  * block device and each inode's chain cursor; user copies and dir_emit happen
  * after it is released. */
 
 #include "fs/fat32.h"
 #include "drivers/blkdev.h"
 #include "mm/kmalloc.h"
+#include "mm/filemap.h"
 #include "proc/mutex.h"
 #include "proc/lockdep.h"
 #include "lib/mem.h"
@@ -54,6 +58,7 @@ typedef struct Fat32Inode {
 static const InodeOps fat32_dir_iops;
 static const FileOps fat32_dir_fops;
 static const FileOps fat32_file_fops;
+static const AddressSpaceOps fat32_aops;
 
 static Fat32Volume *vol_of(const Inode *inode) {
     return (Fat32Volume *)inode->sb;
@@ -226,10 +231,15 @@ static Inode *fat32_iget(Fat32Volume *vol, uint64_t ino, uint32_t mode, uint32_t
     inode->nlink = S_ISDIR(mode) ? 2 : 1;
     inode->iop = S_ISDIR(mode) ? &fat32_dir_iops : NULL;
     inode->fop = S_ISDIR(mode) ? &fat32_dir_fops : &fat32_file_fops;
+    if (!S_ISDIR(mode) && filemap_inode_init(inode, &fat32_aops, 0) != 0) {
+        iput(inode);
+        return NULL;
+    }
     return icache_add(inode);   /* a racing lookup's copy wins; ours is freed */
 }
 
 static void fat32_evict(Inode *inode) {
+    filemap_inode_evict(inode);   /* a file's cached pages (no reads in flight: each held a reference) */
     kfree(inode->priv);
 }
 
@@ -335,41 +345,61 @@ static int fat32_iterate(File *file, DirContext *ctx) {
     return rc < 0 ? rc : 0;
 }
 
-/* --- File read --- */
+/* --- File data: through the page cache (mm/filemap.h) --- */
 
-static int64_t fat32_read(File *file, const IoBuf *buf, loff_t *pos) {
-    Inode *inode = file->inode;
+/* Start filling one page of a file: one read piece per cluster piece it
+ * covers, straight from the device into the page (filemap_bdev_read), and
+ * zeros past the end of the file (or of a short chain). Clusters may be
+ * smaller or larger than a page; both are sector multiples. io_lock held;
+ * the read ends when its last piece does (filemap.h). */
+static void fat32_start_page(Inode *inode, struct page *pg) {
     Fat32Volume *vol = vol_of(inode);
-    loff_t size = inode->size;
-    if (*pos >= size || buf->len == 0) return 0;
-    uint64_t want = buf->len;
-    if (want > (uint64_t)(size - *pos)) want = (uint64_t)(size - *pos);
+    uint64_t base = (uint64_t)pg->index << PAGE_SHIFT;
+    uint64_t size = (uint64_t)inode->size;
     uint32_t bpc = vol->bytes_per_cluster;
-    uint8_t *cbuf = kmalloc(bpc, 0);
-    if (cbuf == NULL) return -ENOMEM;
-    uint64_t done = 0;
-    int64_t err = 0;
-    while (done < want) {
-        loff_t at = *pos + (loff_t)done;
-        uint32_t off = (uint32_t)(at % bpc);
-        int got = read_chain_cluster(inode, (uint32_t)(at / bpc), cbuf);
-        if (got <= 0) {
-            err = got < 0 ? got : 0;   /* a chain shorter than the size: stop there */
-            break;
-        }
-        uint64_t n = bpc - off;
-        if (n > want - done) n = want - done;
-        if (iob_copy_out(buf, (size_t)done, cbuf + off, (size_t)n) != 0) {
-            err = -EFAULT;
-            break;
-        }
-        done += n;
+    size_t off = 0;
+    int err = 0;
+    filemap_io_begin(pg);
+    while (off < PAGE_SIZE && base + off < size) {
+        uint64_t at = base + off;
+        uint32_t c = chain_cluster(vol, fi_of(inode), (uint32_t)(at / bpc));
+        if (c == 0) break;   /* a chain shorter than the size: zeros */
+        uint32_t in_cluster = (uint32_t)(at % bpc);
+        size_t n = bpc - in_cluster;
+        if (n > PAGE_SIZE - off) n = PAGE_SIZE - off;
+        uint64_t sector = vol->data_start + (uint64_t)(c - 2) * vol->sectors_per_cluster + in_cluster / SECTOR_SIZE;
+        err = filemap_bdev_read(vol->dev, sector, (uint32_t)(n / SECTOR_SIZE), pg, off);
+        if (err != 0) break;
+        off += n;
     }
-    kfree(cbuf);
-    if (done == 0 && err != 0) return err;
-    *pos += (loff_t)done;
-    return (int64_t)done;
+    /* Past the end: zeros (the pieces in flight fill only [0, off)) */
+    size_t valid = size > base ? (size - base < PAGE_SIZE ? (size_t)(size - base) : PAGE_SIZE) : 0;
+    if (valid > off) valid = off;
+    memset((uint8_t *)page_to_virt(pg) + valid, 0, PAGE_SIZE - valid);
+    filemap_io_end(pg, err);
 }
+
+static int fat32_readpage(AddressSpace *as, struct page *pg) {
+    Fat32Volume *vol = vol_of(as->host);
+    mutex_lock(&vol->io_lock);
+    fat32_start_page(as->host, pg);
+    mutex_unlock(&vol->io_lock);
+    return 0;
+}
+
+/* A readahead batch: one hold of the device for all of it, the chain cursor
+ * walking forward page by page */
+static void fat32_readpages(AddressSpace *as, struct page **pages, uint32_t n) {
+    Fat32Volume *vol = vol_of(as->host);
+    mutex_lock(&vol->io_lock);
+    for (uint32_t i = 0; i < n; i++) fat32_start_page(as->host, pages[i]);
+    mutex_unlock(&vol->io_lock);
+}
+
+static const AddressSpaceOps fat32_aops = {
+    .readpage = fat32_readpage,
+    .readpages = fat32_readpages,
+};
 
 static const InodeOps fat32_dir_iops = {
     .lookup = fat32_lookup,
@@ -380,7 +410,8 @@ static const FileOps fat32_dir_fops = {
 };
 
 static const FileOps fat32_file_fops = {
-    .read = fat32_read,
+    .read = filemap_read,
+    .mmap_ops = &filemap_vma_ops,
 };
 
 /* --- Mount --- */

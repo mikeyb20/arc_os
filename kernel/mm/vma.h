@@ -32,14 +32,27 @@
 #define VMA_NOHUGEPAGE (1u << 6)
 #define VMA_SEQ_READ   (1u << 7)   /* MADV_SEQUENTIAL (readahead, M1-12) */
 #define VMA_RAND_READ  (1u << 8)   /* MADV_RANDOM */
+#define VMA_MAYWRITE   (1u << 9)   /* shared file mapping whose file is open for writing: mprotect may add write */
 
 struct Vma;
+struct Mm;
 
-/* Per-kind fault operation. Anonymous VMAs have none (mm.c maps a zeroed
- * page); file VMAs get one from M1-12. Returns 0 with *phys set to the page
- * to map, or a negative errno. */
+/* Operations of a VMA backed by an object (a file, M1-12). Anonymous VMAs
+ * have none: mm.c maps zeroed pages. */
 typedef struct VmaOps {
-    int (*fault)(struct Vma *vma, uint64_t addr, uint32_t access, uint64_t *phys);
+    /* Resolve a fault at the page addr (mm lock held for reading; the VMA
+     * allows the access). Returns an MM_FAULT_* result (mm.h). */
+    int (*fault)(struct Mm *mm, struct Vma *vma, uint64_t addr, uint32_t access);
+    /* A new VMA now covers part of the same object (split, fork, mremap):
+     * take its references and link it where the object lists its VMAs. */
+    void (*open)(struct Vma *vma);
+    /* The VMA is being freed (vma_free): undo open. */
+    void (*close)(struct Vma *vma);
+    /* msync(MS_SYNC) of [start, end) inside a shared VMA: write back and
+     * wait. 0 or -errno. NULL: nothing to do. */
+    int (*sync)(struct Vma *vma, uint64_t start, uint64_t end);
+    /* MADV_WILLNEED of [start, end): read it in now. NULL: nothing to do. */
+    void (*willneed)(struct Vma *vma, uint64_t start, uint64_t end);
 } VmaOps;
 
 typedef struct Vma {
@@ -50,13 +63,18 @@ typedef struct Vma {
     uint64_t end;           /* one past the last byte, page aligned */
     uint32_t prot;          /* VMA_READ | VMA_WRITE | VMA_EXEC */
     uint32_t flags;         /* VMA_ANON ... */
-    void *file;             /* backing file (M1-12); NULL when anonymous */
+    void *file;             /* backing File (a reference; M1-12); NULL when anonymous */
     uint64_t pgoff;         /* file offset of start, in pages (M1-12) */
     const VmaOps *ops;      /* NULL for anonymous memory */
+    struct Mm *mm;          /* owning address space (file VMAs: truncate and write-back reach it) */
+    struct Vma *as_next;    /* the file's list of VMAs mapping it (mm/filemap.h, under its mapping lock) */
+    struct Vma *as_prev;
 } Vma;
 
-/* Allocated from its own slab cache: keep it small (ADR-0019) */
-_Static_assert(sizeof(Vma) <= 96, "struct Vma must stay within 96 bytes");
+/* Allocated from its own slab cache: keep it small (ADR-0019). 96 bytes in
+ * M1-07; 120 since M1-12 (the owner and the file's VMA-list links, which
+ * truncate and write-back walk without any mm lock). */
+_Static_assert(sizeof(Vma) <= 120, "struct Vma must stay within 120 bytes");
 
 typedef struct VmaSet {
     RbRoot tree;
@@ -75,7 +93,8 @@ void vma_cache_init(void);
 /* A zeroed VMA from the slab cache, or NULL. O(1). */
 Vma *vma_alloc(void);
 
-/* Return a VMA (already removed from its set) to the cache. */
+/* Return a VMA (already removed from its set) to the cache; calls its
+ * ops->close first. */
 void vma_free(Vma *vma);
 
 /* First VMA whose end is above addr (it contains addr, or is the next one
@@ -100,7 +119,8 @@ void vma_set_bounds(VmaSet *set, Vma *vma, uint64_t start, uint64_t end);
 
 /* Split vma at addr (page aligned, strictly inside it): vma keeps
  * [start, addr), the returned new VMA holds [addr, end) with the same
- * attributes. Returns NULL (vma unchanged) when out of memory. O(log n). */
+ * attributes (a file VMA's offset moved on, ops->open called). Returns NULL
+ * (vma unchanged) when out of memory. O(log n). */
 Vma *vma_split(VmaSet *set, Vma *vma, uint64_t addr);
 
 /* 1 if b directly follows a and they have the same protection, kind and

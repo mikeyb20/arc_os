@@ -90,18 +90,42 @@ typedef struct {
     uint8_t  stack_exec;    /* PT_GNU_STACK asks for an executable stack (or is absent) */
 } ElfLoadResult;
 
+/* Linux's limit on the program header table (fs/binfmt_elf.c) */
+#define ELF_MAX_PHDR_BYTES 65536
+
+struct Mm;
+struct VmaOps;
+
+/* Where elf_load_from reads a program: `read` copies bytes at an offset (0
+ * or -errno). With `ops` set (a file whose data is in the page cache), whole
+ * pages of segment data are mapped from `file` through ops instead of copied
+ * (M1-12). */
+typedef struct ElfSource {
+    uint64_t size;   /* bytes */
+    int (*read)(const struct ElfSource *src, uint64_t off, void *dst, size_t len);
+    const void *data;             /* memory source */
+    void *file;                   /* file source: a File (the VMAs take their own references) */
+    const struct VmaOps *ops;     /* NULL: copy every page */
+} ElfSource;
+
+/* A source reading from memory (no mapping). */
+void elf_source_mem(ElfSource *src, const void *data, uint64_t size);
+
 /* Load a static ELF64 executable (ET_EXEC, or ET_DYN without PT_INTERP) into
  * a process's address space (ADR-0002). Each PT_LOAD page gets its segment's
  * permissions and VMA (M1-07); a page two segments share gets both (its own
- * one-page VMA). Pages with file data are filled now, .bss pages on first
- * touch. What it mapped before a failure stays: the caller frees the mm.
- * data: pointer to ELF file in memory
- * size: size of ELF file
+ * one-page VMA). From a file source, a segment's whole pages of file data are
+ * a private file VMA (read on first touch, copied on first write); the page
+ * a previous segment shares and the last, partly-file page are copied now;
+ * .bss pages come on first touch. What it mapped before a failure stays: the
+ * caller frees the mm.
  * mm: the new address space (nobody else can reach it yet)
  * result: output — entry point and break start
  * Returns 0, -ENOEXEC for a file that is not a static x86_64 ELF executable
- * (including any program with PT_INTERP), or -ENOMEM. */
-struct Mm;
+ * (including any program with PT_INTERP), -ENOMEM, or the source's read error. */
+int elf_load_from(const ElfSource *src, struct Mm *mm, ElfLoadResult *result);
+
+/* elf_load_from with a memory source: data, size bytes. */
 int elf_load(const void *data, size_t size, struct Mm *mm, ElfLoadResult *result);
 
 #endif /* ARCHOS_PROC_ELF_H */

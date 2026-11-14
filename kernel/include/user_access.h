@@ -36,6 +36,12 @@ int copy_from_user(void *dst, const void *src, size_t len);
  * write into file data must not change bytes it didn't take). */
 size_t copy_from_user_partial(void *dst, const void *src, size_t len);
 
+/* As copy_from_user_partial, but a page that isn't mapped yet ends the copy
+ * instead of being faulted in: for copies while holding a page lock, which a
+ * fault could need (mm/filemap.h). Callers fault the range in first and retry
+ * on a short copy. Never sleeps. */
+size_t copy_from_user_nofault(void *dst, const void *src, size_t len);
+
 /* Copy len bytes from kernel src to user dst. Returns 0 or -EFAULT (some
  * bytes may have been written). */
 int copy_to_user(void *dst, const void *src, size_t len);

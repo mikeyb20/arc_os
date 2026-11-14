@@ -1,0 +1,7 @@
+# qemu.pagecache (M1-12): the page cache and file mmap with stock musl
+# ("fat" also reads the FAT32 test disk at /disk through the cache), then a
+# 9 MiB program exec'd twice: its pages come from the cache, its stores to
+# initialized data stay its own. Exit status = failed checks.
+pctest   /boot/pctest fat
+bigexec1 /boot/bigexec
+bigexec2 /boot/bigexec

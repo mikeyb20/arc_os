@@ -376,6 +376,7 @@ typedef struct UnmapWalk {
     vmm_defer_free_t defer;
     void *ctx;
     uint64_t pages;
+    uint64_t stopped;   /* where the walk stopped early (defer asked), else 0 */
 } UnmapWalk;
 
 static int unmap_visit(uint64_t *pt, uint64_t from, uint64_t to, void *ctx) {
@@ -384,28 +385,33 @@ static int unmap_visit(uint64_t *pt, uint64_t from, uint64_t to, void *ctx) {
         uint64_t pte = pt[PT_INDEX(a)];
         if (!pte_mapped(pte)) continue;
         pt[PT_INDEX(a)] = 0;
-        w->defer(pte & PTE_ADDR_MASK, 0, w->ctx);
         w->pages++;
+        if (w->defer(pte & PTE_ADDR_MASK, 0, w->ctx) != 0) {
+            w->stopped = a + PAGE_SIZE;
+            break;
+        }
     }
-    if (!table_empty(pt)) return 0;
+    if (!table_empty(pt)) return w->stopped != 0;
     /* Free the tables this left empty, bottom up */
     uint64_t *pml4 = (uint64_t *)phys_to_virt(w->pml4);
     uint64_t *pdpt = (uint64_t *)phys_to_virt(pml4[PML4_INDEX(from)] & PTE_ADDR_MASK);
     uint64_t *pd = (uint64_t *)phys_to_virt(pdpt[PDPT_INDEX(from)] & PTE_ADDR_MASK);
     pd[PD_INDEX(from)] = 0;
     w->defer(vmm_hhdm_to_phys(pt), 1, w->ctx);
-    if (!table_empty(pd)) return 0;
+    if (!table_empty(pd)) return w->stopped != 0;
     pdpt[PDPT_INDEX(from)] = 0;
     w->defer(vmm_hhdm_to_phys(pd), 1, w->ctx);
-    if (!table_empty(pdpt)) return 0;
+    if (!table_empty(pdpt)) return w->stopped != 0;
     pml4[PML4_INDEX(from)] = 0;
     w->defer(vmm_hhdm_to_phys(pdpt), 1, w->ctx);
-    return 0;
+    return w->stopped != 0;
 }
 
-uint64_t vmm_unmap_range_in(uint64_t pml4_phys, uint64_t start, uint64_t end, vmm_defer_free_t defer, void *ctx) {
-    UnmapWalk w = {pml4_phys, defer, ctx, 0};
+uint64_t vmm_unmap_range_in(uint64_t pml4_phys, uint64_t start, uint64_t end, vmm_defer_free_t defer, void *ctx,
+                            uint64_t *next) {
+    UnmapWalk w = {pml4_phys, defer, ctx, 0, 0};
     (void)walk_range(pml4_phys, start, end, unmap_visit, &w);
+    if (next != NULL) *next = w.stopped != 0 && w.stopped < end ? w.stopped : end;
     return w.pages;
 }
 
@@ -428,6 +434,7 @@ void vmm_protect_range_in(uint64_t pml4_phys, uint64_t start, uint64_t end, uint
 
 typedef struct CopyWalk {
     uint64_t dst;
+    int (*skip)(uint64_t phys);
     uint64_t *copied;
 } CopyWalk;
 
@@ -436,6 +443,7 @@ static int copy_visit(uint64_t *pt, uint64_t from, uint64_t to, void *ctx) {
     for (uint64_t a = from; a < to; a += PAGE_SIZE) {
         uint64_t pte = pt[PT_INDEX(a)];
         if (!pte_mapped(pte)) continue;
+        if (w->skip != NULL && w->skip(pte & PTE_ADDR_MASK)) continue;   /* the child faults it in */
         uint64_t dst_phys = pmm_alloc_page();
         if (dst_phys == 0) return -ENOMEM;
         memcpy(phys_to_virt(dst_phys), phys_to_virt(pte & PTE_ADDR_MASK), PAGE_SIZE);
@@ -449,8 +457,9 @@ static int copy_visit(uint64_t *pt, uint64_t from, uint64_t to, void *ctx) {
     return 0;
 }
 
-int vmm_copy_range_in(uint64_t src_pml4, uint64_t dst_pml4, uint64_t start, uint64_t end, uint64_t *copied) {
-    CopyWalk w = {dst_pml4, copied};
+int vmm_copy_range_in(uint64_t src_pml4, uint64_t dst_pml4, uint64_t start, uint64_t end, int (*skip)(uint64_t phys),
+                      uint64_t *copied) {
+    CopyWalk w = {dst_pml4, skip, copied};
     return walk_range(src_pml4, start, end, copy_visit, &w);
 }
 

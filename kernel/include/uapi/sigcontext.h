@@ -113,6 +113,7 @@ struct ucontext {
 #define FPE_FLTRES  6   /* SIGFPE: inexact result */
 #define FPE_FLTINV  7   /* SIGFPE: invalid operation */
 #define BUS_ADRALN  1   /* SIGBUS: alignment check (#AC) */
+#define BUS_ADRERR  2   /* SIGBUS: a file mapping page past the end of its file (M1-12) */
 #define TRAP_BRKPT  1   /* SIGTRAP: breakpoint (#BP) */
 #define TRAP_TRACE  2   /* SIGTRAP: single step (#DB) */
 
