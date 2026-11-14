@@ -1116,8 +1116,14 @@ TestCase ext2w_state_tests[] = {
  * must not free "block" rdev (made to be another file's data block) */
 TEST(unlinked_device_node_frees_no_blocks) {
     static Vol v;
-    /* 4 << 8 | 13 = 1037: the first data block mkfs gives, keep's */
-    ASSERT_EQ(vol_new(&v, "/rg1", 64, NULL, "mknod node c 4 13 && echo hi > keep"), 0);
+    /* 4 << 8 | 13 = 1037: the first data block mkfs gives, keep's. debugfs
+     * makes the node (mknod needs root; CI runs as a user) */
+    env();
+    ASSERT_EQ(himg_make(&v.im, 64, NULL, "echo hi > keep"), 0);
+    static char cmd[512];
+    snprintf(cmd, sizeof(cmd), "debugfs -w -R 'mknod node c 4 13' '%s' >/dev/null 2>&1", v.im.path);
+    ASSERT_EQ(system(cmd), 0);
+    ASSERT_EQ(vol_mount(&v, "/rg1", 0, EXT2_MOUNT_RW), 0);
     char out[4096];
     ASSERT_TRUE(himg_debugfs(&v.im, "icheck 1037", out, sizeof(out)) > 0);
     ASSERT_TRUE(strstr(out, "1037\t12") != NULL || strstr(out, "1037 12") != NULL);   /* keep (inode 12) owns it */
