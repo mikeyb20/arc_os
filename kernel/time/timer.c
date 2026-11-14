@@ -100,7 +100,7 @@ static void base_remove(TimerBase *b, Timer *t) {
 static void base_program(TimerBase *b, int force) {
     uint64_t next = b->first != NULL ? b->first->expires : TIMER_NEVER;
     if (next == b->programmed && !force) return;
-    b->programmed = next;
+    __atomic_store_n(&b->programmed, next, __ATOMIC_RELAXED);   /* timer_next_event reads it */
     if (next == TIMER_NEVER)
         hal_clockevent_stop();
     else
@@ -165,6 +165,11 @@ void timer_cancel_sync(Timer *t) {
 
 int timer_cpu_ready(void) {
     return this_base() != NULL;
+}
+
+uint64_t timer_next_event(void) {
+    TimerBase *b = this_base();
+    return b != NULL ? __atomic_load_n(&b->programmed, __ATOMIC_RELAXED) : TIMER_NEVER;
 }
 
 int timer_pending(const Timer *t) {

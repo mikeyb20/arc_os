@@ -16,6 +16,15 @@
 #define MSR_TSC_DEADLINE   0x000006E0  /* IA32_TSC_DEADLINE: local APIC timer fires at this TSC value; 0 disarms */
 #define MSR_X2APIC_FIRST   0x00000800  /* x2APIC register r is MSR 0x800 + (MMIO offset >> 4) */
 
+/* Power (M1-21, ADR-0017): Intel HWP and RAPL. Probe with rdmsr_safe. */
+#define MSR_PM_ENABLE              0x00000770  /* IA32_PM_ENABLE: bit 0 turns HWP on (until reset) */
+#define MSR_HWP_CAPABILITIES       0x00000771  /* IA32_HWP_CAPABILITIES: highest, guaranteed, efficient, lowest */
+#define MSR_HWP_REQUEST            0x00000774  /* IA32_HWP_REQUEST: min, max, desired, EPP (per logical CPU) */
+#define MSR_RAPL_POWER_UNIT        0x00000606  /* power, energy and time units */
+#define MSR_PKG_ENERGY_STATUS      0x00000611  /* package energy, 32-bit counter */
+#define MSR_PP0_ENERGY_STATUS      0x00000639  /* cores (power plane 0) energy, 32-bit counter */
+#define MSR_PLATFORM_ENERGY_STATUS 0x0000064D  /* platform (PSYS) energy, 32-bit counter */
+
 /* EFER bits */
 #define EFER_SCE    (1ULL << 0) /* System Call Extensions enable */
 
@@ -38,5 +47,12 @@ static inline void wrmsr(uint32_t msr, uint64_t value) {
     uint32_t hi = (uint32_t)(value >> 32);
     __asm__ volatile ("wrmsr" : : "c"(msr), "a"(lo), "d"(hi));
 }
+
+/* RDMSR / WRMSR that return -EIO instead of crashing when the CPU raises
+ * #GP: the register doesn't exist here or refuses the value (msr_safe.asm,
+ * exception-table fixups; M1-21). 0 on success; rdmsr_safe stores 0 in *out
+ * on failure. Use them for every register CPUID does not promise. */
+int rdmsr_safe(uint32_t msr, uint64_t *out);
+int wrmsr_safe(uint32_t msr, uint64_t value);
 
 #endif /* ARCHOS_ARCH_X86_64_MSR_H */

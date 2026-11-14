@@ -46,6 +46,7 @@
 #include "mm/mm.h"
 #include "time/clock.h"
 #include "time/timer.h"
+#include "power/power.h"
 #include "arch/hal.h"
 #include "lib/kprintf.h"
 
@@ -478,7 +479,7 @@ __attribute__((noreturn)) static void sched_idle_loop(void) {
             sched_schedule();
             continue;
         }
-        hal_idle_wait();    /* interrupts on and halt, atomically */
+        power_idle(&rq->nr_queued);   /* sleep (MWAIT or HLT), interrupts back on (M1-21) */
     }
 }
 

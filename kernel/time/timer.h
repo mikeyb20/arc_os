@@ -55,6 +55,12 @@ void timer_cancel_sync(Timer *t);
 /* 1 once this CPU has a timer queue (timer_init_boot / timer_init_cpus). */
 int timer_cpu_ready(void);
 
+/* Clock time this CPU's timer hardware will next fire at (TIMER_NEVER:
+ * stopped). Interrupts off; the idle loop picks how deep to sleep from it
+ * (M1-21). It may be earlier than the earliest timer (another CPU cancelled
+ * it), never later. */
+uint64_t timer_next_event(void);
+
 /* 1 while t is queued. A hint without the owner's serialisation. */
 int timer_pending(const Timer *t);
 

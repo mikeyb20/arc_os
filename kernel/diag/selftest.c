@@ -4,7 +4,7 @@
  * came online; an AVX2 checksum on every CPU matches the scalar one (XCR0
  * checked first); a 256 MB memory pattern test; the TSC rate against the PIT;
  * the TSCs in step on every CPU and a one-shot kernel timer firing on time
- * (M1-06); a kernel thread pinned to each CPU
+ * (M1-06); rdmsr_safe returns an error for a missing MSR (M1-21); a kernel thread pinned to each CPU
  * runs there (M1-05: this starts the other CPUs' schedulers early); a TLB
  * range flush reaches every CPU that has the address space loaded (M1-07).
  * Invariants: runs only in diagnostic mode, where init never starts, so no
@@ -29,6 +29,7 @@
 #include "lib/kprintf.h"
 #include "lib/testmode.h"
 #include "lib/mem.h"
+#include "uapi/errno.h"
 #include <stdarg.h>
 
 #define AVX_ORDER       4                                  /* 64 KiB buffer */
@@ -208,6 +209,24 @@ static void check_tsc(void) {
                pm / 10, pm % 10);
     } else {
         result("tsc", 1, "%lu kHz from the PIT (the CPU gives no frequency to compare)", t->pit_khz);
+    }
+}
+
+/* ---- Safe MSR access (M1-21) ---- */
+
+static void check_msr(void) {
+    HalMsrCheck c;
+    hal_msr_check(&c);
+    if (c.present_rc != 0 || c.present_safe != c.present_plain) {
+        result("msr", 0, "rdmsr_safe(APIC_BASE) gave %d, %lx (plain read %lx)", c.present_rc, c.present_safe,
+               c.present_plain);
+    } else if (c.missing_rc == -EIO && c.missing_val == 0) {
+        result("msr", 1, "missing MSR 0x%x: -EIO (#GP caught), APIC_BASE %lx", HAL_MSR_MISSING, c.present_safe);
+    } else if (c.missing_rc == 0 && c.missing_val == 0) {
+        result("msr", 1, "missing MSR 0x%x read as 0 without #GP (emulator), APIC_BASE %lx", HAL_MSR_MISSING,
+               c.present_safe);
+    } else {
+        result("msr", 0, "missing MSR 0x%x: rc %d, value %lx", HAL_MSR_MISSING, c.missing_rc, c.missing_val);
     }
 }
 
@@ -418,6 +437,7 @@ void diag_selftest(int *passes, int *fails) {
     check_tsc();
     check_tsc_sync();
     check_timer();
+    check_msr();
     check_sched(); /* starts the other CPUs' schedulers */
     check_tlb(); /* needs them */
     diag_line("Self-test: %d PASS, %d FAIL", passed, failed);
