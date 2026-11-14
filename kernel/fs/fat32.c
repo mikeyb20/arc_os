@@ -87,7 +87,7 @@ static inline uint32_t fat32_entry_cluster(const Fat32DirEntry *e) {
 /* Read one cluster into buf. io_lock held. */
 static int fat32_read_cluster(Fat32Volume *vol, uint32_t cluster, void *buf) {
     uint64_t sector = vol->data_start + (uint64_t)(cluster - 2) * vol->sectors_per_cluster;
-    return vol->dev->read(vol->dev, sector, vol->sectors_per_cluster, buf) != 0 ? -EIO : 0;
+    return blk_rw_sync(vol->dev, BLK_OP_READ, sector, buf, vol->bytes_per_cluster) != 0 ? -EIO : 0;
 }
 
 /* The index-th cluster of fi's chain, or 0 past its end. io_lock held.
@@ -347,13 +347,27 @@ static int fat32_iterate(File *file, DirContext *ctx) {
 
 /* --- File data: through the page cache (mm/filemap.h) --- */
 
+/* The file's last bytes when EOF falls inside a sector: read that sector now
+ * and copy only the file's part, so no disk bytes past EOF reach the page
+ * (an async piece could land after the tail is zeroed). Thread context. */
+static int fat32_read_tail(Fat32Volume *vol, uint64_t sector, uint8_t *dst, size_t len) {
+    uint8_t buf[SECTOR_SIZE] __attribute__((aligned(16)));
+    int rc = blk_rw_sync(vol->dev, BLK_OP_READ, sector, buf, SECTOR_SIZE);
+    if (rc == 0) memcpy(dst, buf, len);
+    return rc != 0 ? -EIO : 0;
+}
+
 /* Start filling one page of a file: one read piece per cluster piece it
  * covers, straight from the device into the page (filemap_bdev_read), and
  * zeros past the end of the file (or of a short chain). Clusters may be
- * smaller or larger than a page; both are sector multiples. io_lock held;
- * the read ends when its last piece does (filemap.h). */
-static void fat32_start_page(Inode *inode, struct page *pg) {
+ * smaller or larger than a page; both are sector multiples. Pieces stop at
+ * the last whole sector before EOF; a partial last sector is read at once
+ * (fat32_read_tail), so the async pieces never touch the zeroed tail. The
+ * pieces go on plug (adjacent clusters reach the disk as one request).
+ * io_lock held; the read ends when its last piece does (filemap.h). */
+static void fat32_start_page(Inode *inode, struct page *pg, BlkPlug *plug) {
     Fat32Volume *vol = vol_of(inode);
+    uint8_t *va = page_to_virt(pg);
     uint64_t base = (uint64_t)pg->index << PAGE_SHIFT;
     uint64_t size = (uint64_t)inode->size;
     uint32_t bpc = vol->bytes_per_cluster;
@@ -368,31 +382,46 @@ static void fat32_start_page(Inode *inode, struct page *pg) {
         size_t n = bpc - in_cluster;
         if (n > PAGE_SIZE - off) n = PAGE_SIZE - off;
         uint64_t sector = vol->data_start + (uint64_t)(c - 2) * vol->sectors_per_cluster + in_cluster / SECTOR_SIZE;
-        err = filemap_bdev_read(vol->dev, sector, (uint32_t)(n / SECTOR_SIZE), pg, off);
+        uint64_t left = size - at;
+        if (n > left) {   /* this piece holds EOF: whole sectors only */
+            n = (size_t)(left & ~(uint64_t)(SECTOR_SIZE - 1));
+            if (n == 0) {
+                err = fat32_read_tail(vol, sector, va + off, (size_t)left);
+                if (err == 0) off += (size_t)left;
+                break;
+            }
+        }
+        err = filemap_bdev_read(plug, vol->dev, sector, (uint32_t)(n / SECTOR_SIZE), pg, off);
         if (err != 0) break;
         off += n;
     }
     /* Past the end: zeros (the pieces in flight fill only [0, off)) */
     size_t valid = size > base ? (size - base < PAGE_SIZE ? (size_t)(size - base) : PAGE_SIZE) : 0;
     if (valid > off) valid = off;
-    memset((uint8_t *)page_to_virt(pg) + valid, 0, PAGE_SIZE - valid);
+    memset(va + valid, 0, PAGE_SIZE - valid);
     filemap_io_end(pg, err);
 }
 
 static int fat32_readpage(AddressSpace *as, struct page *pg) {
     Fat32Volume *vol = vol_of(as->host);
+    BlkPlug plug;
+    blk_plug_init(&plug);
     mutex_lock(&vol->io_lock);
-    fat32_start_page(as->host, pg);
+    fat32_start_page(as->host, pg, &plug);
+    blk_plug_flush(&plug);
     mutex_unlock(&vol->io_lock);
     return 0;
 }
 
 /* A readahead batch: one hold of the device for all of it, the chain cursor
- * walking forward page by page */
+ * walking forward page by page, every piece on one plug (one doorbell) */
 static void fat32_readpages(AddressSpace *as, struct page **pages, uint32_t n) {
     Fat32Volume *vol = vol_of(as->host);
+    BlkPlug plug;
+    blk_plug_init(&plug);
     mutex_lock(&vol->io_lock);
-    for (uint32_t i = 0; i < n; i++) fat32_start_page(as->host, pages[i]);
+    for (uint32_t i = 0; i < n; i++) fat32_start_page(as->host, pages[i], &plug);
+    blk_plug_flush(&plug);
     mutex_unlock(&vol->io_lock);
 }
 
@@ -452,7 +481,7 @@ static int fat32_parse_bpb(Fat32Volume *vol, const Fat32Bpb *bpb) {
 SuperBlock *fat32_mount(BlockDevice *dev) {
     if (dev == NULL) return NULL;
     uint8_t sector_buf[SECTOR_SIZE];
-    if (dev->read(dev, 0, 1, sector_buf) != 0) {
+    if (blk_rw_sync(dev, BLK_OP_READ, 0, sector_buf, SECTOR_SIZE) != 0) {
         kprintf("[FAT32] Failed to read boot sector\n");
         return NULL;
     }
@@ -473,13 +502,11 @@ SuperBlock *fat32_mount(BlockDevice *dev) {
         kfree(vol);
         return NULL;
     }
-    for (uint32_t s = 0; s < vol->fat_sectors; s++) {
-        if (dev->read(dev, vol->fat_start + s, 1, (uint8_t *)vol->fat + (uint64_t)s * SECTOR_SIZE) != 0) {
-            kprintf("[FAT32] Failed to read FAT sector %u\n", s);
-            kfree(vol->fat);
-            kfree(vol);
-            return NULL;
-        }
+    if (blk_rw_sync(dev, BLK_OP_READ, vol->fat_start, vol->fat, (size_t)fat_bytes) != 0) {
+        kprintf("[FAT32] Failed to read the FAT\n");
+        kfree(vol->fat);
+        kfree(vol);
+        return NULL;
     }
 
     vfs_sb_init(&vol->sb, "vfat", &fat32_sops);

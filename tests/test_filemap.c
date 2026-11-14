@@ -6,6 +6,7 @@
 
 #include "test_framework.h"
 #include "vfs_env.h"
+#include "blk_mem.h"
 
 #include "drivers/blkdev.h"
 #include "fs/vfs_internal.h"
@@ -86,17 +87,9 @@ TEST(radix_out_of_memory) {
 
 #define DEV_PAGES 512
 static uint8_t *dev_data;
-static int dev_reads, dev_fail;
-
-static int dev_read(BlockDevice *dev, uint64_t sector, uint32_t count, void *buf) {
-    (void)dev;
-    dev_reads++;
-    if (dev_fail || (sector + count) * 512 > (uint64_t)DEV_PAGES * PAGE_SIZE) return -1;
-    memcpy(buf, dev_data + sector * 512, (size_t)count * 512);
-    return 0;
-}
-
-static BlockDevice mem_dev = {.read = dev_read};
+/* A memory disk (blk_mem.c): blk_mem_fail fails its reads, blk_mem_requests
+ * counts them */
+static BlockDevice mem_dev = {.nr_sectors = (uint64_t)DEV_PAGES * PAGE_SIZE / 512};
 static AddressSpace dev_as;
 
 static void dev_setup(void) {
@@ -104,8 +97,9 @@ static void dev_setup(void) {
     if (dev_data == NULL) {
         dev_data = malloc((size_t)DEV_PAGES * PAGE_SIZE);
         for (size_t i = 0; i < (size_t)DEV_PAGES * PAGE_SIZE; i++) dev_data[i] = (uint8_t)(i / PAGE_SIZE + i);
+        mem_dev.driver_data = dev_data;
     }
-    dev_fail = 0;
+    blk_mem_fail = 0;
     (void)filemap_drop_clean();   /* other suites' clean pages: the counts below are this test's */
     filemap_bdev_init(&dev_as, &mem_dev, (loff_t)DEV_PAGES * PAGE_SIZE);
 }
@@ -193,11 +187,11 @@ TEST(drop_keeps_used_and_dirty_pages) {
 
 TEST(read_error_is_eio_and_retried) {
     dev_setup();
-    dev_fail = 1;
-    dev_reads = 0;
+    blk_mem_fail = 1;
+    blk_mem_requests = 0;
     ASSERT_EQ(get_check(7, NULL, 0), -EIO);
-    ASSERT_EQ(dev_reads, 2);   /* one retry */
-    dev_fail = 0;
+    ASSERT_EQ(blk_mem_requests, 2);   /* one retry */
+    blk_mem_fail = 0;
     ASSERT_EQ(get_check(7, NULL, 0), 0);   /* the failed page reads again */
     filemap_bdev_release(&dev_as);
     return 0;

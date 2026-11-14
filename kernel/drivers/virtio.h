@@ -121,8 +121,9 @@ uint8_t virtio_isr_status(VirtioDevice *vdev);
 uint8_t virtio_config_read8(VirtioDevice *vdev, uint16_t off);
 uint32_t virtio_config_read32(VirtioDevice *vdev, uint16_t off);
 
-/* Negotiate features: read device features, AND with supported, write back. */
-void virtio_negotiate_features(VirtioDevice *vdev, uint32_t supported);
+/* Negotiate features: read device features, AND with supported, write back.
+ * Returns the negotiated set. */
+uint32_t virtio_negotiate_features(VirtioDevice *vdev, uint32_t supported);
 
 /* Initialize a virtqueue: allocate vring memory, configure with device.
  * Returns 0 on success. */
@@ -139,6 +140,15 @@ void virtq_free_chain(Virtqueue *vq, uint16_t head);
 
 /* Submit a descriptor chain: add head to avail ring and notify device. */
 void virtio_submit(VirtioDevice *vdev, int queue_index, uint16_t head);
+
+/* The two halves of virtio_submit, so several chains share one doorbell:
+ * publish head in the avail ring, then notify the device of the queue. */
+void virtq_add_avail(Virtqueue *vq, uint16_t head);
+void virtio_notify(VirtioDevice *vdev, int queue_index);
+
+/* Reset the device: it stops using the rings and DMA (status 0). Any
+ * context. */
+void virtio_reset(VirtioDevice *vdev);
 
 /* Check if device has placed entries in the used ring. */
 int virtq_has_used(Virtqueue *vq);

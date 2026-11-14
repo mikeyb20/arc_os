@@ -36,8 +36,11 @@
 # readahead, read/write through the cache, write-back, truncate, block-device
 # mapping), file mmap (fault, copy on write, msync, madvise), exec from any ELF
 # source, and their backtrace names.
+# 515584 -> 538274 after M1-10 (+22690): the async block layer (requests,
+# queues, plugging, timeouts), the GPT parser and partitions, virtio-blk with
+# many requests in flight, the test-mode block test, and their backtrace names.
 # Limit = measured + 5%)
-kernel_image_bytes     541000      max  bytes  M0-08  build
+kernel_image_bytes     565000      max  bytes  M0-08  build
 
 # Free memory when init starts, booted with -m 4G (qemu.smoke; measured 4251873280)
 boot_free_bytes        3830000000  min  bytes  M0-08  smoke

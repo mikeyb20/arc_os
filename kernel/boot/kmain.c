@@ -19,6 +19,7 @@
 #include "drivers/pci.h"
 #include "drivers/virtio_blk.h"
 #include "drivers/blkdev.h"
+#include "arc_disk.h"
 #include "drivers/tty.h"
 #include "drivers/keyboard.h"
 #include "drivers/fb_console.h"
@@ -320,20 +321,36 @@ static void vfs_setup(const BootInfo *info) {
     boot_mount("/proc", procfs_init(), "proc");
 }
 
-/* Try a FAT32 mount of the first block device. */
+/* FAT32 at /disk, read-only: the first disk's EFI system partition when it
+ * has a GPT, else the whole disk (test images). M1-13 mounts the arc_os
+ * partitions of the boot disk. */
 static void disk_mount(void) {
-    BlockDevice *disk = blkdev_get(0);
-    if (!disk) {
+    BlockDevice *dev = blk_find("vda");
+    if (!dev) {
         kprintf("[BLK] No block device registered\n");
         return;
     }
-
-    SuperBlock *fat = fat32_mount(disk);
-    if (fat != NULL) {
-        boot_mount("/disk", fat, "vda");
-    } else {
-        kprintf("[BLK] No FAT32 filesystem found on disk\n");
+    if (dev->has_gpt) {
+        Guid esp;
+        gpt_guid_parse(ARC_PART_TYPE_ESP, &esp);
+        dev = blk_find_part(&dev->disk_guid, &esp);
+        if (!dev) {
+            kprintf("[BLK] vda: GPT without an EFI system partition\n");
+            return;
+        }
     }
+
+    SuperBlock *fat = fat32_mount(dev);
+    if (fat != NULL) {
+        boot_mount("/disk", fat, dev->name);
+    } else {
+        kprintf("[BLK] No FAT32 filesystem found on %s\n", dev->name);
+    }
+}
+
+/* Request timeouts (ADR-0005): checked on the timer tick until M1-06 */
+static void blk_tick(void) {
+    blk_expire_all(hal_tsc_read());
 }
 
 /* Driver model (M1-09): IRQ layer, the PCI bus, then the drivers, which bind
@@ -345,7 +362,10 @@ static void devices_setup(void) {
     pci_bus_init();
     virtio_blk_register();
     if (virtio_net_register() > 0) net_init();
-    if (testmode_active() && strcmp(testmode_suite(), "devices") == 0) devtest_register();
+    if (testmode_active() && strcmp(testmode_suite(), "devices") == 0) {
+        devtest_register();
+        blktest_run();
+    }
     disk_mount();
 }
 
@@ -488,6 +508,7 @@ void kmain(void) {
 
     /* PIT at 100 Hz: uptime ticks (M1-06 replaces it). Slices come from each
      * CPU's own timer, armed by the scheduler. */
+    hal_timer_set_tick_hook(blk_tick);
     pit_init(100);
 
     /* The boot thread becomes CPU 0's idle thread, the APs join in */

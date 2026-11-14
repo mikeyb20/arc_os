@@ -28,6 +28,10 @@ int sched_wake(Thread *t);
 /* Resume a THREAD_STOPPED thread (SIGCONT). Returns 1 if it was stopped. */
 int sched_continue(Thread *t);
 
+/* 1 if the current thread may block: this CPU has an idle thread to run
+ * meanwhile (0 for the boot thread until sched_start). */
+int sched_can_block(void);
+
 /* Give up the CPU: interrupts off, schedule, interrupts back. */
 void sched_yield(void);
 

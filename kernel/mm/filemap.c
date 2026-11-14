@@ -23,6 +23,8 @@
 #include "mm/slab.h"
 #include "proc/waitqueue.h"
 #include "proc/lockdep.h"
+#include "proc/sched.h"
+#include "arch/hal.h"
 #include "drivers/blkdev.h"
 #include "lib/mem.h"
 #include "user_access.h"
@@ -113,6 +115,13 @@ static PageWait *wait_of(const struct page *pg) {
 }
 
 void page_wait_unlocked(struct page *pg) {
+    while (!sched_can_block() && page_test(pg, PG_LOCKED)) {
+        /* Boot, before the scheduler (a mount reading through the page
+         * cache): nothing can sleep, so poll the disks until the read that
+         * holds the page ends (or times out) */
+        blk_poll_all();
+        hal_cpu_relax();
+    }
     while (page_test(pg, PG_LOCKED)) {
         PageWait *w = wait_of(pg);
         uint64_t f;
@@ -778,16 +787,28 @@ void filemap_bdev_read_done(struct page *pg, int err) {
     io_put(pg, err);
 }
 
-int filemap_bdev_read(struct BlockDevice *dev, uint64_t sector, uint32_t count, struct page *pg, size_t byte_off) {
+/* A piece's request ended (usually the disk interrupt): count it off the page */
+static void bdev_read_end_io(void *priv, int status) {
+    filemap_bdev_read_done(priv, status != 0 ? -EIO : 0);
+}
+
+int filemap_bdev_read(struct BlkPlug *plug, struct BlockDevice *dev, uint64_t sector, uint32_t count, struct page *pg,
+                      size_t byte_off) {
+    BlkRequest *rq = blk_rq_alloc(dev, BLK_OP_READ, sector, bdev_read_end_io, pg);
+    if (rq == NULL) return -ENOMEM;
+    blk_rq_add_page(rq, pg, (uint32_t)byte_off, count * BLK_SECTOR_SIZE);
+    /* The piece's share first: its end_io may run before the submit returns */
     __atomic_add_fetch(&pg->flags, PG_IO_ONE, __ATOMIC_ACQ_REL);
-    /* Synchronous until M1-10: the piece is done when the call returns */
-    int r = dev->read(dev, sector, count, (uint8_t *)page_to_virt(pg) + byte_off);
-    filemap_bdev_read_done(pg, r != 0 ? -EIO : 0);
+    if (plug != NULL)
+        blk_plug_add(plug, rq);
+    else
+        blk_submit(rq);
     return 0;
 }
 
 int filemap_bdev_write(struct BlockDevice *dev, uint64_t sector, uint32_t count, struct page *pg, size_t byte_off) {
-    return dev->write(dev, sector, count, (uint8_t *)page_to_virt(pg) + byte_off) != 0 ? -EIO : 0;
+    void *buf = (uint8_t *)page_to_virt(pg) + byte_off;
+    return blk_rw_sync(dev, BLK_OP_WRITE, sector, buf, (size_t)count * BLK_SECTOR_SIZE) != 0 ? -EIO : 0;
 }
 
 #define BDEV_SECTOR 512u
@@ -803,7 +824,7 @@ static int bdev_readpage(AddressSpace *as, struct page *pg) {
     uint32_t count = bdev_sectors(as, pg);
     memset(page_to_virt(pg), 0, PAGE_SIZE);   /* past a device end that is not page aligned */
     filemap_io_begin(pg);
-    int err = filemap_bdev_read(as->bdev, (uint64_t)pg->index * (PAGE_SIZE / BDEV_SECTOR), count, pg, 0);
+    int err = filemap_bdev_read(NULL, as->bdev, (uint64_t)pg->index * (PAGE_SIZE / BDEV_SECTOR), count, pg, 0);
     filemap_io_end(pg, err);
     return 0;
 }

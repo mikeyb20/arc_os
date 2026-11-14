@@ -325,6 +325,11 @@ void sched_finish_switch(void) {
     if (migrating != NULL) sched_enqueue_on(sched_select_cpu(migrating), migrating);
 }
 
+int sched_can_block(void) {
+    RunQueue *rq = this_rq();
+    return rq != NULL && rq->idle != NULL;
+}
+
 void sched_yield(void) {
     uint64_t flags = irq_save();
     sched_schedule();
