@@ -469,8 +469,13 @@ void vfs_env_as(uint32_t uid, uint32_t gid) {
 /* --- Data sources procfs prints --- */
 uint64_t vfs_env_uptime_ms = 1000;
 
-uint64_t pit_get_uptime_ms(void) {
-    return vfs_env_uptime_ms;
+/* Both clocks (time/clock.h) read the test's time: wall time = uptime here */
+uint64_t clock_mono_ns(void) {
+    return vfs_env_uptime_ms * 1000000;
+}
+
+uint64_t clock_real_ns(void) {
+    return vfs_env_uptime_ms * 1000000;
 }
 
 uint64_t mm_anon_pages(void) {

@@ -312,7 +312,7 @@ void iput(Inode *inode);
 Inode *icache_get(SuperBlock *sb, uint64_t ino);
 Inode *icache_add(Inode *inode);
 
-/* Current time for inode times. Uptime until wall-clock time exists (M1-06). */
+/* Current time for inode times: the wall clock (CLOCK_REALTIME). */
 void vfs_now(struct timespec *ts);
 
 /* Permission check for uid/gid (0 = root passes). 0 or -EACCES. */

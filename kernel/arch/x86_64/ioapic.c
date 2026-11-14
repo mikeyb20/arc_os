@@ -111,6 +111,10 @@ void ioapic_route_isa(const AcpiInfo *acpi, uint8_t dest_apic) {
         if (claimed) continue;
 
         ioapic_route_irq(gsi, (uint8_t)(IRQ_BASE + irq), dest_apic, active_low, level);
-        ioapic_unmask(gsi);
+        /* IRQ0 is the PIT, used only for calibration since M1-06: kept masked */
+        if (irq == 0)
+            ioapic_mask(gsi);
+        else
+            ioapic_unmask(gsi);
     }
 }

@@ -10,6 +10,9 @@
  * FS base, set_tid_address, readv/writev, termios ioctls, execve argument
  * errors, and SSE registers and FS base surviving context switches.
  *
+ * M1-06 adds: the time syscalls through libarc's wrappers and raw (-EINVAL,
+ * -EFAULT, clock_nanosleep returning the error number itself).
+ *
  * Unlike normal programs it makes raw syscalls for the cases libc hides (the
  * -errno value itself, unknown numbers). */
 
@@ -24,6 +27,8 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <sys/ioctl.h>
+#include <sys/time.h>
+#include <time.h>
 #include <uapi/unistd.h>
 #include <uapi/socket.h>
 #include <uapi/prctl.h>
@@ -492,6 +497,38 @@ static void test_sse_and_fs_survive_switches(void) {
     close(to_parent[0]); close(to_parent[1]);
 }
 
+/* M1-06: clocks and sleeps through libarc, and their raw errors */
+static void test_time(void) {
+    struct timespec a, b, res;
+    CHECK(clock_gettime(CLOCK_MONOTONIC, &a) == 0);
+    CHECK(clock_getres(CLOCK_REALTIME, &res) == 0 && res.tv_sec == 0 && res.tv_nsec == 1);
+    struct timespec req = {0, 20000000}; /* 20 ms */
+    CHECK(nanosleep(&req, NULL) == 0);
+    CHECK(clock_gettime(CLOCK_MONOTONIC, &b) == 0);
+    long long slept = (b.tv_sec - a.tv_sec) * 1000000000LL + (b.tv_nsec - a.tv_nsec);
+    CHECK(slept >= 20000000);
+    CHECK(clock_nanosleep(CLOCK_MONOTONIC, 0, &req, NULL) == 0);
+    struct timespec bad = {0, 1000000000};
+    errno = 0;
+    CHECK(nanosleep(&bad, NULL) == -1 && errno == EINVAL);
+    errno = 0;
+    CHECK(clock_nanosleep(CLOCK_MONOTONIC, 0, &bad, NULL) == EINVAL && errno == 0); /* POSIX: no errno */
+    CHECK(clock_nanosleep(CLOCK_PROCESS_CPUTIME_ID, 0, &req, NULL) == EOPNOTSUPP);
+    struct timeval tv;
+    CHECK(gettimeofday(&tv, NULL) == 0 && tv.tv_sec > 1735689600); /* after 2025-01-01: the RTC */
+    time_t t = 0;
+    CHECK(time(&t) == t && t >= tv.tv_sec);
+    CHECK(raw3(__NR_clock_gettime, 99, (long)&a, 0) == -EINVAL);
+    CHECK(raw3(__NR_clock_gettime, CLOCK_MONOTONIC, 8, 0) == -EFAULT);
+    CHECK(raw3(__NR_clock_getres, CLOCK_MONOTONIC, 0, 0) == 0); /* res may be NULL */
+    CHECK(raw3(__NR_nanosleep, 0, 0, 0) == -EFAULT);
+    CHECK(raw4(__NR_clock_nanosleep, CLOCK_THREAD_CPUTIME_ID, 0, (long)&req, 0) == -EOPNOTSUPP);
+    CHECK(raw4(__NR_clock_nanosleep, 99, 0, (long)&req, 0) == -EINVAL);
+    CHECK(raw4(__NR_clock_nanosleep, CLOCK_MONOTONIC, 2, (long)&req, 0) == 0); /* unknown flags ignored */
+    CHECK(raw3(__NR_gettimeofday, 8, 0, 0) == -EFAULT);
+    CHECK(raw3(__NR_time, 0, 0, 0) == tv.tv_sec || raw3(__NR_time, 0, 0, 0) == tv.tv_sec + 1);
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     test_std_fds();
@@ -509,6 +546,7 @@ int main(int argc, char **argv) {
     test_termios();
     test_execve_errors();
     test_sse_and_fs_survive_switches();
+    test_time();
     printf("abi_check: %s (%d failures)\n", failures ? "FAIL" : "PASS", failures);
     return failures;
 }

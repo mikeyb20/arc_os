@@ -62,6 +62,32 @@ add_test(NAME qemu.fpu COMMAND ${_qemu_test} --suite fpu --module sig_fpu --modu
     --expect "fpu_avx: 0 failures"
     --expect "\\[FPU\\] XSAVE on")
 
+# Clocks, timers and tickless idle (M1-06): every clock ID, sleeps within 2 ms
+# of their deadline, monotonic time across CPUs, preemption under load (the
+# slice timer arms only when a CPU has more than one thread), and no timer
+# interrupts on idle CPUs over a 5 s sleep (budget idle_timer_irqs_5s)
+add_test(NAME qemu.time COMMAND ${_qemu_test} --suite time --module timetest --timeout 150
+    --expect "\\[TSC\\] [0-9]+ kHz from"
+    --expect "\\[CLOCK\\] TSC in step on 4 CPUs"
+    --expect "\\[CLOCK\\] Wall clock 20[2-9][0-9]-"
+    --expect "\\[CLOCK\\] Monotonic clock from the TSC .* timers on 4 CPUs; no periodic tick"
+    --expect "timetest: idle: 0 failures"
+    --expect "ARC_TEST budget idle_timer_irqs_5s [0-9]+")
+# The fallbacks: the TSC calibrated against the HPET (as when a laptop has no
+# PIT) and the LAPIC one-shot timer where TSC-deadline exists (CI's KVM)
+add_test(NAME qemu.time.fallback COMMAND ${_qemu_test} --suite time --name time-fallback --module timetest
+    --cmdline arc.tsccal=hpet --cmdline arc.timer=oneshot --timeout 150
+    --expect "\\[TSC\\] [0-9]+ kHz from hpet"
+    --expect "LAPIC one-shot timers on 4 CPUs"
+    --expect "timetest: idle: 0 failures")
+# The TSC-deadline path itself: TCG's CPU models have no TSC-deadline timer, so
+# only KVM (CI) can take it; this run fails if the kernel fell back to one-shot
+add_test(NAME qemu.time.deadline COMMAND ${_qemu_test} --suite time --name time-deadline --module timetest
+    --require-kvm --timeout 150
+    --expect "\\[CLOCK\\] Monotonic clock from the TSC .*; TSC-deadline timers on 4 CPUs"
+    --expect "timetest: idle: 0 failures")
+set_tests_properties(qemu.time.deadline PROPERTIES SKIP_RETURN_CODE 77)
+
 # CPU floor (M1-01): on a CPU without AVX2 the kernel says why and stops
 add_test(NAME qemu.cpufloor COMMAND ${_qemu_test} --suite cpufloor --cpu Nehalem
     --expect-exit 0x7e --timeout 60
@@ -166,6 +192,7 @@ add_test(NAME qemu.diag COMMAND ${_qemu_test} --suite diag
     --expect "\\[REPORT\\] Machine +QEMU"
     --expect "\\[REPORT\\] CPUs +4 online; MADT lists 4"
     --expect "\\[REPORT\\] TSC +[0-9]+ kHz"
+    --expect "\\[REPORT\\] Clock +.* timers \\(microcode 0x[0-9a-f]+\\); TSCs in step on 4 CPUs"
     --expect "\\[REPORT\\] Memory +[0-9]+ MB RAM"
     --expect "\\[REPORT\\] ACPI +revision"
     --expect "\\[REPORT\\] PCI +[0-9]+ devices"
@@ -173,7 +200,9 @@ add_test(NAME qemu.diag COMMAND ${_qemu_test} --suite diag
     --expect "\\[REPORT\\] SELFTEST PASS sched +4 of 4 CPUs ran a pinned thread"
     --expect "\\[REPORT\\] SELFTEST PASS tlb +3 of 3 CPUs with the mm loaded answered; 3 read the new page, 0 a stale one"
     --expect "\\[REPORT\\] BENCH context switch"
-    --expect "ARC_TEST DONE pass=7 fail=0")
+    --expect "\\[REPORT\\] SELFTEST PASS tscsync +TSCs in step on 4 CPUs"
+    --expect "\\[REPORT\\] SELFTEST PASS timer +.* timer due in 50 ms fired"
+    --expect "ARC_TEST DONE pass=8 fail=0")
 
 # QR screens (M1-04c): arc.qr=1 draws the report as ARC1 QR pages. The harness
 # takes a QEMU screendump on each "ARC_QR shown" line and presses a key for the
@@ -283,7 +312,7 @@ add_test(NAME qemu.pagecache COMMAND ${_qemu_test} --suite pagecache --module pc
 set_tests_properties(qemu.smoke qemu.mem.buddy qemu.mem.cap qemu.userland qemu.abi qemu.musl qemu.fpu qemu.cpufloor
     qemu.smp.xapic qemu.smp.x2apic qemu.sched qemu.lockorder qemu.selftest.fail qemu.selftest.panic
     qemu.panic.fault qemu.diag qemu.mm qemu.mm.oom qemu.vfs qemu.pagecache qemu.qr.report qemu.qr.log qemu.qr.panic
-    qemu.devices qemu.devices.intx
+    qemu.devices qemu.devices.intx qemu.time qemu.time.fallback qemu.time.deadline
     PROPERTIES LABELS qemu TIMEOUT 180 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     FIXTURES_SETUP qemu_logs)
 set_tests_properties(qemu.mm.oom qemu.pagecache PROPERTIES TIMEOUT 320)

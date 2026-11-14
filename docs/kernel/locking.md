@@ -35,7 +35,7 @@ of that level (a lock without a subkey counts as 0). Give every lock of a nestab
 | 75 | `LOCK_LEVEL_OBJECT` | spinlock | one object's state, the lock handed to `wq_sleep`: pipe, socket, tty, wait4, mutex and semaphore guards | M1-05 |
 | 76 | `LOCK_LEVEL_OBJECT_TABLE` | spinlock | a table looked up under an object lock: the socket table | M1-05 |
 | 80 | `LOCK_LEVEL_WAITQUEUE` | spinlock | wait-queue locks | M1-05 |
-| 85 | `LOCK_LEVEL_BLK_QUEUE` | spinlock, IRQ-safe | one disk's request queue (`BlkQueue.lock`): pending and flight lists, tags, every `BlockOps` call; taken in the disk's interrupt and by the timeout tick | M1-10 |
+| 85 | `LOCK_LEVEL_BLK_QUEUE` | spinlock, IRQ-safe | one disk's request queue (`BlkQueue.lock`): pending and flight lists, tags, every `BlockOps` call; taken in the disk's interrupt and in its timeout timer | M1-10 |
 | 90 | `LOCK_LEVEL_RUNQUEUE` | spinlock, interrupts off | per-CPU run queues; two at once only in CPU-index order (subkey = index + 1) | M1-05 |
 | 95 | `LOCK_LEVEL_IRQ_DESC` | spinlock, IRQ-safe | interrupt descriptors: request, free, affinity, INTx line chains, `/proc/interrupts` (`drivers/irq.c`); never taken in an interrupt | M1-09 |
 | 96 | `LOCK_LEVEL_IRQ_VECTOR` | spinlock, IRQ-safe | per-CPU device vector tables (`arch/x86_64/irq_vector.c`), under the descriptor lock; never taken in an interrupt | M1-09 |
@@ -43,6 +43,7 @@ of that level (a lock without a subkey counts as 0). Give every lock of a nestab
 | 99 | `LOCK_LEVEL_SLAB_REGISTRY` | spinlock | the list of slab caches | M1-05 |
 | 100 | `LOCK_LEVEL_SLAB` | spinlock | one slab cache | M1-02b |
 | 101 | `LOCK_LEVEL_BUDDY` | spinlock | buddy allocator (the only lock taken under a slab lock) | M1-02 |
+| 105 | `LOCK_LEVEL_TIMER` | spinlock, IRQ-safe | one CPU's timer queue (`kernel/time/timer.c`): its tree and earliest expiry (a timer's running count is atomic); taken under the run-queue (90) and block-queue (85) locks; only the log under it | M1-06 |
 | 109 | `LOCK_LEVEL_LOG` | spinlock | kernel log ring: `kprintf` works under any lock | M1-04 |
 
 M1-12 adds the page-cache levels (30, 40, 59, 60; `kernel/mm/filemap.h`). A page fault holds the mm lock
@@ -55,7 +56,8 @@ the page lock: `readpage` is called with the page locked.
 
 Levels 7, 8, 11, 12, 45 and 62–65 are M1-11's additions (see "VFS locks" below). Levels 75 and 76 are additions to §7's list: the pipe, socket and tty locks are the "condition" locks passed to
 `wq_sleep`, so they sit just above the signal lock and below the wait-queue locks; the socket table is looked up
-while one socket's lock is held. Timer-queue locks (M1-06) go between 101 and 109.
+while one socket's lock is held. The timer-queue lock (105, M1-06) sits above everything that arms a timer (see
+"Timer locks" below).
 
 M1-09 adds the device levels. Probe and remove run under the device lock (5, sleeping), so a driver may sleep,
 allocate and take any lock from a later row from them, but never hold a spinlock across them. The descriptor
@@ -149,7 +151,7 @@ the process list (the process row, M1-16); the tty line discipline (the TTY row)
 ## Block layer locks (M1-10)
 
 - `BlkQueue.lock` (85) is the only lock of the I/O path. Submit, the disk's interrupt (`blk_complete`) and the
-  timeout check (`blk_expire`, from the timer tick) take it with interrupts off; the driver's `queue_rq`, `kick`,
+  timeout check (`blk_expire`, from the disk's timer, M1-06) take it with interrupts off; the driver's `queue_rq`, `kick`,
   `poll` and `reset` run under it, so a driver needs no lock of its own for its ring. Nothing else is taken
   under it except the log (109): requests that finish go on the queue's done list, and their `end_io` callbacks
   run after the lock is dropped. So `end_io` may take wait-queue (80) and run-queue (90) locks, as a wakeup
@@ -163,6 +165,8 @@ the process list (the process row, M1-16); the tty line discipline (the TTY row)
   below those. `blk_rw_sync` sleeps, so it is called with no spinlock held either.
 - Level 85 sits above everything a thread holds with interrupts on (the object locks, 75–76), because the
   disk's interrupt can arrive while such a lock is held on that CPU.
+- The disk's timeout timer (M1-06) is armed and cancelled under `BlkQueue.lock`, so the timer-queue lock (105)
+  nests inside it. Its callback runs with no lock held and takes `BlkQueue.lock` itself.
 
 ## Address-space locks (M1-07)
 
@@ -194,3 +198,17 @@ page faults run without it.
 - An idle CPU pulling work locks its own queue and the busiest one, in CPU-index order.
 - No CPU changes a thread another CPU is running: an affinity change moves a running thread at its next
   schedule.
+
+## Timer locks (M1-06)
+
+- Each CPU has one timer queue (`kernel/time/timer.c`) with its own lock (105, IRQ-safe). It is a leaf: nothing
+  but the log is taken under it. It is taken under the run-queue lock (the slice timer) and the block-queue lock
+  (request timeouts), and under no other lock today.
+- Timer callbacks run in the timer interrupt with the queue lock dropped and interrupts off. They may take any
+  IRQ-safe lock that ranks above what a thread holds with interrupts on (the slice timer takes the run-queue
+  lock, the disk timer the block-queue lock, a sleep's timer does a wakeup); they never sleep.
+- A timer has one owner, the lock it is armed under or the thread it belongs to. `timer_cancel_sync` waits for
+  a callback running on another CPU, so it is never called with a lock that callback takes (a sleeping thread
+  calls it with no lock held).
+- A CPU programs only its own clock-event hardware. Another CPU that queues work for a busy CPU without a slice
+  timer sends it a resched IPI, and that CPU arms its own slice.

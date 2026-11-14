@@ -151,6 +151,11 @@ typedef struct {
     uint32_t tables_listed;    /* entries the RSDT/XSDT has (may exceed table_count) */
     int dmar_present;
     uint8_t dmar_flags;       /* ACPI_DMAR_*; x2APIC opt-out is reported, not acted on yet */
+
+    /* Clocks (M1-06): the HPET's register block (0 = no HPET table, or not
+     * in memory space) and the FADT's CMOS century register (0 = none) */
+    uint64_t hpet_address;
+    uint8_t century_reg;
 } AcpiInfo;
 
 /* Parse ACPI tables starting from the RSDP physical address.

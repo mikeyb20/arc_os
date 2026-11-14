@@ -1,8 +1,8 @@
 /* arc_os — Local APIC access layer (M1-03)
  *
  * Owns: the APIC mode (xAPIC MMIO or x2APIC MSRs), register access, EOI, IPIs,
- * and the per-CPU timer the scheduler uses for time slices (M1-05: rate measured
- * once against the TSC on the BSP, periodic while a CPU runs a thread).
+ * and the per-CPU timer as a one-shot clock event (M1-06: TSC-deadline mode,
+ * else one-shot mode measured once against the TSC on the BSP).
  * Invariants: the mode is chosen once on the BSP before any AP starts and never
  * changes; every CPU runs in that mode (an AP left in xAPIC mode by the
  * bootloader is switched to x2APIC; xAPIC -> x2APIC is the only legal direction
@@ -15,6 +15,7 @@
 #include "arch/x86_64/cpuid.h"
 #include "arch/x86_64/tsc.h"
 #include "arch/x86_64/isr.h"
+#include "arch/x86_64/percpu.h"
 #include "mm/vmm.h"
 #include "arch/hal_lock.h"
 #include "lib/kprintf.h"
@@ -135,55 +136,140 @@ void lapic_send_ipi_all_excluding_self(uint32_t vector) {
     lapic_write_icr(0, vector | ICR_FIXED | ICR_DEST_ALL_EX | ICR_LEVEL_ASSERT);
 }
 
-/* Timer ticks per second at divide-by-16, measured once on the BSP. The APIC
- * timer runs from the same clock on every CPU, so APs reuse the number. */
-#define LAPIC_TIMER_MEASURE_MS   10
-#define LAPIC_TIMER_LVT_PERIODIC (1u << 17)
-#define LAPIC_TIMER_LVT_MASKED   (1u << 16)
+/* ---- Clock events (M1-06) ----
+ * TSC-deadline: the LVT is put in deadline mode once per CPU, then each
+ * program is one MSR write (fenced: Intel SDM 10.5.4.1, the MSR write may
+ * otherwise pass the LVT write). One-shot: divide 16, the count from the TSC
+ * delta through apic_per_tsc (APIC ticks per TSC cycle << 32), measured at boot (best of 5 bracketed tries)
+ * on the BSP; the APIC timer runs from the same clock on every CPU. */
+#define LAPIC_TIMER_MEASURE_NS       10000000ULL   /* 10 ms per try */
+#define LAPIC_TIMER_MEASURE_TRIES    5
+/* One-shot counts run 1/256 short: a rate error left after measuring costs one
+ * extra reprogram instead of a late wakeup */
+#define LAPIC_TIMER_EARLY_SHIFT      8
+#define LAPIC_TIMER_LVT_MASKED       (1u << 16)
+#define LAPIC_TIMER_LVT_TSC_DEADLINE (2u << 17)
+#define LAPIC_TIMER_GUESS_HZ         (1000000000ULL / 16)   /* not measurable: a 1 GHz APIC clock */
 static uint64_t timer_hz;
+static uint64_t apic_per_tsc;
+static int deadline_mode;
 static void (*timer_fn)(void);
 
 static void lapic_timer_handler(InterruptFrame *frame) {
     (void)frame;
+    this_cpu()->irq_stat[PERCPU_STAT_TIMER]++;
     lapic_eoi();   /* first: the handler may switch threads */
     if (timer_fn != NULL) timer_fn();
 }
 
-void lapic_timer_setup(void (*fn)(void)) {
-    timer_fn = fn;
-    isr_register_handler(LAPIC_TIMER_VEC, lapic_timer_handler);
+/* One measurement try: TSC read on both sides of each APIC access, so the
+ * uncertainty of each edge is known (t1-t0 at the start, t3-t2 at the end) */
+typedef struct {
+    uint64_t t0, t1, t2, t3;
+    uint32_t ticks;
+} LapicSample;
 
-    uint64_t tsc_khz = tsc_info()->khz;
-    lapic_write(LAPIC_TIMER_LVT, LAPIC_TIMER_LVT_MASKED | LAPIC_TIMER_VEC);   /* one-shot, masked */
-    lapic_write(LAPIC_TIMER_DCR, LAPIC_TIMER_DIV_16);
-    if (tsc_khz != 0) {
-        uint64_t wait = tsc_khz * LAPIC_TIMER_MEASURE_MS;
-        lapic_write(LAPIC_TIMER_ICR, 0xFFFFFFFF);
-        uint64_t start = cpu_rdtsc();
-        while (cpu_rdtsc() - start < wait) {
-            __asm__ volatile("pause");
+/* APIC ticks per TSC cycle << 32 from the try whose edges are tightest: a
+ * delay inside an edge (an SMI, a busy emulator host) would count APIC ticks
+ * with no TSC cycles against them. The cycles are taken between the edge
+ * midpoints. 0 when no try counted anything. */
+static uint64_t lapic_best_ratio(const LapicSample *s, int n) {
+    int best = -1;
+    uint64_t best_err = UINT64_MAX;
+    for (int i = 0; i < n; i++) {
+        if (s[i].ticks == 0 || s[i].t2 + s[i].t3 <= s[i].t0 + s[i].t1) continue;
+        uint64_t err = (s[i].t1 - s[i].t0) + (s[i].t3 - s[i].t2);
+        if (err < best_err) {
+            best_err = err;
+            best = i;
         }
-        uint32_t elapsed = 0xFFFFFFFF - lapic_read(LAPIC_TIMER_CCR);
-        lapic_write(LAPIC_TIMER_ICR, 0);
-        timer_hz = (uint64_t)elapsed * (1000 / LAPIC_TIMER_MEASURE_MS);
     }
-    if (timer_hz == 0) {
-        timer_hz = 1000000000ULL / 16;   /* no TSC rate: assume a 1 GHz APIC clock */
-        kprintf("[LAPIC] WARNING: timer not measured, assuming %lu Hz\n", timer_hz);
-    }
-    kprintf("[LAPIC] Timer: %lu Hz at divide 16 (slice timer, vector 0x%x)\n", timer_hz, LAPIC_TIMER_VEC);
+    if (best < 0) return 0;
+    uint64_t cycles = ((s[best].t2 + s[best].t3) - (s[best].t0 + s[best].t1)) / 2;
+    return ((uint64_t)s[best].ticks << 32) / cycles;   /* ticks < 2^32: fits in 64 bits */
 }
 
-void lapic_timer_periodic(uint64_t period_ns) {
-    uint64_t count = timer_hz * period_ns / 1000000000ULL;
-    if (count == 0) count = 1;
-    if (count > 0xFFFFFFFF) count = 0xFFFFFFFF;
+/* APIC timer ticks per TSC cycle << 32 at divide 16, best of
+ * LAPIC_TIMER_MEASURE_TRIES bracketed tries */
+static uint64_t lapic_timer_measure(void) {
+    uint64_t wait = tsc_ns_to_cycles(LAPIC_TIMER_MEASURE_NS);
+    LapicSample s[LAPIC_TIMER_MEASURE_TRIES];
+    lapic_write(LAPIC_TIMER_LVT, LAPIC_TIMER_LVT_MASKED | LAPIC_TIMER_VEC);   /* one-shot, masked */
     lapic_write(LAPIC_TIMER_DCR, LAPIC_TIMER_DIV_16);
-    lapic_write(LAPIC_TIMER_LVT, LAPIC_TIMER_LVT_PERIODIC | LAPIC_TIMER_VEC);
+    for (int i = 0; i < LAPIC_TIMER_MEASURE_TRIES; i++) {
+        s[i].t0 = cpu_rdtsc_ordered();
+        lapic_write(LAPIC_TIMER_ICR, 0xFFFFFFFF);
+        s[i].t1 = cpu_rdtsc_ordered();
+        while (cpu_rdtsc() - s[i].t1 < wait) {
+            __asm__ volatile("pause");
+        }
+        s[i].t2 = cpu_rdtsc_ordered();
+        s[i].ticks = 0xFFFFFFFF - lapic_read(LAPIC_TIMER_CCR);
+        s[i].t3 = cpu_rdtsc_ordered();
+    }
+    lapic_write(LAPIC_TIMER_ICR, 0);
+    return lapic_best_ratio(s, LAPIC_TIMER_MEASURE_TRIES);
+}
+
+void lapic_timer_setup(void (*fn)(void), int use_deadline) {
+    timer_fn = fn;
+    isr_register_handler(LAPIC_TIMER_VEC, lapic_timer_handler);
+    deadline_mode = use_deadline;
+    if (!deadline_mode) {
+        uint64_t tsc_hz = tsc_info()->khz * 1000;
+        apic_per_tsc = lapic_timer_measure();
+        if (apic_per_tsc == 0 && tsc_hz != 0) {
+            apic_per_tsc = (LAPIC_TIMER_GUESS_HZ << 32) / tsc_hz;
+            kprintf("[LAPIC] WARNING: timer not measured, assuming %lu Hz\n", (uint64_t)LAPIC_TIMER_GUESS_HZ);
+        }
+        timer_hz = (uint64_t)(((unsigned __int128)apic_per_tsc * tsc_hz) >> 32);
+    }
+    kprintf("[LAPIC] Timer: %s", lapic_timer_mode());
+    if (!deadline_mode) kprintf(", %lu Hz at divide 16", timer_hz);
+    kprintf(" (vector 0x%x)\n", LAPIC_TIMER_VEC);
+}
+
+void lapic_timer_cpu_init(void) {
+    if (deadline_mode) {
+        lapic_write(LAPIC_TIMER_LVT, LAPIC_TIMER_LVT_TSC_DEADLINE | LAPIC_TIMER_VEC);
+        __asm__ volatile("mfence; lfence" ::: "memory");
+        wrmsr(MSR_TSC_DEADLINE, 0);
+    } else {
+        lapic_write(LAPIC_TIMER_DCR, LAPIC_TIMER_DIV_16);
+        lapic_write(LAPIC_TIMER_LVT, LAPIC_TIMER_VEC);   /* one-shot, unmasked */
+        lapic_write(LAPIC_TIMER_ICR, 0);                 /* stopped */
+    }
+}
+
+void lapic_timer_program(uint64_t tsc) {
+    if (deadline_mode) {
+        if (tsc == 0) tsc = 1;   /* 0 would disarm it: 1 is in the past, so it fires at once */
+        __asm__ volatile("mfence; lfence" ::: "memory");
+        wrmsr(MSR_TSC_DEADLINE, tsc);
+        return;
+    }
+    uint64_t now = cpu_rdtsc();
+    uint64_t delta = tsc > now ? tsc - now : 0;
+    uint64_t count = (uint64_t)(((unsigned __int128)delta * apic_per_tsc) >> 32);
+    count -= count >> LAPIC_TIMER_EARLY_SHIFT;   /* early, not late: the queue reprograms */
+    if (count == 0) count = 1;
+    if (count > 0xFFFFFFFF) count = 0xFFFFFFFF;   /* fires early; the timer queue reprograms */
     lapic_write(LAPIC_TIMER_ICR, (uint32_t)count);   /* (re)starts the count */
 }
 
 void lapic_timer_stop(void) {
-    lapic_write(LAPIC_TIMER_LVT, LAPIC_TIMER_LVT_MASKED | LAPIC_TIMER_VEC);
-    lapic_write(LAPIC_TIMER_ICR, 0);
+    if (deadline_mode) {
+        __asm__ volatile("mfence; lfence" ::: "memory");
+        wrmsr(MSR_TSC_DEADLINE, 0);
+    } else {
+        lapic_write(LAPIC_TIMER_ICR, 0);
+    }
+}
+
+const char *lapic_timer_mode(void) {
+    return deadline_mode ? "TSC-deadline" : "LAPIC one-shot";
+}
+
+uint64_t lapic_timer_hz(void) {
+    return timer_hz;
 }

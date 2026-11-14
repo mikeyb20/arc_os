@@ -64,8 +64,11 @@ Kernel and user space are separate worlds: the same function in `kernel/lib` and
 | Start another CPU (bootloader-neutral) | `boot_start_cpu` | `kernel/boot/bootinfo.h` |
 | Time-stamp counter (raw cycles) | `cpu_rdtsc`; portable code: `hal_tsc_read` | `kernel/arch/x86_64/cpuid.h`, `kernel/arch/hal.h` |
 | TSC frequency and cycles to ns (boot calibration) | `hal_tsc_info`, `hal_tsc_to_ns` (`tsc_info`, `tsc_cycles_to_ns`) | `kernel/arch/hal.h` (`arch/x86_64/tsc.h`) |
+| Time now: monotonic, wall clock, any Linux clock ID; timespec conversions; boot/diag/panic busy-wait | `clock_mono_ns`, `clock_real_ns`, `clock_read`, `clock_resolution`, `clock_to_mono`, `clock_ns_to_timespec`, `clock_timespec_to_ns`, `clock_civil_to_unix`, `clock_spin_ns`; ns to TSC cycles for a bounded wait below the clock: `hal_clock_ns_to_cycles` | `kernel/time/clock.h`, `kernel/arch/hal.h` |
+| One-shot kernel timers (per-CPU queues, no periodic tick), sleep until a deadline | `timer_init`, `timer_arm`, `timer_cancel`, `timer_cancel_sync`, `timer_pending`, `timer_cpu_ready`, `timer_sleep_until`, `timer_cpu_stats` | `kernel/time/timer.h` |
+| Per-CPU interrupt counts (timer, IPIs; `/proc/interrupts`) | `hal_cpu_irq_stat`, `HAL_IRQ_STAT_*` | `kernel/arch/hal.h` |
 | Busy-wait hint in a time-bounded loop | `hal_cpu_relax` | `kernel/arch/hal_lock.h` (via `arch/hal.h`) |
-| Run a function on every other CPU (bounded wait) | `hal_run_on_other_cpus` (`ipi_call_others`) | `kernel/arch/hal.h` (`arch/x86_64/ipi.h`) |
+| Run a function on every other CPU, or on every CPU (bounded wait) | `hal_run_on_other_cpus` (`ipi_call_others`), `hal_run_on_all_cpus` (`ipi_call_all`) | `kernel/arch/hal.h` (`arch/x86_64/ipi.h`) |
 | CPU brand, signature, feature names | `hal_cpu_brand`, `hal_cpu_signature`, `hal_cpu_feature_names` (`cpu_brand`, `cpu_feature_names`) | `kernel/arch/hal.h` |
 | Machine maker and model (SMBIOS) | `smbios_read` | `kernel/drivers/smbios.h` |
 | Driver model: buses, devices, drivers, binding, system/runtime suspend and resume; struct from a member | `bus_register`, `bus_add_device`, `driver_register`, `device_unbind`, `bus_suspend_all`, `bus_resume_all`, `device_driver_name`, `container_of` | `kernel/drivers/bus.h` |
@@ -76,13 +79,13 @@ Kernel and user space are separate worlds: the same function in `kernel/lib` and
 | Map device registers (uncached), read and write them | `mmio_map`, `mmio_read8`..`64`, `mmio_write8`..`64` | `kernel/drivers/mmio.h` |
 | DMA: coherent buffers, streaming maps, device masks | `dma_alloc_coherent`, `dma_free_coherent`, `dma_map_single`, `dma_map_page`, `dma_unmap`, `dma_set_mask`, `DMA_BIT_MASK`, `dma_fits` | `kernel/drivers/dma.h` |
 | Block I/O: requests of pages, plugging, sync I/O on a kernel buffer, one-call async page I/O | `blk_rq_alloc`, `blk_rq_add_page`, `blk_submit`, `blk_plug_init` / `_add` / `_flush`, `blk_submit_page`, `blk_rw_sync`, `blk_poll_all` (boot-time waits) | `kernel/drivers/blkdev.h` |
-| Block devices: register a disk (driver side), completion and timeouts, lookups by name, label, disk + type GUID | `blk_disk_register`, `blk_complete`, `blk_rq_done`, `blk_expire_all`; `blk_find`, `blk_find_label`, `blk_find_part`, `blk_get` | `kernel/drivers/blkdev.h` |
+| Block devices: register a disk (driver side), completion and timeouts, lookups by name, label, disk + type GUID | `blk_disk_register`, `blk_complete`, `blk_rq_done`, `blk_expire`; `blk_find`, `blk_find_label`, `blk_find_part`, `blk_get` | `kernel/drivers/blkdev.h` |
 | GPT tables and GUIDs (text form, compare) | `gpt_read`, `gpt_guid_parse`, `gpt_guid_format`, `gpt_guid_equal` | `kernel/drivers/gpt.h` |
 | arc_os partition type GUIDs and labels, ESP type (shared with the image tools) | `ARC_PART_TYPE_*`, `ARC_PART_LABEL_*` | `kernel/include/arc_disk.h` |
 | Legacy virtio-PCI transport: vrings, features, MSI-X vectors | `virtio_init_device`, `virtio_setup_irqs`, `virtio_set_config_vector`, `virtio_set_queue_vector`, `virtio_isr_status`, `virtio_init_queue`, `virtq_*`, `virtio_notify`, `virtio_reset` | `kernel/drivers/virtio.h` |
 | One screen row of text (pagers, banners) | `fb_console_write_row`; pixels only, while paused: `fb_console_paint_row` | `kernel/drivers/fb_console.h` |
 | Own the screen, draw a 1-bit bitmap scaled (QR codes) | `fb_console_pause` / `_resume`, `fb_console_fill`, `fb_console_draw_bitmap`, `fb_console_width` / `_height` / `_row_height` | `kernel/drivers/fb_console.h` |
-| Boot report line, TSC-timed delay or wait bound, key wait, command-line flag (diagnostic and test mode) | `diag_line`, `diag_delay_ms`, `diag_ms_to_cycles`, `diag_wait_key`, `diag_flag_on` | `kernel/diag/diag.h` |
+| Boot report line, key wait, command-line flag (diagnostic and test mode; delays and wait bounds use `kernel/time/clock.h`) | `diag_line`, `diag_wait_key`, `diag_flag_on` | `kernel/diag/diag.h` |
 | QR code from bytes (byte mode, level M, versions 1-30; no allocation) | `qr_encode`, `qr_capacity`, `qr_module` | `kernel/diag/qr.h` |
 | Text as numbered `ARC1` QR pages: sanitize (no links), split, header and CRCs | `qr_text_sanitize`, `qr_text_paginate`, `qr_text_page` | `kernel/diag/qr_text.h` |
 | QR page or panic code on screen; panic and log-tail texts | `qr_screen_show_page`, `qr_screen_draw_panic`, `qr_screen_scale`, `qr_screen_page_height`, `qr_panic_encode`, `qr_panic_text`, `qr_log_text` | `kernel/diag/qr_screen.h` |
@@ -93,7 +96,7 @@ Kernel and user space are separate worlds: the same function in `kernel/lib` and
 ## User space
 
 libarc (`libc/include/`, `libc/src/`) is the only C library for our own programs: `stdio.h`, `stdlib.h`,
-`string.h`, `unistd.h`, `fcntl.h`, `sys/*.h`. Programs never invoke syscalls directly. Ported programs use musl.
+`string.h`, `unistd.h`, `fcntl.h`, `time.h` (M1-06), `sys/*.h`. Programs never invoke syscalls directly. Ported programs use musl.
 
 ## Build (CMake)
 

@@ -27,6 +27,7 @@
 #include "proc/process.h"
 #include "proc/sched.h"
 #include "drivers/irq.h"
+#include "time/clock.h"
 #include "lib/mem.h"
 #include "lib/string.h"
 #include "lib/cmdline.h"
@@ -213,7 +214,7 @@ static int gen_sched_debug(char *buf, int bufsz, void *ctx) {
 static int gen_uptime(char *buf, int bufsz, void *ctx) {
     (void)ctx;
     int pos = 0;
-    uint64_t ms = pit_get_uptime_ms();
+    uint64_t ms = clock_mono_ns() / NSEC_PER_MSEC;
     uint64_t secs = ms / 1000;
     uint64_t frac = ms % 1000;
 

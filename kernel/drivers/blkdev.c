@@ -16,8 +16,9 @@
  * Cost: submit O(1) with one merge check against the tail; completion O(1)
  * per request plus end_io; nothing is allocated in interrupt context
  * (requests come from a slab cache at submit and are freed after end_io).
- * The timeout tick is O(1) while nothing is in flight, else O(disks) (at
- * most BLK_MAX_DISKS) until M1-06 arms one timer per disk. */
+ * Timeouts: one timer per disk (M1-06), armed at the oldest request's
+ * deadline while requests are in flight and stopped when none are; checking
+ * it is O(1) plus the requests that ended. */
 
 #include "drivers/blkdev.h"
 #include "mm/slab.h"
@@ -28,7 +29,8 @@
 #include "proc/semaphore.h"
 #include "proc/sched.h"
 #include "arch/hal.h"
-#include "diag/diag.h"   /* diag_ms_to_cycles until M1-06's clocksource */
+#include "time/clock.h"
+#include "time/timer.h"
 #include "lib/kprintf.h"
 #include "lib/string.h"
 #include "lib/mem.h"
@@ -38,12 +40,11 @@
 
 static BlockDevice *devices[BLK_MAX_DEVICES];
 static uint32_t ndevices;   /* published count (acquire/release) */
-static BlockDevice *disks[BLK_MAX_DISKS];   /* the whole disks, for the timeout tick */
+static BlockDevice *disks[BLK_MAX_DISKS];   /* the whole disks, for blk_poll_all */
 static uint32_t ndisks;
 static Spinlock registry_lock = SPINLOCK_INIT(LOCK_LEVEL_BLK_REGISTRY, "block devices");
 static struct kmem_cache rq_cache_store;
 static struct kmem_cache *rq_cache;
-static uint32_t inflight_total;   /* every queue's in_flight: blk_expire_all's fast exit */
 
 /* --- Registry --- */
 
@@ -106,7 +107,7 @@ void blk_test_set(BlockDevice *dev, uint32_t timeout_ms, uint32_t drop_irqs) {
     BlkQueue *q = dev->disk->queue;
     uint64_t flags;
     spin_lock_irqsave(&q->lock, &flags);
-    q->timeout_cycles = diag_ms_to_cycles(timeout_ms);
+    q->timeout_ns = (uint64_t)timeout_ms * NSEC_PER_MSEC;
     q->drop_irqs = drop_irqs;
     spin_unlock_irqrestore(&q->lock, flags);
 }
@@ -167,8 +168,21 @@ void blk_rq_done(BlkRequest *rq, int status) {
     q->tags[rq->tag] = NULL;
     q->free_tags[q->nfree_tags++] = rq->tag;
     q->in_flight--;
-    __atomic_sub_fetch(&inflight_total, 1, __ATOMIC_RELAXED);
+    if (q->in_flight == 0 && q->timer_armed) {   /* idle disk: no timer interrupt (ADR-0017) */
+        timer_cancel(&q->timer);
+        q->timer_armed = 0;
+    }
     mark_done(q, rq, status);
+}
+
+/* Arm the disk's timeout timer for its oldest request (queue lock held):
+ * when it isn't armed, or is armed later than that request's deadline */
+static void timeout_update(BlkQueue *q) {
+    if (q->fly_head == NULL) return;
+    if (q->timer_armed && q->timer_expires <= q->fly_head->deadline) return;
+    q->timer_expires = q->fly_head->deadline;
+    q->timer_armed = 1;
+    timer_arm(&q->timer, q->timer_expires);
 }
 
 /* Start pending requests while tags are free (queue lock held). */
@@ -179,10 +193,9 @@ static void dispatch(BlockDevice *disk, BlkQueue *q) {
         list_remove(&q->pend_head, &q->pend_tail, rq);
         rq->tag = q->free_tags[--q->nfree_tags];
         q->tags[rq->tag] = rq;
-        rq->deadline = hal_tsc_read() + q->timeout_cycles;
+        rq->deadline = clock_mono_ns() + q->timeout_ns;
         list_append(&q->fly_head, &q->fly_tail, rq);
         q->in_flight++;
-        __atomic_add_fetch(&inflight_total, 1, __ATOMIC_RELAXED);
         int rc = disk->ops->queue_rq(disk, rq);
         if (rc == 0) {
             started = 1;
@@ -193,7 +206,6 @@ static void dispatch(BlockDevice *disk, BlkQueue *q) {
             q->tags[rq->tag] = NULL;
             q->free_tags[q->nfree_tags++] = rq->tag;
             q->in_flight--;
-            __atomic_sub_fetch(&inflight_total, 1, __ATOMIC_RELAXED);
             list_push_front(&q->pend_head, &q->pend_tail, rq);
             break;
         } else {
@@ -201,6 +213,7 @@ static void dispatch(BlockDevice *disk, BlkQueue *q) {
         }
     }
     if (started && disk->ops->kick) disk->ops->kick(disk);
+    timeout_update(q);
 }
 
 /* Take the done list (queue lock held); run it with finish_done after unlocking */
@@ -275,20 +288,26 @@ void blk_expire(BlockDevice *disk, uint64_t now) {
         }
         dispatch(disk, q);
     }
+    timeout_update(q);   /* not due yet: wait for the oldest again */
     BlkRequest *d = take_done(q);
     spin_unlock_irqrestore(&q->lock, flags);
     finish_done(d);
 }
 
-void blk_expire_all(uint64_t now) {
-    if (__atomic_load_n(&inflight_total, __ATOMIC_RELAXED) == 0) return;
-    uint32_t n = __atomic_load_n(&ndisks, __ATOMIC_ACQUIRE);
-    for (uint32_t i = 0; i < n; i++) blk_expire(disks[i], now);
+/* The disk's timeout timer (interrupt context, the CPU that armed it) */
+static void blk_timer_fired(void *arg) {
+    BlockDevice *disk = arg;
+    BlkQueue *q = disk->queue;
+    uint64_t now = clock_mono_ns();
+    spin_lock(&q->lock);   /* interrupts are off */
+    /* Another CPU may have re-armed it (for a later deadline) since it fired */
+    if (q->timer_expires <= now) q->timer_armed = 0;
+    spin_unlock(&q->lock);
+    blk_expire(disk, now);
 }
 
 void blk_poll_all(void) {
-    if (__atomic_load_n(&inflight_total, __ATOMIC_RELAXED) == 0) return;
-    uint64_t now = hal_tsc_read();
+    uint64_t now = clock_mono_ns();
     uint32_t n = __atomic_load_n(&ndisks, __ATOMIC_ACQUIRE);
     for (uint32_t i = 0; i < n; i++) {
         if (__atomic_load_n(&disks[i]->queue->in_flight, __ATOMIC_RELAXED) == 0) continue;
@@ -555,7 +574,7 @@ int blk_rw_sync(BlockDevice *dev, int op, uint64_t sector, void *buf, size_t byt
             got++;
         } else {   /* boot, before the scheduler: poll the device */
             blk_complete(disk);
-            blk_expire(disk, hal_tsc_read());
+            blk_expire(disk, clock_mono_ns());
             hal_cpu_relax();
         }
     }
@@ -647,7 +666,8 @@ static int queue_init(BlockDevice *disk, uint32_t depth) {
     q->depth = depth;
     for (uint32_t t = 0; t < depth; t++) q->free_tags[t] = (uint16_t)(depth - 1 - t);
     q->nfree_tags = depth;
-    q->timeout_cycles = diag_ms_to_cycles(BLK_TIMEOUT_MS);
+    q->timeout_ns = (uint64_t)BLK_TIMEOUT_MS * NSEC_PER_MSEC;
+    timer_init(&q->timer, blk_timer_fired, disk);
     disk->queue = q;
     return 0;
 }

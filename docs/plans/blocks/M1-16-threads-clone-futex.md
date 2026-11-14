@@ -55,3 +55,6 @@
   set, so a second thread needs no new TLB code. The OOM killer and the `SIGKILL`-pending check in
   `mm_handle_fault` work per process; with threads, kill the whole group. Fault signals use
   `sig_force_fault` (per process today; per thread with you).
+- From M1-06: each thread's CPU time is `Thread.run_cycles` (added at every switch; `sched_thread_cpu_ns` adds
+  the running stretch). `CLOCK_PROCESS_CPUTIME_ID` reads only the main thread today (`time/clock.c`); make it
+  the sum over the thread group, exited threads included.

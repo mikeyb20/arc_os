@@ -68,6 +68,7 @@
 #define __NR_chown             92
 #define __NR_fchown            93
 #define __NR_umask             95
+#define __NR_gettimeofday      96
 #define __NR_sysinfo           99
 #define __NR_getuid            102
 #define __NR_getgid            104
@@ -79,6 +80,7 @@
 #define __NR_getpgid           121
 #define __NR_arch_prctl        158
 #define __NR_tkill             200
+#define __NR_time              201
 #define __NR_futex             202
 #define __NR_sched_setaffinity 203
 #define __NR_sched_getaffinity 204
@@ -86,6 +88,8 @@
 #define __NR_set_tid_address   218
 #define __NR_fadvise64         221
 #define __NR_clock_gettime     228
+#define __NR_clock_getres      229
+#define __NR_clock_nanosleep   230
 #define __NR_exit_group        231
 #define __NR_openat            257
 #define __NR_mkdirat           258

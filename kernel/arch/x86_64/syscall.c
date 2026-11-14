@@ -19,6 +19,7 @@
 #include "fs/vfs.h"
 #include "mm/mm_syscalls.h"
 #include "net/net_syscalls.h"
+#include "time/time_syscalls.h"
 #include "lib/kprintf.h"
 
 /* RFLAGS bits cleared by SFMASK on SYSCALL entry. TF too: a user who sets it
@@ -136,6 +137,7 @@ void syscall_init(void) {
     proc_syscalls_init();
     mm_syscalls_init();
     net_syscalls_init();
+    time_syscalls_init();
 
     kprintf("[SYSCALL] Initialized (LSTAR=0x%lx, STAR=0x%lx)\n", (uint64_t)syscall_entry, syscall_star());
 }
