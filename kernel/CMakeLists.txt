@@ -94,6 +94,7 @@ set(KERNEL_C_SOURCES
     drivers/virtio.c
     drivers/virtio_blk.c
     drivers/blkdev.c
+    drivers/blk_lookup.c
     drivers/gpt.c
     drivers/tty.c
     drivers/keyboard.c
@@ -109,9 +110,10 @@ set(KERNEL_C_SOURCES
     fs/ramfs.c
     fs/pipe.c
     fs/fat32.c
+    fs/ext2.c
+    fs/sysmount.c
     fs/devfs.c
     fs/procfs.c
-    fs/path.c
     fs/passwd.c
     net/net_util.c
     net/netif.c

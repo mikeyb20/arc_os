@@ -3,7 +3,8 @@
 
 /* open(2) flags, fcntl(2) commands and *at() flags, Linux x86_64 values
  * (ADR-0001). Since M1-11 the kernel honours every open flag here except
- * O_NOCTTY (accepted, no controlling-terminal rules yet). */
+ * O_NOCTTY (accepted, no controlling-terminal rules yet); O_NOFOLLOW since
+ * M1-13 (symlinks). */
 
 #define O_ACCMODE   00000003
 #define O_RDONLY    00000000
@@ -16,6 +17,7 @@
 #define O_APPEND    00002000
 #define O_NONBLOCK  00004000
 #define O_DIRECTORY 00200000
+#define O_NOFOLLOW  00400000
 #define O_CLOEXEC   02000000
 
 #define AT_FDCWD    (-100)

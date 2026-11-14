@@ -1,7 +1,8 @@
 /* arc_os — file and directory syscalls (Linux x86_64 numbers, ADR-0001).
  *
- * Owns: the syscall layer of the VFS: fds to Files, user paths (cwd- or
- * dirfd-relative) to absolute ones, and the Linux argument and errno rules.
+ * Owns: the syscall layer of the VFS: fds to Files, user paths and where
+ * their walks start (the cwd or a dirfd's directory, by inode), and the
+ * Linux argument and errno rules.
  * Handlers return -errno on failure. Data moves straight between user memory
  * and the filesystem through IoBuf (vfs.h); no bounce buffer.
  *
@@ -61,40 +62,32 @@ static File *get_stdio_file(int64_t fd) {
     return f;
 }
 
-/* The *at calls find dirfd's directory by the path it was opened by (the
- * walk starts from a path, not an inode; M1-13 changes that). If that path no
- * longer leads to the same directory (renamed or removed since), refuse with
- * -ENOENT rather than act in whatever now has that name. */
-static int dir_path_current(File *dir) {
-    PathLoc loc;
-    if (vfs_resolve(dir->path, &loc) != 0) return 0;
-    int same = loc.inode == dir->inode;
-    loc_put(&loc);
-    return same;
-}
-
-/* Copy a user path and make it absolute against dirfd (AT_FDCWD: the cwd).
- * An empty path gives -ENOENT, or 1 with AT_EMPTY_PATH allowed (the caller
- * then works on dirfd itself). */
-static int at_path(int64_t dirfd, uint64_t path_addr, char *abs, size_t size, int allow_empty) {
-    char path[PATH_MAX];
-    long len = strncpy_from_user(path, (const char *)path_addr, sizeof(path));
+/* Copy a user path into path (size bytes) and find where its walk starts:
+ * *base is dirfd's directory (AT_FDCWD: the cwd), with a reference the
+ * caller drops with loc_put; an absolute path needs none (base->inode NULL).
+ * A dirfd is followed by its inode, so it keeps working when its directory
+ * is renamed (M1-13). An empty path gives -ENOENT, or 1 with AT_EMPTY_PATH
+ * allowed (the caller then works on dirfd itself; no base taken). */
+static int at_path(int64_t dirfd, uint64_t path_addr, char *path, size_t size, int allow_empty, PathLoc *base) {
+    base->mnt = NULL;
+    base->inode = NULL;
+    long len = strncpy_from_user(path, (const char *)path_addr, size);
     if (len < 0) return (int)len;   /* -EFAULT or -ENAMETOOLONG */
     if (len == 0) return allow_empty ? 1 : -ENOENT;
-    Process *p = proc_current();
-    if (path[0] == '/' || (int32_t)dirfd == AT_FDCWD) {
-        return path_normalize(p != NULL ? p->cwd : "/", path, abs, size);
+    if (path[0] == '/') return 0;
+    if ((int32_t)dirfd == AT_FDCWD) {
+        vfs_cwd_get(base);
+        return 0;
     }
     File *dir = get_file(dirfd);
     if (dir == NULL) return -EBADF;
-    int err = (!S_ISDIR(dir->inode->mode) || dir->path == NULL) ? -ENOTDIR : path_normalize(dir->path, path, abs, size);
-    if (err == 0 && !dir_path_current(dir)) err = -ENOENT;
+    int err = S_ISDIR(dir->inode->mode) && dir->mnt != NULL ? 0 : -ENOTDIR;
+    if (err == 0) {
+        base->mnt = dir->mnt;
+        base->inode = igrab(dir->inode);
+    }
     fput(dir);
     return err;
-}
-
-int fs_user_path(uint64_t path_addr, char *abs, size_t size) {
-    return at_path(AT_FDCWD, path_addr, abs, size, 0);
 }
 
 /* --- read and write --- */
@@ -205,11 +198,12 @@ static int64_t sys_openat(uint64_t dirfd, uint64_t path_addr, uint64_t flags, ui
     (void)a4, (void)a5;
     FdTable *t = cur_fds();
     if (t == NULL) return -EBADF;
-    char abs[PATH_MAX];
-    int err = at_path((int64_t)dirfd, path_addr, abs, sizeof(abs), 0);
-    if (err != 0) return err;
+    char path[PATH_MAX];
+    PathLoc base;
+    int err = at_path((int64_t)dirfd, path_addr, path, sizeof(path), 0, &base);
     File *f;
-    err = vfs_open(abs, (uint32_t)flags, (uint32_t)mode, &f);
+    if (err == 0) err = vfs_open_at(&base, path, (uint32_t)flags, (uint32_t)mode, &f);
+    loc_put(&base);
     if (err != 0) return err;
     int fd = fd_install(t, f, 0, (flags & O_CLOEXEC) != 0);
     if (fd < 0) fput(f);
@@ -408,22 +402,24 @@ static int64_t sys_fstat(uint64_t fd, uint64_t stat_addr, uint64_t a2, uint64_t 
     return copy_to_user((void *)stat_addr, &st, sizeof(st));
 }
 
-/* newfstatat(dirfd, path, statbuf, flags) — 262. No symlinks exist yet, so
- * AT_SYMLINK_NOFOLLOW changes nothing; AT_EMPTY_PATH stats dirfd itself. */
+/* newfstatat(dirfd, path, statbuf, flags) — 262. AT_SYMLINK_NOFOLLOW stats
+ * a final symlink itself (lstat); AT_EMPTY_PATH stats dirfd itself. */
 static int64_t sys_newfstatat(uint64_t dirfd, uint64_t path_addr, uint64_t stat_addr, uint64_t flags, uint64_t a4,
                               uint64_t a5) {
     if ((flags & ~(uint64_t)(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH)) != 0) return -EINVAL;
-    char abs[PATH_MAX];
-    int err = at_path((int64_t)dirfd, path_addr, abs, sizeof(abs), (flags & AT_EMPTY_PATH) != 0);
+    char path[PATH_MAX];
+    PathLoc base;
+    int err = at_path((int64_t)dirfd, path_addr, path, sizeof(path), (flags & AT_EMPTY_PATH) != 0, &base);
+    struct stat st;
     if (err == 1) {   /* empty path with AT_EMPTY_PATH: dirfd itself */
         if ((int32_t)dirfd != AT_FDCWD) return sys_fstat(dirfd, stat_addr, 0, 0, a4, a5);
-        Process *p = proc_current();
-        strncpy(abs, p != NULL ? p->cwd : "/", sizeof(abs));
-        err = 0;
+        vfs_cwd_get(&base);
+        err = base.inode != NULL ? 0 : -ENOENT;
+        if (err == 0) vfs_fill_stat(base.inode, &st);
+    } else if (err == 0) {
+        err = vfs_stat_at(&base, path, (flags & AT_SYMLINK_NOFOLLOW) ? 0 : WALK_FOLLOW, &st);
     }
-    if (err != 0) return err;
-    struct stat st;
-    err = vfs_stat(abs, &st);
+    loc_put(&base);
     if (err != 0) return err;
     return copy_to_user((void *)stat_addr, &st, sizeof(st));
 }
@@ -442,43 +438,53 @@ static int64_t sys_lstat(uint64_t path_addr, uint64_t stat_addr, uint64_t a2, ui
 
 /* --- Directories and names --- */
 
-/* getcwd(buf, size) — 79: returns the length including the NUL */
+/* getcwd(buf, size) — 79: the cwd's path, found from its inode (so it
+ * follows renames); returns the length including the NUL. -ENOENT once the
+ * directory is removed (Linux). */
 static int64_t sys_getcwd(uint64_t buf_addr, uint64_t size, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
     (void)a2, (void)a3, (void)a4, (void)a5;
-    Process *p = proc_current();
-    if (p == NULL) return -ENOENT;
-    size_t cwd_len = strlen(p->cwd) + 1;
-    if (size < cwd_len) return -ERANGE;
-    if (copy_to_user((void *)buf_addr, p->cwd, cwd_len) != 0) return -EFAULT;
-    return (int64_t)cwd_len;
+    char path[PATH_MAX];
+    PathLoc cwd;
+    vfs_cwd_get(&cwd);
+    if (cwd.inode == NULL) return -ENOENT;
+    int len = vfs_path_of(&cwd, path, sizeof(path));
+    loc_put(&cwd);
+    if (len < 0) return len == -ERANGE ? -ENAMETOOLONG : len;   /* longer than our PATH_MAX */
+    if (size < (uint64_t)len + 1) return -ERANGE;
+    if (copy_to_user((void *)buf_addr, path, (size_t)len + 1) != 0) return -EFAULT;
+    return (int64_t)len + 1;
 }
 
 /* chdir(path) — 80 */
 static int64_t sys_chdir(uint64_t path_addr, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
     (void)a1, (void)a2, (void)a3, (void)a4, (void)a5;
-    Process *p = proc_current();
-    if (p == NULL) return -ENOENT;
-    char abs[PATH_MAX];
-    int err = fs_user_path(path_addr, abs, sizeof(abs));
-    if (err != 0) return err;
-    PathLoc loc;
-    err = vfs_resolve(abs, &loc);
+    if (proc_current() == NULL) return -ENOENT;
+    char path[PATH_MAX];
+    PathLoc base, loc;
+    int err = at_path(AT_FDCWD, path_addr, path, sizeof(path), 0, &base);
+    if (err == 0) err = vfs_resolve_at(&base, path, WALK_FOLLOW, &loc);
+    loc_put(&base);
     if (err != 0) return err;
     if (!S_ISDIR(loc.inode->mode))
         err = -ENOTDIR;
     else
         err = inode_permission(loc.inode, X_OK);
-    loc_put(&loc);
-    if (err == 0) strncpy(p->cwd, abs, PATH_MAX);
+    if (err == 0)
+        vfs_cwd_set(&loc);   /* takes the reference */
+    else
+        loc_put(&loc);
     return err;
 }
 
 /* mkdirat(dirfd, path, mode) — 258 */
 static int64_t sys_mkdirat(uint64_t dirfd, uint64_t path_addr, uint64_t mode, uint64_t a3, uint64_t a4, uint64_t a5) {
     (void)a3, (void)a4, (void)a5;
-    char abs[PATH_MAX];
-    int err = at_path((int64_t)dirfd, path_addr, abs, sizeof(abs), 0);
-    return err != 0 ? err : vfs_mkdir(abs, (uint32_t)mode);
+    char path[PATH_MAX];
+    PathLoc base;
+    int err = at_path((int64_t)dirfd, path_addr, path, sizeof(path), 0, &base);
+    if (err == 0) err = vfs_mkdir_at(&base, path, (uint32_t)mode);
+    loc_put(&base);
+    return err;
 }
 
 /* mkdir(path, mode) — 83 */
@@ -491,10 +497,12 @@ static int64_t sys_mkdir(uint64_t path_addr, uint64_t mode, uint64_t a2, uint64_
 static int64_t sys_unlinkat(uint64_t dirfd, uint64_t path_addr, uint64_t flags, uint64_t a3, uint64_t a4, uint64_t a5) {
     (void)a3, (void)a4, (void)a5;
     if ((flags & ~(uint64_t)AT_REMOVEDIR) != 0) return -EINVAL;
-    char abs[PATH_MAX];
-    int err = at_path((int64_t)dirfd, path_addr, abs, sizeof(abs), 0);
-    if (err != 0) return err;
-    return (flags & AT_REMOVEDIR) ? vfs_rmdir(abs) : vfs_unlink(abs);
+    char path[PATH_MAX];
+    PathLoc base;
+    int err = at_path((int64_t)dirfd, path_addr, path, sizeof(path), 0, &base);
+    if (err == 0) err = (flags & AT_REMOVEDIR) ? vfs_rmdir_at(&base, path) : vfs_unlink_at(&base, path);
+    loc_put(&base);
+    return err;
 }
 
 /* unlink(path) — 87 */
@@ -514,9 +522,13 @@ static int64_t sys_renameat(uint64_t odfd, uint64_t old_addr, uint64_t ndfd, uin
                             uint64_t a5) {
     (void)a4, (void)a5;
     char oldp[PATH_MAX], newp[PATH_MAX];
-    int err = at_path((int64_t)odfd, old_addr, oldp, sizeof(oldp), 0);
-    if (err == 0) err = at_path((int64_t)ndfd, new_addr, newp, sizeof(newp), 0);
-    return err != 0 ? err : vfs_rename(oldp, newp);
+    PathLoc ob, nb = {NULL, NULL};
+    int err = at_path((int64_t)odfd, old_addr, oldp, sizeof(oldp), 0, &ob);
+    if (err == 0) err = at_path((int64_t)ndfd, new_addr, newp, sizeof(newp), 0, &nb);
+    if (err == 0) err = vfs_rename_at(&ob, oldp, &nb, newp);
+    loc_put(&ob);
+    loc_put(&nb);
+    return err;
 }
 
 /* rename(oldpath, newpath) — 82 */
@@ -525,13 +537,37 @@ static int64_t sys_rename(uint64_t old_addr, uint64_t new_addr, uint64_t a2, uin
     return sys_renameat((uint64_t)(int64_t)AT_FDCWD, old_addr, (uint64_t)(int64_t)AT_FDCWD, new_addr, a4, a5);
 }
 
-/* Change attributes of the inode at a user path. */
+/* readlinkat(dirfd, path, buf, bufsiz) — 267: the target of a symlink, not
+ * NUL-terminated; returns the bytes placed (cut at bufsiz) */
+static int64_t sys_readlinkat(uint64_t dirfd, uint64_t path_addr, uint64_t buf_addr, uint64_t bufsiz, uint64_t a4,
+                              uint64_t a5) {
+    (void)a4, (void)a5;
+    int n = (int)bufsiz;   /* Linux's int bufsiz: the upper 32 bits play no part */
+    if (n <= 0) return -EINVAL;
+    char path[PATH_MAX], target[PATH_MAX];
+    PathLoc base;
+    int err = at_path((int64_t)dirfd, path_addr, path, sizeof(path), 0, &base);
+    if (err == 0) err = vfs_readlink_at(&base, path, target, (size_t)n < sizeof(target) ? (size_t)n : sizeof(target));
+    loc_put(&base);
+    if (err < 0) return err;
+    if (copy_to_user((void *)buf_addr, target, (size_t)err) != 0) return -EFAULT;
+    return err;
+}
+
+/* readlink(path, buf, bufsiz) — 89 */
+static int64_t sys_readlink(uint64_t path_addr, uint64_t buf_addr, uint64_t bufsiz, uint64_t a3, uint64_t a4,
+                            uint64_t a5) {
+    (void)a3;
+    return sys_readlinkat((uint64_t)(int64_t)AT_FDCWD, path_addr, buf_addr, bufsiz, a4, a5);
+}
+
+/* Change attributes of the inode at a user path (followed). */
 static int64_t path_setattr(uint64_t path_addr, const InodeAttr *attr) {
-    char abs[PATH_MAX];
-    int err = fs_user_path(path_addr, abs, sizeof(abs));
-    if (err != 0) return err;
-    PathLoc loc;
-    err = vfs_resolve(abs, &loc);
+    char path[PATH_MAX];
+    PathLoc base, loc;
+    int err = at_path(AT_FDCWD, path_addr, path, sizeof(path), 0, &base);
+    if (err == 0) err = vfs_resolve_at(&base, path, WALK_FOLLOW, &loc);
+    loc_put(&base);
     if (err != 0) return err;
     err = vfs_setattr(loc.inode, attr);
     loc_put(&loc);
@@ -652,6 +688,8 @@ void fs_syscalls_init(void) {
     syscall_register(__NR_newfstatat, sys_newfstatat);
     syscall_register(__NR_unlinkat, sys_unlinkat);
     syscall_register(__NR_renameat, sys_renameat);
+    syscall_register(__NR_readlink, sys_readlink);
+    syscall_register(__NR_readlinkat, sys_readlinkat);
     syscall_register(__NR_dup3, sys_dup3);
     syscall_register(__NR_pipe2, sys_pipe2);
 }

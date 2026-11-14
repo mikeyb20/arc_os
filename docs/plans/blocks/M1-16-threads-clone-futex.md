@@ -58,3 +58,5 @@
 - From M1-06: each thread's CPU time is `Thread.run_cycles` (added at every switch; `sched_thread_cpu_ns` adds
   the running stretch). `CLOCK_PROCESS_CPUTIME_ID` reads only the main thread today (`time/clock.c`); make it
   the sum over the thread group, exited threads included.
+- From M1-13: the cwd is an inode reference (`Process.cwd`, `cwd_mnt`; `vfs_cwd_get/set/copy/release`) touched
+  only by its own thread; `CLONE_FS` sharing needs a lock (or a shared fs struct) around it.

@@ -19,10 +19,8 @@
  * straight between user memory and the filesystem through IoBuf). */
 
 #include "fs/vfs_internal.h"
-#include "mm/kmalloc.h"
 #include "mm/slab.h"
 #include "lib/mem.h"
-#include "lib/string.h"
 #include "user_access.h"
 
 _Static_assert(sizeof(File) <= 128, "File must stay within two cache lines");
@@ -94,7 +92,6 @@ void fput(File *file) {
     if (__atomic_sub_fetch(&file->refcount, 1, __ATOMIC_ACQ_REL) != 0) return;
     if (file->fop != NULL && file->fop->release != NULL) file->fop->release(file->inode, file);
     iput(file->inode);
-    if (file->path != NULL) kfree(file->path);
     kmem_cache_free(file_cache, file);
 }
 
@@ -128,10 +125,10 @@ static int open_check(Inode *inode, uint32_t flags, int created, int exec) {
     return inode_permission(inode, open_want(flags));
 }
 
-static int open_file(const char *path, uint32_t flags, uint32_t mode, int exec, File **out) {
+static int open_file(const PathLoc *base, const char *path, uint32_t flags, uint32_t mode, int exec, File **out) {
     PathLoc loc;
     int created;
-    int err = vfs_open_locate(path, flags, mode, &loc, &created);
+    int err = vfs_open_locate(base, path, flags, mode, &loc, &created);
     if (err != 0) return err;
     Inode *inode = loc.inode;
     err = open_check(inode, flags, created, exec);
@@ -148,15 +145,8 @@ static int open_file(const char *path, uint32_t flags, uint32_t mode, int exec, 
         loc_put(&loc);
         return -ENOMEM;
     }
-    if (S_ISDIR(inode->mode)) {
-        size_t n = strlen(path) + 1;
-        f->path = kmalloc(n, 0);
-        if (f->path == NULL)
-            err = -ENOMEM;
-        else
-            memcpy(f->path, path, n);
-    }
-    if (err == 0 && f->fop != NULL && f->fop->open != NULL) err = f->fop->open(inode, f);
+    f->mnt = loc.mnt;
+    if (f->fop != NULL && f->fop->open != NULL) err = f->fop->open(inode, f);
     if (err != 0) {
         if (f->fop != NULL && f->fop->open != NULL) f->fop = NULL;   /* open failed: no release */
         fput(f);
@@ -166,12 +156,12 @@ static int open_file(const char *path, uint32_t flags, uint32_t mode, int exec, 
     return 0;
 }
 
-int vfs_open(const char *path, uint32_t flags, uint32_t mode, File **out) {
-    return open_file(path, flags, mode, 0, out);
+int vfs_open_at(const PathLoc *base, const char *path, uint32_t flags, uint32_t mode, File **out) {
+    return open_file(base, path, flags, mode, 0, out);
 }
 
-int vfs_open_exec(const char *path, File **out) {
-    return open_file(path, O_RDONLY, 0, 1, out);
+int vfs_open_exec_at(const PathLoc *base, const char *path, File **out) {
+    return open_file(base, path, O_RDONLY, 0, 1, out);
 }
 
 /* --- Reading and writing --- */
