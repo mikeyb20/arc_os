@@ -48,6 +48,14 @@ through the page cache (ADR-0008, ADR-0009, ADR-0018).
   strings (a dirfd whose directory moved gives -ENOENT); a walk that starts from an inode fixes both, and
   rename's ancestry check (path text, exact only under `rename_mutex`) then has to walk ".." instead. See the
   M1-11 Notes.
+- From M1-10: partitions are block devices named like Linux (`vda1`, `nvme0n1p1`), each with `disk_guid`,
+  `part_guid` (PARTUUID), `type_guid` and `label`; find them with `blk_find_part(disk_guid, type)` and
+  `blk_find_label(label)`, and parse GUID text with `gpt_guid_parse`. The arc_os type GUIDs and labels are in
+  `kernel/include/arc_disk.h`; `tools/make-gpt-test-disk.sh` reads them from there with `sed`, so build the
+  system/data test disk in that script. Any number of virtio-blk disks bind (`vda`, `vdb`, ...), so the
+  foreign-partition second disk needs only another `-drive`/`-device` pair. Metadata reads: `blk_rw_sync` (or
+  the M1-12 block-device mapping); file data: requests from `readpages`. `kmain.c`'s `disk_mount` mounts the
+  first disk's ESP (or a whole-disk FAT32) at `/disk`; boot-disk mounting goes beside it.
 - 2026-11-14 (built, PR stacked on #42; the boot mount waits for #43, Michael's card). **Path walk**
   (`fs/vfs.c`): from "/" or a start `PathLoc` (cwd, dirfd), one component at a time; `..` asks the filesystem's
   own `..` lookup (every filesystem answers it now: ramfs/fat32 keep a parent pointer, devfs/procfs return their
@@ -98,4 +106,3 @@ through the page cache (ADR-0008, ADR-0009, ADR-0018).
   boot disk's; the bring-up block that next touches `disk_mount` should pick the ESP by the boot disk too. With a
   data partition, `/home` is its `home` directory, so the installer must create `home/user` (the ramfs one is
   hidden).
-

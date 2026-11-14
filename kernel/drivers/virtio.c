@@ -109,13 +109,14 @@ uint32_t virtio_config_read32(VirtioDevice *vdev, uint16_t off) {
     return inl((uint16_t)(vdev->io_base + vdev->config_off + off));
 }
 
-void virtio_negotiate_features(VirtioDevice *vdev, uint32_t supported) {
+uint32_t virtio_negotiate_features(VirtioDevice *vdev, uint32_t supported) {
     uint32_t device_features = inl(vdev->io_base + VIRTIO_REG_DEVICE_FEATURES);
     uint32_t negotiated = device_features & supported;
     outl(vdev->io_base + VIRTIO_REG_GUEST_FEATURES, negotiated);
 
     kprintf("[VIRTIO] Features: device=0x%x  negotiated=0x%x\n",
             device_features, negotiated);
+    return negotiated;
 }
 
 int virtio_init_queue(VirtioDevice *vdev, int queue_index) {
@@ -211,10 +212,7 @@ void virtq_free_chain(Virtqueue *vq, uint16_t head) {
     }
 }
 
-void virtio_submit(VirtioDevice *vdev, int queue_index, uint16_t head) {
-    Virtqueue *vq = &vdev->queues[queue_index];
-
-    /* Add to available ring */
+void virtq_add_avail(Virtqueue *vq, uint16_t head) {
     uint16_t avail_idx = vq->avail->idx;
     vq->avail->ring[avail_idx % vq->size] = head;
 
@@ -222,12 +220,22 @@ void virtio_submit(VirtioDevice *vdev, int queue_index, uint16_t head) {
     virtio_mb();
 
     vq->avail->idx = avail_idx + 1;
+}
 
+void virtio_notify(VirtioDevice *vdev, int queue_index) {
     /* Memory barrier: device must see avail idx before notify */
     virtio_mb();
-
-    /* Notify device */
     outw(vdev->io_base + VIRTIO_REG_QUEUE_NOTIFY, (uint16_t)queue_index);
+}
+
+void virtio_submit(VirtioDevice *vdev, int queue_index, uint16_t head) {
+    virtq_add_avail(&vdev->queues[queue_index], head);
+    virtio_notify(vdev, queue_index);
+}
+
+void virtio_reset(VirtioDevice *vdev) {
+    /* Legacy virtio-PCI: the port write resets the device before it returns */
+    outb(vdev->io_base + VIRTIO_REG_DEVICE_STATUS, 0);
 }
 
 int virtq_has_used(Virtqueue *vq) {

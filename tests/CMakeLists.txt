@@ -19,6 +19,8 @@ add_executable(test_runner
     test_irq_vector.c
     test_dma.c
     test_virtio.c
+    test_gpt.c
+    test_blkdev.c
     test_string.c
     test_syscall.c
     test_elf.c
@@ -99,6 +101,8 @@ add_test(NAME test_irq     COMMAND test_runner --suite irq)
 add_test(NAME test_irq_vector COMMAND test_runner --suite irq_vector)
 add_test(NAME test_dma     COMMAND test_runner --suite dma)
 add_test(NAME test_virtio  COMMAND test_runner --suite virtio)
+add_test(NAME test_gpt     COMMAND test_runner --suite gpt)
+add_test(NAME test_blkdev  COMMAND test_runner --suite blkdev)
 add_test(NAME test_string  COMMAND test_runner --suite string)
 add_test(NAME test_syscall  COMMAND test_runner --suite syscall)
 add_test(NAME test_elf      COMMAND test_runner --suite elf)
@@ -138,7 +142,7 @@ add_test(NAME test_panic       COMMAND test_runner --suite panic)
 add_test(NAME test_smbios      COMMAND test_runner --suite smbios)
 add_test(NAME test_qr          COMMAND test_runner --suite qr)
 add_test(NAME test_qr_screen   COMMAND test_runner --suite qr_screen)
-set_tests_properties(arc_os_tests PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+set_tests_properties(arc_os_tests test_gpt test_blkdev PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 
 # M1-11: the VFS suites run the real kernel/fs sources (and proc/fd.c), each
 # its own object as in the kernel, over host stand-ins for the rest of the
@@ -161,6 +165,7 @@ add_library(arc_vfs_host STATIC
     ${CMAKE_SOURCE_DIR}/kernel/mm/filemap.c
     ${CMAKE_SOURCE_DIR}/kernel/mm/filemap_mmap.c
     vfs_env.c
+    blk_mem.c
 )
 target_include_directories(arc_vfs_host PUBLIC ${CMAKE_SOURCE_DIR}/kernel ${CMAKE_SOURCE_DIR}/tests)
 target_compile_options(arc_vfs_host PUBLIC -Wall -Wextra -std=c11 -DARC_HOST_TEST
@@ -184,6 +189,14 @@ set_tests_properties(fat32_test_image PROPERTIES
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     FIXTURES_SETUP fat32_image)
 set_tests_properties(test_fat32 vfs_tests PROPERTIES FIXTURES_REQUIRED fat32_image)
+
+# M1-10: GPT images (sgdisk, plus tools/make-gpt-image.py for 4Kn) in tests/gpt/
+# (gitignored); the gpt suite also reads the FAT32 image as a disk without GPT.
+add_test(NAME gpt_test_images COMMAND bash ${CMAKE_SOURCE_DIR}/tools/make-gpt-test-disk.sh host tests/gpt)
+set_tests_properties(gpt_test_images PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    FIXTURES_SETUP gpt_images)
+set_tests_properties(arc_os_tests test_gpt test_blkdev PROPERTIES FIXTURES_REQUIRED "fat32_image;gpt_images")
 
 # The ext2 suite reads tests/ext2_{4k,2k,1k}.img (gitignored), made by
 # mkfs.ext2 from e2fsprogs (tools/dev-setup.sh) with no root needed.

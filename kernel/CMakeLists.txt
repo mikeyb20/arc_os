@@ -89,6 +89,7 @@ set(KERNEL_C_SOURCES
     drivers/virtio.c
     drivers/virtio_blk.c
     drivers/blkdev.c
+    drivers/gpt.c
     drivers/tty.c
     drivers/keyboard.c
     drivers/fb_console.c
@@ -127,6 +128,7 @@ set(KERNEL_C_SOURCES
     diag/qr.c
     diag/qr_text.c
     diag/devtest.c
+    diag/blktest.c
     diag/qr_screen.c
     diag/qr_mode.c
 )

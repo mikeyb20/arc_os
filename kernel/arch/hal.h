@@ -340,6 +340,13 @@ static inline void hal_timer_init(uint32_t freq_hz) {
     pit_init(freq_hz);
 }
 
+/* Run fn on every tick of the periodic timer (interrupt context, one CPU).
+ * Interim: M1-06's per-CPU timer queue replaces the tick and its users arm
+ * one-shot timers instead (the block layer's request timeouts). */
+static inline void hal_timer_set_tick_hook(void (*fn)(void)) {
+    pit_set_tick_hook(fn);
+}
+
 /* Get total tick count since timer initialization. */
 static inline uint64_t hal_timer_ticks(void) {
     return pit_get_ticks();

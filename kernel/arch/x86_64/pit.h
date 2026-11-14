@@ -18,6 +18,9 @@
 /* Initialize PIT channel 0 as periodic timer at the given frequency (Hz). */
 void pit_init(uint32_t freq_hz);
 
+/* Call fn from every tick (interrupt context, BSP). */
+void pit_set_tick_hook(void (*fn)(void));
+
 /* Get total tick count since PIT initialization. */
 uint64_t pit_get_ticks(void);
 

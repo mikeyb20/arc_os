@@ -207,8 +207,14 @@ add_test(NAME qemu.qr.panic COMMAND ${_qemu_test} --suite kpanic --name qr-panic
 # interrupt, and the FAT32 disk mounted (its reads raise the queue
 # interrupt). The .intx run takes MSI-X away from virtio-blk (vectors=0) and
 # runs edu on its legacy line. The FAT32 disk image is made by the fixture.
+# M1-10: the disk is GPT (tools/make-gpt-test-disk.sh devices): the FAT32
+# volume in an EFI system partition, and partition "blktest" with a sector
+# pattern for the kernel's block-layer test ([BLKTEST] lines: 64 reads in
+# flight, merging, sync I/O, write + flush, refusals, a lost interrupt). The
+# suite reads /disk/hello.txt, so completions by interrupt are proven on
+# MSI-X and on INTx.
 set(_devices_disk ${CMAKE_BINARY_DIR}/devices-disk.img)
-add_test(NAME qemu.devices.disk COMMAND bash ${CMAKE_SOURCE_DIR}/tools/make-fat32-test-disk.sh ${_devices_disk})
+add_test(NAME qemu.devices.disk COMMAND bash ${CMAKE_SOURCE_DIR}/tools/make-gpt-test-disk.sh devices ${_devices_disk})
 set_tests_properties(qemu.devices.disk PROPERTIES LABELS qemu FIXTURES_SETUP devices_disk)
 set(_devices_qemu
     --qemu-arg=-drive --qemu-arg=file=${_devices_disk},if=none,id=disk0,format=raw,snapshot=on
@@ -226,7 +232,17 @@ add_test(NAME qemu.devices COMMAND ${_qemu_test} --suite devices ${_devices_qemu
     --expect "\\[DEVTEST\\] net: ARP reply from the gateway after [1-9][0-9]* RX interrupt\\(s\\) ok"
     --expect "\\[DEVTEST\\] net: rx interrupt moved cpu[0-9] -> cpu[0-9]"
     --expect "\\[DEVTEST\\] net: rx interrupt arrived on cpu[0-9] ok"
+    --expect "\\[BLK\\] vda: GPT 4A7D3F10-1B2C-4D5E-8F90-A1B2C3D4E5F6, 2 partitions$"
+    --expect "\\[BLK\\] vda2: start 71680, 8192 sectors, type 0FC63DAF-8483-4772-8E79-3D69D8477DE4, PARTUUID [0-9A-F-]+, PARTLABEL \"blktest\""
+    --expect "\\[BLKTEST\\] partitions: vda1 ESP, vda2 \"blktest\" on vda ok"
+    --expect "\\[BLKTEST\\] 64 concurrent reads ok"
+    --expect "\\[BLKTEST\\] 8 adjacent reads merged into 1 request\\(s\\) ok"
+    --expect "\\[BLKTEST\\] sync read across pages ok"
+    --expect "\\[BLKTEST\\] write, flush, read back ok"
+    --expect "\\[BLKTEST\\] out-of-range and partial-sector requests refused ok"
+    --expect "\\[BLKTEST\\] lost interrupt: completed by the timeout poll ok"
     --expect "\\[VFS\\] Mounted vfat at /disk"
+    --expect "Hello, FAT32!"
     --expect ":( +[0-9]+)* +[1-9][0-9]*( +[0-9]+)*  PCI-MSIX 0000:00:[0-9a-f.]+ 1 cpu[0-9]/0x[0-9a-f]+  virtio-blk-queue"
     --expect ":( +[0-9]+)* +[1-9][0-9]*( +[0-9]+)*  PCI-MSIX 0000:00:[0-9a-f.]+ 1 cpu[0-9]/0x[0-9a-f]+  virtio-net-rx"
     --expect "PCI-MSI +0000:00:[0-9a-f.]+ 0 cpu[0-9]/0x[0-9a-f]+  edu")
@@ -235,6 +251,9 @@ add_test(NAME qemu.devices.intx COMMAND ${_qemu_test} --suite devices --name dev
     --cmdline arc.devtest=intx
     --expect "\\[PCI\\] 0000:00:[0-9a-f.]+: WARNING: INTx on line [0-9]+ from the firmware's irq_line"
     --expect "\\[DEVTEST\\] edu: intx interrupt on cpu0 ok"
+    --expect "\\[BLKTEST\\] 64 concurrent reads ok"
+    --expect "\\[BLKTEST\\] lost interrupt: completed by the timeout poll ok"
+    --expect "Hello, FAT32!"
     --expect "\\[DEVTEST\\] edu: dma 4096 bytes round trip ok"
     --expect "\\[VFS\\] Mounted vfat at /disk"
     --expect ":( +[0-9]+)* +[1-9][0-9]*( +[0-9]+)*  INTx +0000:00:[0-9a-f.]+ line [0-9]+  virtio-blk"

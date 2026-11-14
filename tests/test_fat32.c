@@ -5,25 +5,20 @@
 
 #include "test_framework.h"
 #include "vfs_env.h"
+#include "blk_mem.h"
 
 #include "drivers/blkdev.h"
 #include "fs/fat32.h"
 #include "mm/filemap.h"
+#include "mm/pmm.h"
 #include "uapi/errno.h"
 #include "uapi/fcntl.h"
 
 static uint8_t *image;
 static size_t image_size;
 
-static int mem_read(BlockDevice *dev, uint64_t sector, uint32_t count, void *buf) {
-    const uint8_t *base = dev->private_data;
-    size_t size = dev == NULL ? 0 : (base == image ? image_size : 512);
-    if ((sector + count) * 512 > size) return -1;
-    memcpy(buf, base + sector * 512, (size_t)count * 512);
-    return 0;
-}
-
-static BlockDevice disk = {.read = mem_read};
+/* The image is a memory disk (blk_mem.c): read-only, as FAT32 is */
+static BlockDevice disk = {.flags = BLK_RDONLY};
 
 /* Load the image and mount it at /fat (once). 0, or 1 to skip. */
 static int fat_ready(void) {
@@ -43,7 +38,8 @@ static int fat_ready(void) {
     image = malloc(image_size);
     if (fread(image, 1, image_size, f) != image_size) abort();
     fclose(f);
-    disk.private_data = image;
+    disk.driver_data = image;
+    disk.nr_sectors = image_size / 512;
     SuperBlock *sb = fat32_mount(&disk);
     if (sb == NULL || vfs_mkdir("/fat", 0755) != 0 || vfs_mount("/fat", sb, "vda") != 0) abort();
     state = 1;
@@ -82,7 +78,7 @@ static int list(const char *path, Names *l) {
 TEST(rejects_bad_boot_sectors) {
     vfs_env_setup();
     static uint8_t sector[512];
-    BlockDevice bad = {.read = mem_read, .private_data = sector};
+    BlockDevice bad = {.nr_sectors = 1, .driver_data = sector};
     ASSERT_TRUE(fat32_mount(&bad) == NULL);   /* all zeros */
     if (fat_ready() != 0) return 0;
     memcpy(sector, image, 512);
@@ -203,6 +199,41 @@ TEST(reads_across_clusters) {
     return 0;
 }
 
+/* EOF inside a sector: the async pieces stop at the last whole sector before
+ * EOF and the partial sector is read at once, so disk bytes past EOF never
+ * reach the page, however late the pieces land. Deferred (async) reads here
+ * write BLK_MEM_POISON. */
+TEST(page_tail_past_eof_stays_zero) {
+    if (fat_ready() != 0) return 0;
+    static char expect[16384];
+    size_t len = 0;
+    for (int i = 1; i <= 3000; i++) len += (size_t)snprintf(expect + len, sizeof(expect) - len, "%d\n", i);
+    File *f;
+    ASSERT_EQ(vfs_open("/fat/big.txt", O_RDONLY, 0, &f), 0);
+    AddressSpace *as = f->inode->mapping;
+    uint64_t last = (len - 1) / PAGE_SIZE;
+    size_t eof = len - last * PAGE_SIZE, whole = eof & ~(size_t)511;
+    ASSERT_TRUE(eof % 512 != 0);   /* the image's big.txt ends mid-sector */
+    struct page *pg = alloc_pages(0, 0);
+    ASSERT_TRUE(pg != NULL);
+    pg->index = last;
+    page_set(pg, PG_LOCKED);   /* as the page cache hands it to readpage */
+    blk_mem_defer = 1;
+    ASSERT_EQ(as->ops->readpage(as, pg), 0);
+    blk_mem_defer = 0;
+    ASSERT_TRUE(page_test(pg, PG_LOCKED));   /* pieces still in flight */
+    blk_mem_run();                           /* ... and now they land */
+    ASSERT_TRUE(!page_test(pg, PG_LOCKED) && page_test(pg, PG_UPTODATE));
+    const uint8_t *va = page_to_virt(pg);
+    for (size_t i = 0; i < whole; i++) ASSERT_EQ(va[i], BLK_MEM_POISON);
+    ASSERT_MEM_EQ(va + whole, expect + last * PAGE_SIZE + whole, eof - whole);
+    for (size_t i = eof; i < PAGE_SIZE; i++) ASSERT_EQ(va[i], 0);
+    page_clear(pg, PG_UPTODATE);
+    free_pages(pg, 0);
+    fput(f);
+    return 0;
+}
+
 TEST(changes_get_erofs) {
     if (fat_ready() != 0) return 0;
     File *f;
@@ -294,6 +325,7 @@ TestCase fat32_tests[] = {
     TEST_ENTRY(attributes),
     TEST_ENTRY(reads),
     TEST_ENTRY(reads_across_clusters),
+    TEST_ENTRY(page_tail_past_eof_stays_zero),
     TEST_ENTRY(changes_get_erofs),
     TEST_ENTRY(inodes_are_shared_and_leak_free),
     TEST_ENTRY(reads_through_the_page_cache),

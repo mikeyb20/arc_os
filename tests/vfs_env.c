@@ -500,6 +500,11 @@ int mm_format_maps(Mm *mm, char *buf, int size) {
     return snprintf(buf, (size_t)size, "00400000-00401000 r-xp 00000000 00:00 0\n");
 }
 
+/* The host suites run as a scheduled thread: page waits take the sleeping path */
+int sched_can_block(void) {
+    return 1;
+}
+
 int sched_cpu_stats(uint32_t cpu, SchedCpuStats *out) {
     if (cpu > 0) return -1;
     memset(out, 0, sizeof(*out));

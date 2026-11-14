@@ -8,43 +8,31 @@
 
 #include "test_framework.h"
 #include "vfs_env.h"
+#include "blk_mem.h"
 
 #include "drivers/blkdev.h"
 #include "fs/ext2.h"
 #include "mm/filemap.h"
+#include "mm/pmm.h"
 #include "uapi/dirent.h"
 #include "uapi/errno.h"
 #include "uapi/fcntl.h"
 
-/* A disk image in memory, with optional patches applied on every read */
-typedef struct {
-    const uint8_t *data;
-    size_t size;
-    uint64_t patch_at[4];
-    uint8_t patch_len[4];
-    uint8_t patch[4][8];
-    int npatch;
-} Disk;
-
-static int disk_read(BlockDevice *dev, uint64_t sector, uint32_t count, void *buf) {
-    const Disk *d = dev->private_data;
-    uint64_t at = sector * 512, n = (uint64_t)count * 512;
-    if (at + n > d->size) return -1;
-    memcpy(buf, d->data + at, n);
-    for (int i = 0; i < d->npatch; i++) {
-        for (unsigned k = 0; k < d->patch_len[i]; k++) {
-            uint64_t p = d->patch_at[i] + k;
-            if (p >= at && p < at + n) ((uint8_t *)buf)[p - at] = d->patch[i][k];
-        }
-    }
-    return 0;
+/* A memory disk (blk_mem.c) over size bytes at data, read-only */
+static void disk_init(BlockDevice *dev, uint8_t *data, size_t size) {
+    memset(dev, 0, sizeof(*dev));
+    dev->driver_data = data;
+    dev->nr_sectors = size / 512;
+    dev->flags = BLK_RDONLY;
 }
 
-static void disk_patch(Disk *d, uint64_t at, const void *bytes, unsigned len) {
-    d->patch_at[d->npatch] = at;
-    d->patch_len[d->npatch] = (uint8_t)len;
-    memcpy(d->patch[d->npatch], bytes, len);
-    d->npatch++;
+/* A copy of an image with len bytes at byte `at` replaced (a corrupt disk) */
+static uint8_t *patched(const uint8_t *data, size_t size, uint64_t at, const void *bytes, unsigned len) {
+    uint8_t *copy = malloc(size);
+    if (copy == NULL) abort();
+    memcpy(copy, data, size);
+    memcpy(copy + at, bytes, len);
+    return copy;
 }
 
 /* The three volumes, mounted at /e4k, /e2k and /e1k */
@@ -53,14 +41,15 @@ typedef struct {
     const char *mnt;
     const char *dev;
     uint32_t block_size;
-    Disk disk;
+    uint8_t *data;   /* the image */
+    size_t size;
     BlockDevice bdev;
 } Volume;
 
 static Volume vols[] = {
-    {"tests/ext2_4k.img", "/e4k", "vdb", 4096, {0}, {0}},
-    {"tests/ext2_2k.img", "/e2k", "vdc", 2048, {0}, {0}},
-    {"tests/ext2_1k.img", "/e1k", "vdd", 1024, {0}, {0}},
+    {.file = "tests/ext2_4k.img", .mnt = "/e4k", .dev = "vdb", .block_size = 4096},
+    {.file = "tests/ext2_2k.img", .mnt = "/e2k", .dev = "vdc", .block_size = 2048},
+    {.file = "tests/ext2_1k.img", .mnt = "/e1k", .dev = "vdd", .block_size = 1024},
 };
 #define NVOLS ((int)(sizeof(vols) / sizeof(vols[0])))
 
@@ -88,16 +77,15 @@ static int ext2_ready(void) {
     if (state != 0) return state == 1 ? 0 : 1;
     for (int i = 0; i < NVOLS; i++) {
         Volume *v = &vols[i];
-        v->disk.data = load(v->file, &v->disk.size);
-        if (v->disk.data == NULL) {
+        v->data = load(v->file, &v->size);
+        if (v->data == NULL) {
             printf("  (no %s: run tools/make-ext2-test-images.sh)\n", v->file);
             state = 2;
             return 1;
         }
-        v->bdev.read = disk_read;
-        v->bdev.private_data = &v->disk;
+        disk_init(&v->bdev, v->data, v->size);
         int err;
-        SuperBlock *sb = ext2_mount(&v->bdev, v->disk.size, v->dev, &err);
+        SuperBlock *sb = ext2_mount(&v->bdev, v->size, v->dev, &err);
         if (sb == NULL || vfs_mkdir(v->mnt, 0755) != 0 || vfs_mount(v->mnt, sb, v->dev) != 0) abort();
     }
     state = 1;
@@ -487,13 +475,13 @@ TEST(inodes_are_shared_and_leak_free) {
 }
 
 /* The block of the root directory's first entries, read off the raw image */
-static uint64_t root_dir_block_offset(const Disk *d, uint32_t *bs_out) {
-    const uint8_t *s = d->data + 1024;
+static uint64_t root_dir_block_offset(const uint8_t *data, uint32_t *bs_out) {
+    const uint8_t *s = data + 1024;
     uint32_t bs = 1024u << *(const uint32_t *)(s + 24);
     uint32_t first = *(const uint32_t *)(s + 20);
     uint16_t isz = *(const uint16_t *)(s + 88);
-    uint32_t itable = *(const uint32_t *)(d->data + (uint64_t)(first + 1) * bs + 8);
-    const uint8_t *ino2 = d->data + (uint64_t)itable * bs + isz;   /* inode 2: index 1 */
+    uint32_t itable = *(const uint32_t *)(data + (uint64_t)(first + 1) * bs + 8);
+    const uint8_t *ino2 = data + (uint64_t)itable * bs + isz;   /* inode 2: index 1 */
     *bs_out = bs;
     uint32_t block0 = *(const uint32_t *)(ino2 + 40);   /* i_block[0] */
     return (uint64_t)block0 * bs;
@@ -503,8 +491,8 @@ TEST(rejects_bad_superblocks) {
     vfs_env_setup();
     int err;
     static uint8_t zero[8192];
-    Disk zd = {zero, sizeof(zero), {0}, {0}, {{0}}, 0};
-    BlockDevice zdev = {.read = disk_read, .private_data = &zd};
+    BlockDevice zdev;
+    disk_init(&zdev, zero, sizeof(zero));
     ASSERT_TRUE(ext2_mount(&zdev, sizeof(zero), "z", &err) == NULL);   /* no magic */
     ASSERT_EQ(err, -EINVAL);
     ASSERT_TRUE(ext2_mount(NULL, 1 << 20, "z", &err) == NULL);
@@ -528,11 +516,10 @@ TEST(rejects_bad_superblocks) {
         {92, 0x0020 | 0x0004, 4, 1},   /* s_feature_compat + has_journal: ignored */
     };
     for (size_t k = 0; k < sizeof(cases) / sizeof(cases[0]); k++) {
-        Disk d = vols[0].disk;
-        d.npatch = 0;
-        disk_patch(&d, 1024 + cases[k].at, &cases[k].value, cases[k].len);
-        BlockDevice dev = {.read = disk_read, .private_data = &d};
-        SuperBlock *sb = ext2_mount(&dev, d.size, "bad", &err);
+        uint8_t *copy = patched(vols[0].data, vols[0].size, 1024 + cases[k].at, &cases[k].value, cases[k].len);
+        BlockDevice *dev = malloc(sizeof(*dev));   /* a mounted volume keeps both */
+        disk_init(dev, copy, vols[0].size);
+        SuperBlock *sb = ext2_mount(dev, vols[0].size, "bad", &err);
         if (cases[k].ok) {
             ASSERT_TRUE(sb != NULL);
             ASSERT_EQ(ext2_ro_forced(sb), cases[k].at == 100);
@@ -540,16 +527,17 @@ TEST(rejects_bad_superblocks) {
         } else {
             ASSERT_TRUE(sb == NULL);
             ASSERT_EQ(err, -EINVAL);
+            free(dev);
+            free(copy);
         }
     }
     /* A device smaller than the volume says */
-    Disk d = vols[0].disk;
-    BlockDevice dev = {.read = disk_read, .private_data = &d};
-    ASSERT_TRUE(ext2_mount(&dev, d.size / 2, "short", &err) == NULL);
+    BlockDevice dev;
+    disk_init(&dev, vols[0].data, vols[0].size);
+    ASSERT_TRUE(ext2_mount(&dev, vols[0].size / 2, "short", &err) == NULL);
     ASSERT_EQ(err, -EINVAL);
-    /* An unreadable device */
-    Disk tiny = {vols[0].disk.data, 1024, {0}, {0}, {{0}}, 0};
-    dev.private_data = &tiny;
+    /* An unreadable device: two sectors, the superblock past them */
+    disk_init(&dev, vols[0].data, 1024);
     ASSERT_TRUE(ext2_mount(&dev, 1 << 20, "eio", &err) == NULL);
     ASSERT_EQ(err, -EIO);
     return 0;
@@ -563,17 +551,18 @@ TEST(failed_mounts_leak_nothing) {
     VfsEnvUsage before, after;
     (void)filemap_drop_clean();
     vfs_env_usage(&before);
-    Disk d = vols[1].disk;
-    d.npatch = 0;
     uint32_t bad = 0x0002 | 0x40;
-    disk_patch(&d, 1024 + 96, &bad, 4);
-    BlockDevice dev = {.read = disk_read, .private_data = &d};
-    ASSERT_TRUE(ext2_mount(&dev, d.size, "bad", &err) == NULL);
-    d.npatch = 0;
+    uint8_t *copy = patched(vols[1].data, vols[1].size, 1024 + 96, &bad, 4);
+    BlockDevice dev;
+    disk_init(&dev, copy, vols[1].size);
+    ASSERT_TRUE(ext2_mount(&dev, vols[1].size, "bad", &err) == NULL);
+    free(copy);
     uint32_t far = 0x00ffffff;
-    disk_patch(&d, 2048 + 8, &far, 4);   /* 2 KiB blocks: group descriptors in block 1 */
-    ASSERT_TRUE(ext2_mount(&dev, d.size, "bad", &err) == NULL);
+    copy = patched(vols[1].data, vols[1].size, 2048 + 8, &far, 4);   /* 2 KiB blocks: group descriptors in block 1 */
+    disk_init(&dev, copy, vols[1].size);
+    ASSERT_TRUE(ext2_mount(&dev, vols[1].size, "bad", &err) == NULL);
     ASSERT_EQ(err, -EINVAL);
+    free(copy);
     vfs_env_usage(&after);
     ASSERT_TRUE(vfs_env_no_leak(&before, &after));
     int failures = 0;
@@ -581,7 +570,7 @@ TEST(failed_mounts_leak_nothing) {
         (void)filemap_drop_clean();
         vfs_env_usage(&before);
         vfs_env_fail_alloc_in(n);
-        SuperBlock *sb = ext2_mount(&vols[2].bdev, vols[2].disk.size, "oom", &err);
+        SuperBlock *sb = ext2_mount(&vols[2].bdev, vols[2].size, "oom", &err);
         vfs_env_fail_alloc_in(0);
         if (sb != NULL) break;   /* past the last allocation (this volume stays) */
         failures++;
@@ -599,21 +588,16 @@ TEST(failed_mounts_leak_nothing) {
  * (mount table slots are few). */
 TEST(corrupt_directory_entry_is_eio) {
     if (ext2_ready() != 0) return 0;
-    static Disk disks[NVOLS];
-    static BlockDevice devs[NVOLS];
+    static BlockDevice devs[NVOLS];   /* the volumes stay mounted */
     static const char *mnts[NVOLS] = {"/bad4k", "/bad2k", "/bad1k"};
     for (int i = 0; i < NVOLS; i++) {
-        disks[i] = vols[i].disk;
-        disks[i].npatch = 0;
         uint32_t bs;
-        uint64_t at = root_dir_block_offset(&disks[i], &bs);
-        ASSERT_EQ(disks[i].data[at + 8], '.');   /* found the root's "." */
+        uint64_t at = root_dir_block_offset(vols[i].data, &bs);
+        ASSERT_EQ(vols[i].data[at + 8], '.');   /* found the root's "." */
         uint16_t lens[NVOLS] = {0, 13, (uint16_t)(bs + 4)};
-        disk_patch(&disks[i], at + 4, &lens[i], 2);   /* "."'s rec_len */
-        devs[i].read = disk_read;
-        devs[i].private_data = &disks[i];
+        disk_init(&devs[i], patched(vols[i].data, vols[i].size, at + 4, &lens[i], 2), vols[i].size);   /* "."'s rec_len */
         int err;
-        SuperBlock *sb = ext2_mount(&devs[i], disks[i].size, "bad", &err);
+        SuperBlock *sb = ext2_mount(&devs[i], vols[i].size, "bad", &err);
         ASSERT_TRUE(sb != NULL);   /* the root inode is fine; its entries aren't */
         ASSERT_EQ(vfs_mkdir(mnts[i], 0755), 0);
         ASSERT_EQ(vfs_mount(mnts[i], sb, "bad"), 0);
@@ -658,6 +642,53 @@ TEST(reads_through_the_page_cache) {
     return 0;
 }
 
+/* A readahead batch with async pieces (deferred reads write BLK_MEM_POISON):
+ * a whole page's blocks go on the plug and land late; the page holding EOF is
+ * copied from the metadata cache with its tail zeroed, never touched by a
+ * piece, so it is done (and right) before any interrupt. 1 KiB blocks. */
+TEST(readahead_pieces_land_late_eof_page_does_not_wait) {
+    if (ext2_ready() != 0) return 0;
+    File *f;
+    ASSERT_EQ(vfs_open("/e1k/medium.bin", O_RDONLY, 0, &f), 0);
+    AddressSpace *as = f->inode->mapping;
+    uint64_t last = (300000 - 1) / PAGE_SIZE;
+    size_t eof = 300000 - last * PAGE_SIZE;
+    ASSERT_TRUE(eof < 1024);   /* EOF in the page's first block: no piece */
+    struct page *pg[2];
+    for (int i = 0; i < 2; i++) {
+        pg[i] = alloc_pages(0, 0);
+        ASSERT_TRUE(pg[i] != NULL);
+        pg[i]->index = last - 1 + (uint64_t)i;
+    }
+    /* Warm the metadata cache (block map, the EOF block) with a plain read */
+    page_set(pg[1], PG_LOCKED);
+    ASSERT_EQ(as->ops->readpage(as, pg[1]), 0);
+    ASSERT_TRUE(!page_test(pg[1], PG_LOCKED) && page_test(pg[1], PG_UPTODATE));
+    page_clear(pg[1], PG_UPTODATE);
+    for (int i = 0; i < 2; i++) page_set(pg[i], PG_LOCKED);   /* as readahead hands them over */
+    int before = blk_mem_requests;
+    blk_mem_defer = 1;
+    as->ops->readpages(as, pg, 2);
+    blk_mem_defer = 0;
+    ASSERT_TRUE(page_test(pg[0], PG_LOCKED));   /* its pieces are still in flight */
+    ASSERT_TRUE(!page_test(pg[1], PG_LOCKED) && page_test(pg[1], PG_UPTODATE));
+    ASSERT_TRUE(blk_mem_requests == before);    /* nothing reached the disk yet */
+    blk_mem_run();
+    ASSERT_TRUE(blk_mem_requests > before);
+    ASSERT_TRUE(!page_test(pg[0], PG_LOCKED) && page_test(pg[0], PG_UPTODATE));
+    const uint8_t *va = page_to_virt(pg[0]);
+    for (size_t i = 0; i < PAGE_SIZE; i++) ASSERT_EQ(va[i], BLK_MEM_POISON);
+    va = page_to_virt(pg[1]);
+    ASSERT_TRUE(pat_ok(va, last * PAGE_SIZE, eof));
+    ASSERT_TRUE(zeros(va + eof, PAGE_SIZE - eof));
+    for (int i = 0; i < 2; i++) {
+        page_clear(pg[i], PG_UPTODATE);
+        free_pages(pg[i], 0);
+    }
+    fput(f);
+    return 0;
+}
+
 TestCase ext2_tests[] = {
     TEST_ENTRY(mounts_all_geometries),
     TEST_ENTRY(root_listing),
@@ -674,5 +705,6 @@ TestCase ext2_tests[] = {
     TEST_ENTRY(failed_mounts_leak_nothing),
     TEST_ENTRY(corrupt_directory_entry_is_eio),
     TEST_ENTRY(reads_through_the_page_cache),
+    TEST_ENTRY(readahead_pieces_land_late_eof_page_does_not_wait),
 };
 int ext2_test_count = sizeof(ext2_tests) / sizeof(ext2_tests[0]);

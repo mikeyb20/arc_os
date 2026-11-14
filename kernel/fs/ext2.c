@@ -506,8 +506,9 @@ static int ext2_readlink(Inode *inode, char *buf, size_t size) {
 /* Start filling one page of a regular file: holes and blocks past the end
  * zeroed, runs of contiguous blocks read straight into the page (one piece
  * each), the block holding the end copied from the metadata cache with its
- * tail zeroed (see the top). The read ends when its last piece does. */
-static void ext2_start_page(Inode *inode, struct page *pg) {
+ * tail zeroed (see the top). Pieces go on plug (NULL: submitted at once).
+ * The read ends when its last piece does. */
+static void ext2_start_page(Inode *inode, struct page *pg, BlkPlug *plug) {
     Ext2Vol *v = ext2_vol(inode);
     uint32_t sh = v->block_shift, bs = v->block_size;
     uint32_t bpp = PAGE_SIZE >> sh;
@@ -543,19 +544,22 @@ static void ext2_start_page(Inode *inode, struct page *pg) {
         }
         uint32_t n = 1;   /* whole blocks contiguous on disk: one piece */
         while (i + n < bpp && base + ((uint64_t)(i + n + 1) << sh) <= size && ext2_bmap(inode, lblk + n) == p + n) n++;
-        err = filemap_bdev_read(v->dev, (uint64_t)p << (sh - 9), n << (sh - 9), pg, (size_t)i << sh);
+        err = filemap_bdev_read(plug, v->dev, (uint64_t)p << (sh - 9), n << (sh - 9), pg, (size_t)i << sh);
         i += n;
     }
     filemap_io_end(pg, err);
 }
 
 static int ext2_readpage(AddressSpace *as, struct page *pg) {
-    ext2_start_page(as->host, pg);
+    ext2_start_page(as->host, pg, NULL);
     return 0;
 }
 
 static void ext2_readpages(AddressSpace *as, struct page **pages, uint32_t n) {
-    for (uint32_t i = 0; i < n; i++) ext2_start_page(as->host, pages[i]);
+    BlkPlug plug;   /* the pages' pieces reach the disk together */
+    blk_plug_init(&plug);
+    for (uint32_t i = 0; i < n; i++) ext2_start_page(as->host, pages[i], &plug);
+    blk_plug_flush(&plug);
 }
 
 /* Devices, FIFOs and sockets on an arc_os volume have no driver behind them

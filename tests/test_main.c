@@ -37,6 +37,10 @@ extern TestCase dma_tests[];
 extern int dma_test_count;
 extern TestCase virtio_tests[];
 extern int virtio_test_count;
+extern TestCase gpt_tests[];
+extern int gpt_test_count;
+extern TestCase blkdev_tests[];
+extern int blkdev_test_count;
 extern TestCase string_tests[];
 extern int string_test_count;
 extern TestCase syscall_tests[];
@@ -127,6 +131,8 @@ int main(int argc, char **argv) {
         { "irq_vector", irq_vector_tests, &irq_vector_test_count },
         { "dma",     dma_tests,     &dma_test_count },
         { "virtio",  virtio_tests,  &virtio_test_count },
+        { "gpt",     gpt_tests,     &gpt_test_count },
+        { "blkdev",  blkdev_tests,  &blkdev_test_count },
         { "string",  string_tests,  &string_test_count },
         { "syscall", syscall_tests, &syscall_test_count },
         { "elf",     elf_tests,     &elf_test_count },

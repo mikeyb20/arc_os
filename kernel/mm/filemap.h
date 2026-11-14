@@ -22,11 +22,11 @@
  * pieces in flight in its flags (PG_IO_MASK); whichever finishes last, the
  * reader's filemap_io_end or a piece's completion, ends the read with
  * filemap_end_read: PG_UPTODATE (PG_ERROR if any piece failed), page
- * unlocked, waiters woken. Today every piece finishes inside
- * filemap_bdev_read (synchronous block reads); with the async block layer
- * (M1-10) a piece's completion calls filemap_bdev_read_done from the
- * interrupt instead, and nothing above changes. Writes are synchronous
- * (filemap_bdev_write waits): write-back's callers rely on that.
+ * unlocked, waiters woken. A piece is one block-layer request (M1-10); its
+ * completion calls filemap_bdev_read_done, usually from the disk interrupt,
+ * sometimes at once in the submitter (drivers/blkdev.h lists when). Writes
+ * are synchronous (filemap_bdev_write waits): write-back's callers rely on
+ * that.
  *
  * Locks, outermost first (docs/kernel/locking.md):
  *   inode lock (10)      held by read/write/truncate callers
@@ -52,6 +52,7 @@
 
 typedef struct AddressSpace AddressSpace;
 struct BlockDevice;
+struct BlkPlug;
 struct Vma;
 
 /* Filesystem operations on a mapping. */
@@ -228,11 +229,14 @@ void filemap_mkclean(AddressSpace *as, struct page *pg);
 void filemap_io_begin(struct page *pg);
 void filemap_io_end(struct page *pg, int err);
 
-/* One piece: count sectors from sector into pg at byte_off. Finishes now
- * (synchronous today) or later from its completion (M1-10), which calls
- * filemap_bdev_read_done. Returns 0 when the piece was started (its result
- * arrives through the completion), -errno when it never was. */
-int filemap_bdev_read(struct BlockDevice *dev, uint64_t sector, uint32_t count, struct page *pg, size_t byte_off);
+/* One piece: count sectors from sector into pg at byte_off (inside the page),
+ * as one block request, queued on plug (the caller flushes it) or, with plug
+ * NULL, submitted at once. Its completion calls filemap_bdev_read_done.
+ * Thread context, no spinlock held. Returns 0 when the piece was started
+ * (its result arrives through the completion, even a refusal), -ENOMEM when
+ * it never was. */
+int filemap_bdev_read(struct BlkPlug *plug, struct BlockDevice *dev, uint64_t sector, uint32_t count, struct page *pg,
+                      size_t byte_off);
 
 /* A piece finished (any context, an interrupt included): err != 0 fails the
  * read; the last piece ends it. */

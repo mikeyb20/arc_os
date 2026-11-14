@@ -41,6 +41,11 @@ void diag_bench(void);
  * device; it checks MSI or INTx, affinity and DMA and logs "[DEVTEST]" lines. */
 void devtest_register(void);
 
+/* Test mode, suite "devices" (M1-10): the block layer on the first disk's
+ * "blktest" partition (64 reads in flight, merging, sync I/O, write and
+ * flush, a lost interrupt, refused requests); logs "[BLKTEST]" lines. */
+void blktest_run(void);
+
 /* Busy-wait ms milliseconds by the TSC (diagnostics only). */
 void diag_delay_ms(uint32_t ms);
 
