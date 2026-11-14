@@ -17,6 +17,7 @@
 #define ARCHOS_MM_SLAB_H
 #define ARCHOS_MM_KMALLOC_H
 #define ARCHOS_MM_VMM_H
+#define ARCHOS_MM_PMM_H
 #define ARCHOS_PROC_SEMAPHORE_H
 #define ARCHOS_PROC_SCHED_H
 #define ARCHOS_ARCH_HAL_H
@@ -85,6 +86,19 @@ static void *kmalloc(size_t size, uint32_t flags) {
 }
 static void kfree(void *p) {
     (void)p;   /* the bump heap is never reused */
+}
+/* Bounce pages: page-aligned from the bump heap, counted */
+static int pages_live;
+static struct page *alloc_pages(unsigned order, uint32_t flags) {
+    (void)flags;
+    heap_used = (heap_used + PAGE_SIZE - 1) & ~(size_t)(PAGE_SIZE - 1);
+    uint8_t *p = kmalloc((size_t)PAGE_SIZE << order, 0);
+    pages_live++;
+    return pfn_to_page((uint64_t)((uintptr_t)p - blkt_hhdm_offset) >> PAGE_SHIFT);
+}
+static void free_pages(struct page *pg, unsigned order) {
+    (void)pg, (void)order;
+    pages_live--;
 }
 
 /* One thread: a semaphore is a count, and waiting never blocks (polling) */
@@ -427,6 +441,43 @@ TEST(blk_sync_splits_unaligned_buffer) {
     return 0;
 }
 
+/* A device without SEG_MAX takes one segment per request: a block that
+ * straddles two pages (fat32_mount's stack buffer can) goes through a bounce
+ * page instead of failing with -EINVAL */
+TEST(blk_one_segment_bounces_straddling_blocks) {
+    FakeDisk *fd = fake_disk(512, 8, 1, NULL);
+    uint8_t *buf = arena + PAGE_SIZE - 200; /* one 512-byte block across two pages */
+    memset(arena, 0, 3 * PAGE_SIZE);
+    ASSERT_EQ(blk_rw_sync(&fd->disk, BLK_OP_READ, 7, buf, 512), 0);
+    ASSERT_TRUE(words_are_sector(buf, 7, 512));
+    ASSERT_EQ(buf[-1], 0);
+    ASSERT_EQ(buf[512], 0);
+    /* Several pages from an unaligned start: aligned pieces go direct, the
+     * blocks that straddle a page boundary bounce */
+    buf = arena + 104;
+    ASSERT_EQ(blk_rw_sync(&fd->disk, BLK_OP_READ, 40, buf, 3 * PAGE_SIZE), 0);
+    ASSERT_TRUE(words_are_sector(buf, 40, 3 * PAGE_SIZE));
+    ASSERT_EQ(fd->max_chain_segs, 1);
+    /* Writes bounce too */
+    buf = arena + PAGE_SIZE - 200;
+    memset(buf, 0x33, 512);
+    ASSERT_EQ(blk_rw_sync(&fd->disk, BLK_OP_WRITE, 300, buf, 512), 0);
+    ASSERT_EQ(fd->store[300 * 512], 0x33);
+    ASSERT_EQ(fd->store[300 * 512 + 511], 0x33);
+    ASSERT_EQ(fd->store[301 * 512], 301 & 0xFF); /* next sector untouched */
+    ASSERT_EQ(pages_live, 0);
+    ASSERT_EQ(rq_live, 0);
+
+    /* 4Kn, one segment: every block of an unaligned buffer straddles */
+    FakeDisk *fk = fake_disk(4096, 8, 1, NULL);
+    buf = arena + 1024;
+    ASSERT_EQ(blk_rw_sync(&fk->disk, BLK_OP_READ, 64, buf, 2 * PAGE_SIZE), 0);
+    ASSERT_TRUE(words_are_sector(buf, 64, 2 * PAGE_SIZE));
+    ASSERT_EQ(pages_live, 0);
+    ASSERT_EQ(rq_live, 0);
+    return 0;
+}
+
 TEST(blk_4kn_requests_cut_on_block_boundaries) {
     FakeDisk *fd = fake_disk(4096, 8, 2, NULL);
     uint8_t *buf = arena + 1024;   /* two segments per request: 3 KiB + 4 KiB, cut to 4 KiB */
@@ -543,6 +594,7 @@ TestCase blkdev_tests[] = {
     TEST_ENTRY(blk_merge_into_pending_tail),
     TEST_ENTRY(blk_device_busy_requeues_in_order),
     TEST_ENTRY(blk_sync_splits_unaligned_buffer),
+    TEST_ENTRY(blk_one_segment_bounces_straddling_blocks),
     TEST_ENTRY(blk_4kn_requests_cut_on_block_boundaries),
     TEST_ENTRY(blk_refusals_and_flush),
     TEST_ENTRY(blk_submit_page_async),

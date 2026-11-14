@@ -144,9 +144,12 @@ TEST(gpt_max_parts_skips_the_rest) {
 /* Both headers bad: an in-memory copy with both CRCs broken */
 static uint8_t mem_disk[16384 * 512];
 
+static uint64_t mem_bad_lba = UINT64_MAX;   /* a bad sector: reads covering it fail */
+
 static int mem_read(void *ctx, uint64_t lba, uint32_t count, void *buf) {
     (void)ctx;
     if ((lba + count) * 512 > sizeof(mem_disk)) return -EIO;
+    if (mem_bad_lba >= lba && mem_bad_lba < lba + count) return -EIO;
     memcpy(buf, mem_disk + lba * 512, (size_t)count * 512);
     return 0;
 }
@@ -170,6 +173,30 @@ TEST(gpt_both_headers_bad) {
     return 0;
 }
 
+/* A read error at the primary header or its entries falls back to the backup */
+TEST(gpt_primary_read_error_uses_backup) {
+    uint8_t scratch[1024];
+    GptDisk d;
+    GptPart p[8];
+    FILE *f = fopen(GPT_DIR "gpt512.img", "rb");
+    ASSERT_TRUE(f != NULL);
+    size_t n = fread(mem_disk, 1, sizeof(mem_disk), f);
+    fclose(f);
+    ASSERT_EQ(n, sizeof(mem_disk));
+    for (uint64_t bad = 1; bad <= 2; bad++) {   /* header, then first entry block */
+        mem_bad_lba = bad;
+        int rc = gpt_read(mem_read, NULL, 512, 16384, scratch, &d, p, 8);
+        mem_bad_lba = UINT64_MAX;
+        ASSERT_EQ(rc, 0);
+        ASSERT_EQ(d.backup_used, 1);
+        ASSERT_EQ(check_layout(&d, p, 512), 0);
+    }
+    mem_bad_lba = 0;   /* the MBR itself: the error, not "no table" */
+    ASSERT_EQ(gpt_read(mem_read, NULL, 512, 16384, scratch, &d, p, 8), -EIO);
+    mem_bad_lba = UINT64_MAX;
+    return 0;
+}
+
 TestCase gpt_tests[] = {
     TEST_ENTRY(gpt_guid_text),
     TEST_ENTRY(gpt_sgdisk_image),
@@ -179,6 +206,7 @@ TestCase gpt_tests[] = {
     TEST_ENTRY(gpt_no_table),
     TEST_ENTRY(gpt_max_parts_skips_the_rest),
     TEST_ENTRY(gpt_both_headers_bad),
+    TEST_ENTRY(gpt_primary_read_error_uses_backup),
 };
 
 int gpt_test_count = sizeof(gpt_tests) / sizeof(gpt_tests[0]);

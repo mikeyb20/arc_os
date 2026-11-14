@@ -2,8 +2,8 @@
  *
  * Owns: nothing; a pure parser over a read callback (see gpt.h).
  * Invariants: a header is used only if its signature, size, own CRC, own LBA,
- * ranges and entry-array CRC all check out; the primary first, else the
- * backup at the last block. Entries are read one block at a time and their
+ * ranges and entry-array CRC all check out; the primary first, else (bad or
+ * unreadable) the backup at the last block. Entries are read one block at a time and their
  * CRC is chained over the blocks, so nothing is allocated.
  * Locks: none. Cost: one read per header block and per entry block. */
 
@@ -215,7 +215,10 @@ int gpt_read(GptReadFn read, void *ctx, uint32_t lbs, uint64_t nr_lbas, void *sc
     if (!has_protective_mbr(buf)) return -ENOENT;
 
     rc = try_header(read, ctx, lbs, nr_lbas, 1, buf, disk, parts, max_parts);
-    if (rc != -EINVAL) return rc;
+    if (rc == 0) return 0;
+    /* Bad or unreadable primary (a bad sector at its header or entries): the
+     * backup, from a clean slate, since the primary may have filled some */
+    memset(disk, 0, sizeof(*disk));
     rc = try_header(read, ctx, lbs, nr_lbas, nr_lbas - 1, buf, disk, parts, max_parts);
     if (rc == 0) disk->backup_used = 1;
     return rc;

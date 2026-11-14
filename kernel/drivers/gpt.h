@@ -51,8 +51,10 @@ typedef int (*GptReadFn)(void *ctx, uint64_t lba, uint32_t count, void *buf);
 
 /* Read the GPT of a disk of nr_lbas logical blocks of lbs bytes (512 or
  * 4096). scratch holds 2 * lbs bytes. Fills disk and up to max_parts parts.
- * Returns 0, -ENOENT when there is no protective MBR (no GPT), -EINVAL when
- * both headers are bad, or the read callback's error. Reads O(entries)
+ * The backup is used when the primary header or its entries are bad or fail
+ * to read. Returns 0, -ENOENT when there is no protective MBR (no GPT), else
+ * the backup's failure: -EINVAL when it is bad too, or the read callback's
+ * error. Reads O(entries)
  * blocks, one at a time; allocates nothing. */
 int gpt_read(GptReadFn read, void *ctx, uint32_t lbs, uint64_t nr_lbas, void *scratch, GptDisk *disk, GptPart *parts,
              uint32_t max_parts);

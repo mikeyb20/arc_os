@@ -50,8 +50,10 @@ GPT partitions, and every later storage driver plugs into the same queue (ADR-00
   `include/arc_disk.h` holds the ADR-0018 GUIDs and labels plus the ESP type. virtio-blk: any number of disks,
   one chain per request (header, segments mapped with `dma_map_page`, status), one doorbell per batch,
   negotiates `SEG_MAX`, `BLK_SIZE`, `TOPOLOGY`, `FLUSH`, `RO`.
-- Contract (M1-12 swap): `end_io` runs exactly once per request, in interrupt context (or at once in the
-  submitter when the request fails its checks), with no block-layer lock held; then the request is freed. For
+- Contract (M1-12 swap): `end_io` runs exactly once per request, with no block-layer lock held; then the request
+  is freed. Usually in interrupt context, but synchronously in the calling thread for a request that fails its
+  checks, a dead disk (-EIO), a flush without a write cache (0), a `queue_rq` error, and while a thread polls
+  (boot `blk_rw_sync`) or runs `blk_expire`. So no spinlock may be held across a submit (list in `blkdev.h`). For
   per-page completion submit one request per page on a plug: adjacent ones still reach the disk as one device
   request, each keeping its own `end_io`. Told the M1-12 thread (its review found one cache page can need
   several reads: a per-page "pieces pending" counter on its side fits this).
@@ -64,18 +66,23 @@ GPT partitions, and every later storage driver plugs into the same queue (ADR-00
   tick through a new `hal_timer_set_tick_hook` until M1-06 replaces the tick (note added to M1-06). This also
   fixes M1-09's latent bug for virtio-blk (freeing DMA buffers the device may still write); virtio-net TX still
   has it (its owner is the network block).
+- Review fixes (D3): `blk_rw_sync` bounces a logical block that straddles two pages on a one-segment device
+  (virtio without `SEG_MAX`; `fat32_mount`'s stack buffer can straddle) instead of failing; segments must be
+  4-byte aligned (documented). GPT falls back to the backup on any primary failure, read errors included.
+  virtio-blk refuses a `BLK_SIZE` other than 512/4096. A probe that fails after its interrupts exist resets the
+  device and keeps its memory on purpose (a handler may still run; no wait until M4-02).
 - Locks: `BlkQueue.lock` level 85 (IRQ-safe) and the registry lock level 66; see docs/kernel/locking.md "Block
   layer locks".
-- Tests: host `gpt` (8: sgdisk image, broken primary header, broken primary entries, 4Kn, no GPT, too many
-  parts, both headers bad, GUID text) and `blkdev` (14, real blkdev.c over a fake driver and a page arena:
+- Tests: host `gpt` (9: sgdisk image, broken primary header, broken primary entries, 4Kn, no GPT, too many
+  parts, both headers bad, primary read errors, GUID text) and `blkdev` (15, real blkdev.c over a fake driver and a page arena:
   64 in flight with one doorbell, depth limit, merging within limits, pending-tail merge, BLK_BUSY requeue,
-  splitting of unaligned buffers, 4Kn cuts, refusals, flush without a cache, lost interrupt, hung device
+  splitting of unaligned buffers, one-segment bounces, 4Kn cuts, refusals, flush without a cache, lost interrupt, hung device
   reset, names). QEMU `qemu.devices` and `.intx`: the disk is now GPT (ESP with the FAT32 volume + "blktest"
   pattern partition); the kernel's `diag/blktest.c` logs `[BLKTEST]` lines (64 reads in flight, 8 merged into
   1, sync read across pages, write + flush + read back, refusals, dropped interrupt completed by the timeout
   poll), and the suite reads `/disk/hello.txt` from a program, which sleeps until the disk interrupt (MSI-X,
   and INTx in `.intx`). `qemu.vfs` still mounts a whole-disk FAT32 image.
-- Measured: kernel image 507074 bytes (limit 511000, unchanged). M1-12 measured 515584 on its own branch, so
+- Measured: kernel image 508109 bytes (limit 511000, unchanged). M1-12 measured 515584 on its own branch, so
   whichever of #42 and this block merges second raises the limit (measure, don't guess).
 - Not done / for later: no `/dev` nodes for disks (spec changed above). FAT32 on a 4Kn disk refuses to mount
   (`fat32.c` assumes 512-byte sectors; ESPs on 4Kn disks use 4096-byte FAT sectors): fix when a 4Kn machine

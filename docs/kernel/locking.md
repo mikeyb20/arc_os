@@ -145,10 +145,13 @@ the process list (the process row, M1-16); the tty line discipline (the TTY row)
   under it except the log (109): requests that finish go on the queue's done list, and their `end_io` callbacks
   run after the lock is dropped. So `end_io` may take wait-queue (80) and run-queue (90) locks, as a wakeup
   does, and the slab lock (100) when the request is freed after it.
-- `end_io` runs in interrupt context: no sleeping, no allocation, no sleeping lock. M1-12's page unlock is
-  allowed (it wakes the page's wait queue).
-- Callers may hold any sleeping lock across a submit (a page lock, FAT32's `io_lock` at 45) and spinlocks below
-  85, never a spinlock at 85 or above. `blk_rw_sync` sleeps, so it is called with no spinlock held.
+- `end_io` usually runs in interrupt context: no sleeping, no allocation, no sleeping lock. M1-12's page unlock
+  is allowed (it wakes the page's wait queue). It also runs synchronously in the submitting thread (failed
+  checks, a dead disk, a flush without a cache, a `queue_rq` error, the boot polling path, `blk_expire`); the
+  list is in `drivers/blkdev.h`.
+- Callers may hold any sleeping lock across a submit (a page lock, FAT32's `io_lock` at 45), but no spinlock:
+  a synchronous `end_io` takes wait-queue (80) and run-queue (90) locks, and the object locks (75–76) sit
+  below those. `blk_rw_sync` sleeps, so it is called with no spinlock held either.
 - Level 85 sits above everything a thread holds with interrupts on (the object locks, 75–76), because the
   disk's interrupt can arrive while such a lock is held on that CPU.
 

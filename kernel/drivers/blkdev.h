@@ -11,12 +11,25 @@
  * logical block size. A request carries pages, never copies: each segment is
  * (page, offset, length) inside one page block.
  *
+ * Alignment: every segment's offset and length are multiples of 4 bytes (the
+ * DMA rule of AHCI and NVMe PRPs); a request breaking it fails with -EINVAL.
+ *
  * Lifetime: a request belongs to the block layer from blk_submit (or
- * blk_plug_add) on. Its end_io runs exactly once, then the request is freed.
- * end_io runs in interrupt context (or in the submitter, for a request that
- * fails its checks): it must not sleep or allocate; it may wake waiters and
- * unlock pages. Filesystems and the page cache use these calls only; nothing
- * outside drivers calls a driver's functions directly. */
+ * blk_plug_add) on. Its end_io runs exactly once, with no block-layer lock
+ * held, then the request is freed. It usually runs in interrupt context, but
+ * synchronously in the calling thread when:
+ *   - the request fails its checks (blk_plug_add / blk_submit),
+ *   - the disk is dead after a timeout reset (-EIO, at flush),
+ *   - it is a flush and the disk has no volatile cache (0, at flush),
+ *   - the driver's queue_rq refuses it with an error (at flush, or in
+ *     whatever thread or interrupt ends another request and dispatches it),
+ *   - it ends while a thread polls (blk_rw_sync before the scheduler runs) or
+ *     on the timeout path (blk_expire).
+ * So end_io must not sleep or allocate (it may wake waiters and unlock
+ * pages), and a caller must not hold a spinlock across blk_submit,
+ * blk_plug_add, blk_plug_flush or blk_submit_page: end_io may take its own.
+ * Filesystems and the page cache use these calls only; nothing outside
+ * drivers calls a driver's functions directly. */
 
 #include <stddef.h>
 #include <stdint.h>
@@ -163,8 +176,9 @@ struct BlockDevice {
  * physical_block, max_segments, max_transfer, flags, ops, driver_data),
  * with depth requests in flight at most. Names it prefix + letter ("vd" ->
  * "vda") unless disk->name is already set, reads its GPT and registers the
- * partitions. Thread context; reads
- * the disk, polling if the scheduler can't sleep yet. Returns 0 or -errno. */
+ * partitions. Thread context; reads the disk, polling if the scheduler
+ * can't sleep yet. Returns 0 or -errno; on failure the disk keeps no queue
+ * and the driver resets its device. */
 int blk_disk_register(BlockDevice *disk, const char *prefix, uint32_t depth);
 
 /* Interrupt path: reap finished requests (ops->poll), start waiting ones and
@@ -214,9 +228,11 @@ void blk_plug_flush(BlkPlug *plug);
 int blk_submit_page(BlockDevice *dev, int op, uint64_t sector, struct page *pg, uint32_t offset, uint32_t len,
                     BlkEndIo end_io, void *priv);
 
-/* Synchronous I/O on a kernel buffer (any kernel address), split into
- * requests the device takes. Waits for all of them: sleeps, or before the
- * scheduler runs, polls the device. Thread context. Returns 0 or -errno. */
+/* Synchronous I/O on a kernel buffer (any kernel address, 4-byte aligned),
+ * split into requests the device takes. A logical block that straddles two
+ * pages on a device taking one segment per request goes through a bounce
+ * page. Waits for all of them: sleeps, or before the scheduler runs, polls
+ * the device. Thread context, no spinlock held. Returns 0 or -errno. */
 int blk_rw_sync(BlockDevice *dev, int op, uint64_t sector, void *buf, size_t bytes);
 
 /* --- Lookups (mount time; O(devices)) --- */

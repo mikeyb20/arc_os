@@ -187,15 +187,20 @@ static int vblk_setup_irqs(VirtioBlk *vb) {
 }
 
 /* Disk properties from the device config (after vblk_setup_irqs: MSI-X
- * moves the config). */
-static void vblk_read_config(VirtioBlk *vb, uint32_t features) {
+ * moves the config). Returns 0, or -EINVAL for a block size other than 512
+ * or 4096. */
+static int vblk_read_config(VirtioBlk *vb, uint32_t features) {
     VirtioDevice *v = &vb->vdev;
     BlockDevice *d = &vb->disk;
     uint16_t qsz = v->queues[0].size;
     d->nr_sectors = ((uint64_t)virtio_config_read32(v, VIRTIO_BLK_CFG_CAPACITY + 4) << 32) |
                     virtio_config_read32(v, VIRTIO_BLK_CFG_CAPACITY);
     uint32_t lbs = (features & VIRTIO_BLK_F_BLK_SIZE) ? virtio_config_read32(v, VIRTIO_BLK_CFG_BLK_SIZE) : 512;
-    d->logical_block = lbs == 4096 ? 4096 : 512;
+    if (lbs != 512 && lbs != 4096) {   /* reading it as 512 would address the wrong bytes */
+        kprintf("[VIRTIO-BLK] %s: %u-byte blocks not supported\n", v->pci->name, lbs);
+        return -EINVAL;
+    }
+    d->logical_block = lbs;
     uint8_t exp = (features & VIRTIO_BLK_F_TOPOLOGY) ? virtio_config_read8(v, VIRTIO_BLK_CFG_PHYS_EXP) : 0;
     d->physical_block = exp <= 3 ? d->logical_block << exp : d->logical_block;
     /* Without SEG_MAX the device takes one data segment per request */
@@ -207,6 +212,18 @@ static void vblk_read_config(VirtioBlk *vb, uint32_t features) {
     d->flags = ((features & VIRTIO_BLK_F_RO) ? BLK_RDONLY : 0) | ((features & VIRTIO_BLK_F_FLUSH) ? BLK_CACHE : 0);
     d->ops = &vblk_ops;
     d->driver_data = vb;
+    return 0;
+}
+
+/* A probe that fails once the device has interrupts: reset it (no more DMA or
+ * interrupts); the PCI bus frees the vectors after a failed probe. vb, its
+ * vring and DMA slots stay allocated on purpose: a handler already running
+ * on another CPU may still hold vb, and nothing can wait for it until
+ * hot-unplug (M4-02). Boot only, once per failed disk. */
+static int vblk_fail(VirtioBlk *vb, int rc) {
+    virtio_reset(&vb->vdev);
+    kprintf("[VIRTIO-BLK] %s: probe failed (%d); device reset\n", vb->vdev.pci->name, rc);
+    return rc;
 }
 
 static int vblk_probe(PciDevice *pci, const PciDeviceId *id) {
@@ -239,12 +256,17 @@ static int vblk_probe(PciDevice *pci, const PciDeviceId *id) {
     }
 
     int rc = vblk_setup_irqs(vb);
-    if (rc != 0) return rc;
-    vblk_read_config(vb, features);
+    if (rc == 0) rc = vblk_read_config(vb, features);
+    if (rc != 0) return vblk_fail(vb, rc);
     kprintf("[VIRTIO-BLK] %s: %s, features 0x%x\n", pci->name, vb->vdev.msix ? "MSI-X" : "INTx", features);
     virtio_device_ready(&vb->vdev);
     dev->driver_data = vb;
-    return blk_disk_register(&vb->disk, "vd", depth);
+    rc = blk_disk_register(&vb->disk, "vd", depth);
+    if (rc != 0) {
+        dev->driver_data = NULL;
+        return vblk_fail(vb, rc);
+    }
+    return 0;
 }
 
 /* ADR-0017: the hooks exist; power management of the disk comes later. */

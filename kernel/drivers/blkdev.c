@@ -24,6 +24,7 @@
 #include "mm/kmalloc.h"
 #include "mm/page.h"
 #include "mm/vmm.h"
+#include "mm/pmm.h"
 #include "proc/semaphore.h"
 #include "proc/sched.h"
 #include "arch/hal.h"
@@ -448,7 +449,8 @@ static struct page *kva_page(uintptr_t va) {
 
 /* Fill rq with up to the device's limits from buf + pos (bytes left: left).
  * Cuts the request to whole logical blocks unless it ends the buffer.
- * Returns the bytes taken, or -errno. */
+ * Returns the bytes taken, 0 when not even one block fits (a block straddles
+ * pages and the device takes one segment: the caller bounces it), or -errno. */
 static int64_t fill_request(BlkRequest *rq, uintptr_t va, uint64_t left) {
     BlockDevice *disk = rq->disk->disk;
     uint32_t max_segs = disk->max_segments < BLK_RQ_SEGS ? disk->max_segments : BLK_RQ_SEGS;
@@ -475,10 +477,27 @@ static int64_t fill_request(BlkRequest *rq, uintptr_t va, uint64_t left) {
         extra -= cut;
         if (s->len == 0) rq->nsegs--;
     }
-    return taken > 0 ? (int64_t)taken : -EINVAL;
+    return (int64_t)taken;
+}
+
+/* One logical block (len bytes) at va through a page of its own: for a block
+ * that straddles pages on a one-segment device. Thread context. */
+static int bounce_block(BlockDevice *dev, int op, uint64_t sector, uint8_t *va, uint32_t len) {
+    struct page *pg = alloc_pages(0, 0);
+    if (pg == NULL) return -ENOMEM;
+    uint8_t *b = page_to_virt(pg);
+    if (op == BLK_OP_WRITE) memcpy(b, va, len);
+    int rc = blk_rw_sync(dev, op, sector, b, len);   /* page-aligned: one segment */
+    if (rc == 0 && op == BLK_OP_READ) memcpy(va, b, len);
+    free_pages(pg, 0);
+    return rc;
 }
 
 int blk_rw_sync(BlockDevice *dev, int op, uint64_t sector, void *buf, size_t bytes) {
+    if (op == BLK_OP_FLUSH)
+        bytes = 0;   /* no data, one request */
+    else if (bytes == 0)
+        return -EINVAL;
     SyncWait w;
     sem_init(&w.done, 0);
     w.status = 0;
@@ -495,10 +514,18 @@ int blk_rw_sync(BlockDevice *dev, int op, uint64_t sector, void *buf, size_t byt
         }
         if (op != BLK_OP_FLUSH) {
             int64_t n = fill_request(rq, (uintptr_t)buf + pos, bytes - pos);
-            if (n < 0) {
+            if (n <= 0) {
                 blk_rq_free(rq);
-                rc = (int)n;
-                break;
+                if (n < 0) {
+                    rc = (int)n;
+                    break;
+                }
+                uint32_t lbs = dev->disk->logical_block;
+                uint32_t len = bytes - pos < lbs ? (uint32_t)(bytes - pos) : lbs;
+                rc = bounce_block(dev, op, sector + (pos >> BLK_SECTOR_SHIFT), (uint8_t *)buf + pos, len);
+                if (rc != 0) break;
+                pos += len;
+                continue;
             }
             pos += (uint64_t)n;
         }
@@ -635,7 +662,14 @@ int blk_disk_register(BlockDevice *disk, const char *prefix, uint32_t depth) {
         ksnprintf(disk->name, sizeof(disk->name), "%s%c", prefix, (char)('a' + same % 26));
     }
     rc = registry_add(disk);
-    if (rc != 0) return rc;
+    if (rc != 0) {   /* nothing was submitted, so no interrupt can reach the queue */
+        BlkQueue *q = disk->queue;
+        disk->queue = NULL;
+        kfree(q->tags);
+        kfree(q->free_tags);
+        kfree(q);
+        return rc;
+    }
     kprintf("[BLK] %s: %lu sectors (%lu MiB), %u/%u-byte blocks, depth %u, %u segments, %u KiB per request%s%s\n",
             disk->name, disk->nr_sectors, disk->nr_sectors >> 11, disk->logical_block, disk->physical_block,
             disk->queue->depth, disk->max_segments, disk->max_transfer >> 10,
