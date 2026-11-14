@@ -119,8 +119,9 @@ void wb_page_write_begin(void);
 void wb_page_write_end(int err);
 
 /* A write of as failed (err) or worked (0); with an error, returns 1 while
- * the page should stay dirty for another try, 0 once as has failed for
- * WB_GIVE_UP_MS (the page is dropped clean, the error kept for fsync).
+ * the page should stay dirty for another try, 0 once as has failed with
+ * -EIO for WB_GIVE_UP_MS (the page is dropped clean, the error kept for
+ * fsync). Other errors (-ENOMEM) never start the clock or drop data.
  * Page locked. */
 int wb_write_result(AddressSpace *as, int err);
 

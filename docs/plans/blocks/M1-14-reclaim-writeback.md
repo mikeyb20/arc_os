@@ -98,7 +98,11 @@ reach the disk without periodic polling (ADR-0004, ADR-0016, ADR-0017).
   mapping lock), so a write path that adds one must count. ETXTBSY (writing a running program's file) still has
   no owner. Also from the D3 review (below): ext2's `fsync` must end with `BLK_OP_FLUSH` on its device and
   report the mapping's kept error; its `writepage` must not wait for the inode lock (a writer over the dirty
-  limit holds it while it waits for write-back).
+  limit holds it while it waits for write-back), and should return `-EIO` only for a failed disk write (that
+  starts the 30 s give-up clock). Re-check LOWs: `filemap_write_range` waits on any locked page, clean ones
+  too, so a thread throttled in direct reclaim while holding its readahead batch can stall a flusher pass on
+  that mapping for about 300 ms (fix: a `PG_WRITEBACK`-style bit, wait only on that); sync could flush only
+  disks written since their last flush.
 - **D3 review fixes (#47).**
   - *Private copies survive reclaim (was HIGH).* `filemap_unmap_page` zapped the entry at the page's index in
     every VMA, and in a written `MAP_PRIVATE` VMA that entry is the process's own copy. Now it takes an entry out
@@ -122,7 +126,8 @@ reach the disk without periodic polling (ADR-0004, ADR-0016, ADR-0017).
   - *Failing writes stop.* A failed page stays dirty and is retried; once a mapping's writes have failed for
     `WB_GIVE_UP_MS` (30 s) with none getting through, failed pages are dropped clean, one `[WB]` log line says so,
     the error is kept in `as->wb_err` for the next `fsync`, and the flusher stops waking for them. A write that
-    works resets the clock. Linux drops a failed page at once; 30 s rides out a short glitch.
+    works resets the clock. Only `-EIO` counts: `-ENOMEM` from a `writepage` never drops data. Linux drops a
+    failed page at once; 30 s rides out a short glitch.
   - *kswapd's gate.* A page losing its last mapping bumps `lru_gen` while kswapd sleeps after a failed run
     (`reclaim_note_freeable`), so it tries again.
   - /proc/vmstat: `wb_dirty_for_disks`, `wb_throttled`, `wb_dropped`, `wb_device_flushes`. qemu.writeback adds a

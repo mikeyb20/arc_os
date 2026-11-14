@@ -27,6 +27,7 @@
 #define MF_LIST  64    /* pages the aging tests put on the lists (two batches) */
 static uint8_t mf_disk[MF_PAGES * PAGE_SIZE];
 static int mf_reads, mf_writes, mf_write_fail;
+static int mf_write_err = -EIO;   /* what a failing write returns */
 
 static int mf_readpage(AddressSpace *as, struct page *pg) {
     (void)as;
@@ -38,7 +39,7 @@ static int mf_readpage(AddressSpace *as, struct page *pg) {
 
 static int mf_writepage(AddressSpace *as, struct page *pg) {
     (void)as;
-    if (mf_write_fail) return -EIO;
+    if (mf_write_fail) return mf_write_err;
     memcpy(mf_disk + (size_t)pg->index * PAGE_SIZE, page_to_virt(pg), PAGE_SIZE);
     mf_writes++;
     return 0;
@@ -741,6 +742,13 @@ TEST(write_back_gives_up_after_failing_for_a_while) {
     ASSERT_TRUE(as != NULL);
     mf_write_fail = 1;
     ASSERT_EQ(mf_dirty(as, 0, 0x77), 0);
+    mf_write_err = -ENOMEM;   /* not the disk: never given up, however long */
+    wb_sync_all();
+    vfs_env_uptime_ms += WB_GIVE_UP_MS * 2;
+    wb_sync_all();
+    ASSERT_TRUE(page_test(mf_cached(as, 0), PG_DIRTY));
+    ASSERT_EQ(as->wb_fail_since, 0);
+    mf_write_err = -EIO;
     wb_sync_all();   /* fails: dirty again, listed again */
     ASSERT_TRUE(page_test(mf_cached(as, 0), PG_DIRTY));
     ASSERT_EQ(as->wb_state, WB_LISTED);

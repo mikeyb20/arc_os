@@ -33,6 +33,7 @@
 #include "arch/hal.h"
 #include "drivers/blkdev.h"
 #include "lib/kprintf.h"
+#include "uapi/errno.h"
 
 static WbStats stats;
 
@@ -90,6 +91,7 @@ int wb_write_result(AddressSpace *as, int err) {
             __atomic_store_n(&as->wb_fail_since, 0, __ATOMIC_RELAXED);
         return 0;
     }
+    if (err != -EIO) return 1;   /* no memory and the like: not the disk failing, so no clock and no loss */
     uint64_t now = hal_timer_uptime_ms();
     uint64_t since = 0;
     if (__atomic_compare_exchange_n(&as->wb_fail_since, &since, now != 0 ? now : 1, 0, __ATOMIC_RELAXED,
