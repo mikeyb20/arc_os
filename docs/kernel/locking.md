@@ -29,10 +29,12 @@ of that level (a lock without a subkey counts as 0). Give every lock of a nestab
 | 63 | `LOCK_LEVEL_DCACHE` | spinlock | the dentry cache: hash chains, LRU list, count | M1-11 |
 | 64 | `LOCK_LEVEL_ICACHE` | spinlock | the inode cache: hash chains; a hashed inode's count goes 1 → 0 only under it | M1-11 |
 | 65 | `LOCK_LEVEL_FD_TABLE` | spinlock | one fd table's slots and bitmaps | M1-11 |
+| 66 | `LOCK_LEVEL_BLK_REGISTRY` | spinlock | adding a disk or partition to the block-device registry (lookups take no lock: entries are published, never removed) | M1-10 |
 | 70 | `LOCK_LEVEL_SIGNAL` | spinlock | thread-group and signal lock | M1-16 |
 | 75 | `LOCK_LEVEL_OBJECT` | spinlock | one object's state, the lock handed to `wq_sleep`: pipe, socket, tty, wait4, mutex and semaphore guards | M1-05 |
 | 76 | `LOCK_LEVEL_OBJECT_TABLE` | spinlock | a table looked up under an object lock: the socket table | M1-05 |
 | 80 | `LOCK_LEVEL_WAITQUEUE` | spinlock | wait-queue locks | M1-05 |
+| 85 | `LOCK_LEVEL_BLK_QUEUE` | spinlock, IRQ-safe | one disk's request queue (`BlkQueue.lock`): pending and flight lists, tags, every `BlockOps` call; taken in the disk's interrupt and by the timeout tick | M1-10 |
 | 90 | `LOCK_LEVEL_RUNQUEUE` | spinlock, interrupts off | per-CPU run queues; two at once only in CPU-index order (subkey = index + 1) | M1-05 |
 | 95 | `LOCK_LEVEL_IRQ_DESC` | spinlock, IRQ-safe | interrupt descriptors: request, free, affinity, INTx line chains, `/proc/interrupts` (`drivers/irq.c`); never taken in an interrupt | M1-09 |
 | 96 | `LOCK_LEVEL_IRQ_VECTOR` | spinlock, IRQ-safe | per-CPU device vector tables (`arch/x86_64/irq_vector.c`), under the descriptor lock; never taken in an interrupt | M1-09 |
@@ -134,6 +136,21 @@ the process list (the process row, M1-16); the tty line discipline (the TTY row)
   release may free the pipe).
 - Directory changes re-check `I_DEAD` under the parent's lock (create, mkdir, rename's target), since the
   directory may be removed between resolving and locking it.
+
+## Block layer locks (M1-10)
+
+- `BlkQueue.lock` (85) is the only lock of the I/O path. Submit, the disk's interrupt (`blk_complete`) and the
+  timeout check (`blk_expire`, from the timer tick) take it with interrupts off; the driver's `queue_rq`, `kick`,
+  `poll` and `reset` run under it, so a driver needs no lock of its own for its ring. Nothing else is taken
+  under it except the log (109): requests that finish go on the queue's done list, and their `end_io` callbacks
+  run after the lock is dropped. So `end_io` may take wait-queue (80) and run-queue (90) locks, as a wakeup
+  does, and the slab lock (100) when the request is freed after it.
+- `end_io` runs in interrupt context: no sleeping, no allocation, no sleeping lock. M1-12's page unlock is
+  allowed (it wakes the page's wait queue).
+- Callers may hold any sleeping lock across a submit (a page lock, FAT32's `io_lock` at 45) and spinlocks below
+  85, never a spinlock at 85 or above. `blk_rw_sync` sleeps, so it is called with no spinlock held.
+- Level 85 sits above everything a thread holds with interrupts on (the object locks, 75–76), because the
+  disk's interrupt can arrive while such a lock is held on that CPU.
 
 ## Address-space locks (M1-07)
 

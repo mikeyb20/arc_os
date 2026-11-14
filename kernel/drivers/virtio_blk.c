@@ -1,15 +1,16 @@
-/* arc_os — virtio-blk driver (legacy virtio-PCI)
+/* arc_os — virtio-blk driver (legacy virtio-PCI) on the block layer (M1-10)
  *
- * Owns: one virtio block device (the first one found), its request queue and
- * its block-device registration.
- * Invariants: requests are synchronous: one in flight, polled to completion
- * (M1-10 makes them asynchronous with interrupt completion). The queue's
- * MSI-X vector is set up and counted now; its handler has nothing to finish
- * yet.
- * Locks: none of its own; callers are serialized by the big kernel lock
- * (syscalls) or run at boot. The interrupt handlers touch no driver state.
- * Cost: one request = two coherent DMA allocations + one copy (M1-10 drops
- * both). */
+ * Owns: per bound device, its request queue (vring 0), a coherent page of
+ * per-tag request headers and status bytes, and the map from descriptor chain
+ * head to request.
+ * Invariants: every chain is header, the request's segments (dma_map_page),
+ * status; by_head[head] is set exactly while the device owns that chain. A
+ * reset device is dead: it never sees another request.
+ * Locks: none of its own. Every BlockOps call runs under the block queue lock
+ * (IRQ-safe), which also serializes the vring; the interrupt handlers only
+ * call blk_complete.
+ * Cost: one request = 2 + segments descriptors, no allocation and no copy;
+ * one doorbell per batch. */
 
 #include "drivers/virtio_blk.h"
 #include "drivers/blkdev.h"
@@ -17,51 +18,165 @@
 #include "drivers/pci.h"
 #include "drivers/irq.h"
 #include "drivers/dma.h"
-#include "arch/hal.h"
-#include "mm/pmm.h"
-#include "lib/mem.h"
+#include "mm/kmalloc.h"
+#include "mm/page.h"
 #include "lib/kprintf.h"
 #include "uapi/errno.h"
 
-/* Sector size in bytes */
-#define SECTOR_SIZE 512
+#define VBLK_MAX_TRANSFER (1024 * 1024)
 
-/* Polling timeout: max spins before giving up */
-#define POLL_TIMEOUT 10000000
+/* Per-tag DMA area: header the device reads, status byte it writes */
+typedef struct {
+    VirtioBlkReqHeader hdr;
+    uint8_t status;
+    uint8_t pad[15];
+} VblkSlot;
 
-static VirtioDevice blk_vdev;
-static uint64_t blk_capacity;  /* in 512-byte sectors */
-static int blk_initialized;
+_Static_assert(sizeof(VblkSlot) == 32, "virtio-blk slot is 32 bytes");
 
-static void virtio_blk_register_blkdev(void);
+typedef struct {
+    VirtioDevice vdev;
+    BlockDevice disk;
+    VblkSlot *slots;
+    uint64_t slots_bus;
+    BlkRequest **by_head;   /* vring size entries */
+} VirtioBlk;
 
-/* Queue vector (MSI-X): completions are still polled, so only count it. */
-static int blk_queue_irq(void *arg) {
-    (void)arg;
+static int dma_dir(const BlkRequest *rq) {
+    return rq->op == BLK_OP_READ ? DMA_FROM_DEVICE : DMA_TO_DEVICE;
+}
+
+/* Unmap the data descriptors of the chain at head and free it. The chain
+ * is complete (ends with the status descriptor) or, when building it failed,
+ * ends with the last data descriptor. */
+static void release_chain(VirtioBlk *vb, uint16_t head, const BlkRequest *rq, int complete) {
+    Virtqueue *vq = &vb->vdev.queues[0];
+    Device *dev = &vb->vdev.pci->dev;
+    for (uint16_t d = vq->desc[head].next; d != VRING_DESC_NONE; d = vq->desc[d].next) {
+        if (complete && vq->desc[d].next == VRING_DESC_NONE) break;   /* the status byte */
+        dma_unmap(dev, vq->desc[d].addr, vq->desc[d].len, dma_dir(rq));
+    }
+    virtq_free_chain(vq, head);
+}
+
+static uint16_t add_desc(Virtqueue *vq, uint16_t prev, uint64_t addr, uint32_t len, uint16_t flags) {
+    uint16_t d = virtq_alloc_desc(vq);   /* enough are free: checked by the caller */
+    vq->desc[d].addr = addr;
+    vq->desc[d].len = len;
+    vq->desc[d].flags = flags;
+    vq->desc[d].next = VRING_DESC_NONE;
+    if (prev != VRING_DESC_NONE) {
+        vq->desc[prev].flags |= VRING_DESC_F_NEXT;
+        vq->desc[prev].next = d;
+    }
+    return d;
+}
+
+static int vblk_queue_rq(BlockDevice *disk, BlkRequest *rq) {
+    VirtioBlk *vb = disk->driver_data;
+    Virtqueue *vq = &vb->vdev.queues[0];
+    if (vq->num_free < (uint32_t)rq->total_segs + 2) return BLK_BUSY;
+
+    VblkSlot *s = &vb->slots[rq->tag];
+    uint64_t slot_bus = vb->slots_bus + (uint64_t)rq->tag * sizeof(VblkSlot);
+    s->hdr.type = rq->op == BLK_OP_READ    ? VIRTIO_BLK_T_IN
+                  : rq->op == BLK_OP_WRITE ? VIRTIO_BLK_T_OUT
+                                           : VIRTIO_BLK_T_FLUSH;
+    s->hdr.reserved = 0;
+    s->hdr.sector = rq->op == BLK_OP_FLUSH ? 0 : rq->sector;
+    s->status = VIRTIO_BLK_STATUS_INIT;
+
+    uint16_t head = add_desc(vq, VRING_DESC_NONE, slot_bus, sizeof(VirtioBlkReqHeader), 0);
+    uint16_t prev = head;
+    uint16_t data_flags = rq->op == BLK_OP_READ ? VRING_DESC_F_WRITE : 0;
+    BlkRequest *r;
+    uint32_t i;
+    blk_rq_for_each_seg(rq, r, i) {
+        const BlkSeg *seg = &r->seg[i];
+        uint64_t bus = dma_map_page(&vb->vdev.pci->dev, seg->page, seg->offset, seg->len, dma_dir(rq));
+        if (bus == DMA_MAPPING_ERROR) {
+            release_chain(vb, head, rq, 0);
+            return -EIO;
+        }
+        prev = add_desc(vq, prev, bus, seg->len, data_flags);
+    }
+    add_desc(vq, prev, slot_bus + offsetof(VblkSlot, status), 1, VRING_DESC_F_WRITE);
+    vb->by_head[head] = rq;
+    virtq_add_avail(vq, head);
+    return 0;
+}
+
+static void vblk_kick(BlockDevice *disk) {
+    VirtioBlk *vb = disk->driver_data;
+    virtio_notify(&vb->vdev, 0);
+}
+
+static void vblk_poll(BlockDevice *disk) {
+    VirtioBlk *vb = disk->driver_data;
+    Virtqueue *vq = &vb->vdev.queues[0];
+    while (virtq_has_used(vq)) {
+        uint16_t head = virtq_pop_used(vq, NULL);
+        BlkRequest *rq = head < vq->size ? vb->by_head[head] : NULL;
+        if (rq == NULL) continue;   /* not ours (a device bug): ignore it */
+        vb->by_head[head] = NULL;
+        uint8_t st = vb->slots[rq->tag].status;
+        release_chain(vb, head, rq, 1);
+        blk_rq_done(rq, st == VIRTIO_BLK_S_OK ? 0 : st == VIRTIO_BLK_S_UNSUPP ? -EOPNOTSUPP : -EIO);
+    }
+}
+
+/* Timed out: stop the device, then drop every chain it had (the block layer
+ * fails the requests). */
+static void vblk_reset(BlockDevice *disk) {
+    VirtioBlk *vb = disk->driver_data;
+    Virtqueue *vq = &vb->vdev.queues[0];
+    virtio_reset(&vb->vdev);
+    for (uint16_t h = 0; h < vq->size; h++) {
+        if (vb->by_head[h] == NULL) continue;
+        release_chain(vb, h, vb->by_head[h], 1);
+        vb->by_head[h] = NULL;
+    }
+}
+
+static const BlockOps vblk_ops = {
+    .queue_rq = vblk_queue_rq,
+    .kick = vblk_kick,
+    .poll = vblk_poll,
+    .reset = vblk_reset,
+};
+
+/* Queue vector (MSI-X): requests finished */
+static int vblk_queue_irq(void *arg) {
+    VirtioBlk *vb = arg;
+    if (vb->disk.queue != NULL) blk_complete(&vb->disk);
     return IRQ_HANDLED;
 }
 
 /* Config-change vector (MSI-X): capacity changes are not handled yet. */
-static int blk_config_irq(void *arg) {
+static int vblk_config_irq(void *arg) {
     (void)arg;
     return IRQ_HANDLED;
 }
 
 /* INTx (shared line): reading the ISR status acknowledges the device. */
-static int blk_intx_irq(void *arg) {
-    return virtio_isr_status(arg) != 0 ? IRQ_HANDLED : IRQ_NONE;
+static int vblk_intx_irq(void *arg) {
+    VirtioBlk *vb = arg;
+    uint8_t isr = virtio_isr_status(&vb->vdev);
+    if ((isr & VIRTIO_ISR_QUEUE) && vb->disk.queue != NULL) blk_complete(&vb->disk);
+    return isr != 0 ? IRQ_HANDLED : IRQ_NONE;
 }
 
 /* MSI-X entry 0 = config changes, entry 1 = request queue (with a single
  * vector the queue takes entry 0); INTx = one shared handler. */
-static int blk_setup_irqs(VirtioDevice *v) {
+static int vblk_setup_irqs(VirtioBlk *vb) {
+    VirtioDevice *v = &vb->vdev;
     Device *dev = &v->pci->dev;
     int n = virtio_setup_irqs(v, 2);
     if (n < 0) return n;
-    if (!v->msix) return irq_request(dev, 0, blk_intx_irq, v, IRQF_SHARED, "virtio-blk");
+    if (!v->msix) return irq_request(dev, 0, vblk_intx_irq, vb, IRQF_SHARED, "virtio-blk");
     uint16_t qvec = n >= 2 ? 1 : 0;
-    int rc = irq_request(dev, qvec, blk_queue_irq, v, 0, "virtio-blk-queue");
-    if (rc == 0 && n >= 2) rc = irq_request(dev, 0, blk_config_irq, v, 0, "virtio-blk-config");
+    int rc = irq_request(dev, qvec, vblk_queue_irq, vb, 0, "virtio-blk-queue");
+    if (rc == 0 && n >= 2) rc = irq_request(dev, 0, vblk_config_irq, vb, 0, "virtio-blk-config");
     if (rc != 0) return rc;
     if (virtio_set_queue_vector(v, 0, qvec) != 0 ||
         virtio_set_config_vector(v, n >= 2 ? 0 : VIRTIO_MSI_NO_VECTOR) != 0) {
@@ -71,48 +186,75 @@ static int blk_setup_irqs(VirtioDevice *v) {
     return 0;
 }
 
-static int virtio_blk_probe(PciDevice *pci, const PciDeviceId *id) {
+/* Disk properties from the device config (after vblk_setup_irqs: MSI-X
+ * moves the config). */
+static void vblk_read_config(VirtioBlk *vb, uint32_t features) {
+    VirtioDevice *v = &vb->vdev;
+    BlockDevice *d = &vb->disk;
+    uint16_t qsz = v->queues[0].size;
+    d->nr_sectors = ((uint64_t)virtio_config_read32(v, VIRTIO_BLK_CFG_CAPACITY + 4) << 32) |
+                    virtio_config_read32(v, VIRTIO_BLK_CFG_CAPACITY);
+    uint32_t lbs = (features & VIRTIO_BLK_F_BLK_SIZE) ? virtio_config_read32(v, VIRTIO_BLK_CFG_BLK_SIZE) : 512;
+    d->logical_block = lbs == 4096 ? 4096 : 512;
+    uint8_t exp = (features & VIRTIO_BLK_F_TOPOLOGY) ? virtio_config_read8(v, VIRTIO_BLK_CFG_PHYS_EXP) : 0;
+    d->physical_block = exp <= 3 ? d->logical_block << exp : d->logical_block;
+    /* Without SEG_MAX the device takes one data segment per request */
+    uint32_t segs = (features & VIRTIO_BLK_F_SEG_MAX) ? virtio_config_read32(v, VIRTIO_BLK_CFG_SEG_MAX) : 1;
+    if (segs == 0) segs = 1;
+    if (segs > (uint32_t)qsz - 2) segs = qsz - 2;
+    d->max_segments = segs;
+    d->max_transfer = VBLK_MAX_TRANSFER;
+    d->flags = ((features & VIRTIO_BLK_F_RO) ? BLK_RDONLY : 0) | ((features & VIRTIO_BLK_F_FLUSH) ? BLK_CACHE : 0);
+    d->ops = &vblk_ops;
+    d->driver_data = vb;
+}
+
+static int vblk_probe(PciDevice *pci, const PciDeviceId *id) {
     (void)id;
-    if (blk_initialized) return -EBUSY;   /* one virtio disk for now */
+    Device *dev = &pci->dev;
+    VirtioBlk *vb = kmalloc(sizeof(VirtioBlk), GFP_ZERO);
+    if (vb == NULL) return -ENOMEM;
+    if (virtio_init_device(&vb->vdev, pci) != 0) {
+        kfree(vb);
+        return -ENODEV;
+    }
 
-    if (virtio_init_device(&blk_vdev, pci) != 0) return -ENODEV;
+    uint32_t want =
+        VIRTIO_BLK_F_SEG_MAX | VIRTIO_BLK_F_RO | VIRTIO_BLK_F_BLK_SIZE | VIRTIO_BLK_F_FLUSH | VIRTIO_BLK_F_TOPOLOGY;
+    uint32_t features = virtio_negotiate_features(&vb->vdev, want);
+    uint16_t qsz = 0;
+    uint32_t depth = 0;
+    if (virtio_init_queue(&vb->vdev, 0) == 0) {   /* (a vring is not freed on failure: boot only) */
+        qsz = vb->vdev.queues[0].size;
+        depth = qsz < BLK_MAX_DEPTH ? qsz : BLK_MAX_DEPTH;
+        vb->by_head = kmalloc(qsz * sizeof(BlkRequest *), GFP_ZERO);
+        vb->slots = dma_alloc_coherent(dev, depth * sizeof(VblkSlot), &vb->slots_bus, 0);
+    }
+    if (vb->by_head == NULL || vb->slots == NULL || qsz < 3) {
+        virtio_reset(&vb->vdev);
+        if (vb->slots != NULL) dma_free_coherent(dev, depth * sizeof(VblkSlot), vb->slots, vb->slots_bus);
+        kfree(vb->by_head);
+        kfree(vb);
+        return -ENOMEM;
+    }
 
-    /* Negotiate features — we don't need any optional features for basic I/O */
-    virtio_negotiate_features(&blk_vdev, 0);
-
-    /* Initialize request queue (queue 0) */
-    if (virtio_init_queue(&blk_vdev, 0) != 0) return -ENOMEM;
-
-    int rc = blk_setup_irqs(&blk_vdev);
+    int rc = vblk_setup_irqs(vb);
     if (rc != 0) return rc;
-
-    /* Capacity: 64 bits at the start of the device config (moved by MSI-X) */
-    uint32_t cap_lo = virtio_config_read32(&blk_vdev, 0);
-    uint32_t cap_hi = virtio_config_read32(&blk_vdev, 4);
-    blk_capacity = ((uint64_t)cap_hi << 32) | cap_lo;
-
-    kprintf("[VIRTIO-BLK] Capacity: %lu sectors (%lu MB), %s\n", blk_capacity,
-            (blk_capacity * SECTOR_SIZE) / (1024 * 1024), blk_vdev.msix ? "MSI-X" : "INTx");
-
-    /* Mark device ready */
-    virtio_device_ready(&blk_vdev);
-
-    blk_initialized = 1;
-    pci->dev.driver_data = &blk_vdev;
-
-    /* Register as a generic block device */
-    virtio_blk_register_blkdev();
-    return 0;
+    vblk_read_config(vb, features);
+    kprintf("[VIRTIO-BLK] %s: %s, features 0x%x\n", pci->name, vb->vdev.msix ? "MSI-X" : "INTx", features);
+    virtio_device_ready(&vb->vdev);
+    dev->driver_data = vb;
+    return blk_disk_register(&vb->disk, "vd", depth);
 }
 
 /* ADR-0017: the hooks exist; power management of the disk comes later. */
-static int virtio_blk_suspend(Device *dev, int how) {
+static int vblk_suspend(Device *dev, int how) {
     (void)how;
     kprintf("[VIRTIO-BLK] %s: suspend not supported yet\n", dev->name);
     return -EOPNOTSUPP;
 }
 
-static int virtio_blk_resume(Device *dev, int how) {
+static int vblk_resume(Device *dev, int how) {
     (void)how;
     kprintf("[VIRTIO-BLK] %s: resume not supported yet\n", dev->name);
     return -EOPNOTSUPP;
@@ -124,180 +266,11 @@ static const PciDeviceId virtio_blk_ids[] = {
 };
 
 static PciDriver virtio_blk_driver = {
-    .driver = {.name = "virtio-blk", .suspend = virtio_blk_suspend, .resume = virtio_blk_resume},
+    .driver = {.name = "virtio-blk", .suspend = vblk_suspend, .resume = vblk_resume},
     .ids = virtio_blk_ids,
-    .probe = virtio_blk_probe,
+    .probe = vblk_probe,
 };
 
 int virtio_blk_register(void) {
     return pci_register_driver(&virtio_blk_driver);
-}
-
-/* Build a 3-descriptor chain for a VirtIO-blk request.
- * data_flags controls the data descriptor direction (WRITE|NEXT for reads, NEXT for writes).
- * Returns the head descriptor index, or VRING_DESC_NONE on failure. */
-static uint16_t blk_build_chain(Virtqueue *vq, uint64_t req_phys,
-                                 uint64_t data_phys, uint32_t data_bytes,
-                                 uint64_t status_phys, uint16_t data_flags) {
-    uint16_t desc_hdr  = virtq_alloc_desc(vq);
-    uint16_t desc_data = virtq_alloc_desc(vq);
-    uint16_t desc_stat = virtq_alloc_desc(vq);
-    if (desc_hdr == VRING_DESC_NONE || desc_data == VRING_DESC_NONE || desc_stat == VRING_DESC_NONE) {
-        uint16_t descs[] = { desc_hdr, desc_data, desc_stat };
-        for (int i = 0; i < 3; i++) {
-            if (descs[i] != VRING_DESC_NONE) virtq_free_chain(vq, descs[i]);
-        }
-        return VRING_DESC_NONE;
-    }
-
-    /* Descriptor 0: request header (device-readable) */
-    vq->desc[desc_hdr].addr  = req_phys;
-    vq->desc[desc_hdr].len   = sizeof(VirtioBlkReqHeader);
-    vq->desc[desc_hdr].flags = VRING_DESC_F_NEXT;
-    vq->desc[desc_hdr].next  = desc_data;
-
-    /* Descriptor 1: data buffer */
-    vq->desc[desc_data].addr  = data_phys;
-    vq->desc[desc_data].len   = data_bytes;
-    vq->desc[desc_data].flags = data_flags;
-    vq->desc[desc_data].next  = desc_stat;
-
-    /* Descriptor 2: status byte (device-writable) */
-    vq->desc[desc_stat].addr  = status_phys;
-    vq->desc[desc_stat].len   = 1;
-    vq->desc[desc_stat].flags = VRING_DESC_F_WRITE;
-    vq->desc[desc_stat].next  = VRING_DESC_NONE;
-
-    return desc_hdr;
-}
-
-/* Internal transfer helper for both reads and writes. */
-static int blk_transfer(uint64_t sector, uint32_t count, void *buf, int is_write) {
-    if (!blk_initialized) return -1;
-    if (count == 0) return 0;
-    if (sector + count > blk_capacity) return -1;
-
-    const char *op = is_write ? "Write" : "Read";
-    Virtqueue *vq = &blk_vdev.queues[0];
-    Device *dev = &blk_vdev.pci->dev;
-    uint32_t data_bytes = count * SECTOR_SIZE;
-
-    /* Request page (header + status) and data buffer: coherent DMA memory */
-    uint64_t req_phys, data_phys;
-    uint8_t *req = dma_alloc_coherent(dev, PAGE_SIZE, &req_phys, 0);
-    if (req == NULL) {
-        kprintf("[VIRTIO-BLK] Failed to alloc request page\n");
-        return -1;
-    }
-    uint8_t *data = dma_alloc_coherent(dev, data_bytes, &data_phys, 0);
-    if (data == NULL) {
-        kprintf("[VIRTIO-BLK] Failed to alloc %u data bytes\n", data_bytes);
-        dma_free_coherent(dev, PAGE_SIZE, req, req_phys);
-        return -1;
-    }
-
-    /* Set up request header */
-    VirtioBlkReqHeader *hdr = (VirtioBlkReqHeader *)req;
-    hdr->type = is_write ? VIRTIO_BLK_T_OUT : VIRTIO_BLK_T_IN;
-    hdr->reserved = 0;
-    hdr->sector = sector;
-
-    /* For writes, copy caller data into DMA pages before submit */
-    if (is_write) {
-        memcpy(data, buf, data_bytes);
-    }
-
-    /* Status byte at end of request page */
-    uint8_t *status_ptr = req + sizeof(VirtioBlkReqHeader);
-    *status_ptr = VIRTIO_BLK_STATUS_INIT;
-    uint64_t status_phys = req_phys + sizeof(VirtioBlkReqHeader);
-
-    /* Build 3-descriptor chain: header -> data -> status */
-    uint16_t data_flags = is_write ? VRING_DESC_F_NEXT
-                                   : (VRING_DESC_F_WRITE | VRING_DESC_F_NEXT);
-    uint16_t desc_head = blk_build_chain(vq, req_phys, data_phys, data_bytes,
-                                          status_phys, data_flags);
-    if (desc_head == VRING_DESC_NONE) {
-        kprintf("[VIRTIO-BLK] No free descriptors\n");
-        dma_free_coherent(dev, data_bytes, data, data_phys);
-        dma_free_coherent(dev, PAGE_SIZE, req, req_phys);
-        return -1;
-    }
-
-    /* Submit and spin-poll for completion */
-    virtio_submit(&blk_vdev, 0, desc_head);
-
-    int timeout = POLL_TIMEOUT;
-    while (!virtq_has_used(vq) && --timeout > 0) {
-        __asm__ volatile ("pause");
-    }
-
-    if (timeout == 0) {
-        kprintf("[VIRTIO-BLK] %s timeout (sector %lu, count %u)\n", op, sector, count);
-        virtq_free_chain(vq, desc_head);
-        dma_free_coherent(dev, data_bytes, data, data_phys);
-        dma_free_coherent(dev, PAGE_SIZE, req, req_phys);
-        return -1;
-    }
-
-    /* Pop used entry */
-    uint32_t used_len;
-    virtq_pop_used(vq, &used_len);
-    virtq_free_chain(vq, desc_head);
-
-    /* Check status */
-    int ret = -1;
-    if (*status_ptr == VIRTIO_BLK_S_OK) {
-        /* For reads, copy data to caller's buffer */
-        if (!is_write) {
-            memcpy(buf, data, data_bytes);
-        }
-        ret = 0;
-    } else {
-        kprintf("[VIRTIO-BLK] %s failed, status=%d\n", op, *status_ptr);
-    }
-
-    /* Free buffers */
-    dma_free_coherent(dev, data_bytes, data, data_phys);
-    dma_free_coherent(dev, PAGE_SIZE, req, req_phys);
-
-    return ret;
-}
-
-int virtio_blk_read(uint64_t sector, uint32_t count, void *buf) {
-    return blk_transfer(sector, count, buf, 0);
-}
-
-int virtio_blk_write(uint64_t sector, uint32_t count, const void *buf) {
-    return blk_transfer(sector, count, (void *)buf, 1);
-}
-
-uint64_t virtio_blk_capacity(void) {
-    return blk_capacity;
-}
-
-/* --- Block device registration --- */
-
-static int virtio_blk_dev_read(BlockDevice *dev, uint64_t sector, uint32_t count, void *buf) {
-    (void)dev;
-    return virtio_blk_read(sector, count, buf);
-}
-
-static int virtio_blk_dev_write(BlockDevice *dev, uint64_t sector, uint32_t count, const void *buf) {
-    (void)dev;
-    return virtio_blk_write(sector, count, buf);
-}
-
-static uint64_t virtio_blk_dev_capacity(BlockDevice *dev) {
-    (void)dev;
-    return virtio_blk_capacity();
-}
-
-static BlockDevice virtio_blk_blockdev;
-
-static void virtio_blk_register_blkdev(void) {
-    virtio_blk_blockdev.read = virtio_blk_dev_read;
-    virtio_blk_blockdev.write = virtio_blk_dev_write;
-    virtio_blk_blockdev.capacity = virtio_blk_dev_capacity;
-    blkdev_register(&virtio_blk_blockdev);
 }

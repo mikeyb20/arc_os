@@ -56,3 +56,8 @@
   (`hal_slice_timer_start/stop`, three APIC writes per switch). So idle CPUs already get no slice interrupts; the
   BSP's PIT still ticks at 100 Hz for `pit_get_uptime_ms` only (it no longer schedules). Replace both with the
   per-CPU timer queue; `sched_preempt` (skips a CPU holding a spinlock) stays the slice handler.
+- From M1-10: the block layer's request timeouts (`blk_expire_all`, 30 s per request, O(1) when nothing is in
+  flight) run from the PIT tick through `hal_timer_set_tick_hook` (kmain). When the PIT tick goes, arm a
+  one-shot timer per disk at its oldest request's deadline instead (the head of `BlkQueue.fly_head`; re-arm on
+  dispatch and completion), and drop the hook. Both `blkdev.c` and the diag code turn milliseconds into TSC
+  cycles with `diag_ms_to_cycles`; switch them to the clocksource.

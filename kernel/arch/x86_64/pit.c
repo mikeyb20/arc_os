@@ -7,10 +7,12 @@
 
 static volatile uint64_t pit_ticks = 0;
 static uint32_t pit_freq = 0;
+static void (*tick_hook)(void);
 
 static void pit_handler(InterruptFrame *frame) {
     (void)frame;
     pit_ticks++;
+    if (tick_hook) tick_hook();
 
     /* Print a heartbeat every second */
     if (pit_ticks % pit_freq == 0) {
@@ -41,6 +43,10 @@ void pit_init(uint32_t freq_hz) {
 
     kprintf("[HAL] PIT initialized at %lu Hz (divisor=%u)\n",
             (uint64_t)freq_hz, (uint32_t)divisor);
+}
+
+void pit_set_tick_hook(void (*fn)(void)) {
+    tick_hook = fn;
 }
 
 uint64_t pit_get_ticks(void) {

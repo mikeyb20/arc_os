@@ -14,15 +14,16 @@
 static uint8_t *image;
 static size_t image_size;
 
-static int mem_read(BlockDevice *dev, uint64_t sector, uint32_t count, void *buf) {
-    const uint8_t *base = dev->private_data;
-    size_t size = dev == NULL ? 0 : (base == image ? image_size : 512);
-    if ((sector + count) * 512 > size) return -1;
-    memcpy(buf, base + sector * 512, (size_t)count * 512);
+/* The block layer, as fat32.c sees it: sync reads of the image (M1-10) */
+int blk_rw_sync(BlockDevice *dev, int op, uint64_t sector, void *buf, size_t bytes) {
+    if (op != BLK_OP_READ || bytes % 512 != 0 || sector > dev->nr_sectors || bytes / 512 > dev->nr_sectors - sector) {
+        return -EINVAL;
+    }
+    memcpy(buf, (const uint8_t *)dev->driver_data + sector * 512, bytes);
     return 0;
 }
 
-static BlockDevice disk = {.read = mem_read};
+static BlockDevice disk;
 
 /* Load the image and mount it at /fat (once). 0, or 1 to skip. */
 static int fat_ready(void) {
@@ -42,7 +43,8 @@ static int fat_ready(void) {
     image = malloc(image_size);
     if (fread(image, 1, image_size, f) != image_size) abort();
     fclose(f);
-    disk.private_data = image;
+    disk.driver_data = image;
+    disk.nr_sectors = image_size / 512;
     SuperBlock *sb = fat32_mount(&disk);
     if (sb == NULL || vfs_mkdir("/fat", 0755) != 0 || vfs_mount("/fat", sb, "vda") != 0) abort();
     state = 1;
@@ -81,7 +83,7 @@ static int list(const char *path, Names *l) {
 TEST(rejects_bad_boot_sectors) {
     vfs_env_setup();
     static uint8_t sector[512];
-    BlockDevice bad = {.read = mem_read, .private_data = sector};
+    BlockDevice bad = {.nr_sectors = 1, .driver_data = sector};
     ASSERT_TRUE(fat32_mount(&bad) == NULL);   /* all zeros */
     if (fat_ready() != 0) return 0;
     memcpy(sector, image, 512);

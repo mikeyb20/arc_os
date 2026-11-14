@@ -34,12 +34,14 @@
 #define LOCK_LEVEL_DCACHE        63   /* spinlock: the dentry cache (M1-11) */
 #define LOCK_LEVEL_ICACHE        64   /* spinlock: the inode cache (M1-11) */
 #define LOCK_LEVEL_FD_TABLE      65   /* spinlock: one fd table (M1-11) */
+#define LOCK_LEVEL_BLK_REGISTRY  66   /* spinlock: adding block devices (M1-10) */
 #define LOCK_LEVEL_SIGNAL        70   /* thread-group and signal (M1-16) */
 /* LOCK_LEVEL_OBJECT: one object's state, the lock passed to wq_sleep (pipe,
  * socket, tty, wait4, mutex/semaphore guards) */
 #define LOCK_LEVEL_OBJECT        75
 #define LOCK_LEVEL_OBJECT_TABLE  76   /* a table of objects looked up under an object lock (sockets) */
 #define LOCK_LEVEL_WAITQUEUE     80   /* wait-queue locks */
+#define LOCK_LEVEL_BLK_QUEUE     85   /* IRQ-safe: one disk's request queue; taken in interrupts (M1-10) */
 #define LOCK_LEVEL_RUNQUEUE      90   /* run queues: interrupts off; two only in CPU-index order */
 #define LOCK_LEVEL_IRQ_DESC      95   /* IRQ descriptors: request, free, affinity, /proc/interrupts (M1-09) */
 #define LOCK_LEVEL_IRQ_VECTOR    96   /* per-CPU device vector tables (M1-09) */

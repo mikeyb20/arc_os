@@ -8,8 +8,9 @@
 #define VIRTIO_BLK_DEVICE_ID  0x1001
 
 /* VirtIO block request types */
-#define VIRTIO_BLK_T_IN   0  /* Read */
-#define VIRTIO_BLK_T_OUT  1  /* Write */
+#define VIRTIO_BLK_T_IN    0  /* Read */
+#define VIRTIO_BLK_T_OUT   1  /* Write */
+#define VIRTIO_BLK_T_FLUSH 4  /* Write the volatile cache out */
 
 /* VirtIO block status values */
 #define VIRTIO_BLK_S_OK      0
@@ -23,29 +24,25 @@
 #define VIRTIO_BLK_F_GEOMETRY   (1 << 4)
 #define VIRTIO_BLK_F_RO         (1 << 5)
 #define VIRTIO_BLK_F_BLK_SIZE   (1 << 6)
+#define VIRTIO_BLK_F_FLUSH      (1 << 9)
+#define VIRTIO_BLK_F_TOPOLOGY   (1 << 10)
+
+/* Device config offsets (legacy layout) */
+#define VIRTIO_BLK_CFG_CAPACITY 0    /* u64, 512-byte sectors */
+#define VIRTIO_BLK_CFG_SEG_MAX  12   /* u32 */
+#define VIRTIO_BLK_CFG_BLK_SIZE 20   /* u32, logical block size */
+#define VIRTIO_BLK_CFG_PHYS_EXP 24   /* u8, physical block = logical << exp */
 
 /* Block request header (sent to device as first descriptor) */
 typedef struct {
-    uint32_t type;      /* VIRTIO_BLK_T_IN or VIRTIO_BLK_T_OUT */
+    uint32_t type;      /* VIRTIO_BLK_T_* */
     uint32_t reserved;
-    uint64_t sector;    /* Starting sector (512-byte units) */
+    uint64_t sector;    /* Starting sector (512-byte units, always) */
 } __attribute__((packed)) VirtioBlkReqHeader;
 
-/* Register the virtio-blk PCI driver; it binds to the first virtio-blk
- * device and registers it as a block device. Returns how many it bound. */
+/* Register the virtio-blk PCI driver; every virtio-blk device it binds
+ * becomes a disk of the block layer (vda, vdb, ...). Returns how many it
+ * bound. Nothing else calls this driver: I/O goes through drivers/blkdev.h. */
 int virtio_blk_register(void);
-
-/* Read sectors from the block device (polling).
- * sector: starting sector number
- * count: number of 512-byte sectors to read
- * buf: destination buffer (must be at least count*512 bytes)
- * Returns 0 on success. */
-int virtio_blk_read(uint64_t sector, uint32_t count, void *buf);
-
-/* Write sectors to the block device (stub — returns -1). */
-int virtio_blk_write(uint64_t sector, uint32_t count, const void *buf);
-
-/* Get device capacity in 512-byte sectors. */
-uint64_t virtio_blk_capacity(void);
 
 #endif /* ARCHOS_DRIVERS_VIRTIO_BLK_H */

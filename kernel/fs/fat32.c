@@ -82,7 +82,7 @@ static inline uint32_t fat32_entry_cluster(const Fat32DirEntry *e) {
 /* Read one cluster into buf. io_lock held. */
 static int fat32_read_cluster(Fat32Volume *vol, uint32_t cluster, void *buf) {
     uint64_t sector = vol->data_start + (uint64_t)(cluster - 2) * vol->sectors_per_cluster;
-    return vol->dev->read(vol->dev, sector, vol->sectors_per_cluster, buf) != 0 ? -EIO : 0;
+    return blk_rw_sync(vol->dev, BLK_OP_READ, sector, buf, vol->bytes_per_cluster) != 0 ? -EIO : 0;
 }
 
 /* The index-th cluster of fi's chain, or 0 past its end. io_lock held.
@@ -421,7 +421,7 @@ static int fat32_parse_bpb(Fat32Volume *vol, const Fat32Bpb *bpb) {
 SuperBlock *fat32_mount(BlockDevice *dev) {
     if (dev == NULL) return NULL;
     uint8_t sector_buf[SECTOR_SIZE];
-    if (dev->read(dev, 0, 1, sector_buf) != 0) {
+    if (blk_rw_sync(dev, BLK_OP_READ, 0, sector_buf, SECTOR_SIZE) != 0) {
         kprintf("[FAT32] Failed to read boot sector\n");
         return NULL;
     }
@@ -442,13 +442,11 @@ SuperBlock *fat32_mount(BlockDevice *dev) {
         kfree(vol);
         return NULL;
     }
-    for (uint32_t s = 0; s < vol->fat_sectors; s++) {
-        if (dev->read(dev, vol->fat_start + s, 1, (uint8_t *)vol->fat + (uint64_t)s * SECTOR_SIZE) != 0) {
-            kprintf("[FAT32] Failed to read FAT sector %u\n", s);
-            kfree(vol->fat);
-            kfree(vol);
-            return NULL;
-        }
+    if (blk_rw_sync(dev, BLK_OP_READ, vol->fat_start, vol->fat, (size_t)fat_bytes) != 0) {
+        kprintf("[FAT32] Failed to read the FAT\n");
+        kfree(vol->fat);
+        kfree(vol);
+        return NULL;
     }
 
     vfs_sb_init(&vol->sb, "vfat", &fat32_sops);
