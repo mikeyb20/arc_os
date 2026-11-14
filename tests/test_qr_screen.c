@@ -113,7 +113,9 @@ static int check_pages_on_screen(const char *text, size_t len) {
     int n = qr_text_paginate(&page_fmt, text, len, pages, 8);
     ASSERT_TRUE(n >= 1);
     for (int i = 0; i < n; i++) {
-        ASSERT_EQ(qr_screen_show_page(&page_fmt, text, pages, n, i, 10, &code, payload_buf), 0);
+        ASSERT_EQ(
+            qr_screen_show_page(&page_fmt, text, pages, n, i, "any key: next page (auto in 60 s)", &code, payload_buf),
+            0);
         char want[QR_BYTES_MAX];
         int wlen = qr_text_page(&page_fmt, text, pages, n, i, want, sizeof(want));
         ASSERT_TRUE(wlen > 0);
@@ -179,6 +181,41 @@ TEST(qrscreen_report_pages_uneven_height) {
     return check_pages_on_screen(text_buf, len);
 }
 
+/* The pager's countdown redraws only the caption (qr_screen_show_caption):
+ * every pixel above the caption row stays as it was, the caption changes with
+ * the hint, and the code still decodes. NULL and "" draw the same caption. */
+TEST(qrscreen_caption_redraw) {
+    screen_init(1280, 800, 0);
+    size_t len = make_report(30);
+    QrTextPage pages[8];
+    int n = qr_text_paginate(&page_fmt, text_buf, len, pages, 8);
+    ASSERT_TRUE(n >= 2);
+    ASSERT_EQ(qr_screen_show_page(&page_fmt, text_buf, pages, n, 1, NULL, &code, payload_buf), 0);
+    uint32_t cap_y = (fb_console_rows() - 1) * fb_console_row_height();
+    size_t above = (size_t)cap_y * screen_fb.pitch, row = (size_t)fb_console_row_height() * screen_fb.pitch;
+    static uint8_t before[SCREEN_MAX_PIXELS * 4], bare[SCREEN_MAX_PIXELS * 4];
+    memcpy(before, screen, above + row);
+    memcpy(bare, (uint8_t *)screen + above, row);
+
+    qr_screen_show_caption(&page_fmt, text_buf, pages, n, 1, "any key: next page (auto in 59 s)");
+    ASSERT_EQ(memcmp(before, screen, above), 0);                     /* the code untouched */
+    ASSERT_TRUE(memcmp(bare, (uint8_t *)screen + above, row) != 0);   /* the caption changed */
+    static uint8_t c59[SCREEN_MAX_PIXELS / 4];
+    ASSERT_TRUE(row <= sizeof(c59));
+    memcpy(c59, (uint8_t *)screen + above, row);
+    qr_screen_show_caption(&page_fmt, text_buf, pages, n, 1, "any key: next page (auto in 58 s)");
+    ASSERT_TRUE(memcmp(c59, (uint8_t *)screen + above, row) != 0);   /* the figure moved */
+    qr_screen_show_caption(&page_fmt, text_buf, pages, n, 1, "");
+    ASSERT_EQ(memcmp(bare, (uint8_t *)screen + above, row), 0);      /* "" is as NULL */
+
+    char want[QR_BYTES_MAX];
+    int wlen = qr_text_page(&page_fmt, text_buf, pages, n, 1, want, sizeof(want));
+    long got = decode_screen(0, 0, screen_fb.width, screen_fb.height, decoded, sizeof(decoded));
+    ASSERT_EQ(got, wlen);
+    ASSERT_EQ(memcmp(decoded, want, (size_t)wlen), 0);
+    return 0;
+}
+
 TEST(qrscreen_page_too_small_screen) {
     screen_init(400, 300, 0);   /* version 30 needs 580 x 580 at 4 px */
     size_t len = make_report(40);
@@ -186,7 +223,7 @@ TEST(qrscreen_page_too_small_screen) {
     int n = qr_text_paginate(&page_fmt, text_buf, len, pages, 8);
     ASSERT_TRUE(n >= 1);
     ASSERT_EQ(grey_at(0, 0), 0);   /* fb_console_init cleared it */
-    ASSERT_EQ(qr_screen_show_page(&page_fmt, text_buf, pages, n, 0, 10, &code, payload_buf), -ENOSPC);
+    ASSERT_EQ(qr_screen_show_page(&page_fmt, text_buf, pages, n, 0, NULL, &code, payload_buf), -ENOSPC);
     ASSERT_EQ(grey_at(0, 0), 0);   /* nothing drawn */
     return 0;
 }
@@ -403,6 +440,7 @@ TestCase qr_screen_tests[] = {
     TEST_ENTRY(qrscreen_report_pages_decode_32bpp),
     TEST_ENTRY(qrscreen_report_pages_decode_24bpp_bgr),
     TEST_ENTRY(qrscreen_report_pages_uneven_height),
+    TEST_ENTRY(qrscreen_caption_redraw),
     TEST_ENTRY(qrscreen_page_too_small_screen),
     TEST_ENTRY(qrscreen_panic_text_format),
     TEST_ENTRY(qrscreen_panic_code_decodes),

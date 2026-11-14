@@ -3,8 +3,9 @@
  * Owns: the boot report (build commit, machine, firmware, CPU, APIC, TSC,
  * memory, display, ACPI tables, PCI devices) logged as "[REPORT]" lines on
  * every boot, and in diagnostic mode (arc.report / arc.selftest / arc.bench /
- * arc.qr) the on-screen pager that shows it page by page, every 10 s or on any
- * key, forever: as text, or as QR codes with arc.qr (diag/qr_mode.c).
+ * arc.qr) the on-screen pager that shows it page by page, forever: as text,
+ * or as QR codes with arc.qr (diag/qr_mode.c). A page holds until a key, or
+ * with no key pressed yet in this run, for a countdown (diag/pager.h).
  * Invariants: report lines are kept only in diagnostic mode (lines != NULL);
  * the pager owns the screen: the text pager removes the log's screen hook
  * first, the QR pager pauses the console instead (diag/qr_mode.c).
@@ -13,6 +14,7 @@
  * Cost: boot only; O(memory map + PCI devices + ACPI tables) once. */
 
 #include "diag/diag.h"
+#include "diag/pager.h"
 #include "arch/hal.h"
 #include "drivers/acpi.h"
 #include "drivers/pci.h"
@@ -34,8 +36,7 @@
 #include <stdarg.h>
 
 #define DIAG_MAX_LINES 320
-#define DIAG_LINE_MAX  120
-#define PAGER_SECONDS  10
+#define DIAG_LINE_MAX  160   /* the Clock line with its wall-clock note is about 145 */
 #define MB             ((uint64_t)1024 * 1024)
 
 static char (*lines)[DIAG_LINE_MAX];
@@ -297,30 +298,15 @@ void diag_report(const BootInfo *info) {
 
 /* ---- Pager ---- */
 
-/* Draw page `page` of `pages` (rows - 1 lines under a banner). */
-static void pager_draw(uint32_t page, uint32_t pages, uint32_t per_page) {
-    char banner[DIAG_LINE_MAX];
-    ksnprintf(banner, sizeof(banner), " arc_os boot report  page %u/%u  next in %u s, any key: next page", page + 1,
-              pages, PAGER_SECONDS);
-    fb_console_write_row(0, banner, 0x000000, 0x5FD7FF);
-    for (uint32_t r = 0; r < per_page; r++) {
-        uint32_t idx = page * per_page + r;
-        const char *s = idx < line_count ? lines[idx] : "";
-        /* PASS/FAIL lines in colour so they show up in a photo */
-        uint32_t color = 0xFFFFFF;
-        if (strncmp(s, "SELFTEST PASS", 13) == 0) color = 0x5FFF5F;
-        if (strncmp(s, "SELFTEST FAIL", 13) == 0) color = 0xFF5F5F;
-        fb_console_write_row(r + 1, s, color, 0x000000);
-    }
-}
+#define PAGER_TEST_AUTO_S 15   /* arc.pagetest: a shorter countdown, so the suite stays quick */
 
 static void wake_noop(void *arg) {
     (void)arg;   /* the interrupt itself ends the halt */
 }
 
-int diag_wait_key(uint32_t seconds, int can_halt) {
-    uint32_t keys = keyboard_key_count();
-    uint64_t end = clock_mono_ns() + (uint64_t)seconds * NSEC_PER_SEC;
+/* Wait until clock time end or until the key count differs from keys;
+ * returns 1 for a key. Halts between interrupts when can_halt. */
+static int wait_key_until(uint32_t keys, uint64_t end, int can_halt) {
     Timer wake;
     timer_init(&wake, wake_noop, NULL);
     while (clock_mono_ns() < end && keyboard_key_count() == keys) {
@@ -341,6 +327,104 @@ int diag_wait_key(uint32_t seconds, int can_halt) {
     return keyboard_key_count() != keys;
 }
 
+int diag_wait_key(uint32_t seconds, int can_halt) {
+    return wait_key_until(keyboard_key_count(), clock_mono_ns() + (uint64_t)seconds * NSEC_PER_SEC, can_halt);
+}
+
+int diag_page_hold(DiagPageHold *h, uint32_t cap_s) {
+    char hint[64];
+    uint32_t keys = keyboard_key_count();   /* one snapshot: a key between two waits still counts */
+    uint64_t now = clock_mono_ns();
+    uint64_t cap_end = cap_s > 0 ? now + (uint64_t)cap_s * NSEC_PER_SEC : UINT64_MAX;
+    if (h->manual) {
+        pager_hint(hint, sizeof(hint), 1, 0);
+        h->show_hint(hint, h->ctx);
+        /* Until the key; an hour at a time, so the timer deadline stays sane */
+        while (now < cap_end) {
+            uint64_t step = now + 3600 * NSEC_PER_SEC;
+            if (wait_key_until(keys, step < cap_end ? step : cap_end, h->can_halt)) return 1;
+            now = clock_mono_ns();
+        }
+        return 0;
+    }
+    uint64_t end = now + (uint64_t)h->auto_s * NSEC_PER_SEC;
+    for (;;) {
+        uint32_t left = pager_seconds_left(now, end);
+        if (left == 0) return 0;
+        pager_hint(hint, sizeof(hint), 0, left);
+        h->show_hint(hint, h->ctx);
+        /* Wake when the countdown's figure changes */
+        if (wait_key_until(keys, end - (uint64_t)(left - 1) * NSEC_PER_SEC, h->can_halt)) {
+            h->manual = 1;   /* the keyboard works: no more countdowns */
+            return 1;
+        }
+        now = clock_mono_ns();
+    }
+}
+
+/* Which page the text pager shows (the banner callback's context) */
+typedef struct {
+    uint32_t page, pages, per_page;
+} TextPage;
+
+/* DiagPageHold callback: the blue banner, "page n/N" and the hint. */
+static void banner_show_hint(const char *hint, void *ctx) {
+    const TextPage *tp = ctx;
+    char banner[DIAG_LINE_MAX];
+    ksnprintf(banner, sizeof(banner), " arc_os boot report  page %u/%u  %s", tp->page + 1, tp->pages, hint);
+    fb_console_write_row(0, banner, 0x000000, 0x5FD7FF);
+}
+
+/* Draw the lines of page tp->page (rows - 1 lines under the banner, which
+ * the hold draws). */
+static void pager_draw(const TextPage *tp) {
+    for (uint32_t r = 0; r < tp->per_page; r++) {
+        uint32_t idx = tp->page * tp->per_page + r;
+        const char *s = idx < line_count ? lines[idx] : "";
+        /* PASS/FAIL lines in colour so they show up in a photo */
+        uint32_t color = 0xFFFFFF;
+        if (strncmp(s, "SELFTEST PASS", 13) == 0) color = 0x5FFF5F;
+        if (strncmp(s, "SELFTEST FAIL", 13) == 0) color = 0xFF5F5F;
+        fb_console_write_row(r + 1, s, color, 0x000000);
+    }
+}
+
+/* Test mode, arc.pagetest (suite "diag", qemu.pager): three pages, each
+ * announced on serial so the harness can take a screendump, and a key from
+ * the harness on the second only. Checks that a page with no key turns by
+ * itself after the countdown, that a key turns it at once and ends the
+ * countdowns, and that afterwards a page outlasts the countdown. */
+static void pager_test(TextPage *tp, DiagPageHold *hold) __attribute__((noreturn));
+static void pager_test(TextPage *tp, DiagPageHold *hold) {
+    int passes = 0, fails = 0;
+    uint64_t auto_ns = (uint64_t)hold->auto_s * NSEC_PER_SEC;
+    for (int step = 0; step < 3; step++) {
+        tp->page = (uint32_t)step % tp->pages;
+        pager_draw(tp);
+        static const char *const what[] = {"countdown", "countdown, press a key", "manual"};
+        kprintf("ARC_PAGE shown %d/3 %s\n", step + 1, what[step]);
+        uint64_t t0 = clock_mono_ns();
+        int key = diag_page_hold(hold, step == 2 ? hold->auto_s + 5 : 0);
+        uint64_t ms = (clock_mono_ns() - t0) / NSEC_PER_MSEC;
+        int ok;
+        if (step == 0)
+            ok = !key && !hold->manual && ms >= auto_ns / NSEC_PER_MSEC;
+        else if (step == 1)
+            ok = key && hold->manual && ms < auto_ns / NSEC_PER_MSEC;
+        else
+            ok = !key && ms >= (auto_ns + 5 * NSEC_PER_SEC) / NSEC_PER_MSEC;
+        static const char *const name[] = {"page-auto", "page-key", "page-manual"};
+        kprintf("ARC_TEST %s %s key=%d manual=%d after %lu ms\n", ok ? "PASS" : "FAIL", name[step], key, hold->manual,
+                ms);
+        if (ok)
+            passes++;
+        else
+            fails++;
+    }
+    kprintf("ARC_TEST DONE pass=%d fail=%d\n", passes, fails);
+    testmode_exit(fails == 0 ? 0 : 1);
+}
+
 void diag_run(void) {
     keyboard_grab(1);   /* keys turn pages; nothing reads the TTY in this mode */
 
@@ -348,10 +432,11 @@ void diag_run(void) {
     if (diag_flag_on("arc.selftest")) diag_selftest(&passes, &fails);
     if (diag_flag_on("arc.bench")) diag_bench();
     int qr = diag_flag_on("arc.qr");
+    int pagetest = testmode_active() && diag_flag_on("arc.pagetest");
     const char *hint = qr ? " Codes repeat; scan each one." : " Pages repeat; photograph each one.";
     diag_line("End of report.%s", testmode_active() ? "" : hint);
 
-    if (testmode_active() && !qr) {
+    if (testmode_active() && !qr && !pagetest) {
         kprintf("ARC_TEST DONE pass=%d fail=%d\n", passes, fails);
         testmode_exit(fails == 0 ? 0 : 1);
     }
@@ -359,13 +444,22 @@ void diag_run(void) {
     int can_halt = timer_cpu_ready();   /* a timer can end each halt */
     if (qr) diag_qr_run(can_halt, passes, fails);   /* returns only if it can't draw */
     if (fb_console_cols() == 0 || lines == NULL || fb_console_rows() < 2) {
+        if (pagetest) {
+            kprintf("ARC_TEST FAIL page-screen no screen to page on\n");
+            testmode_exit(1);
+        }
         for (;;) hal_halt();   /* no screen: the report went to serial */
     }
     kprintf_set_putchar_hook(NULL);   /* the screen is the pager's now */
-    uint32_t per_page = fb_console_rows() - 1;
-    uint32_t pages = (line_count + per_page - 1) / per_page;
-    for (uint32_t page = 0;; page = (page + 1) % pages) {
-        pager_draw(page, pages, per_page);
-        diag_wait_key(PAGER_SECONDS, can_halt);
+    TextPage tp = {.per_page = fb_console_rows() - 1};
+    tp.pages = (line_count + tp.per_page - 1) / tp.per_page;
+    DiagPageHold hold = {.auto_s = pagetest ? PAGER_TEST_AUTO_S : PAGER_AUTO_SECONDS,
+                         .can_halt = can_halt,
+                         .show_hint = banner_show_hint,
+                         .ctx = &tp};
+    if (pagetest) pager_test(&tp, &hold);
+    for (tp.page = 0;; tp.page = (tp.page + 1) % tp.pages) {
+        pager_draw(&tp);
+        diag_page_hold(&hold, 0);
     }
 }

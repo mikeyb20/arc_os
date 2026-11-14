@@ -26,11 +26,14 @@ kernel ends the run itself, e.g. 0x7e when the CPU is below the x86-64-v3
 floor); the --expect patterns must still match.
 --screendump REGEX (M1-04c) opens a QEMU monitor socket and, each time a new
 serial line matches REGEX, saves the screen as <name>.shot-<k>.ppm, then
-presses a key (--after-shot key, the default) or ends QEMU (--after-shot
-quit). --check CMD then runs CMD with the serial log and the screendumps as
-arguments; the suite fails if it exits non-zero (tools/qr-check.py decodes
-the QR codes on them). Without --screendump it gets the serial log alone
-(M1-13: tools/make-arc-test-disks.sh check compares checksums with the host's).
+presses a key (--after-shot key, the default), ends QEMU (--after-shot
+quit) or does nothing (--after-shot none). With --after-shot none, --key-on
+REGEX presses a key after the screendump only on lines that also match it
+(the pager suite: some pages must turn without a key). --check CMD then
+runs CMD with the serial log and the screendumps as arguments; the suite
+fails if it exits non-zero (tools/qr-check.py decodes the QR codes on them).
+Without --screendump it gets the serial log alone (M1-13:
+tools/make-arc-test-disks.sh check compares checksums with the host's).
 
 Exit status of this script: 0 = suite passed, 1 = failed, 2 = harness error.
 Python 3 standard library only.
@@ -181,8 +184,9 @@ def run_with_screendumps(args, cmd, serial_log, out_dir, name):
                     log(f"screendump {len(shots)} after: {line.strip()}")
                     if args.after_shot == "quit":
                         mon.send("quit")   # no prompt comes back
-                    else:
+                    elif args.after_shot == "key" or (args.key_on and re.search(args.key_on, line)):
                         mon.command("sendkey spc")
+                        log("key pressed")
             seen = max(seen, done)
             time.sleep(0.2)
     except OSError as e:
@@ -248,8 +252,10 @@ def main():
                     help="pass only if the kernel ends the run with this debug-exit value")
     ap.add_argument("--screendump", default=None, metavar="REGEX",
                     help="save the screen each time a new serial line matches REGEX (QEMU monitor)")
-    ap.add_argument("--after-shot", choices=("key", "quit"), default="key",
-                    help="after each screendump press a key (default) or end QEMU")
+    ap.add_argument("--after-shot", choices=("key", "quit", "none"), default="key",
+                    help="after each screendump press a key (default), end QEMU or do nothing")
+    ap.add_argument("--key-on", default=None, metavar="REGEX",
+                    help="with --after-shot none: press a key after a screendump whose line also matches REGEX")
     ap.add_argument("--check", default=None, metavar="CMD",
                     help="run CMD SERIAL_LOG SHOT... after the run; non-zero fails the suite")
     args = ap.parse_args()
