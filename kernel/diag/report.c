@@ -152,6 +152,21 @@ static void report_cpu(const BootInfo *info, const AcpiInfo *acpi) {
     diag_line("Clock      %s timers (microcode 0x%x); TSCs %s on %u CPUs (worst step back %lu cycles)%s",
               ci->event_mode, t->microcode, ci->clamped ? "OUT OF STEP" : "in step", t->sync_cpus, t->max_warp,
               ci->rtc_ok ? "; wall clock from the RTC" : "; RTC unreadable: wall clock at 1970");
+    /* M1-21: idle states, HWP and RAPL as probed on this machine */
+    const PowerHwInfo *pw = hal_power_info();
+    char hwp[40], rapl[40];
+    if (pw->hwp)
+        ksnprintf(hwp, sizeof(hwp), "HWP %u/%u%s", pw->hwp_cpus, hal_cpu_count(), pw->epp ? " EPP" : " no-EPP");
+    else
+        ksnprintf(hwp, sizeof(hwp), "no HWP");
+    if (pw->rapl_mask)
+        ksnprintf(rapl, sizeof(rapl), "RAPL%s%s%s 2^-%u J", pw->rapl_mask & 1 ? " pkg" : "",
+                  pw->rapl_mask & 2 ? " cores" : "", pw->rapl_mask & 4 ? " psys" : "", pw->rapl_esu);
+    else
+        ksnprintf(rapl, sizeof(rapl), "no RAPL");
+    diag_line("Power      idle %s %s%s%s%s%s%s; %s; %s; %s", pw->idle_method, pw->idle[0].name,
+              pw->idle_count > 1 ? "+" : "", pw->idle_count > 1 ? pw->idle[1].name : "", pw->idle_why[0] ? " (" : "",
+              pw->idle_why, pw->idle_why[0] ? ")" : "", pw->arat ? "ARAT" : "no ARAT", hwp, rapl);
 }
 
 static void report_memory(const BootInfo *info) {

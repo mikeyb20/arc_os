@@ -52,6 +52,11 @@ struct Thread;
 #define PERCPU_STAT_CALL    3   /* function-call IPIs */
 #define PERCPU_STATS        4
 
+#define PERCPU_IDLE_STATES 2   /* power.h POWER_IDLE_MAX */
+#define PERCPU_HWP_UNTRIED 0
+#define PERCPU_HWP_ON      1
+#define PERCPU_HWP_FAILED  2
+
 /* One per CPU. The fields the entry paths and this_cpu() touch come first and
  * share one cache line that no other CPU writes. */
 typedef struct __attribute__((aligned(64))) PerCpu {
@@ -71,6 +76,16 @@ typedef struct __attribute__((aligned(64))) PerCpu {
     uint64_t irq_stat[PERCPU_STATS];  /* per-CPU interrupt counts (PERCPU_STAT_*, /proc/interrupts) */
     TlbRequest tlb_req;               /* this CPU's TLB shootdown request (tlb.c) */
     CpuMask tlb_from;                 /* CPUs whose request this CPU still has to run (tlb.c) */
+
+    /* Power (power.c, M1-21): written only by this CPU, interrupts off */
+    uint64_t idle_tsc;                          /* TSC at idle entry; 0 = not idle */
+    uint32_t idle_state;                        /* state index entered */
+    uint32_t idle_seq;                          /* odd while the idle fields change (readers retry) */
+    uint32_t power_gen;                         /* EPP generation applied here */
+    uint64_t idle_cycles[PERCPU_IDLE_STATES];   /* residency per state (TSC cycles) */
+    uint64_t idle_entries[PERCPU_IDLE_STATES];
+    uint64_t hwp_req;                           /* IA32_HWP_REQUEST as last written */
+    uint8_t hwp_state;                          /* PERCPU_HWP_* */
 
     GDTEntry gdt[GDT_ENTRY_COUNT];    /* this CPU's GDT (LTR marks its TSS busy) */
     TSS tss_storage;                  /* RSP0 + IST pointers */

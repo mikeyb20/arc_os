@@ -44,3 +44,45 @@ preference set by the power profile, and package energy can be read (ADR-0017).
   before MWAIT into C3 or deeper on a CPU without ARAT, a pending timer needs another wake source, or the CPU
   stays at C1. The clock-event and TSC code has no suspend/resume hooks yet (`lapic_timer_cpu_init` reprograms
   the LVT; the queue reprograms on its next arm); add them here. `arc.timer=oneshot` forces LAPIC one-shot.
+- **Built (M1-21).** Read these before touching idle, HWP or energy:
+  - Layout: `arch/x86_64/power.c` (hardware: idle-state table, MWAIT/HLT entry with residency, HWP, RAPL),
+    `msr_safe.asm` (`rdmsr_safe` / `wrmsr_safe`), `kernel/power/power.c` (profiles, the idle loop's sleep length,
+    the status snapshot). Portable code reaches the hardware only through `hal_power_*`, `hal_idle_enter`,
+    `hal_idle_stats`. `/proc/arc/power` (procfs.c) is the only user-facing file; M4 renames it.
+  - Safe MSRs: two exception-table entries; kernel-mode #GP now looks the RIP up in `.ex_table` (isr.c), so the
+    user copy also fails with `-EFAULT` instead of panicking if it is ever handed a non-canonical address. QEMU's
+    TCG reads and writes unknown MSRs without #GP (all read 0), so probes also treat a 0 unit register or a 0
+    counter as absent; only KVM (CI, `qemu.power.msr`) and real CPUs show the fixup.
+  - Idle: MWAIT only on Intel, only when leaf 5 has both the extensions and interrupt-break bits and lists a C1
+    sub-state (Linux's rule; TCG's EDX is 0, so QEMU idles on HLT). States: C1 (0x00) plus one deep state for
+    family 6 models 0x8E/0x9E (Kaby/Coffee Lake: C6 0x20, exit 85 us, residency 200 us, Linux `skl_cstates`) and
+    0xC5 (Arrow Lake H: C6 0x20, 140/420 us; Linux has no ARL table, these are its Meteor Lake L numbers). The
+    hint must be listed in leaf 5 EDX; without ARAT only C1. Governor: deepest state whose residency fits the
+    time to this CPU's programmed timer (`timer_next_event`; none = deepest). MWAIT runs with interrupts masked
+    and ECX bit 0 (an interrupt ends it), so the residency is closed before the handler runs; HLT's handler runs
+    first and may switch threads, so the interrupt entry closes it (`power_idle_close` in `isr_dispatch`).
+    Residency is per CPU behind a seqcount and includes the sleep in progress (a tickless CPU may sleep for
+    seconds). `arc.idle=hlt|c1` caps it for bring-up.
+  - HWP: each CPU enables it and builds its own request (min = lowest, max = highest from its own capabilities,
+    desired 0, activity window and package bit kept, EPP when supported) the first time it syncs. A profile change
+    bumps a generation and broadcasts a reschedule IPI; each CPU applies it in that IPI or before its next sleep
+    (no cross-CPU call that waits). EPP: performance 0, balanced 128, saver 192 (Linux's strings). HWP stays on
+    once enabled (until reset).
+  - RAPL: units from 0x606; package, cores, platform present when they read non-zero at boot; 32-bit counters
+    extended under `rapl_lock` at every read and at most once a second from an idle CPU (trylock). A wrap is lost
+    only if every CPU stays busy and nothing reads for a whole wrap (about 40 min at 100 W with 61 uJ units).
+    PSYS uses the same energy unit as the package (Linux does too on client parts; check in M1-22).
+  - Costs: an idle entry adds one clock read, two TSC reads and two compares; the interrupt entry one per-CPU
+    load. Image +14950 bytes (tests/budgets.txt).
+  - Measured (TCG, -smp 4): `qemu.power` idle residency +4.0 s over a 1 s sleep on 4 CPUs, 2 idle entries.
+- **For later blocks.**
+  - M1-22: read `/proc/arc/power` and the report's `Power` line on both machines (idle method and C6 accepted, HWP
+    CPUs, RAPL domains); record idle watts per profile. If C6 misbehaves, `arc.idle=c1` is the fallback. The
+    deep-state values are Linux's, not measured.
+  - M4-12: profiles add thread count, core choice and display timeout; the final file names replace
+    `/proc/arc/power` (only procfs.c changes). Battery/AC switching of profiles belongs there too.
+  - Not taken here (not in this spec): clock-event suspend/resume hooks (M1-06 note; no system suspend exists to
+    call them), the BKL on time syscalls, `qemu.fpu` tick counting, the 100 ms wake latency under load.
+  - Other low-tier CPUs (6th-10th gen: Skylake 0x4E/0x5E, Comet Lake 0xA5/0xA6) get MWAIT C1 only until someone
+    adds a measured row to `idle_models`.
+

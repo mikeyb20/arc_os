@@ -1,12 +1,12 @@
 /* arc_os — procfs (procfs.h; M0, inodes M1-11)
  *
  * Owns: /proc. Fixed files (meminfo, uptime, cmdline, cpuinfo, slabinfo,
- * kmsg, sched_debug, mounts, interrupts, vmstat) and sys/vm/drop_caches are
- * static inodes; /proc/<pid> directories and their files are inodes made per lookup and freed with their last
+ * kmsg, sched_debug, mounts, interrupts, vmstat), sys/vm/drop_caches and
+ * arc/power (M1-21) are static inodes; /proc/<pid> directories and their files are inodes made per lookup and freed with their last
  * reference, so nothing is shared between lookups and no pool can be
  * overrun. A file's text is generated whole at each read.
  *
- * Inode numbers (64-bit): 1 the root, 2.. the fixed files, 0x100.. sys/vm, (1 << 32) |
+ * Inode numbers (64-bit): 1 the root, 2.. the fixed files, 0x100.. sys/vm, 0x110.. arc, (1 << 32) |
  * pid << 8 a pid directory, + 1 + i its file i. No two can collide.
  *
  * Locks: none of its own. Process lookups and the process list are lane KB's
@@ -28,12 +28,14 @@
 #include "proc/sched.h"
 #include "drivers/irq.h"
 #include "time/clock.h"
+#include "power/power.h"
 #include "lib/mem.h"
 #include "lib/string.h"
 #include "lib/cmdline.h"
 #include "lib/klog.h"
 #include "lib/kprintf.h"
 #include "uapi/dirent.h"
+#include <stdarg.h>
 
 /* Scratch buffer for content generation */
 #define PROCFS_SCRATCH_SIZE 2048   /* /proc/cpuinfo: ~80 bytes per CPU */
@@ -466,8 +468,9 @@ typedef struct {
     uint64_t parent_ino;
 } ProcSubdir;
 
-static Inode proc_sys, proc_sys_vm, proc_drop_caches;
+static Inode proc_sys, proc_sys_vm, proc_drop_caches, proc_arc, proc_arc_power;
 static const ProcSubdir sys_entry = {"vm", &proc_sys_vm, DT_DIR, PROC_INO_ROOT};
+static const ProcSubdir arc_entry = {"power", &proc_arc_power, DT_REG, PROC_INO_ROOT};
 static const ProcSubdir vm_entry = {"drop_caches", &proc_drop_caches, DT_REG, PROC_INO_SYS};
 
 static int procfs_subdir_lookup(Inode *dir, const char *name, Inode **out) {
@@ -504,6 +507,126 @@ static const InodeOps procfs_subdir_iops = {.lookup = procfs_subdir_lookup};
 static const FileOps procfs_subdir_fops = {.iterate = procfs_subdir_iterate};
 static const FileOps procfs_drop_caches_fops = {.write = procfs_drop_caches_write};
 
+/* --- /proc/arc/power (M1-21, provisional: ADR-0017 fixes the paths in M4):
+ * the power profile, HWP, idle states and residency per CPU, and energy.
+ * Reading from offset 0 takes a fresh snapshot and starts the next
+ * "average since the previous read" interval; reads further on continue the
+ * same text (kept with the open file), so a reader in small chunks gets one
+ * consistent snapshot. Writing a profile name switches profile (root:
+ * mode 0644). --- */
+
+#define PROC_INO_ARC       0x110
+#define PROC_INO_ARC_POWER 0x111
+#define PROC_POWER_SIZE    8192   /* about 90 bytes per CPU: 256 CPUs would be cut */
+
+typedef struct {
+    int len;   /* -1: nothing rendered yet */
+    char text[PROC_POWER_SIZE];
+} PowerText;
+
+static int procfs_append_fmt(char *buf, int pos, int max, const char *fmt, ...) __attribute__((format(printf, 4, 5)));
+static int procfs_append_fmt(char *buf, int pos, int max, const char *fmt, ...) {
+    if (pos >= max - 1) return pos;
+    va_list ap;
+    va_start(ap, fmt);
+    int n = kvsnprintf(buf + pos, (size_t)(max - pos), fmt, ap);
+    va_end(ap);
+    pos += n;
+    return pos < max - 1 ? pos : max - 1;   /* cut, NUL not counted */
+}
+
+static const char *const power_domain_names[POWER_DOMAINS] = {"package", "cores", "platform"};
+
+static int gen_arc_power(char *buf, int bufsz) {
+    PowerStatus st;
+    power_status(&st);
+    int pos = procfs_append_fmt(buf, 0, bufsz, "profile: %s\nprofiles:", power_profile_name(st.profile));
+    for (uint32_t p = 0; p < POWER_PROFILE_COUNT; p++)
+        pos = procfs_append_fmt(buf, pos, bufsz, " %s", power_profile_name((PowerProfile)p));
+    pos = procfs_append_fmt(buf, pos, bufsz, "\n");
+    if (!st.hwp)
+        pos = procfs_append_fmt(buf, pos, bufsz, "hwp: absent (firmware P-states)\n");
+    else
+        pos = procfs_append_fmt(buf, pos, bufsz, "hwp: on %u CPUs, %u failed; epp %u%s\n", st.hwp_cpus, st.hwp_failed,
+                                st.epp, st.epp_supported ? "" : " (not supported)");
+    pos = procfs_append_fmt(buf, pos, bufsz, "idle: %s", st.idle_method);
+    for (uint32_t i = 0; i < st.idle_count; i++) pos = procfs_append_fmt(buf, pos, bufsz, " %s", st.idle_names[i]);
+    pos = procfs_append_fmt(buf, pos, bufsz, st.idle_why[0] ? " (%s)\n" : "%s\n", st.idle_why);
+    if (st.energy_mask == 0) {
+        pos = procfs_append_fmt(buf, pos, bufsz, "energy_j: absent\n");
+    } else {
+        pos = procfs_append_fmt(buf, pos, bufsz, "energy_j:");
+        for (uint32_t d = 0; d < POWER_DOMAINS; d++) {
+            if (st.energy_mask & (1u << d))
+                pos = procfs_append_fmt(buf, pos, bufsz, " %s %lu.%06lu", power_domain_names[d],
+                                        st.energy_uj[d] / 1000000, st.energy_uj[d] % 1000000);
+        }
+        pos = procfs_append_fmt(buf, pos, bufsz, "\navg_w:");
+        for (uint32_t d = 0; d < POWER_DOMAINS; d++) {
+            if (st.energy_mask & (1u << d))
+                pos = procfs_append_fmt(buf, pos, bufsz, " %s %lu.%03lu", power_domain_names[d], st.avg_mw[d] / 1000,
+                                        st.avg_mw[d] % 1000);
+        }
+        pos = procfs_append_fmt(buf, pos, bufsz, " (over %lu ms since the previous read)\n", st.interval_ns / 1000000);
+    }
+    pos = procfs_append_fmt(buf, pos, bufsz, "cpu state residency_ns entries ...\n");
+    for (uint32_t cpu = 0; cpu < HAL_MAX_CPUS; cpu++) {
+        uint64_t ns[POWER_IDLE_MAX], n[POWER_IDLE_MAX];
+        if (hal_idle_stats(cpu, ns, n) != 0) continue;
+        pos = procfs_append_fmt(buf, pos, bufsz, "cpu%u", cpu);
+        for (uint32_t i = 0; i < st.idle_count; i++)
+            pos = procfs_append_fmt(buf, pos, bufsz, " %s %lu %lu", st.idle_names[i], ns[i], n[i]);
+        pos = procfs_append_fmt(buf, pos, bufsz, "\n");
+    }
+    return pos;
+}
+
+static int procfs_power_open(Inode *inode, File *file) {
+    (void)inode;
+    PowerText *t = kmalloc(sizeof(PowerText), 0);
+    if (t == NULL) return -ENOMEM;
+    t->len = -1;
+    file->priv = t;
+    return 0;
+}
+
+static void procfs_power_release(Inode *inode, File *file) {
+    (void)inode;
+    kfree(file->priv);
+    file->priv = NULL;
+}
+
+static int64_t procfs_power_read(File *file, const IoBuf *buf, loff_t *pos) {
+    PowerText *t = (PowerText *)file->priv;
+    if (*pos == 0 || t->len < 0) t->len = gen_arc_power(t->text, PROC_POWER_SIZE);
+    if (*pos >= t->len) return 0;
+    size_t avail = (size_t)(t->len - *pos);
+    size_t n = buf->len < avail ? buf->len : avail;
+    if (iob_copy_out(buf, 0, t->text + *pos, n) != 0) return -EFAULT;
+    *pos += (loff_t)n;
+    return (int64_t)n;
+}
+
+static int64_t procfs_power_write(File *file, const IoBuf *buf, loff_t *pos) {
+    (void)file;
+    char text[16];
+    if (buf->len >= sizeof(text)) return -EINVAL;
+    if (iob_copy_in(text, buf, 0, buf->len) != 0) return -EFAULT;
+    PowerProfile p;
+    if (power_profile_parse(text, buf->len, &p) != 0) return -EINVAL;
+    int r = power_set_profile(p);
+    if (r != 0) return r;
+    *pos += (loff_t)buf->len;
+    return (int64_t)buf->len;
+}
+
+static const FileOps procfs_power_fops = {
+    .open = procfs_power_open,
+    .release = procfs_power_release,
+    .read = procfs_power_read,
+    .write = procfs_power_write,
+};
+
 static void procfs_subdir_init(Inode *dir, uint64_t ino, const ProcSubdir *entry) {
     inode_init_static(dir, &proc_sb, ino, S_IFDIR | 0555);
     dir->nlink = entry->type == DT_DIR ? 3 : 2;
@@ -516,6 +639,10 @@ static int procfs_root_lookup(Inode *dir, const char *name, Inode **out) {
     (void)dir;
     if (strcmp(name, "sys") == 0) {
         *out = igrab(&proc_sys);
+        return 0;
+    }
+    if (strcmp(name, "arc") == 0) {
+        *out = igrab(&proc_arc);
         return 0;
     }
     for (uint32_t i = 0; i < FIXED_COUNT; i++) {
@@ -545,11 +672,12 @@ static int procfs_root_lookup(Inode *dir, const char *name, Inode **out) {
     return 0;
 }
 
-/* Root directory listing: cookies 2.. are the fixed files, then "sys", then
- * "self", then pid + PID_COOKIE0 for each process (pids grow, so a pid cookie
- * resumes the walk where it stopped). */
+/* Root directory listing: cookies 2.. are the fixed files, then "sys",
+ * "arc", "self", then pid + PID_COOKIE0 for each process (pids grow, so a pid
+ * cookie resumes the walk where it stopped). */
 #define SYS_COOKIE  (PROC_COOKIE0 + FIXED_COUNT)
-#define SELF_COOKIE (SYS_COOKIE + 1)
+#define ARC_COOKIE  (SYS_COOKIE + 1)
+#define SELF_COOKIE (ARC_COOKIE + 1)
 #define PID_COOKIE0 (SELF_COOKIE + 1)
 
 struct procfs_readdir_ctx {
@@ -574,7 +702,8 @@ static int procfs_root_iterate(File *file, DirContext *ctx) {
                       (loff_t)(i + 1 + PROC_COOKIE0)))
             return 0;
     }
-    if (ctx->pos == SYS_COOKIE && !dir_emit(ctx, "sys", 3, PROC_INO_SYS, DT_DIR, SELF_COOKIE)) return 0;
+    if (ctx->pos == SYS_COOKIE && !dir_emit(ctx, "sys", 3, PROC_INO_SYS, DT_DIR, ARC_COOKIE)) return 0;
+    if (ctx->pos == ARC_COOKIE && !dir_emit(ctx, "arc", 3, PROC_INO_ARC, DT_DIR, SELF_COOKIE)) return 0;
     if (ctx->pos == SELF_COOKIE) {
         Process *self = proc_current();
         uint64_t ino = self != NULL ? PROC_INO_PID(self->pid) : PROC_INO_ROOT;
@@ -606,6 +735,9 @@ SuperBlock *procfs_init(void) {
     procfs_subdir_init(&proc_sys_vm, PROC_INO_SYS_VM, &vm_entry);
     inode_init_static(&proc_drop_caches, &proc_sb, PROC_INO_DROP_CACHES, S_IFREG | 0200);
     proc_drop_caches.fop = &procfs_drop_caches_fops;
+    procfs_subdir_init(&proc_arc, PROC_INO_ARC, &arc_entry);
+    inode_init_static(&proc_arc_power, &proc_sb, PROC_INO_ARC_POWER, S_IFREG | 0644);
+    proc_arc_power.fop = &procfs_power_fops;
     proc_sb.root = &proc_root;
     return &proc_sb;
 }

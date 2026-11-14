@@ -42,8 +42,12 @@
 # 538274 -> 554652 after M1-06 (+16378, inside the limit): the timer queues,
 # clocks, RTC/HPET readers, time syscalls, clock-event setup and the tickless
 # slice (.text +12151, .rodata +1422, .ksyms +2387, .data/.bss +448).
+# 557243 -> 572193 after M1-21 (+14950; measured on #45's head): safe MSR
+# access, idle states with residency, HWP and EPP, RAPL, the power profiles,
+# /proc/arc/power, the report's Power line and the msr self-test (.text +10423,
+# .rodata +1902, .ksyms +1793, .ex_table +32, .data +192, .bss +608).
 # Limit = measured + 5%)
-kernel_image_bytes     565000      max  bytes  M0-08  build
+kernel_image_bytes     601000      max  bytes  M0-08  build
 
 # Free memory when init starts, booted with -m 4G (qemu.smoke; measured 4251873280)
 boot_free_bytes        3830000000  min  bytes  M0-08  smoke

@@ -15,6 +15,7 @@ set(KERNEL_ASM_SOURCES
     arch/x86_64/usermode.asm
     arch/x86_64/selftest_avx2.asm
     arch/x86_64/uaccess.asm
+    arch/x86_64/msr_safe.asm
 )
 
 # --- C sources ---
@@ -40,6 +41,7 @@ set(KERNEL_C_SOURCES
     arch/x86_64/pic.c
     arch/x86_64/pit.c
     arch/x86_64/tsc.c
+    arch/x86_64/power.c
     arch/x86_64/hpet.c
     arch/x86_64/rtc.c
     mm/pmm.c
@@ -83,6 +85,7 @@ set(KERNEL_C_SOURCES
     time/clock.c
     time/timer.c
     time/time_syscalls.c
+    power/power.c
     drivers/acpi.c
     drivers/pci.c
     drivers/pci_irq.c

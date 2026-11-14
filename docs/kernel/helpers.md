@@ -63,6 +63,9 @@ Kernel and user space are separate worlds: the same function in `kernel/lib` and
 | Local APIC (xAPIC or x2APIC): EOI, IPIs, ID | `lapic_eoi`, `lapic_send_ipi`, `lapic_id`, `lapic_x2apic` | `kernel/arch/x86_64/lapic.h` |
 | Start another CPU (bootloader-neutral) | `boot_start_cpu` | `kernel/boot/bootinfo.h` |
 | Time-stamp counter (raw cycles) | `cpu_rdtsc`; portable code: `hal_tsc_read` | `kernel/arch/x86_64/cpuid.h`, `kernel/arch/hal.h` |
+| Idle instructions: STI+HLT, MONITOR+MWAIT with masked-interrupt break | `cpu_sti_hlt`, `cpu_sti`, `cpu_monitor_mwait`; portable code: `hal_idle_wait` (plain halt), `power_idle` (the idle loop's sleep) | `kernel/arch/x86_64/cpuid.h`, `kernel/arch/hal.h`, `kernel/power/power.h` |
+| Model-specific registers; ones CPUID doesn't promise (#GP becomes -EIO) | `rdmsr` / `wrmsr`; `rdmsr_safe` / `wrmsr_safe` | `kernel/arch/x86_64/msr.h` |
+| Power profile, EPP, idle residency, energy (RAPL) | `power_set_profile`, `power_profile_parse`, `power_status`; HAL: `hal_power_info`, `hal_idle_stats`, `hal_power_energy` | `kernel/power/power.h`, `kernel/arch/hal.h` |
 | TSC frequency and cycles to ns (boot calibration) | `hal_tsc_info`, `hal_tsc_to_ns` (`tsc_info`, `tsc_cycles_to_ns`) | `kernel/arch/hal.h` (`arch/x86_64/tsc.h`) |
 | Time now: monotonic, wall clock, any Linux clock ID; timespec conversions; boot/diag/panic busy-wait | `clock_mono_ns`, `clock_real_ns`, `clock_read`, `clock_resolution`, `clock_to_mono`, `clock_ns_to_timespec`, `clock_timespec_to_ns`, `clock_civil_to_unix`, `clock_spin_ns`; ns to TSC cycles for a bounded wait below the clock: `hal_clock_ns_to_cycles` | `kernel/time/clock.h`, `kernel/arch/hal.h` |
 | One-shot kernel timers (per-CPU queues, no periodic tick), sleep until a deadline | `timer_init`, `timer_arm`, `timer_cancel`, `timer_cancel_sync`, `timer_pending`, `timer_cpu_ready`, `timer_sleep_until`, `timer_cpu_stats` | `kernel/time/timer.h` |

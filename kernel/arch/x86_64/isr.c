@@ -4,6 +4,7 @@
 #include "arch/x86_64/percpu.h"
 #include "arch/x86_64/irq_vector.h"
 #include "arch/x86_64/fpu.h"
+#include "arch/x86_64/power.h"
 #include "arch/hal_lock.h"
 #include "mm/mm.h"
 #include "proc/signal.h"
@@ -187,8 +188,9 @@ static void isr_handle(InterruptFrame *frame);
 
 #define USER_HALF_END 0x0000800000000000ULL
 
-/* Exception table (linker.ld): an instruction allowed to fault on user
- * memory, and where it continues when the fault can't be resolved */
+/* Exception table (linker.ld): an instruction allowed to fault, and where it
+ * continues when the fault can't be resolved: the user copy (#PF on user
+ * memory, uaccess.asm) and the safe MSR accesses (#GP, msr_safe.asm) */
 typedef struct ExTableEntry {
     uint64_t insn;
     uint64_t fixup;
@@ -198,8 +200,8 @@ extern const ExTableEntry __ex_table_start[], __ex_table_end[];
 /* The IRETQ in syscall_entry.asm that returns through IRET */
 extern const char syscall_iret_user[];
 
-/* Fixup address for a faulting kernel RIP, or 0. One entry today (the user
- * copy routine, uaccess.asm), so a scan is the lookup. */
+/* Fixup address for a faulting kernel RIP, or 0. Three entries today, and
+ * only a fault looks, so a scan is the lookup. */
 static uint64_t ex_table_fixup(uint64_t rip) {
     for (const ExTableEntry *e = __ex_table_start; e < __ex_table_end; e++) {
         if (e->insn == rip) return e->fixup;
@@ -375,6 +377,7 @@ static int vector_may_deliver(uint64_t vector) {
 }
 
 void isr_dispatch(InterruptFrame *frame) {
+    if (frame->vector >= IRQ_BASE) power_idle_close();   /* an idle CPU woke: end its residency (M1-21) */
     isr_handle(frame);
     if ((frame->cs & 3) != 0 && vector_may_deliver(frame->vector)) user_return_work(frame);
 }
@@ -432,6 +435,16 @@ static void isr_handle(InterruptFrame *frame) {
         kernel_lock();
         kprintf("[SIG] bad user context on return: SIGSEGV\n");
         sig_fatal(SIGSEGV);
+    }
+
+    /* #GP in the kernel at an instruction with a fixup: a safe MSR access
+     * (or a user copy given a non-canonical address) returns an error */
+    if (vector == 13 && (frame->cs & 3) == 0) {
+        uint64_t fixup = ex_table_fixup(frame->rip);
+        if (fixup != 0) {
+            frame->rip = fixup;
+            return;
+        }
     }
 
     /* Unhandled CPU exception (0-31) — print diagnostic and halt */

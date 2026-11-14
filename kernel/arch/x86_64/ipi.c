@@ -10,6 +10,7 @@
 #include "arch/x86_64/percpu.h"
 #include "arch/x86_64/cpuid.h"
 #include "arch/x86_64/tlb.h"
+#include "arch/x86_64/power.h"
 #include "arch/hal_lock.h"
 #include "proc/sched.h"
 #include "lib/kprintf.h"
@@ -19,6 +20,7 @@ static void ipi_schedule_handler(InterruptFrame *frame) {
     (void)frame;
     this_cpu()->irq_stat[PERCPU_STAT_RESCHED]++;
     lapic_eoi();   /* first: sched_ipi may switch threads */
+    power_cpu_sync();   /* a new EPP is announced with this IPI (power.c, M1-21) */
     sched_ipi();
 }
 
