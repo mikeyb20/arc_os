@@ -48,9 +48,14 @@ static uint64_t cpu_rdtsc_ordered(void) {
     return fake_rdtsc;
 }
 static uint64_t pit_cycles;   /* what PIT channel 2 measures over 50 ms (0: no PIT) */
+static uint64_t pit_seq[3];   /* per-try results instead, when pit_seq[0] != 0 */
+static int pit_calls;
+static uint64_t pit_last_max;
 static uint64_t pit_measure_tsc(uint32_t ms, uint64_t max_cycles) {
-    (void)ms, (void)max_cycles;
-    return pit_cycles;
+    (void)ms;
+    pit_last_max = max_cycles;
+    int i = pit_calls++;
+    return pit_seq[0] != 0 && i < 3 ? pit_seq[i] : pit_cycles;
 }
 static uint64_t hpet_khz;
 static int hpet_calls;
@@ -65,6 +70,22 @@ static uint32_t ipi_call_all(void (*fn)(void *arg), void *arg, uint64_t max_cycl
     return 0;
 }
 
+/* MSR 0x8B: the microcode revision (Intel: write 0, CPUID 1, read the high half) */
+#include "../kernel/arch/x86_64/msr.h"
+static uint64_t fake_ucode_msr;
+static int ucode_writes;
+static uint64_t test_rdmsr(uint32_t msr) {
+    return msr == MSR_UCODE_REV ? fake_ucode_msr : 0;
+}
+static void test_wrmsr(uint32_t msr, uint64_t v) {
+    if (msr == MSR_UCODE_REV) {
+        ucode_writes++;
+        fake_ucode_msr = v == 0 ? 0xF4ULL << 32 : v;   /* the CPU fills in its revision */
+    }
+}
+#define rdmsr test_rdmsr
+#define wrmsr test_wrmsr
+
 #include "../kernel/arch/x86_64/tsc.c"
 
 static void reset(void) {
@@ -76,8 +97,13 @@ static void reset(void) {
     leaf16_eax = 0;
     fake_rdtsc = 1000000;
     pit_cycles = 0;
+    memset(pit_seq, 0, sizeof(pit_seq));
+    pit_calls = 0;
+    pit_last_max = 0;
     hpet_khz = 0;
     hpet_calls = 0;
+    fake_ucode_msr = 0;
+    ucode_writes = 0;
     memset(&info, 0, sizeof(info));
     info.source = "none";
 }
@@ -93,9 +119,12 @@ TEST(tsc_cpuid15_first) {
     ASSERT_EQ(info.khz, 1704000);
     ASSERT_TRUE(strcmp(info.source, "cpuid") == 0);
     ASSERT_EQ(info.pit_khz, 1703000);
+    ASSERT_EQ(pit_calls, 1);                     /* one try: only the report's cross-check */
+    ASSERT_EQ(pit_last_max, 1704000ULL * 100);   /* given up after 100 ms, not 2^32 cycles */
     ASSERT_EQ(info.base_mhz, 1700);
     ASSERT_TRUE(info.invariant);
     ASSERT_TRUE(info.deadline);
+    ASSERT_EQ(info.microcode, 0);   /* no vendor string: not read */
     /* Conversions both ways, to within 1 ns per second */
     uint64_t sec = tsc_ns_to_cycles(1000000000ULL);
     ASSERT_TRUE(sec >= 1703999999ULL && sec <= 1704000001ULL);
@@ -113,6 +142,43 @@ TEST(tsc_pit_before_cpuid16) {
     ASSERT_TRUE(strcmp(info.source, "pit") == 0);
     tsc_calibrate_late(0xFED00000, false);   /* the PIT worked: no HPET */
     ASSERT_EQ(hpet_calls, 0);
+    return 0;
+}
+
+/* The PIT is the clock: median of 3, so one stretched try can't set the rate */
+TEST(tsc_pit_median_of_three) {
+    reset();
+    pit_seq[0] = 50 * 2300000;
+    pit_seq[1] = 50 * 2918000;   /* +27%: a busy host stalled the end of this try */
+    pit_seq[2] = 50 * 2299000;
+    tsc_calibrate();
+    ASSERT_EQ(pit_calls, 3);
+    ASSERT_EQ(info.khz, 2300000);
+    ASSERT_TRUE(strcmp(info.source, "pit") == 0);
+    /* A PIT that never finishes is tried once, not three times */
+    reset();
+    tsc_calibrate();
+    ASSERT_EQ(pit_calls, 1);
+    ASSERT_EQ(info.pit_khz, 0);
+    return 0;
+}
+
+/* PIT more than 2% off CPUID 0x16: the base wins, with a warning */
+TEST(tsc_pit_checked_against_base) {
+    reset();
+    leaf16_eax = 2300;
+    pit_cycles = 50 * 2100000;   /* -8.7% */
+    tsc_calibrate();
+    ASSERT_EQ(info.khz, 2300000);
+    ASSERT_TRUE(strcmp(info.source, "base") == 0);
+    ASSERT_EQ(info.pit_khz, 2100000);   /* still reported */
+    /* Within 2%: the PIT's finer figure is kept */
+    reset();
+    leaf16_eax = 2300;
+    pit_cycles = 50 * 2304000;
+    tsc_calibrate();
+    ASSERT_EQ(info.khz, 2304000);
+    ASSERT_TRUE(strcmp(info.source, "pit") == 0);
     return 0;
 }
 
@@ -150,6 +216,23 @@ TEST(tsc_guess_without_any_source) {
     return 0;
 }
 
+TEST(tsc_microcode_by_vendor) {
+    reset();
+    strcpy(fake_features.vendor, "GenuineIntel");
+    pit_cycles = 50 * 2000000;
+    tsc_calibrate();
+    ASSERT_EQ(ucode_writes, 1);
+    ASSERT_EQ(info.microcode, 0xF4);
+    reset();
+    strcpy(fake_features.vendor, "AuthenticAMD");
+    fake_ucode_msr = 0xFFFFFFFF0A20120EULL;   /* patch level in the low half; never written */
+    pit_cycles = 50 * 2000000;
+    tsc_calibrate();
+    ASSERT_EQ(ucode_writes, 0);
+    ASSERT_EQ(info.microcode, 0x0A20120E);
+    return 0;
+}
+
 /* A deadline centuries away saturates instead of wrapping into the past */
 TEST(tsc_conversions_saturate) {
     reset();
@@ -178,9 +261,15 @@ TEST(tsc_sync_one_cpu) {
 }
 
 TestCase tsc_tests[] = {
-    TEST_ENTRY(tsc_cpuid15_first),        TEST_ENTRY(tsc_pit_before_cpuid16),
-    TEST_ENTRY(tsc_hpet_replaces_base),   TEST_ENTRY(tsc_guess_without_any_source),
-    TEST_ENTRY(tsc_conversions_saturate), TEST_ENTRY(tsc_sync_one_cpu),
+    TEST_ENTRY(tsc_cpuid15_first),
+    TEST_ENTRY(tsc_pit_before_cpuid16),
+    TEST_ENTRY(tsc_pit_median_of_three),
+    TEST_ENTRY(tsc_pit_checked_against_base),
+    TEST_ENTRY(tsc_microcode_by_vendor),
+    TEST_ENTRY(tsc_hpet_replaces_base),
+    TEST_ENTRY(tsc_guess_without_any_source),
+    TEST_ENTRY(tsc_conversions_saturate),
+    TEST_ENTRY(tsc_sync_one_cpu),
 };
 
 int tsc_test_count = sizeof(tsc_tests) / sizeof(tsc_tests[0]);

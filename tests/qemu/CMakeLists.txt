@@ -80,6 +80,13 @@ add_test(NAME qemu.time.fallback COMMAND ${_qemu_test} --suite time --name time-
     --expect "\\[TSC\\] [0-9]+ kHz from hpet"
     --expect "LAPIC one-shot timers on 4 CPUs"
     --expect "timetest: idle: 0 failures")
+# The TSC-deadline path itself: TCG's CPU models have no TSC-deadline timer, so
+# only KVM (CI) can take it; this run fails if the kernel fell back to one-shot
+add_test(NAME qemu.time.deadline COMMAND ${_qemu_test} --suite time --name time-deadline --module timetest
+    --require-kvm --timeout 150
+    --expect "\\[CLOCK\\] Monotonic clock from the TSC .*; TSC-deadline timers on 4 CPUs"
+    --expect "timetest: idle: 0 failures")
+set_tests_properties(qemu.time.deadline PROPERTIES SKIP_RETURN_CODE 77)
 
 # CPU floor (M1-01): on a CPU without AVX2 the kernel says why and stops
 add_test(NAME qemu.cpufloor COMMAND ${_qemu_test} --suite cpufloor --cpu Nehalem
@@ -185,7 +192,7 @@ add_test(NAME qemu.diag COMMAND ${_qemu_test} --suite diag
     --expect "\\[REPORT\\] Machine +QEMU"
     --expect "\\[REPORT\\] CPUs +4 online; MADT lists 4"
     --expect "\\[REPORT\\] TSC +[0-9]+ kHz"
-    --expect "\\[REPORT\\] Clock +.* timers; TSCs in step on 4 CPUs"
+    --expect "\\[REPORT\\] Clock +.* timers \\(microcode 0x[0-9a-f]+\\); TSCs in step on 4 CPUs"
     --expect "\\[REPORT\\] Memory +[0-9]+ MB RAM"
     --expect "\\[REPORT\\] ACPI +revision"
     --expect "\\[REPORT\\] PCI +[0-9]+ devices"
@@ -305,7 +312,7 @@ add_test(NAME qemu.pagecache COMMAND ${_qemu_test} --suite pagecache --module pc
 set_tests_properties(qemu.smoke qemu.mem.buddy qemu.mem.cap qemu.userland qemu.abi qemu.musl qemu.fpu qemu.cpufloor
     qemu.smp.xapic qemu.smp.x2apic qemu.sched qemu.lockorder qemu.selftest.fail qemu.selftest.panic
     qemu.panic.fault qemu.diag qemu.mm qemu.mm.oom qemu.vfs qemu.pagecache qemu.qr.report qemu.qr.log qemu.qr.panic
-    qemu.devices qemu.devices.intx qemu.time qemu.time.fallback
+    qemu.devices qemu.devices.intx qemu.time qemu.time.fallback qemu.time.deadline
     PROPERTIES LABELS qemu TIMEOUT 180 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     FIXTURES_SETUP qemu_logs)
 set_tests_properties(qemu.mm.oom qemu.pagecache PROPERTIES TIMEOUT 320)

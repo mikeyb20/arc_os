@@ -43,7 +43,7 @@ of that level (a lock without a subkey counts as 0). Give every lock of a nestab
 | 99 | `LOCK_LEVEL_SLAB_REGISTRY` | spinlock | the list of slab caches | M1-05 |
 | 100 | `LOCK_LEVEL_SLAB` | spinlock | one slab cache | M1-02b |
 | 101 | `LOCK_LEVEL_BUDDY` | spinlock | buddy allocator (the only lock taken under a slab lock) | M1-02 |
-| 105 | `LOCK_LEVEL_TIMER` | spinlock, IRQ-safe | one CPU's timer queue (`kernel/time/timer.c`): its tree, earliest expiry and the running callback; taken under the run-queue (90) and block-queue (85) locks; only the log under it | M1-06 |
+| 105 | `LOCK_LEVEL_TIMER` | spinlock, IRQ-safe | one CPU's timer queue (`kernel/time/timer.c`): its tree and earliest expiry (a timer's running count is atomic); taken under the run-queue (90) and block-queue (85) locks; only the log under it | M1-06 |
 | 109 | `LOCK_LEVEL_LOG` | spinlock | kernel log ring: `kprintf` works under any lock | M1-04 |
 
 M1-12 adds the page-cache levels (30, 40, 59, 60; `kernel/mm/filemap.h`). A page fault holds the mm lock

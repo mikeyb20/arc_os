@@ -34,6 +34,7 @@
 #define LATE_MAX_NS (50 * NS_PER_MS)     /* any single sleep: a sanity bound */
 #define HOGS        8                    /* CPU-bound processes on 4 CPUs */
 #define HOG_NS      (1500 * NS_PER_MS)
+#define HOG_SPIN    10000                /* busy loops between clock reads */
 #define MAX_CPUS    16
 
 static int failures;
@@ -216,8 +217,15 @@ static void test_sleeps(void) {
     CHECK(nanosleep((struct timespec *)8, NULL) == -1 && errno == EFAULT, "nanosleep(bad pointer): errno %d", errno);
     struct timespec ok = {0, 1000};
     CHECK(clock_nanosleep(42, 0, &ok, NULL) == EINVAL, "clock_nanosleep(42)");
-    CHECK(clock_nanosleep(CLOCK_THREAD_CPUTIME_ID, 0, &ok, NULL) == EINVAL, "clock_nanosleep(THREAD_CPUTIME)");
-    CHECK(clock_nanosleep(CLOCK_MONOTONIC, 0x10, &ok, NULL) == EINVAL, "clock_nanosleep(bad flags)");
+    /* Raw syscall 230: musl answers THREAD_CPUTIME_ID itself with EINVAL. Linux
+     * gives EOPNOTSUPP for a clock it can't sleep on and ignores unknown flags. */
+    errno = 0;
+    CHECK(syscall(SYS_clock_nanosleep, CLOCK_THREAD_CPUTIME_ID, 0, &ok, NULL) == -1 && errno == EOPNOTSUPP,
+          "SYS_clock_nanosleep(THREAD_CPUTIME): errno %d", errno);
+    errno = 0;
+    CHECK(syscall(SYS_clock_nanosleep, CLOCK_MONOTONIC_COARSE, 0, &ok, NULL) == -1 && errno == EOPNOTSUPP,
+          "SYS_clock_nanosleep(MONOTONIC_COARSE): errno %d", errno);
+    CHECK(syscall(SYS_clock_nanosleep, CLOCK_MONOTONIC, 0x10, &ok, NULL) == 0, "SYS_clock_nanosleep(flag 0x10)");
     CHECK(clock_nanosleep(CLOCK_MONOTONIC, 0, &bad, NULL) == EINVAL, "clock_nanosleep(tv_sec -1)");
 }
 
@@ -293,8 +301,11 @@ static void test_cross_cpu(void) {
 
 /* HOGS processes spin HOG_NS of wall time each, checking their own clock
  * stays monotonic as they move between CPUs; each exits with the share of
- * the CPU it got, in percent. Meanwhile the parent sleeps and checks it is
- * woken within a slice of its deadline. */
+ * the CPU it got, in percent. They read the clock only every HOG_SPIN loops:
+ * every syscall takes the kernel lock, and 8 CPUs reading the clock flat out
+ * would hold the woken sleeper off it. Meanwhile the parent sleeps and checks
+ * how late it wakes: run queues are FIFO, so with 8 hogs on 4 CPUs it can
+ * queue behind one hog and wait out the running slice and one more. */
 static void test_load(void) {
     pid_t pids[HOGS];
     for (int i = 0; i < HOGS; i++) {
@@ -303,6 +314,8 @@ static void test_load(void) {
             int64_t w0 = now_ns(CLOCK_MONOTONIC), c0 = now_ns(CLOCK_THREAD_CPUTIME_ID), prev = w0;
             int back = 0;
             for (;;) {
+                for (volatile int spin = 0; spin < HOG_SPIN; spin++) {
+                }
                 int64_t t = now_ns(CLOCK_MONOTONIC);
                 if (t < prev) back++;
                 prev = t;
@@ -333,8 +346,8 @@ static void test_load(void) {
            HOGS, min_pct, total, (long long)late / NS_PER_MS);
     CHECK(back == 0, "%d processes saw CLOCK_MONOTONIC go backwards", back);
     CHECK(starved == 0, "%d processes got under 10%% of a CPU: the slice timer isn't preempting", starved);
-    /* A wakeup waits for the running thread's slice to end (100 ms) at most */
-    CHECK(late >= 0 && late <= 150 * NS_PER_MS, "1 s sleep under load: %lld ms late", (long long)late / NS_PER_MS);
+    /* At most the running slice plus one queued ahead (2 x 100 ms), plus margin */
+    CHECK(late >= 0 && late <= 300 * NS_PER_MS, "1 s sleep under load: %lld ms late", (long long)late / NS_PER_MS);
 }
 
 /* ---- Tickless idle ---- */

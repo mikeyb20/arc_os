@@ -10,9 +10,11 @@
  *  - A CPU programs its own clock event only, always to base->first's expiry
  *    (or stops it when the queue is empty): no periodic tick, and an idle CPU
  *    with an empty queue gets no timer interrupt.
- *  - base->running is the timer whose callback is executing; it is set in the
- *    same critical section that dequeues the timer, so timer_cancel_sync sees
- *    every timer either pending, running, or finished.
+ *  - t->running counts t's callbacks executing now, on any CPU; it is raised
+ *    in the same critical section that dequeues t, so timer_cancel_sync sees
+ *    every timer either pending, running, or finished. It lives in the timer,
+ *    not the queue: a timer re-armed onto another CPU while its callback still
+ *    runs on the first must still be waited for.
  *
  * Locks: base->lock (LOCK_LEVEL_TIMER, IRQ-safe), one queue at a time. Taken
  * under the run-queue lock (the slice timer) and the block queue lock (request
@@ -40,7 +42,6 @@ typedef struct TimerBase {
     Spinlock lock;
     RbRoot tree;
     Timer *first;          /* earliest expiry, NULL when empty */
-    Timer *running;        /* callback executing now, or NULL */
     uint64_t programmed;   /* expiry in the hardware, TIMER_NEVER when stopped */
     uint32_t cpu;
     uint32_t queued;
@@ -54,7 +55,6 @@ static void base_init(TimerBase *b, uint32_t cpu) {
     spin_lock_init(&b->lock, LOCK_LEVEL_TIMER, "timer queue");
     b->tree.node = NULL;
     b->first = NULL;
-    b->running = NULL;
     b->programmed = TIMER_NEVER;
     b->cpu = cpu;
 }
@@ -116,6 +116,7 @@ void timer_init(Timer *t, TimerFn fn, void *arg) {
     t->arg = arg;
     t->base = NULL;
     t->pending = 0;
+    t->running = 0;
 }
 
 /* Remove t from its queue if pending (that queue's lock taken here).
@@ -159,9 +160,7 @@ int timer_cancel(Timer *t) {
 
 void timer_cancel_sync(Timer *t) {
     timer_dequeue(t);
-    TimerBase *b = __atomic_load_n(&t->base, __ATOMIC_ACQUIRE);
-    if (b == NULL) return;
-    while (__atomic_load_n(&b->running, __ATOMIC_ACQUIRE) == t) hal_cpu_relax();
+    while (__atomic_load_n(&t->running, __ATOMIC_ACQUIRE) != 0) hal_cpu_relax();
 }
 
 int timer_cpu_ready(void) {
@@ -183,12 +182,12 @@ void timer_interrupt(void) {
     Timer *t;
     while ((t = b->first) != NULL && t->expires <= now) {
         base_remove(b, t);
-        __atomic_store_n(&b->running, t, __ATOMIC_RELAXED);
+        __atomic_add_fetch(&t->running, 1, __ATOMIC_RELAXED);
         b->expired++;
         spin_unlock(&b->lock);
         t->fn(t->arg);
         spin_lock(&b->lock);
-        __atomic_store_n(&b->running, NULL, __ATOMIC_RELEASE);   /* t is no longer touched */
+        __atomic_sub_fetch(&t->running, 1, __ATOMIC_RELEASE);   /* t is no longer touched */
         now = clock_mono_ns();
     }
     /* Always written: the one that fired is spent, and a thread may have

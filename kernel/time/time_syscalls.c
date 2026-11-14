@@ -85,10 +85,15 @@ static int64_t sys_clock_nanosleep(uint64_t a0, uint64_t a1, uint64_t a2, uint64
         break;
     case CLOCK_PROCESS_CPUTIME_ID:
         return -EOPNOTSUPP;   /* Linux sleeps on it; no CPU-time timers here */
+    case CLOCK_THREAD_CPUTIME_ID:
+    case CLOCK_MONOTONIC_RAW:
+    case CLOCK_REALTIME_COARSE:
+    case CLOCK_MONOTONIC_COARSE:
+        return -EOPNOTSUPP;   /* Linux: a known clock that can't be slept on */
     default:
-        return -EINVAL;       /* THREAD_CPUTIME_ID, the COARSE and RAW clocks, unknown IDs */
+        return -EINVAL;       /* unknown IDs */
     }
-    if (flags & ~TIMER_ABSTIME) return -EINVAL;
+    /* Flag bits other than TIMER_ABSTIME are ignored, as Linux does */
     uint64_t ns, left;
     int rc = get_timespec((const void *)a2, &ns);
     if (rc != 0) return rc;

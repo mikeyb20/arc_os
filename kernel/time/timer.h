@@ -30,6 +30,7 @@ typedef struct Timer {
     void *arg;
     struct TimerBase *base;    /* queue it was last armed on; NULL: never armed */
     uint8_t pending;           /* on base's queue (under its lock) */
+    uint8_t running;           /* callbacks executing now, on any CPU (timer_cancel_sync) */
 } Timer;
 
 /* Expiry that never comes: arming with it only removes the timer. */

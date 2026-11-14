@@ -522,8 +522,9 @@ static void test_time(void) {
     CHECK(raw3(__NR_clock_gettime, CLOCK_MONOTONIC, 8, 0) == -EFAULT);
     CHECK(raw3(__NR_clock_getres, CLOCK_MONOTONIC, 0, 0) == 0); /* res may be NULL */
     CHECK(raw3(__NR_nanosleep, 0, 0, 0) == -EFAULT);
-    CHECK(raw4(__NR_clock_nanosleep, CLOCK_THREAD_CPUTIME_ID, 0, (long)&req, 0) == -EINVAL);
-    CHECK(raw4(__NR_clock_nanosleep, CLOCK_MONOTONIC, 2, (long)&req, 0) == -EINVAL);
+    CHECK(raw4(__NR_clock_nanosleep, CLOCK_THREAD_CPUTIME_ID, 0, (long)&req, 0) == -EOPNOTSUPP);
+    CHECK(raw4(__NR_clock_nanosleep, 99, 0, (long)&req, 0) == -EINVAL);
+    CHECK(raw4(__NR_clock_nanosleep, CLOCK_MONOTONIC, 2, (long)&req, 0) == 0); /* unknown flags ignored */
     CHECK(raw3(__NR_gettimeofday, 8, 0, 0) == -EFAULT);
     CHECK(raw3(__NR_time, 0, 0, 0) == tv.tv_sec || raw3(__NR_time, 0, 0, 0) == tv.tv_sec + 1);
 }

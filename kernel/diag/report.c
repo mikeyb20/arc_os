@@ -149,8 +149,8 @@ static void report_cpu(const BootInfo *info, const AcpiInfo *acpi) {
               t->deadline ? ", deadline timer" : "");
     /* M1-06: what the hardware-sensitive clock choices came to on this machine */
     const ClockInfo *ci = clock_info();
-    diag_line("Clock      %s timers; TSCs %s on %u CPUs (worst step back %lu cycles)%s", ci->event_mode,
-              ci->clamped ? "OUT OF STEP" : "in step", t->sync_cpus, t->max_warp,
+    diag_line("Clock      %s timers (microcode 0x%x); TSCs %s on %u CPUs (worst step back %lu cycles)%s",
+              ci->event_mode, t->microcode, ci->clamped ? "OUT OF STEP" : "in step", t->sync_cpus, t->max_warp,
               ci->rtc_ok ? "; wall clock from the RTC" : "; RTC unreadable: wall clock at 1970");
 }
 

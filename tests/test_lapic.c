@@ -179,6 +179,26 @@ TEST(xapic_enables_disabled_apic) {
     return 0;
 }
 
+/* One-shot calibration (M1-06 review): the try with the tightest edges wins,
+ * so a stall inside one edge can't inflate the APIC rate */
+TEST(lapic_best_ratio_skips_stalled_edges) {
+    /* 62.5 MHz APIC vs a 2.3 GHz TSC: 625000 ticks per 23000000 cycles */
+    LapicSample s[3] = {
+        /* stalled between the ICR write and t0's partner: ticks without cycles */
+        {.t0 = 1000, .t1 = 400000, .t2 = 23001000, .t3 = 23001100, .ticks = 635000},
+        {.t0 = 1000, .t1 = 1100, .t2 = 23001100, .t3 = 23001200, .ticks = 625000},
+        /* stalled after the CCR read */
+        {.t0 = 1000, .t1 = 1100, .t2 = 23001100, .t3 = 23900000, .ticks = 625000},
+    };
+    uint64_t want = ((uint64_t)625000 << 32) / 23000100; /* midpoint to midpoint */
+    uint64_t got = lapic_best_ratio(s, 3);
+    ASSERT_TRUE(got >= want - 2 && got <= want + 2);
+    /* Nothing counted (a dead timer): 0, so the caller falls back to a guess */
+    s[0].ticks = s[1].ticks = s[2].ticks = 0;
+    ASSERT_EQ(lapic_best_ratio(s, 3), 0);
+    return 0;
+}
+
 TestCase lapic_tests[] = {
     TEST_ENTRY(x2apic_chosen_when_cpuid_has_it),
     TEST_ENTRY(x2apic_kept_when_firmware_enabled_it),
@@ -188,5 +208,6 @@ TestCase lapic_tests[] = {
     TEST_ENTRY(ap_follows_bsp_into_x2apic),
     TEST_ENTRY(xapic_mmio_mode),
     TEST_ENTRY(xapic_enables_disabled_apic),
+    TEST_ENTRY(lapic_best_ratio_skips_stalled_edges),
 };
 int lapic_test_count = sizeof(lapic_tests) / sizeof(lapic_tests[0]);

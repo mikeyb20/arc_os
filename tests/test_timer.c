@@ -6,9 +6,12 @@
  * last programmed to. The scheduler is a recorder; sched_schedule can "run"
  * the timer interrupt to play out a sleep. */
 
+#define _DEFAULT_SOURCE   /* nanosleep */
 #include "test_framework.h"
 #include <stdint.h>
 #include <stdlib.h>
+#include <pthread.h>
+#include <time.h>
 
 /* Guard kernel headers that need stubbing */
 #define ARCHOS_ARCH_HAL_H
@@ -47,7 +50,7 @@ static void *kmalloc(size_t size, uint32_t flags) {
 /* ---- Simulated CPUs and their clock-event hardware (hal.h) ---- */
 
 #define HAL_MAX_CPUS 4
-static uint32_t test_cpu;
+static _Thread_local uint32_t test_cpu;   /* per host thread: the pthread test runs two CPUs at once */
 static int cpus_online = 1;
 static void *cpu_timers[HAL_MAX_CPUS];
 static uint64_t hw_expires[HAL_MAX_CPUS];   /* 0: stopped */
@@ -301,7 +304,7 @@ TEST(timer_callback_rearms_itself) {
     interrupt_at(0, 2200);
     ASSERT_EQ(rearm_runs, 3);
     ASSERT_EQ(hw_expires[0], 0);
-    ASSERT_TRUE(test_bases[0].running == NULL);
+    ASSERT_EQ(rearm_timer.running, 0);
     return 0;
 }
 
@@ -368,11 +371,64 @@ TEST(timer_bring_up_programs_every_cpu) {
     return 0;
 }
 
+/* Review of #45: a callback still running on CPU 0 after its timer was
+ * re-armed onto CPU 1 must still hold off timer_cancel_sync (the running
+ * count is the timer's, not the queue's). Real threads: CPU 0 sits in the
+ * callback while CPU 1 re-arms and then cancel_syncs. */
+static volatile int cb_entered, cb_release, sync_done;
+static void blocking_fn(void *arg) {
+    (void)arg;
+    __atomic_store_n(&cb_entered, 1, __ATOMIC_RELEASE);
+    while (!__atomic_load_n(&cb_release, __ATOMIC_ACQUIRE)) {
+    }
+}
+static void *cpu0_interrupt(void *arg) {
+    (void)arg;
+    test_cpu = 0;
+    timer_interrupt();   /* fake_now is already past the expiry */
+    return NULL;
+}
+static void *cpu1_cancel_sync(void *arg) {
+    test_cpu = 1;
+    timer_cancel_sync((Timer *)arg);
+    __atomic_store_n(&sync_done, 1, __ATOMIC_RELEASE);
+    return NULL;
+}
+TEST(timer_cancel_sync_waits_across_cpus) {
+    reset(2);
+    cb_entered = cb_release = sync_done = 0;
+    Timer t;
+    timer_init(&t, blocking_fn, NULL);
+    timer_arm(&t, 2000);   /* on CPU 0 */
+    fake_now = 2000;
+    pthread_t a, b;
+    ASSERT_EQ(pthread_create(&a, NULL, cpu0_interrupt, NULL), 0);
+    while (!__atomic_load_n(&cb_entered, __ATOMIC_ACQUIRE)) {
+    }
+    test_cpu = 1;
+    timer_arm(&t, 9000);   /* re-armed on CPU 1 while CPU 0 still runs it */
+    ASSERT_TRUE(t.base == &test_bases[1]);
+    ASSERT_EQ(pthread_create(&b, NULL, cpu1_cancel_sync, &t), 0);
+    struct timespec pause = {0, 50 * 1000 * 1000};
+    nanosleep(&pause, NULL);
+    int early = __atomic_load_n(&sync_done, __ATOMIC_ACQUIRE);
+    __atomic_store_n(&cb_release, 1, __ATOMIC_RELEASE);
+    pthread_join(a, NULL);
+    pthread_join(b, NULL);
+    test_cpu = 0;
+    ASSERT_EQ(early, 0);   /* still waiting while CPU 0 was in the callback */
+    ASSERT_EQ(sync_done, 1);
+    ASSERT_FALSE(timer_pending(&t));
+    ASSERT_EQ(t.running, 0);
+    return 0;
+}
+
 TestCase timer_tests[] = {
     TEST_ENTRY(timer_fires_in_expiry_order),
     TEST_ENTRY(timer_equal_expiries_fifo),
     TEST_ENTRY(timer_early_interrupt_reprograms),
     TEST_ENTRY(timer_cancel_and_rearm),
+    TEST_ENTRY(timer_cancel_sync_waits_across_cpus),
     TEST_ENTRY(timer_per_cpu_queues),
     TEST_ENTRY(timer_callback_rearms_itself),
     TEST_ENTRY(timer_sleep_runs_to_deadline),

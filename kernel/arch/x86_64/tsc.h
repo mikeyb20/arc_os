@@ -16,6 +16,7 @@ typedef struct {
     const char *source;   /* "cpuid", "pit", "hpet", "base" or "guess" */
     bool invariant;       /* CPUID 0x80000007 EDX bit 8: constant rate in every C/P state */
     bool deadline;        /* TSC-deadline timer mode (CPUID 1 ECX bit 24) */
+    uint32_t microcode;   /* microcode revision (0: unknown); TSC-deadline errata depend on it */
     uint32_t sync_cpus;   /* CPUs in the boot sync check (0 = not run) */
     uint64_t max_warp;    /* largest step back one CPU's TSC showed against another's, cycles */
 } TscInfo;

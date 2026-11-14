@@ -66,14 +66,18 @@
     (clock-event hardware); `kernel/time/clock.c` (clock IDs, wall clock, bring-up order), `timer.c` (per-CPU
     queues), `time_syscalls.c`. Portable code reaches the hardware only through the `hal_clock*` /
     `hal_clockevent_*` / `hal_rtc_read` calls in `arch/hal.h`.
-  - Calibration order: CPUID 0x15, else the PIT (50 ms), else the HPET (20 ms, after ACPI, only if the PIT
-    failed; `arc.tsccal=hpet` forces it in test mode), else CPUID 0x16, else a 1 GHz guess. 0x16 went last: it is
-    the nominal base clock, which differs from the TSC rate on some parts. Conversions are mult/shift (32-bit
-    shift, one 128-bit multiply, no divide).
+  - Calibration order: CPUID 0x15, else the PIT (median of 3 x 50 ms), else the HPET (20 ms, after ACPI, only if
+    the PIT failed; `arc.tsccal=hpet` forces it in test mode), else CPUID 0x16, else a 1 GHz guess. 0x16 went
+    last: it is the nominal base clock, which differs from the TSC rate on some parts by ~0.2%; but a PIT figure
+    more than 2% off 0x16 loses to it (an SMI or busy host stretched it). With 0x15 the PIT is one try capped at
+    100 ms, for the self-test's cross-check only. Conversions are mult/shift (32-bit shift, one 128-bit
+    multiply, no divide), saturating. The microcode revision (MSR 0x8B) is on the `[TSC]` and report `Clock`
+    lines, for deadline-timer errata.
   - The boot sync check runs every CPU at once (`ipi_call_all`, 20 ms, Linux's `check_tsc_warp` idea). Any step
     back turns on a clamp: every monotonic read goes through one shared atomic maximum (slower, never backwards).
   - Clock events: TSC-deadline when CPUID says so (LVT mode first, `mfence; lfence` before the MSR write), else
-    LAPIC one-shot at divide 16, measured against the TSC once; `arc.timer=oneshot` forces one-shot (a fallback
+    LAPIC one-shot at divide 16, measured against the TSC at boot (best of 5 tries, TSC read on both sides of
+    each APIC access; one unbracketed try read 78-90 MHz for 62.5 under load), counts programmed 1/256 short; `arc.timer=oneshot` forces one-shot (a fallback
     for deadline-timer errata on some Skylake/Kaby Lake microcode). One-shot may fire a little early; the queue
     just reprograms.
   - Timer queue: an rbtree with a cached leftmost per CPU, not the min-heap the spec named: no allocation and no
@@ -82,8 +86,9 @@
   - Tickless scheduler: `rq_wants_slice` = a real thread runs and another is queued. A remote enqueue onto a busy
     CPU without a slice sends a resched IPI; that CPU arms its own slice (`sched_ipi`). Slice expiry only sets
     `need_resched`; `sched_timer_exit` switches after the timer queue is done; a CPU holding a spinlock retries in
-    1 ms (`SCHED_RETRY_NS`). Wakeups still wait for the running thread's slice (up to 100 ms, as in M1-05): the
-    load test measures a 1 s sleep waking ~104 ms late beside 8 CPU hogs.
+    1 ms (`SCHED_RETRY_NS`). Run queues are FIFO, so a woken thread waits up to (threads queued
+    ahead + 1) slices of 100 ms (M1-05 policy): the load test (8 hogs, 4 CPUs) sees 100-200 ms and allows 300.
+    Its hogs read the clock only every 10 000 loops, because every syscall takes the BKL.
   - PIT: silenced (`pit_stop`, IRQ0 masked in the IOAPIC); only `pit_measure_tsc` remains. The old tick path and
     `hal_timer_*` / `pit_get_uptime_ms` / `diag_ms_to_cycles` / `diag_delay_ms` are gone; use `clock_*`.
   - Block layer: one timer per disk at the oldest in-flight request's deadline, cancelled when nothing is in
@@ -103,5 +108,12 @@
   - M1-21: the LAPIC timer stops in deep C-states unless CPUID 6 EAX bit 2 (ARAT) is set. Before MWAIT into
     C3 or deeper on a CPU without ARAT, a pending timer needs another wake source (or stay at C1). Clock-event
     suspend/resume hooks also belong there.
+  - Lane KB: the time syscalls take the BKL though they touch no shared state, and there is no vDSO, so every
+    `clock_gettime` serialises all CPUs (ADR-0019 hot-path global lock). A "no BKL" dispatcher flag for such
+    syscalls is a small follow-up (flagged by the #45 review; not in this block).
+  - `timer_cancel_sync` waits on a per-timer running count (a timer re-armed onto another CPU while its
+    callback still runs on the first is still waited for). `clock_nanosleep` returns `-EOPNOTSUPP` for clocks
+    Linux can't sleep on and ignores unknown flag bits, as Linux does. `qemu.time.deadline` (KVM only) checks
+    the TSC-deadline path is taken.
   - Hardware: ADR-0021 smoke boot on both machines after merge; the report's new `Clock` line shows the timer
     mode, TSC sync and RTC result, and the self-test adds `tscsync` and `timer` (now 8 checks).
