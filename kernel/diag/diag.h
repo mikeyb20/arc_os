@@ -9,10 +9,11 @@
  *
  * Every boot logs the report as "[REPORT] ..." lines. With arc.report=1,
  * arc.selftest=1, arc.bench=1 or arc.qr the kernel instead stops after the
- * report, runs the tests asked for, and pages the whole report on screen every
- * 10 s (any key: next page) instead of starting init. arc.qr=1 shows the pages
- * as QR codes, arc.qr=log the newest 8 KiB of the kernel log (M1-04c). In
- * test mode it ends the QEMU run after one pass. */
+ * report, runs the tests asked for, and pages the whole report on screen
+ * instead of starting init: a page holds until a key, or until a 60 s
+ * countdown while no key has been pressed yet (diag/pager.h). arc.qr=1 shows
+ * the pages as QR codes, arc.qr=log the newest 8 KiB of the kernel log
+ * (M1-04c). In test mode it ends the QEMU run after one pass. */
 
 /* Write the boot report to the log (and keep it for the pager when a
  * diagnostic mode is on). Call after SMP, ACPI and PCI are up. */
@@ -61,11 +62,31 @@ const char *diag_line_text(uint32_t i);
  * wakes it at the end), otherwise polls. */
 int diag_wait_key(uint32_t seconds, int can_halt);
 
+/* How a pager holds its pages (diag/pager.h): one per pager run. */
+typedef struct {
+    int manual;        /* a key was pressed in this run: no more countdowns */
+    uint32_t auto_s;   /* countdown length while !manual (PAGER_AUTO_SECONDS) */
+    int can_halt;      /* as for diag_wait_key */
+    /* Draws the page's banner or caption with `hint` (pager_hint's text);
+     * called when the page starts to hold and each time the countdown's
+     * figure changes, with the console as the pager left it */
+    void (*show_hint)(const char *hint, void *ctx);
+    void *ctx;
+} DiagPageHold;
+
+/* Hold the page on screen: until a key (returns 1; h->manual becomes 1), or,
+ * while !h->manual, until h->auto_s seconds pass with a countdown in the hint
+ * (returns 0). Once manual it waits for the key however long that takes;
+ * cap_s > 0 bounds that wait (test mode only; returns 0 when it ends). A key
+ * pressed at any moment of the hold counts. */
+int diag_page_hold(DiagPageHold *h, uint32_t cap_s);
+
 /* ---- QR screens (diag/qr_mode.c, M1-04c) ---- */
 
 /* arc.qr: show the report (arc.qr=1) or the log tail (arc.qr=log) as QR
- * pages, forever; in test mode one pass, waiting for a key after each page,
- * then end the run (passes and fails from the self-test count too). Returns
+ * pages, forever, each held by diag_page_hold; in test mode one pass, waiting
+ * for a key after each page, then end the run (passes and fails from the
+ * self-test count too). Returns
  * only when the screen can't show a code: the caller falls back to text. */
 void diag_qr_run(int can_halt, int passes, int fails);
 

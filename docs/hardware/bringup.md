@@ -37,6 +37,12 @@ stick, under legacy BIOS and UEFI. It has a boot menu (10 s timeout):
 
 The diagnostic entries never start `init`: the report pages repeat forever until the machine is switched off.
 
+**How pages turn.** Each page stays on screen until you press a key (any key but Shift, Ctrl, Alt or Caps
+Lock). Until the first key press, a page also turns by itself after 60 s, with the countdown in its banner
+("any key: next page (auto in 42 s)"), so a machine whose keyboard doesn't work still shows every page. Your
+first key press shows the keyboard works: from then on the countdown is gone and each page waits for the next
+key, however long you take. After the last page the first one comes back.
+
 ## 2. Write the stick
 
 Any stick of 64 MB or more. **Everything on it is erased.**
@@ -64,8 +70,8 @@ Enter the firmware setup (usually F2, F1, Del or Enter then F1 on business lapto
 
 The laptop has no serial port, so the screen is the only output.
 
-1. **Every page of the boot report.** Pages turn every 10 s, or at once on any key, and repeat. Each page has a
-   blue banner with its number ("page 1/2"). Hold the camera square to the screen; the text is 2× size on
+1. **Every page of the boot report.** Press a key once the boot report is up: from then on each page waits
+   for your next key (see "How pages turn" in §1). Each page has a blue banner with its number ("page 1/2"). Hold the camera square to the screen; the text is 2× size on
    screens 2400×1350 and larger.
 2. **The self-test lines** (green PASS, red FAIL) and the **BENCH** table. They are on the last page.
 3. **A panic screen**, if one appears (red, yellow banner "arc_os KERNEL PANIC - scan the code or photograph
@@ -82,7 +88,7 @@ The two QR entries show the same text as codes, so it arrives exactly, with noth
 
 1. Pick "boot report as QR codes" (or "kernel log as QR codes") in the boot menu.
 2. Each screen is one code, black on white, with a line under it: `arc_os report  page 1/4  crc 1a2b3c4d`.
-   Pages turn every 10 s, or at once on any key, and repeat.
+   Pages turn as in §1: on a key, or after a 60 s countdown until your first key press.
 3. Point the phone's camera app at the code. It shows the text as a preview: tap the preview, then **Copy**
    (iPhone: "Copy"; Android camera or Google Lens: "Copy text"). Don't open anything.
 4. Paste each page into the thread in order. Every page starts `ARC1 <build> report <n>/<N> <crc>`; the last one

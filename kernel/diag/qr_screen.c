@@ -40,29 +40,32 @@ static void draw_code(const QrCode *qr, uint32_t scale, uint32_t x, uint32_t y) 
                            y);
 }
 
+void qr_screen_show_caption(const QrTextFormat *fmt, const char *text, const QrTextPage *pages, int npages, int index,
+                            const char *hint) {
+    char caption[128];
+    uint32_t crc = crc32(0, text + pages[index].start, pages[index].len);
+    ksnprintf(caption, sizeof(caption), " arc_os %s  page %d/%d  crc %08x%s%s", fmt->kind, index + 1, npages, crc,
+              hint != NULL && hint[0] != '\0' ? "  " : "", hint != NULL ? hint : "");
+    fb_console_paint_row(fb_console_rows() - 1, caption, 0x000000, 0xFFFFFF);
+}
+
 int qr_screen_show_page(const QrTextFormat *fmt, const char *text, const QrTextPage *pages, int npages, int index,
-                        uint32_t seconds, QrCode *qr, char *payload) {
+                        const char *hint, QrCode *qr, char *payload) {
     int len = qr_text_page(fmt, text, pages, npages, index, payload, QR_BYTES_MAX);
     if (len < 0) return len;
     int ver = qr_encode((const uint8_t *)payload, (size_t)len, fmt->max_version, qr);
     if (ver < 0) return ver;
 
-    uint32_t w = fb_console_width(), rows = fb_console_rows();
+    uint32_t w = fb_console_width();
     uint32_t avail_h = qr_screen_page_height();   /* the bottom text row holds the caption */
     if (avail_h == 0) return -ENOSPC;
     uint32_t scale = qr_screen_scale((uint32_t)qr->size, w, avail_h);
     if (scale == 0) return -ENOSPC;
     uint32_t px = ((uint32_t)qr->size + 2 * QR_SCREEN_QUIET) * scale;
 
-    char caption[128];
-    uint32_t crc = crc32(0, text + pages[index].start, pages[index].len);
-    int n = ksnprintf(caption, sizeof(caption), " arc_os %s  page %d/%d  crc %08x", fmt->kind, index + 1, npages, crc);
-    if (seconds > 0 && n > 0 && (size_t)n < sizeof(caption))
-        ksnprintf(caption + n, sizeof(caption) - (size_t)n, "  next in %u s, any key: next page", seconds);
-
     fb_console_fill(0xFFFFFF);
     draw_code(qr, scale, (w - px) / 2, (avail_h - px) / 2);
-    fb_console_paint_row(rows - 1, caption, 0x000000, 0xFFFFFF);
+    qr_screen_show_caption(fmt, text, pages, npages, index, hint);
     return 0;
 }
 
