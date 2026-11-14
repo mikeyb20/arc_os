@@ -43,13 +43,20 @@ uint32_t qr_screen_page_height(void);
 
 /* Encode page `index` of npages (qr_text_paginate over text) into qr, using
  * payload (QR_BYTES_MAX bytes) as scratch, and show it: the screen white, the
- * code centred above the bottom text row, which says "arc_os <kind>  page n/N
- * crc <crc of the page's text>" and, when seconds > 0, when the next page
- * comes. Returns 0, -ENOSPC if the screen is too small for the code at
- * QR_SCREEN_MIN_SCALE (nothing drawn), or a qr_text_page / qr_encode error.
+ * code centred above the bottom text row, which holds the caption
+ * (qr_screen_show_caption with hint). Returns 0, -ENOSPC if the screen is
+ * too small for the code at QR_SCREEN_MIN_SCALE (nothing drawn), or a
+ * qr_text_page / qr_encode error.
  * Cost: one encode (about 4 ms at version 30) and one full-screen write. */
 int qr_screen_show_page(const QrTextFormat *fmt, const char *text, const QrTextPage *pages, int npages, int index,
-                        uint32_t seconds, QrCode *qr, char *payload);
+                        const char *hint, QrCode *qr, char *payload);
+
+/* Redraw only the caption under page `index`, the bottom text row:
+ * "arc_os <kind>  page n/N  crc <crc of the page's text>", then hint (how the
+ * page turns, diag/pager.h) unless it is NULL or empty. The code above it is
+ * left as it is. Cost: one CRC over the page's text and one row write. */
+void qr_screen_show_caption(const QrTextFormat *fmt, const char *text, const QrTextPage *pages, int npages, int index,
+                            const char *hint);
 
 /* Write the panic text for the first nframes frames of info into out (cap
  * bytes, NUL-terminated, cut if too small): "PANIC <reason>", "CPU <n>", the

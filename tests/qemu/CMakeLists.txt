@@ -251,6 +251,19 @@ add_test(NAME qemu.qr.panic COMMAND ${_qemu_test} --suite kpanic --name qr-panic
     --check "${_qr_check} --kind panic"
     --expect "PANIC: Page Fault on CPU 0")
 
+# Page hold (bring-up pagers, diag/pager.h): arc.pagetest shows three text
+# report pages with a 15 s countdown. The harness takes a screendump on each
+# "ARC_PAGE shown" line and presses a key only on the second. The kernel checks
+# that page 1 turned by itself after the countdown, page 2 at once on the key,
+# and that page 3, after that first key, outlasted the countdown (manual).
+add_test(NAME qemu.pager COMMAND ${_qemu_test} --suite diag --name pager
+    --cmdline arc.report=1 --cmdline arc.pagetest=1
+    --screendump "^ARC_PAGE shown " --after-shot none --key-on "press a key"
+    --expect "ARC_TEST PASS page-auto key=0 manual=0"
+    --expect "ARC_TEST PASS page-key key=1 manual=1"
+    --expect "ARC_TEST PASS page-manual key=0 manual=1"
+    --expect "ARC_TEST DONE pass=3 fail=0")
+
 # Driver model (M1-09, ADR-0006): virtio-blk and virtio-net bound through the
 # PCI bus with MSI-X (config + queue vectors spread over the CPUs), QEMU's edu
 # device with MSI, an affinity move and a DMA round trip, virtio-net's RX
@@ -463,6 +476,7 @@ set_tests_properties(qemu.ext2w.verify PROPERTIES FIXTURES_REQUIRED "write_disk;
 set_tests_properties(qemu.smoke qemu.mem.buddy qemu.mem.cap qemu.userland qemu.abi qemu.musl qemu.fpu qemu.cpufloor
     qemu.smp.xapic qemu.smp.x2apic qemu.sched qemu.lockorder qemu.selftest.fail qemu.selftest.panic
     qemu.panic.fault qemu.diag qemu.mm qemu.mm.oom qemu.vfs qemu.pagecache qemu.qr.report qemu.qr.log qemu.qr.panic
+    qemu.pager
     qemu.devices qemu.devices.intx qemu.ext2 qemu.ext2.named qemu.ext2w qemu.ext2w.verify qemu.reclaim
     qemu.writeback qemu.writeback.verify
     qemu.time qemu.time.fallback qemu.time.deadline qemu.power qemu.power.msr

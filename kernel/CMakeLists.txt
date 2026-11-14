@@ -148,6 +148,7 @@ set(KERNEL_C_SOURCES
     diag/wbtest.c
     diag/qr_screen.c
     diag/qr_mode.c
+    diag/pager.c
 )
 
 # The build commit (M1-04c): rewritten on every build, but only when the

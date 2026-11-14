@@ -9,6 +9,8 @@ extern TestCase qr_tests[];
 extern int qr_test_count;
 extern TestCase qr_screen_tests[];
 extern int qr_screen_test_count;
+extern TestCase pager_tests[];
+extern int pager_test_count;
 extern TestCase timer_tests[];
 extern int timer_test_count;
 extern TestCase clock_tests[];
@@ -178,6 +180,7 @@ int main(int argc, char **argv) {
         { "cmdline",      cmdline_tests,      &cmdline_test_count },
         { "qr",           qr_tests,           &qr_test_count },
         { "qr_screen",    qr_screen_tests,    &qr_screen_test_count },
+        { "pager",        pager_tests,        &pager_test_count },
         { "timer",        timer_tests,        &timer_test_count },
         { "clock",        clock_tests,        &clock_test_count },
         { "tsc",          tsc_tests,          &tsc_test_count },

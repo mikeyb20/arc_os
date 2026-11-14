@@ -58,6 +58,7 @@ add_executable(test_runner
     test_cmdline.c
     test_qr.c
     test_qr_screen.c
+    test_pager.c
     test_timer.c
     test_clock.c
     test_tsc.c
@@ -146,6 +147,7 @@ add_test(NAME test_panic       COMMAND test_runner --suite panic)
 add_test(NAME test_smbios      COMMAND test_runner --suite smbios)
 add_test(NAME test_qr          COMMAND test_runner --suite qr)
 add_test(NAME test_qr_screen   COMMAND test_runner --suite qr_screen)
+add_test(NAME test_pager       COMMAND test_runner --suite pager)
 add_test(NAME test_timer       COMMAND test_runner --suite timer)
 add_test(NAME test_clock       COMMAND test_runner --suite clock)
 add_test(NAME test_tsc         COMMAND test_runner --suite tsc)
