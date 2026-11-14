@@ -75,7 +75,7 @@ GPT partitions, and every later storage driver plugs into the same queue (ADR-00
   1, sync read across pages, write + flush + read back, refusals, dropped interrupt completed by the timeout
   poll), and the suite reads `/disk/hello.txt` from a program, which sleeps until the disk interrupt (MSI-X,
   and INTx in `.intx`). `qemu.vfs` still mounts a whole-disk FAT32 image.
-- Measured: kernel image 506844 bytes (limit 511000, unchanged). M1-12 measured 515584 on its own branch, so
+- Measured: kernel image 507074 bytes (limit 511000, unchanged). M1-12 measured 515584 on its own branch, so
   whichever of #42 and this block merges second raises the limit (measure, don't guess).
 - Not done / for later: no `/dev` nodes for disks (spec changed above). FAT32 on a 4Kn disk refuses to mount
   (`fat32.c` assumes 512-byte sectors; ESPs on 4Kn disks use 4096-byte FAT sectors): fix when a 4Kn machine
