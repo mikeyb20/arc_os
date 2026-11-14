@@ -91,6 +91,19 @@ static void uuid_to_gpt(const struct limine_uuid *u, uint8_t out[16]) {
     for (int i = 0; i < 8; i++) out[8 + i] = u->d[i];
 }
 
+/* The boot disk and partition (GPT GUIDs; zero when not GPT) */
+static void bootinfo_read_boot_disk(const struct limine_file *kfile) {
+    g_boot_info.boot_gpt = false;
+    memset(g_boot_info.boot_disk_guid, 0, sizeof(g_boot_info.boot_disk_guid));
+    memset(g_boot_info.boot_part_guid, 0, sizeof(g_boot_info.boot_part_guid));
+    if (kfile == NULL) return;
+    uuid_to_gpt(&kfile->gpt_disk_uuid, g_boot_info.boot_disk_guid);
+    uuid_to_gpt(&kfile->gpt_part_uuid, g_boot_info.boot_part_guid);
+    for (int i = 0; i < 16; i++) {
+        if (g_boot_info.boot_disk_guid[i] != 0) g_boot_info.boot_gpt = true;
+    }
+}
+
 const BootInfo *bootinfo_init(void) {
     memset(&g_boot_info, 0, sizeof(g_boot_info));
 
@@ -183,18 +196,7 @@ const BootInfo *bootinfo_init(void) {
                 sizeof(g_boot_info.cmdline) - 1);
         g_boot_info.cmdline[sizeof(g_boot_info.cmdline) - 1] = '\0';
     }
-
-    /* The boot disk and partition (GPT GUIDs; zero when not GPT) */
-    g_boot_info.boot_gpt = false;
-    memset(g_boot_info.boot_disk_guid, 0, sizeof(g_boot_info.boot_disk_guid));
-    memset(g_boot_info.boot_part_guid, 0, sizeof(g_boot_info.boot_part_guid));
-    if (kf != NULL && kf->kernel_file != NULL) {
-        uuid_to_gpt(&kf->kernel_file->gpt_disk_uuid, g_boot_info.boot_disk_guid);
-        uuid_to_gpt(&kf->kernel_file->gpt_part_uuid, g_boot_info.boot_part_guid);
-        for (int i = 0; i < 16; i++) {
-            if (g_boot_info.boot_disk_guid[i] != 0) g_boot_info.boot_gpt = true;
-        }
-    }
+    bootinfo_read_boot_disk(kf != NULL ? kf->kernel_file : NULL);
 
     return &g_boot_info;
 }
