@@ -35,6 +35,10 @@ finds the result clean (ADR-0008).
 - L block: a clean stopping point is after allocation + file writes + truncate pass their e2fsck scenarios.
 
 **Notes.**
+- From M1-14 (and its D3 review): `fsync` ends with `blk_rw_sync(dev, BLK_OP_FLUSH, ...)` on the volume's
+  device and returns `as->wb_err` if a page was given up (`filemap_fsync` shows the pattern); `sync` already
+  flushes every cached disk. `writepage` runs with the page locked and no inode lock, and must not wait for the
+  inode lock: a writer over the dirty limit waits for write-back while holding it. See M1-14 Notes.
 - From M1-13: clear `ind_cache` on any block-map change; never make an `ext2_ro_forced` volume writable;
   clear `EXT2_INDEX_FL` on a `dir_index` directory you change (no htree upkeep); `ext2_start_page` copies a
   file's EOF block from the metadata cache, so keep that copy coherent with writes (or drop it). See M1-13 Notes.

@@ -35,8 +35,10 @@
  *                        a page into a page table, write-back
  *   mapping lock (40)    AddressSpace.map_lock: the list of VMAs mapping it
  *   page-table lock (50) the mm's, to change entries mapping cache pages
- *   LRU lock (59)        the evictable-page list (spinlock)
+ *   LRU lock (59)        the inactive and active lists (mm/reclaim.c, spinlock)
  *   index lock (60)      AddressSpace.tree_lock: the radix tree (spinlock)
+ *   write-back lock (78) the list of mappings with dirty pages (mm/writeback.c;
+ *                        IRQ-safe, above every lock held with interrupts on)
  * Never take the mm lock while holding a page lock, and never fault on user
  * memory while holding one: copies into a locked page prefault the user
  * buffer, copy with faults disabled and retry on a short copy. */
@@ -90,6 +92,11 @@ struct AddressSpace {
     uint32_t flags;               /* AS_* */
     Mutex map_lock;               /* LOCK_LEVEL_MAPPING: vmas */
     struct Vma *vmas;             /* VMAs mapping this file (Vma.as_next), under map_lock */
+    AddressSpace *wb_next;        /* write-back list (mm/writeback.c), under its lock */
+    AddressSpace *wb_prev;
+    uint32_t wb_state;            /* WB_LISTED, WB_BUSY (mm/writeback.h) */
+    uint64_t wb_fail_since;       /* uptime ms its writes began failing; 0: the last one worked (atomic) */
+    int wb_err;                   /* error of a page given up since the last fsync (atomic) */
 };
 
 #define FILEMAP_RA_MIN_PAGES 32    /* 128 KiB: the first window */
@@ -104,11 +111,12 @@ struct AddressSpace {
 typedef struct FilemapStats {
     uint64_t file_pages;   /* pages in every page cache */
     uint64_t dirty;        /* of those, dirty */
+    uint64_t dirty_wb;     /* of those, in mappings with a disk: what the dirty limit counts (M1-14) */
     uint64_t mapped;       /* of those, mapped by at least one page table */
     uint64_t pgpgin;       /* pages read by readpage */
     uint64_t ra_pages;     /* pages read ahead of the one asked for */
     uint64_t ra_batches;   /* readahead batches started */
-    uint64_t dropped;      /* clean pages dropped (drop_caches, M1-14's reclaim) */
+    uint64_t dropped;      /* clean pages taken out by drop_caches and reclaim (M1-14) */
 } FilemapStats;
 
 /* Boot: the radix-node and address-space slab caches. */
@@ -183,12 +191,45 @@ int64_t filemap_write(File *file, const IoBuf *buf, loff_t *pos);
  * of the last page; growing zeroes the old last page's tail. */
 void filemap_truncate(Inode *inode, loff_t size);
 
-/* Write back the dirty pages with index in [first, last] and wait. 0 or the
- * first error. */
+/* Write back the dirty pages with index in [first, last] and wait, also for
+ * writes of them already under way (the flusher's, kswapd's). 0 or the first
+ * error. */
 int filemap_write_range(AddressSpace *as, uint64_t first, uint64_t last);
 
-/* fsync / fdatasync for files whose data lives in the cache. */
+/* --- For reclaim (mm/reclaim.c): pages it took with page_trylock --- */
+
+/* Write one dirty page now: write-protect it in every shared mapping, clear
+ * PG_DIRTY, writepage (it is dirty again if that fails). pg locked. 0 or
+ * -errno. */
+int filemap_writepage_locked(AddressSpace *as, struct page *pg);
+
+/* Take a locked page out of its tree if nothing but the tree and the
+ * caller holds a reference (no reader, no page-table entry, no waiter); it
+ * must be off the LRU lists and clean. Drops the tree's reference and
+ * returns 1 (the page stays locked, the caller's reference is the last), or
+ * returns 0 and changes nothing. */
+int filemap_remove_unused(AddressSpace *as, struct page *pg);
+
+/* Release a page lock taken with page_trylock (not known to the lock
+ * checker). */
+void page_unlock_trylocked(struct page *pg);
+
+/* How many page-table entries mapping pg were accessed since the last call:
+ * tests and clears their accessed bits, through the VMAs mapping as. pg
+ * locked. No TLB flush: a CPU still caching an entry may skip setting the
+ * bit again, which only makes the page look older (as Linux). */
+int filemap_page_young(AddressSpace *as, struct page *pg);
+
+/* fsync / fdatasync for files whose data lives in the cache: write the
+ * dirty pages and wait, flush the device's write cache (block-device
+ * mappings; a file system with a disk flushes in its own fsync, M1-15), and
+ * report an error kept from a page given up since the last fsync. */
 int filemap_fsync(File *file);
+
+/* Send BLK_OP_FLUSH to the device of a block-device mapping (its volatile
+ * write cache to the medium) and wait. 0 at once for other mappings and for
+ * disks without a write cache; -EIO. */
+int filemap_flush_device(AddressSpace *as);
 
 /* The VMA operations of every file mapping (FileOps.mmap_ops of files
  * whose data lives in the cache): faults, msync, MADV_WILLNEED. */
@@ -198,9 +239,6 @@ extern const VmaOps filemap_vma_ops;
  * of a window). Pages already there are skipped. Returns pages read. */
 uint64_t filemap_readahead(AddressSpace *as, uint64_t first, uint64_t count);
 
-/* Drop every clean, unmapped, unlocked page of evictable mappings
- * (/proc/sys/vm/drop_caches 1). Returns pages freed. */
-uint64_t filemap_drop_clean(void);
 
 /* Counters. */
 void filemap_stats(FilemapStats *out);
@@ -213,9 +251,10 @@ void filemap_page_mapped(struct page *pg);
 void filemap_page_unmapped(struct page *pg);
 
 /* Through the VMAs that map as (filemap_mmap.c): take every entry for pages
- * >= first out of every process; take one page's entries out; write-protect
- * one page in every shared mapping (write-back). The page functions want the
- * page locked. */
+ * >= first out of every process (private copies of them too: truncate);
+ * take out the entries that map one page (a private copy made from it stays:
+ * reclaim, a fault that raced truncate); write-protect one page in every
+ * shared mapping (write-back). The page functions want the page locked. */
 void filemap_unmap_from(AddressSpace *as, uint64_t first);
 void filemap_unmap_page(AddressSpace *as, struct page *pg);
 void filemap_mkclean(AddressSpace *as, struct page *pg);

@@ -63,7 +63,7 @@ long zbar_decode_file(const char *path, uint8_t *out, size_t cap) {
         zbar_checked = 1;
     }
     char cmd[256];
-    snprintf(cmd, sizeof(cmd), "zbarimg --raw -q -Sbinary %s 2>/dev/null", path);
+    snprintf(cmd, sizeof(cmd), "zbarimg --raw -q -Sdisable -Sqrcode.enable -Sbinary %s 2>/dev/null", path);
     FILE *p = popen(cmd, "r");
     if (p == NULL) return -1;
     size_t n = fread(out, 1, cap, p);

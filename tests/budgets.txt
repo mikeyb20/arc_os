@@ -42,11 +42,18 @@
 # 538274 -> 558053 after M1-13 (+19779): the path walk on the tree (symlinks,
 # "..", cwd by inode, readlink), ext2 read-only, the boot mount (sysmount,
 # blk_lookup) and their backtrace names.
-# after M1-06 (+16378 on its own base, measured again on top of M1-13 below): the timer queues,
-# clocks, RTC/HPET readers, time syscalls, clock-event setup and the tickless
-# slice (.text +12151, .rodata +1422, .ksyms +2387, .data/.bss +448).
+# 558053 -> 574833 after M1-14 (+16780): LRU lists, kswapd and direct reclaim,
+# the write-back list, flusher and sync(2), the test-mode write-back test, and
+# their backtrace names. 574833 -> 579487 with the D3 review fixes (+4654:
+# waiting for write-back, the dirty limit, disk flushes, the phys-checked
+# unmap). With M1-06 (#45) in the same image, the second of the two to merge
+# measures again.
+# 579487 -> 598658 after M1-06 (+19171, merged second): the timer queues,
+# clocks, RTC/HPET readers, time syscalls, clock-event setup, the tickless
+# slice, the D3 review fixes and the write-back timers swapped to one-shot
+# Timers.
 # Limit = measured + 5%)
-kernel_image_bytes     586000      max  bytes  M0-08  build
+kernel_image_bytes     628000      max  bytes  M0-08  build
 
 # Free memory when init starts, booted with -m 4G (qemu.smoke; measured 4251873280)
 boot_free_bytes        3830000000  min  bytes  M0-08  smoke

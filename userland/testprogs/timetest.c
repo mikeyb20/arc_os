@@ -376,7 +376,7 @@ static int read_loc(uint64_t counts[MAX_CPUS]) {
     return n;
 }
 
-static void test_idle(void) {
+static void test_tickless_idle(void) {
     uint64_t before[MAX_CPUS], after[MAX_CPUS];
     int n = read_loc(before);
     CHECK(n >= 1, "/proc/interrupts has no LOC row");
@@ -409,7 +409,7 @@ int main(int argc, char **argv) {
     if (all || strcmp(part, "cputime") == 0) test_cpu_time();
     if (all || strcmp(part, "crosscpu") == 0) test_cross_cpu();
     if (all || strcmp(part, "load") == 0) test_load();
-    if (all || strcmp(part, "idle") == 0) test_idle();
+    if (all || strcmp(part, "idle") == 0) test_tickless_idle();
     printf("timetest: %s: %d failures\n", part, failures);
     return failures;
 }

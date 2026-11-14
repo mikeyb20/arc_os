@@ -20,7 +20,8 @@
  * Both are at most one step per order.
  *
  * Locking: one IRQ-safe spinlock, a leaf lock (work-blocks.md §7, level 10).
- * Nothing else is taken while it is held. */
+ * Nothing else is taken while it is held. The memory-pressure hook (M1-14)
+ * runs after it is released, in the allocating context. */
 
 /* Initialize from the BootInfo memory map. Reads `arc.mem=<size>` from the
  * kernel command line (e.g. arc.mem=4G): RAM beyond that amount is ignored, so
@@ -30,8 +31,39 @@ void pmm_init(const BootInfo *info);
 /* Allocate 2^order physically contiguous pages, aligned to their size.
  * Flags: GFP_ZERO zeroes the block; GFP_DMA32 takes memory below 4 GiB only.
  * Without GFP_DMA32 memory above 4 GiB is used first, then below.
- * Returns the head descriptor (refcount 1), or NULL. At most one step per order. */
+ * GFP_RECLAIM: the caller may sleep and holds no spinlock, so low memory is
+ * reclaimed before it fails (M1-14, see the pressure hook below).
+ * Returns the head descriptor (refcount 1), or NULL. At most one step per
+ * order in the allocator itself. */
 struct page *alloc_pages(unsigned order, uint32_t flags);
+
+/* alloc_pages without the memory-pressure hook below: the buddy allocation
+ * alone (reclaim's own retries use it). Same flags and result. */
+struct page *pmm_alloc_block(unsigned order, uint32_t flags);
+
+/* --- Memory pressure (M1-14, mm/reclaim.c) --- */
+
+/* Free-page watermarks: below low the reclaim thread is woken, below min a
+ * GFP_RECLAIM allocation reclaims directly, and reclaim stops at high. */
+typedef struct PmmWatermarks {
+    uint64_t min;
+    uint64_t low;
+    uint64_t high;
+} PmmWatermarks;
+
+/* Called by alloc_pages when the allocation failed (got NULL) or left fewer
+ * free pages than the low watermark; returns the block to hand out (got, or
+ * one found after reclaiming). It runs in the allocating context, so it
+ * decides itself what that context allows (GFP_RECLAIM, spinlocks held). */
+typedef struct page *(*pmm_pressure_fn)(struct page *got, unsigned order, uint32_t flags);
+
+/* Set by reclaim_init once (boot). Until then alloc_pages never calls out. */
+void pmm_set_watermarks(const PmmWatermarks *w);
+void pmm_get_watermarks(PmmWatermarks *out);
+void pmm_set_pressure_hook(pmm_pressure_fn fn);
+
+/* Fewest free pages left after any allocation since boot (/proc/vmstat). */
+uint64_t pmm_free_lowest(void);
 
 /* Drop the caller's reference to a block from alloc_pages(page, order). When
  * the reference count reaches 0 the block returns to the free lists and merges

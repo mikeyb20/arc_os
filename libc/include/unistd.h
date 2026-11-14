@@ -23,6 +23,7 @@ int     dup2(int oldfd, int newfd);
 int     unlink(const char *path);
 int rmdir(const char *path);
 int     pipe(int pipefd[2]);
+void sync(void);
 
 /* Process operations */
 pid_t   fork(void);
