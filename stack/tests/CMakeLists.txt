@@ -34,10 +34,11 @@ add_subdirectory(arcpack)
 add_subdirectory(search)
 add_subdirectory(arcutil)
 add_subdirectory(arcpkg)
+add_subdirectory(zim)
 
 # Sizes for stack/budgets.txt (ADR-0019): loaded ELF bytes, as kernel_image_bytes.
 lane_driver_test(NAME sizes COMMAND python3 "${ARC_ROOT}/tools/lane/sizes.py"
     "${ARC_LANE_BUDGET_DIR}/sizes.budget.log" cxx_basic_bytes=$<TARGET_FILE:cxx_basic>
     zstd_cli_bytes=${ARC_ZSTD_CLI} sqlite3_shell_bytes=${ARC_SQLITE_SHELL}
     llama_completion_bytes=${ARC_LLAMA_COMPLETION} arc_llm_bytes=$<TARGET_FILE:arc-llm>
-    arcpkg_bytes=$<TARGET_FILE:arcpkg>)
+    arcpkg_bytes=$<TARGET_FILE:arcpkg> zimcat_bytes=$<TARGET_FILE:zimcat>)

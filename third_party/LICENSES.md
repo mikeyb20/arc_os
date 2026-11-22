@@ -33,6 +33,7 @@ used to build arc_os ship alongside it.
 | spleen | 2.2.0 | BSD-2-Clause | Inside arc_os (linked or installed) | Bitmap console fonts; ships ready-made PSF2 (.psfu) files (M3-05) |
 | linux-uapi-ref | 6.12 | GPL-2.0 WITH Linux-syscall-note | Build host only | Reference only for syscall numbers and struct layouts (ADR-0001). Never #include in arc_os code. |
 | ext2-doc | 2019 | GFDL-1.2-or-later | Build host only | The Second Extended File System layout spec by Dave Poirier (M1-13, M1-15) |
+| zim-spec | 2026-09-12 | CC-BY-SA-3.0 | Build host only | openZIM's ZIM format spec (wiki pages at fixed revisions); the reference for arczim (M3-03a, ADR-0022) |
 | tiny-chat-model | smollm2-135m | Apache-2.0 | Tests only (CI and QEMU) | Tiny GGUF chat model for QEMU and CI tests (M2) |
 | tiny-embed-model | nomic-embed- | Apache-2.0 | Tests only (CI and QEMU) | Tiny GGUF embedder for retrieval tests (M3) |
 

@@ -6,24 +6,24 @@
 
 ## 1. Summary
 
-<!-- Totals computed by script from the §4 tables on 2026-11-12. Recompute when blocks change. -->
+<!-- Totals computed by script from the §4 tables on 2026-11-22. Recompute when blocks change. -->
 
 | Milestone | Blocks | Session units | With allowance |
 |---|---|---|---|
 | M0 Lock-in decisions | 10 | 8.0 | 10.5 |
 | M1 Compute kernel | 25 | 30.5 | 43.5 |
 | M2 Toolchain + first LLM | 9 | 8.0 | 9.7 |
-| M3 Knowledge layer | 15 | 14.5 | 18.8 |
+| M3 Knowledge layer | 16 | 15.5 | 20.0 |
 | M4 Real hardware | 15 | 16.0 | 21.1 |
 | M5 Packages + installer | 9 | 8.5 | 10.3 |
-| **Total** | **83** | **85.5** | **113.9** |
+| **Total** | **84** | **86.5** | **115.1** |
 
-- **83 blocks**: 19 small, 52 medium, 12 large. The 39 deep (D) blocks carry
-  45.5 of the 85.5 session units.
+- **84 blocks**: 19 small, 53 medium, 12 large. The 39 deep (D) blocks carry
+  45.5 of the 86.5 session units.
 - **Session units:** S = 0.5, M = 1, L = 2. "With allowance" adds debugging and rework: D blocks × 1.5, R blocks
   × 1.2; Linux-first blocks (lane L) × 1.2 and × 1.1, because they are debugged natively on Linux instead of in
   QEMU under TCG. That allowance is an estimate, not a measurement; recheck it after M1, the first milestone with
-  real numbers. Budget about **114 sessions**.
+  real numbers. Budget about **115 sessions**.
 - **M1 is the big one:** 25 blocks and 30.5 units, 17 of them deep. It gives the kernel virtual memory, SMP, threads,
   a page cache and ext2.
 - **Critical path:** 26 blocks, 27 units (§5); 21.5 units are left after the 24 blocks merged by 2026-11-12. That
@@ -157,7 +157,7 @@ Start every block with `/os/implement-block <ID>`. These rules are what keep ses
 | M2-05 | `ask` command + M2 done-test | S | R | U | M2-04b | `ask "what is hypothermia"` answers in QEMU (4 CPUs, 4 GB) | todo |
 | M2-06 | Measure on the laptop, shortlist models | M | R | H | M2-05 | Tokens/s and RAM per tier recorded; mmap vs 2 MiB anonymous loading compared and chosen (ADR-0019); plan §4 updated | todo |
 
-### M3 — Knowledge layer (specs from M3-00; M3-02 and M3-06a from M2-00a; M3-01, M3-03 and M3-04 from M3-00a, with [`content-lane.md`](content-lane.md); M3-05 from M4-00)
+### M3 — Knowledge layer (specs from M3-00; M3-02 and M3-06a from M2-00a; M3-01, M3-03 and M3-04 from M3-00a, with [`content-lane.md`](content-lane.md); M3-03a written with its code, ADR-0022; M3-05 from M4-00)
 
 M3-00 sets the smallest supported screen at 1366×768, common on the low-tier reference laptops: the reader,
 assistant and viewers lay out from the framebuffer size, never a fixed one.
@@ -168,7 +168,8 @@ assistant and viewers lay out from the framebuffer size, never a fixed one.
 | M3-00 | Plan M3 | S | D | P | M2-06 | Specs for the other M3 blocks written (M3-04b included; M3-05 comes from M4-00); content-lane specs corrected from M2-06 | todo |
 | M3-01 | Content selection, licences, size budget | M | R | C | M3-00a, M0-07 | Source list per category and tier approved by Michael | done |
 | M3-02 | `libarcpack`: doc store, chunks, manifests | M | D | L | M2-00a, M2-02, M2-04, M0-07 | One library reads packs on Linux inside the syscall inventory (on arc_os from M3-07) | done |
-| M3-03 | ZIM → doc store + chunks (host) | L | R | C | M3-01, M3-02 | Medical pack built twice with identical chunk IDs | todo |
+| M3-03a | Own ZIM reader (host) | M | R | C | M2-02, M3-01 | `arczim` + `zimcat` read and check the sample medical ZIMs; lane tests on good and damaged fixture ZIMs (ADR-0022) | in progress |
+| M3-03 | ZIM → doc store + chunks (host) | L | R | C | M3-01, M3-02, M3-03a | Medical pack built twice with identical chunk IDs | todo |
 | M3-04 | FTS5, tier selector, `.arcpkg` (host) | M | R | C | M3-03, M5-02 | 32 GB keyword-only pack set built and sized; `tiers.json` for each storage tier | todo |
 | M3-04b | Pack vectors (host) | M | R | C | M3-00, M3-04 | Each 32 GB pack gets `vectors/<embedder>/` from M2-06's embedder as a new minor version with unchanged chunk IDs; tier sizes re-measured | todo |
 | M3-05 | UTF-8 console, PSF2, `/dev/input`, `/dev/fb0` | M | D | KB | M4-00 | fbdev `mmap` and `input_event` work from user space | todo |
@@ -272,7 +273,7 @@ done-test (12 of M1's 28 units). The other M1 blocks hang off that chain and slo
   xHCI, USB core, USB storage and NVMe (M4-01, M4-02, M4-04, M4-05) are built while the user-space lane runs
   M2-00 → M2-04b → M2-05 and M3. Real hardware is the biggest unknown, and the USB-only machine can't use the
   key before USB storage exists. M4-03 and M4-07 still wait for M3-05 (`/dev/input`); M4-14 waits for M3-11.
-- **Content lane** (M3-01, M3-03, M3-04; M3-04b after M2-06) runs on a Linux host from M3-00a, which plans it once M3-02 has fixed
+- **Content lane** (M3-01, M3-03a, M3-03, M3-04; M3-04b after M2-06) runs on a Linux host from M3-00a, which plans it once M3-02 has fixed
   the pack format, so content choice and the pack builder happen during M1 instead of after M2-06.
 
 **Linux-first lane (L).** arc_os uses the Linux x86_64 syscall ABI (ADR-0001), so a static musl program built
@@ -479,3 +480,9 @@ Secure Boot through a signed shim and our own key.
 - **2026-11-13** — M1-04c (QR screens) built out of lane order, beside M1-09, on Michael's card answer in its thread:
   its spec needs only M1-04b and M1-05, and its one shared file with M1-09 (`report.c`) is split by function
   (M1-09 rewrites `report_pci`, M1-04c touches the first line, the Features line and the pager).
+- **2026-11-22** — Own ZIM reader (Michael: "1b", write our own instead of python-libzim; ADR-0022). New block
+  M3-03a (M, content lane, before M3-03): `stack/lib/arczim/` and `zimcat`, build host only, zstd and uncompressed
+  clusters (xz refused), the test ZIM writer `zim_fixture`, and the `zim-spec` archive entry. M3-03 now needs it,
+  gets entries from `zimcat stream` in cluster order (path order costs about one cluster decompression per article)
+  and makes its test ZIM with `zim_fixture`. Totals 84 blocks, 86.5 units; critical path unchanged (the content
+  lane is off it).
