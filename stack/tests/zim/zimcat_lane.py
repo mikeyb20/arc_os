@@ -6,7 +6,9 @@ Checks: `info` prints the header, MIME list, metadata (text values, binary ones 
 counts per namespace and kind; `ls` lists every entry in path order with redirect targets and titles,
 control characters escaped, and `ls NS` only that namespace; `cat` prints content byte for byte and
 follows redirects, and a missing path exits 1; `check` passes on the good file and exits 1 naming the
-cluster on one with an xz cluster; a file that isn't a ZIM exits 1; bad usage exits 2. Budgets:
+cluster on one with an xz cluster; a file that isn't a ZIM exits 1; bad usage exits 2. `stream` (M3-03)
+prints metadata, redirects to HTML articles, every article framed in cluster order (out of path order in
+the fixture), other entries by MIME type and the counts, and stops on an xz cluster. Budgets:
 zimcat_bytes comes from sizes.py; zimcat_check_rss_kib is the peak RSS of `zimcat check` on a generated
 ZIM of 20 000 articles in 40 zstd clusters spread out of path order, through lane_rss.
 """
@@ -131,6 +133,65 @@ def test_bad(args, tmp):
     check(code == 2, "cat without NS/ exits 2")
 
 
+STREAM = {
+    "major": 6, "minor": 3,
+    "clusters": [{"compression": "zstd"}, {"compression": "none"}, {"compression": "zstd"}],
+    "entries": [
+        {"ns": "M", "path": "Source", "mime": "text/plain", "text": "lane.example", "cluster": 1},
+        {"ns": "M", "path": "Date", "mime": "text/plain", "text": "2026-11-22", "cluster": 1},
+        {"ns": "C", "path": "Alpha", "mime": "text/html", "text": "<p>alpha</p>", "cluster": 2},
+        {"ns": "C", "path": "Beta", "title": "Beta title", "mime": "text/html; charset=iso-8859-1",
+         "text": "<p>beta</p>", "cluster": 0},
+        {"ns": "C", "path": "Gamma\tTab", "mime": "text/html", "text": "<p>gamma\nline</p>", "cluster": 2},
+        {"ns": "C", "path": "Delta", "mime": "text/html", "text": "", "cluster": 0},
+        {"ns": "C", "path": "Cold", "redirect": "C/Beta"},
+        {"ns": "C", "path": "Style", "redirect": "C/site.css"},
+        {"ns": "C", "path": "site.css", "mime": "text/css", "text": "p{}", "cluster": 1},
+        {"ns": "C", "path": "img/a.webp", "mime": "image/webp", "text": "WEBPDATA", "cluster": 1},
+        {"ns": "W", "path": "mainPage", "redirect": "C/Alpha"},
+    ],
+}
+
+
+def parse_stream(out):
+    """zimcat stream output as (lines before the articles, articles, lines after)."""
+    head, arts, tail, i = [], [], [], 0
+    while i < len(out):
+        nl = out.index(b"\n", i)
+        line = out[i:nl].decode()
+        i = nl + 1
+        if line.startswith("article\t"):
+            _, path, title, mime, size = line.split("\t")
+            body = out[i:i + int(size)]
+            check(out[i + int(size):i + int(size) + 1] == b"\n", f"stream: article {path} ends with a newline")
+            i += int(size) + 1
+            arts.append((path, title, mime, body))
+        else:
+            (tail if arts or line.startswith(("other", "count", "end")) else head).append(line)
+    return head, arts, tail
+
+
+def test_stream(args, tmp):
+    zim = fixture(args, tmp, "stream", STREAM)
+    code, out, _ = run(args, "stream", zim, raw=True)
+    check(code == 0, "stream: exits 0")
+    head, arts, tail = parse_stream(out)
+    check(head[0].startswith("zim\t") and head[0].split("\t")[2:] == ["6.3", "11", "3"], "stream: zim line")
+    check("meta Source\tlane.example" in head and "meta Date\t2026-11-22" in head, "stream: metadata lines")
+    check([h for h in head if h.startswith("redirect")] == ["redirect\tCold\tBeta"],
+          "stream: redirects to HTML articles only, namespace C only")
+    check([a[0] for a in arts] == ["Beta", "Delta", "Alpha", "Gamma\\x09Tab"],
+          "stream: articles in cluster order (path order inside a cluster), paths escaped")
+    check(arts[0][1:] == ("Beta title", "text/html; charset=iso-8859-1", b"<p>beta</p>") and arts[1][3] == b"" and
+          arts[3][3] == b"<p>gamma\nline</p>", "stream: title, MIME type and bytes of each article (newlines kept)")
+    check(tail == ["other\ttext/css\t1\t3", "other\timage/webp\t1\t8", "count\tredirects\t2\t1",
+                   "count\tobsolete\t0", "end\t4"], "stream: other entries by MIME type, counts, end line")
+    bad = fixture(args, tmp, "stream-xz", dict(STREAM, clusters=[{"compression": "zstd"}, {"compression": "none"},
+                                                                 {"compression": "xz"}]))
+    code, _, err = run(args, "stream", bad)
+    check(code == 1 and "xz" in err, "stream: an article in an xz cluster stops it with exit 1")
+
+
 def test_rss(args, tmp):
     zim = fixture(args, tmp, "big", {"major": 6, "minor": 3, "clusters": [{"compression": "zstd"}],
                                      "entries": [{"ns": "M", "path": "Title", "mime": "text/plain",
@@ -159,6 +220,7 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         test_good(args, tmp)
         test_bad(args, tmp)
+        test_stream(args, tmp)
         test_rss(args, tmp)
     print(f"zimcat: {failures} failure(s)")
     return 1 if failures else 0

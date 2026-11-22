@@ -641,8 +641,7 @@ static bool lru_touch(lru_sim *l, unsigned cap, uint32_t c) {
     return miss;
 }
 
-/* is_html: a text/html MIME type, with or without parameters. */
-static bool is_html(const char *mime) {
+bool arczim_mime_is_html(const char *mime) {
     return strncmp(mime, "text/html", 9) == 0 && (mime[9] == '\0' || mime[9] == ';');
 }
 
@@ -675,7 +674,7 @@ static bool check_entries(arczim *z, arczim_stats *st, uint64_t *per_cluster) {
         st->content++;
         st->mime[e.mime].entries++;
         per_cluster[e.cluster + 1]++;
-        if ((e.ns == 'C' || e.ns == 'A') && is_html(z->mimes[e.mime])) {
+        if ((e.ns == 'C' || e.ns == 'A') && arczim_mime_is_html(z->mimes[e.mime])) {
             st->html_entries++;
             for (unsigned k = 0; k < ARCZIM_LRU_SIZES; k++) {
                 st->html_lru_misses[k] += lru_touch(&lru[k], arczim_lru_sizes[k], e.cluster);

@@ -6,6 +6,10 @@
  *                               "-> target", title if it differs from the path; tab-separated
  *   zimcat cat   ZIM NS/PATH    the entry's data on stdout (redirects followed)
  *   zimcat check ZIM            read and check the whole file once; print what it holds
+ *   zimcat stream ZIM           the articles for the content pipeline (M3-03): metadata, redirects, then every
+ *                               HTML entry of namespace C (A in old files) as a framed record, in cluster
+ *                               order so each cluster is decompressed once; then counts of the rest.
+ *                               Format: docs/formats/article-stream.md, "zimcat stream"
  *
  * Control characters and backslashes in paths, titles and metadata are printed as \xNN, so each
  * entry stays one line. Exit status: 0 ok, 1 damaged file or entry not found, 2 usage.
@@ -19,7 +23,7 @@
 #define META_SHOW_MAX 300 /* bytes of a metadata value printed by `info` */
 
 static void zimcat_usage(void) {
-    fputs("usage: zimcat info ZIM | ls ZIM [NS] | cat ZIM NS/PATH | check ZIM\n", stderr);
+    fputs("usage: zimcat info ZIM | ls ZIM [NS] | cat ZIM NS/PATH | check ZIM | stream ZIM\n", stderr);
     exit(2);
 }
 
@@ -51,6 +55,38 @@ static bool is_text(const char *mime) {
     return strncmp(mime, "text/plain", 10) == 0;
 }
 
+/*
+ * print_metadata: one "meta KEY<TAB>value" line per metadata entry: text values escaped, cut at `max`
+ * bytes (with the full size after "..."), other types as "<mime, N bytes>".
+ */
+static int print_metadata(arczim *z, uint64_t max) {
+    uint32_t first, end;
+    if (!arczim_lower_bound(z, 'M', "", 0, &first) || !arczim_lower_bound(z, 'M' + 1, "", 0, &end)) {
+        return zimcat_fail(z, "metadata");
+    }
+    for (uint32_t i = first; i < end; i++) {
+        arczim_entry e;
+        const char *value;
+        uint64_t size;
+        if (!arczim_resolve(z, i, &e) || !arczim_content(z, &e, &value, &size)) {
+            return zimcat_fail(z, "metadata");
+        }
+        fputs("meta ", stdout);
+        put_escaped(e.path, e.path_length);
+        putchar('\t');
+        if (is_text(arczim_mime(z, e.mime))) {
+            put_escaped(value, size > max ? (size_t)max : (size_t)size);
+            if (size > max) {
+                printf("... (%llu bytes)", (unsigned long long)size);
+            }
+        } else {
+            printf("<%s, %llu bytes>", arczim_mime(z, e.mime), (unsigned long long)size);
+        }
+        putchar('\n');
+    }
+    return 0;
+}
+
 static int zimcat_info(arczim *z) {
     const arczim_header *h = arczim_get_header(z);
     printf("version\t%u.%u\nsize\t%llu\nuuid\t", h->major, h->minor, (unsigned long long)arczim_file_size(z));
@@ -71,29 +107,8 @@ static int zimcat_info(arczim *z) {
     for (uint16_t i = 0; i < arczim_mime_count(z); i++) {
         printf("mime %u\t%s\n", i, arczim_mime(z, i));
     }
-    uint32_t first, end;
-    if (!arczim_lower_bound(z, 'M', "", 0, &first) || !arczim_lower_bound(z, 'M' + 1, "", 0, &end)) {
-        return zimcat_fail(z, "metadata");
-    }
-    for (uint32_t i = first; i < end; i++) {
-        arczim_entry e;
-        const char *value;
-        uint64_t size;
-        if (!arczim_resolve(z, i, &e) || !arczim_content(z, &e, &value, &size)) {
-            return zimcat_fail(z, "metadata");
-        }
-        fputs("meta ", stdout);
-        put_escaped(e.path, e.path_length);
-        putchar('\t');
-        if (is_text(arczim_mime(z, e.mime))) {
-            put_escaped(value, size > META_SHOW_MAX ? META_SHOW_MAX : (size_t)size);
-            if (size > META_SHOW_MAX) {
-                printf("... (%llu bytes)", (unsigned long long)size);
-            }
-        } else {
-            printf("<%s, %llu bytes>", arczim_mime(z, e.mime), (unsigned long long)size);
-        }
-        putchar('\n');
+    if (print_metadata(z, META_SHOW_MAX) != 0) {
+        return 1;
     }
     uint64_t per_ns[256] = {0}, kinds[3] = {0};
     for (uint32_t i = 0; i < h->entry_count; i++) {
@@ -211,6 +226,159 @@ static int zimcat_check(arczim *z) {
     return 0;
 }
 
+/* cmp_u64: qsort order for the (cluster, entry) keys of `stream`. */
+static int cmp_u64(const void *a, const void *b) {
+    uint64_t x = *(const uint64_t *)a;
+    uint64_t y = *(const uint64_t *)b;
+    return x < y ? -1 : x > y;
+}
+
+/* content_range: the article namespace's entry numbers: 'C', or 'A' in a file that has no 'C' (before 6.1). */
+static bool content_range(arczim *z, char *ns, uint32_t *first, uint32_t *end) {
+    for (int i = 0; i < 2; i++) {
+        *ns = i == 0 ? 'C' : 'A';
+        if (!arczim_lower_bound(z, *ns, "", 0, first) || !arczim_lower_bound(z, (char)(*ns + 1), "", 0, end)) {
+            return false;
+        }
+        if (*first < *end) {
+            return true;
+        }
+    }
+    return true;
+}
+
+/* Entry counts of the article namespace, from stream_redirects. */
+typedef struct {
+    uint64_t content, redirects, redirects_out, obsolete;
+} stream_counts;
+
+/*
+ * stream_redirects: count the entries of [first, end) and print a `redirect` line for each redirect whose final
+ * target is an HTML article of namespace ns, in path order. False on a damaged entry (arczim_error says why).
+ */
+static bool stream_redirects(arczim *z, char ns, uint32_t first, uint32_t end, stream_counts *c) {
+    for (uint32_t i = first; i < end; i++) {
+        arczim_entry e;
+        arczim_entry t;
+        if (!arczim_entry_get(z, i, &e)) {
+            return false;
+        }
+        if (e.kind == ARCZIM_ENTRY_CONTENT) {
+            c->content++;
+        } else if (e.kind == ARCZIM_ENTRY_OBSOLETE) {
+            c->obsolete++;
+        } else if (c->redirects++, !arczim_resolve(z, i, &t)) {
+            return false;
+        } else if (t.ns == ns && arczim_mime_is_html(arczim_mime(z, t.mime))) {
+            fputs("redirect\t", stdout);
+            put_escaped(e.path, e.path_length);
+            putchar('\t');
+            put_escaped(t.path, t.path_length);
+            putchar('\n');
+            c->redirects_out++;
+        }
+    }
+    return true;
+}
+
+/* put_article: one framed `article` record; false if stdout fails. */
+static bool put_article(const arczim_entry *e, const char *mime, const char *data, uint64_t size) {
+    fputs("article\t", stdout);
+    put_escaped(e->path, e->path_length);
+    putchar('\t');
+    put_escaped(e->title, e->title_length);
+    putchar('\t');
+    put_escaped(mime, strlen(mime));
+    printf("\t%llu\n", (unsigned long long)size);
+    return fwrite(data, 1, (size_t)size, stdout) == size && putchar('\n') != EOF;
+}
+
+/*
+ * zimcat_stream: the article namespace for the content pipeline (docs/formats/article-stream.md, "zimcat
+ * stream"): metadata, redirects in path order, then every HTML article as a framed record in cluster order
+ * (each cluster decompressed once), then counts of everything else.
+ */
+static int zimcat_stream(arczim *z) {
+    const arczim_header *h = arczim_get_header(z);
+    printf("zim\t");
+    for (int i = 0; i < 16; i++) {
+        printf("%02x", h->uuid[i]);
+    }
+    printf("\t%u.%u\t%u\t%u\n", h->major, h->minor, h->entry_count, h->cluster_count);
+    if (print_metadata(z, UINT64_MAX) != 0) {
+        return 1;
+    }
+    if (!arczim_set_cache_slots(z, 1)) { /* cluster order: each cluster is needed once, so one slot is enough */
+        return zimcat_fail(z, "stream");
+    }
+    char ns;
+    uint32_t first, end;
+    if (!content_range(z, &ns, &first, &end)) {
+        return zimcat_fail(z, "stream");
+    }
+    stream_counts c = {0};
+    if (!stream_redirects(z, ns, first, end, &c)) {
+        return zimcat_fail(z, "stream");
+    }
+    uint64_t n_content = c.content;
+    /* 8 bytes per content entry: (cluster, entry number), sorted, so each cluster is read once. */
+    uint64_t *keys = malloc((n_content ? n_content : 1) * sizeof(*keys));
+    uint16_t mimes = arczim_mime_count(z);
+    uint64_t *other = calloc(2 * (size_t)mimes + 1, sizeof(*other)); /* entries, bytes per MIME type */
+    if (keys == NULL || other == NULL) {
+        free(keys);
+        free(other);
+        fputs("zimcat: out of memory\n", stderr);
+        return 1;
+    }
+    size_t n = 0;
+    for (uint32_t i = first; i < end && n < n_content; i++) {
+        arczim_entry e;
+        if (!arczim_entry_get(z, i, &e)) {
+            free(keys);
+            free(other);
+            return zimcat_fail(z, "stream");
+        }
+        if (e.kind == ARCZIM_ENTRY_CONTENT) {
+            keys[n++] = (uint64_t)e.cluster << 32 | i;
+        }
+    }
+    qsort(keys, n, sizeof(*keys), cmp_u64);
+    uint64_t articles = 0;
+    int rc = 0;
+    for (size_t k = 0; k < n && rc == 0; k++) {
+        arczim_entry e;
+        const char *data;
+        uint64_t size;
+        if (!arczim_entry_get(z, (uint32_t)keys[k], &e) || !arczim_content(z, &e, &data, &size)) {
+            rc = zimcat_fail(z, "stream");
+            break;
+        }
+        const char *mime = arczim_mime(z, e.mime);
+        if (!arczim_mime_is_html(mime)) {
+            other[2 * e.mime]++;
+            other[2 * e.mime + 1] += size;
+            continue;
+        }
+        rc = put_article(&e, mime, data, size) ? 0 : 1;
+        articles++;
+    }
+    for (uint16_t m = 0; m < mimes && rc == 0; m++) {
+        if (other[2 * m]) {
+            fputs("other\t", stdout);
+            put_escaped(arczim_mime(z, m), strlen(arczim_mime(z, m)));
+            printf("\t%llu\t%llu\n", (unsigned long long)other[2 * m], (unsigned long long)other[2 * m + 1]);
+        }
+    }
+    if (rc == 0) {
+        printf("count\tredirects\t%llu\t%llu\ncount\tobsolete\t%llu\nend\t%llu\n", (unsigned long long)c.redirects,
+               (unsigned long long)c.redirects_out, (unsigned long long)c.obsolete, (unsigned long long)articles);
+    }
+    free(keys);
+    free(other);
+    return rc;
+}
+
 int main(int argc, char **argv) {
     if (argc < 3) {
         zimcat_usage();
@@ -219,7 +387,7 @@ int main(int argc, char **argv) {
     bool usage_ok = (strcmp(cmd, "info") == 0 && argc == 3) ||
                     (strcmp(cmd, "ls") == 0 && (argc == 3 || (argc == 4 && strlen(argv[3]) == 1))) ||
                     (strcmp(cmd, "cat") == 0 && argc == 4 && argv[3][0] != '\0' && argv[3][1] == '/') ||
-                    (strcmp(cmd, "check") == 0 && argc == 3);
+                    (strcmp(cmd, "check") == 0 && argc == 3) || (strcmp(cmd, "stream") == 0 && argc == 3);
     if (!usage_ok) {
         zimcat_usage();
     }
@@ -236,8 +404,10 @@ int main(int argc, char **argv) {
         rc = zimcat_ls(z, argc == 4 ? argv[3] : NULL);
     } else if (strcmp(cmd, "cat") == 0) {
         rc = zimcat_cat(z, argv[3]);
-    } else {
+    } else if (strcmp(cmd, "check") == 0) {
         rc = zimcat_check(z);
+    } else {
+        rc = zimcat_stream(z);
     }
     arczim_close(z);
     if (fflush(stdout) != 0 || ferror(stdout)) {

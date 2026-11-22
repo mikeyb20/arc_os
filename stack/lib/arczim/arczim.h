@@ -123,6 +123,9 @@ bool arczim_set_cache_slots(arczim *z, unsigned slots);
 /* arczim_set_cluster_max: largest decompressed cluster accepted, in bytes (>= 64); drops the cache. */
 bool arczim_set_cluster_max(arczim *z, size_t bytes);
 
+/* arczim_mime_is_html: `mime` is text/html, with or without parameters ("text/html; charset=..."). */
+bool arczim_mime_is_html(const char *mime);
+
 /* arczim_get_header: the header as read. */
 const arczim_header *arczim_get_header(const arczim *z);
 
