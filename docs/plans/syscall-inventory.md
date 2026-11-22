@@ -141,6 +141,7 @@ generated table lists something (for example after a port bump), its row here ma
 
 | # | Syscall | Details | Owner | Why |
 |---|---|---|---|---|
+| 25 | mremap | `flags: MREMAP_MAYMOVE` | M1-07 | `packbuild` (M3-03): musl's `realloc` grows a large buffer (a stream line, a document's text) in place with `mremap(MREMAP_MAYMOVE)` |
 | 41 | socket | `family: AF_UNIX`, `type: SOCK_STREAM`, `type: SOCK_CLOEXEC` | M1-18 | `arc-llm` (M2-04) listens on `/var/run/arc-llm.sock`, ADR-0012 |
 | 42 | connect | | M1-18 | `arc-llm` probes a leftover socket file: refused means stale (unlink and bind), accepted means another `arc-llm` runs |
 | 45 | recvfrom | | M1-18 | `recv()` of HTTP requests in `arc-llm` (musl: `recvfrom` with NULL address) |
