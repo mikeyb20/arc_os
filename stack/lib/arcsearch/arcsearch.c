@@ -15,7 +15,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <wctype.h>
 
 #include "arcjson.h"
 #include "arcsearch.h"
@@ -271,14 +270,6 @@ const char *arcsearch_warning(const arcsearch *s, size_t i) {
 
 /* ---- Queries ------------------------------------------------------------------------------------ */
 
-/* word_char: a Unicode letter or digit, or a combining accent (U+0300-U+036F) that belongs to the letter before it. */
-static bool word_char(uint32_t cp) {
-    if (cp < 0x80) {
-        return (cp >= 'a' && cp <= 'z') || (cp >= 'A' && cp <= 'Z') || (cp >= '0' && cp <= '9');
-    }
-    return iswalnum((wint_t)cp) || (cp >= 0x300 && cp <= 0x36F);
-}
-
 static bool is_stopword(const char *w, size_t len) {
     for (size_t i = 0; i < sizeof(STOPWORDS) / sizeof(STOPWORDS[0]); i++) {
         if (strlen(STOPWORDS[i]) == len && memcmp(STOPWORDS[i], w, len) == 0) {
@@ -294,17 +285,9 @@ size_t arcsearch_match_expr(const char *query, char *buf, size_t cap) {
     if (cap == 0) {
         return 0;
     }
-    for (size_t i = 0; i < qlen;) {
-        uint32_t cp;
-        size_t len = arcjson_utf8_decode(query + i, qlen - i, &cp);
-        if (len == 0 || !word_char(cp)) { /* separators, and bytes that are not UTF-8 */
-            i += len ? len : 1;
-            continue;
-        }
-        size_t start = i;
-        while (i < qlen && (len = arcjson_utf8_decode(query + i, qlen - i, &cp)) != 0 && word_char(cp)) {
-            i += len;
-        }
+    size_t i = 0;
+    size_t start;
+    while (arcpack_next_word(query, qlen, &i, &start)) { /* the pack's word rule (arcpack.h) */
         size_t wlen = i - start;
         size_t need = (n ? 4 : 0) + wlen + 2; /* " OR " + quoted word */
         if (n + need + 1 > cap) {

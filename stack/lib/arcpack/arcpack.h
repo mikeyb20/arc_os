@@ -156,6 +156,24 @@ bool arcpack_chunk_parse(arcpack *p, const char *id, size_t len, uint32_t *index
  */
 size_t arcpack_plain(char *dst, const char *src, size_t len);
 
+/* ---- Words ---------------------------------------------------------------------------------- */
+
+/*
+ * Words are runs of Unicode letters and digits (pack-v1.md, "Words"): the manifest's "words" tokenizer,
+ * which the pack pipeline's chunker counts (M3-03) and the keyword search splits a query by (M3-06a).
+ * One definition, here, so the two never drift apart (ADR-0020).
+ */
+
+/* arcpack_word_char: cp is a Unicode letter or digit, or a combining accent (U+0300-U+036F) that belongs to the letter before it. */
+bool arcpack_word_char(uint32_t cp);
+
+/*
+ * arcpack_next_word: the next word in s[*pos..len): true with the word at s[*start..*pos) (*pos moves
+ * past it); false with *pos = len when no word is left. Bytes that are not UTF-8 separate words.
+ * O(bytes scanned).
+ */
+bool arcpack_next_word(const char *s, size_t len, size_t *pos, size_t *start);
+
 /* ---- Writer --------------------------------------------------------------------------------- */
 
 typedef struct arcpack_writer arcpack_writer;
