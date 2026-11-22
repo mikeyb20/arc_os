@@ -12,3 +12,7 @@ target_link_libraries(arczim_test PRIVATE arczim zim_fixture)
 lane_test(NAME arczim COMMAND $<TARGET_FILE:arczim_test>)
 lane_driver_test(NAME zimcat COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/zimcat_lane.py"
     --zimcat $<TARGET_FILE:zimcat> --fixture $<TARGET_FILE:zim_fixture_tool> --lane-rss $<TARGET_FILE:lane_rss>)
+# M3-03: a fixture ZIM through zimcat stream, tools/content/zim_extract.py and packbuild.
+lane_driver_test(NAME zim_extract COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/zim_extract_lane.py"
+    --zimcat $<TARGET_FILE:zimcat> --fixture $<TARGET_FILE:zim_fixture_tool> --packbuild $<TARGET_FILE:packbuild>
+    --extract "${ARC_ROOT}/tools/content/zim_extract.py")
