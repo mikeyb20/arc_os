@@ -59,6 +59,9 @@ sources.json (M3-01)
   tokens, inside ADR-0011's 300–500 and under the 512-token limit common to small embedders. If M2-06 picks an
   embedder with a smaller limit, M3-00 says whether M3-04b rechunks (a new major version, new chunk IDs) or lets
   the embedder truncate.
+- **A heading always starts a chunk** (M3-03), so chunks are often shorter than the target (median 102 words on
+  WikiMed, 64 on NHS Medicines). Michael kept this on 2026-11-22: precise hits for search, and the assistant (M3-09)
+  pulls in neighbouring chunks of the same document when it needs more context.
 
 ## Where things live
 

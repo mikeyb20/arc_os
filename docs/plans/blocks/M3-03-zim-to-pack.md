@@ -129,9 +129,10 @@ plus the sort index (key and offset per article); the temporary file is about th
   would compress better (not measured here); that is a pack-v2 question, not this block's.
 - **Short chunks on NHS** (median 64 words): its pages are many short `<h2>`/`<h3>` sections, and only sections
   under 20 words join the next. Good for precise hits (search lands on "Pregnancy and paracetamol"), thin as LLM
-  context; the assistant (M3-09) can take neighbouring chunks. Raising `MIN_SECTION` would change chunk IDs, so
-  decide before the first release pack.
-- **Licences** (Michael's check; `sources.json` `license_basis` updated): neither ZIM has `License` metadata.
+  context. **DECISION (Michael, 2026-11-22): keep the chunking as built** (a heading always starts a chunk); the
+  assistant (M3-09) pulls in neighbouring chunks of the same document when it needs more context.
+- **Licences: CONFIRMED by Michael (2026-11-22)**: wikimed-en `CC-BY-SA-4.0`, nhs-medicines-en `OGL-UK-3.0`
+  (`sources.json` and `licences.json` updated). Evidence: neither ZIM has `License` metadata.
   WikiMed pages' footer: "Creative Commons Attribution-Share Alike 4.0 unless otherwise noted". NHS pages' schema.org
   data: copyright holder "Crown Copyright", licence `https://developer.api.nhs.uk/terms`; M3-01 recorded OGL v3.0
   from the NHS website terms. `sha256` filled in `sources.json` for both.
@@ -161,5 +162,4 @@ plus the sort index (key and offset per article); the temporary file is about th
     arcpack writer refused ("range outside the text"). Now the window before a long construct ends at its start
     and the construct is one chunk of its own (pack-v1.md "Words"); lane test `test_long_construct`. The two test
     packs rebuilt with the fix are byte-identical to before (they had no such line).
-- **Next**: M3-04 (FTS index, manifest from `sources.json`, `.arcpkg`, tier sizing) reads `packbuild`'s output;
-  Michael's licence check for WikiMed (CC BY-SA 4.0 evidence) before a release pack.
+- **Next**: M3-04 (FTS index, manifest from `sources.json`, `.arcpkg`, tier sizing) reads `packbuild`'s output.
