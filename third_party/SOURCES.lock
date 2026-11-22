@@ -392,8 +392,8 @@
           "sha256": "a33a72285f6c49079766e8dac09af63032c1fa10079fcf91f499603c6a2af85c"
         }
       ],
-      "sha256": "",
-      "archive_url": ""
+      "sha256": "2fb95147642e18230c6b757b17f17e69ca5a5f4419c233915f4397eb7ccca9f1",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261122/zim-spec-2026-09-12.tar.gz"
     },
     {
       "name": "tiny-chat-model",
