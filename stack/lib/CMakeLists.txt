@@ -19,3 +19,9 @@ target_link_libraries(arcpack PUBLIC arcjson PRIVATE arcutil port::zstd)
 add_library(arcsearch STATIC arcsearch/arcsearch.c arcsearch/arcsearch_build.c)
 target_include_directories(arcsearch PUBLIC arcsearch)
 target_link_libraries(arcsearch PUBLIC arcpack PRIVATE arcutil arcjson port::sqlite3)
+
+# arczim (M3-03a, ADR-0022): our own ZIM reader. Build host only: never linked into anything that runs
+# on arc_os (ADR-0011); zimcat and the tests are its only users.
+add_library(arczim STATIC arczim/arczim.c)
+target_include_directories(arczim PUBLIC arczim)
+target_link_libraries(arczim PRIVATE port::zstd)

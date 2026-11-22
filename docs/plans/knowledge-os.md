@@ -225,7 +225,7 @@ starts with a planning block that writes its specs.
 - [ ] **Done when:** `ask "what is hypothermia"` answers in QEMU (4 CPUs, 4 GB); tokens/sec and a RAM budget (OS, chat model, embedder, page cache) recorded for the low tier
 
 ### M3 — Knowledge layer
-- [ ] Host pipeline: source ZIM → extract → chunk → FTS5 index → embeddings → manifest → `.arcpkg`
+- [ ] Host pipeline: source ZIM → read with our own reader (ADR-0022) → extract → chunk → FTS5 index → embeddings → manifest → `.arcpkg`
 - [ ] Tier selector: packs in priority order to fit 32 GB or 1 TB, using measured index and vector sizes
 - [ ] Document store (zstd) so citations open the full source article; images kept for medical/repair
 - [ ] UTF-8 console with a PSF2 font covering Latin + common symbols (°, µ, ±)
@@ -281,6 +281,10 @@ Static Linux programs may run thanks to the ABI, but that is not a goal.
 
 ## 11. Review history
 
+- **2026-11-22 — Own ZIM reader** (Michael: "write our own reader" instead of python-libzim; ADR-0022). The
+  build host reads ZIMs with our C library `arczim` and the `zimcat` tool (new block M3-03a), on the archived zstd;
+  xz clusters are refused, and no ZIM on the content list uses them. One less outside component; nothing on
+  arc_os reads ZIMs (ADR-0011 unchanged).
 - **2026-11-12 — Parallel lanes** (Michael approved; ADR-0021, [`parallel-lanes.md`](parallel-lanes.md)). Process
   only, no locked technical decision changed:
   - Two kernel lanes from the merge of M1-05, split by lock level.

@@ -358,6 +358,44 @@
       "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261108/ext2-doc-2019.html"
     },
     {
+      "name": "zim-spec",
+      "version": "2026-09-12",
+      "kind": "reference",
+      "license": "CC-BY-SA-3.0",
+      "ships": "build-host",
+      "purpose": "openZIM's ZIM format spec, five wiki pages as wikitext at fixed revisions, that arczim implements (M3-03a, ADR-0022)",
+      "upstream_url": "https://wiki.openzim.org/wiki/ZIM_file_format",
+      "files": [
+        {
+          "path": "ZIM_file_format.wiki",
+          "url": "https://wiki.openzim.org/w/index.php?title=ZIM_file_format&oldid=31500&action=raw",
+          "sha256": "1dc1556d9becc5786cb4b7e81ac2f8553f79a830c117537b5e028e4981260af9"
+        },
+        {
+          "path": "Metadata.wiki",
+          "url": "https://wiki.openzim.org/w/index.php?title=Metadata&oldid=31440&action=raw",
+          "sha256": "353a9265c71b9b69389a05678762be2db49d8e2b1c1b9bf140cdee9a77fb1176"
+        },
+        {
+          "path": "Search_indexes.wiki",
+          "url": "https://wiki.openzim.org/w/index.php?title=Search_indexes&oldid=31305&action=raw",
+          "sha256": "f21714cd86e2f816d207b25ca09fa0c8fe31697a55dad67a4b0ed08d42b4db22"
+        },
+        {
+          "path": "Well_known_entries.wiki",
+          "url": "https://wiki.openzim.org/w/index.php?title=Well_known_entries&oldid=31200&action=raw",
+          "sha256": "dca5d84e9e180b1b99ebc9c759a46561fe7c3d5ee12923d373106b345c0081bb"
+        },
+        {
+          "path": "Article_Format.wiki",
+          "url": "https://wiki.openzim.org/w/index.php?title=Article_Format&oldid=31494&action=raw",
+          "sha256": "a33a72285f6c49079766e8dac09af63032c1fa10079fcf91f499603c6a2af85c"
+        }
+      ],
+      "sha256": "2fb95147642e18230c6b757b17f17e69ca5a5f4419c233915f4397eb7ccca9f1",
+      "archive_url": "https://github.com/mikeyb20/arc_os/releases/download/archive-20261122/zim-spec-2026-09-12.tar.gz"
+    },
+    {
       "name": "tiny-chat-model",
       "version": "smollm2-135m-instruct-q8_0",
       "kind": "test-model",

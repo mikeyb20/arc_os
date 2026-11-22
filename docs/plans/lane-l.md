@@ -33,7 +33,9 @@ stack/                    CMake project for in-house musl programs and libraries
   lib/arcpack/            pack reader and writer (format: docs/formats/pack-v1.md)                     (M3-02)
   lib/arcsearch/          keyword retriever and the FTS index schema                                   (M3-06a)
   lib/arcutil/            SHA-256, durable file writes, directory helpers                              (M5-02)
+  lib/arczim/             ZIM reader, build host only (format: docs/formats/zim.md, ADR-0022)        (M3-03a)
   arc-llm/  search/  arcpkg/                                                                           (M2-04, M3-06a, M5-02)
+  zimcat/                 look inside a ZIM; build host only                                          (M3-03a)
   tests/                  lane tests and fixtures
 tools/lane/build.sh       fetch archived sources, build ports, configure and build stack/ into build-lane/ (M2-01)
 tools/lane/port-env.sh    compiler, flags and helpers every ports/<name>/build.sh sources                (M2-02)
