@@ -16,6 +16,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <wctype.h>
 #include <zstd.h>
 
 #include "arcjson.h"
@@ -482,4 +483,36 @@ size_t arcpack_plain(char *dst, const char *src, size_t len) {
         }
     }
     return o;
+}
+
+/* ---- Words -------------------------------------------------------------------------------------- */
+
+bool arcpack_word_char(uint32_t cp) {
+    if (cp < 0x80) {
+        return (cp >= 'a' && cp <= 'z') || (cp >= 'A' && cp <= 'Z') || (cp >= '0' && cp <= '9');
+    }
+    return iswalnum((wint_t)cp) || (cp >= 0x300 && cp <= 0x36F);
+}
+
+bool arcpack_next_word(const char *s, size_t len, size_t *pos, size_t *start) {
+    size_t i = *pos;
+    uint32_t cp;
+    while (i < len) {
+        size_t n = arcjson_utf8_decode(s + i, len - i, &cp);
+        if (n != 0 && arcpack_word_char(cp)) {
+            break;
+        }
+        i += n ? n : 1; /* separators, and bytes that are not UTF-8 */
+    }
+    if (i >= len) {
+        *pos = len;
+        return false;
+    }
+    *start = i;
+    size_t n;
+    while (i < len && (n = arcjson_utf8_decode(s + i, len - i, &cp)) != 0 && arcpack_word_char(cp)) {
+        i += n;
+    }
+    *pos = i;
+    return true;
 }

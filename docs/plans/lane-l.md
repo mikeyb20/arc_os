@@ -36,6 +36,7 @@ stack/                    CMake project for in-house musl programs and libraries
   lib/arczim/             ZIM reader, build host only (format: docs/formats/zim.md, ADR-0022)        (M3-03a)
   arc-llm/  search/  arcpkg/                                                                           (M2-04, M3-06a, M5-02)
   zimcat/                 look inside a ZIM; build host only                                          (M3-03a)
+  packbuild/              article stream to pack content and chunks                                   (M3-03)
   tests/                  lane tests and fixtures
 tools/lane/build.sh       fetch archived sources, build ports, configure and build stack/ into build-lane/ (M2-01)
 tools/lane/port-env.sh    compiler, flags and helpers every ports/<name>/build.sh sources                (M2-02)

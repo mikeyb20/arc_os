@@ -265,6 +265,9 @@ if(Python3_Interpreter_FOUND)
     # M3-01: content-lane scripts (tools/content/catalog.py, budget.py), no network
     add_test(NAME tools_content
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/tools/test_content_tools.py)
+    # M3-03: tools/content/zim_extract.py (HTML conversion, stream parsing, key order) with a zimcat stand-in
+    add_test(NAME tools_zim_extract
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/tools/test_zim_extract.py)
     # M0-09: tools/hygiene.py on a fixture tree, and hygiene limits as exact ratchets
     add_test(NAME tools_hygiene
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/tools/test_hygiene.py)

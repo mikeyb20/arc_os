@@ -169,7 +169,7 @@ assistant and viewers lay out from the framebuffer size, never a fixed one.
 | M3-01 | Content selection, licences, size budget | M | R | C | M3-00a, M0-07 | Source list per category and tier approved by Michael | done |
 | M3-02 | `libarcpack`: doc store, chunks, manifests | M | D | L | M2-00a, M2-02, M2-04, M0-07 | One library reads packs on Linux inside the syscall inventory (on arc_os from M3-07) | done |
 | M3-03a | Own ZIM reader (host) | M | R | C | M2-02, M3-01 | `arczim` + `zimcat` read and check the sample medical ZIMs; lane tests on good and damaged fixture ZIMs (ADR-0022) | review (#51) |
-| M3-03 | ZIM → doc store + chunks (host) | L | R | C | M3-01, M3-02, M3-03a | Medical pack built twice with identical chunk IDs | todo |
+| M3-03 | ZIM → doc store + chunks (host) | L | R | C | M3-01, M3-02, M3-03a | Medical pack built twice with identical chunk IDs | review (#52) |
 | M3-04 | FTS5, tier selector, `.arcpkg` (host) | M | R | C | M3-03, M5-02 | 32 GB keyword-only pack set built and sized; `tiers.json` for each storage tier | todo |
 | M3-04b | Pack vectors (host) | M | R | C | M3-00, M3-04 | Each 32 GB pack gets `vectors/<embedder>/` from M2-06's embedder as a new minor version with unchanged chunk IDs; tier sizes re-measured | todo |
 | M3-05 | UTF-8 console, PSF2, `/dev/input`, `/dev/fb0` | M | D | KB | M4-00 | fbdev `mmap` and `input_event` work from user space | todo |
