@@ -143,6 +143,28 @@ Move the person somewhere warm.
 level are removed (the heading text stays), a link becomes its text, an image line becomes its caption. Every
 other byte is kept, so plain text is never longer than the marked-up text.
 
+## Words
+
+A **word** is a run of Unicode letters and digits (musl's `iswalnum`, whose Unicode tables apply in every locale, plus
+the combining accents U+0300–U+036F, which belong to the letter before them); every other character, and any byte that isn't UTF-8,
+separates words. "x-ray" is two words, "35 °C" two, "café" one. This is the manifest's `"words"` tokenizer: the
+chunker counts chunk sizes in it (`chunking.target_tokens`, `max_tokens`, `overlap_tokens`) and keyword search
+splits a query by it. One definition, `arcpack_next_word()` in libarcpack, so the two never drift apart.
+
+**Chunking** (`stack/packbuild/`, M3-03), counted in words of the plain text:
+
+- A heading line starts a new chunk, and the chunk's section path is the heading stack at that point. Sections
+  shorter than `MIN_SECTION` (20) words join the next ones until the run has 20 words; the joined chunk keeps
+  the first section's path.
+- A section longer than `max_tokens` (360) is cut into windows of about `target_tokens` (280) words. A cut goes, in
+  order of preference: at the last line end between ¾ of the target and the target; else at the sentence end
+  (`.`, `!` or `?`, closing quotes or brackets, then a space or the line end) nearest the target, up to the
+  maximum; else right after the target word. Never inside a link, a heading line or an image line.
+- A link, heading or image line longer than `max_tokens` is never cut: it becomes a chunk of its own (WikiMed has
+  figure captions of several hundred words), and the window before it ends where it starts.
+- The next window starts `overlap_tokens` (40) words before the cut, but never before its section's start; the
+  overlap moves to the start of a link or image line it would split, so an overlap can be a few words longer.
+
 ## Manifest
 
 `manifest.json` follows `schemas/pack.schema.json`. A reader also checks that its `name` and `version` equal every

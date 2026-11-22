@@ -72,9 +72,9 @@ halves of the boundary (content-lane.md).
    run on the WikiMed mini sample (M3-03a Notes) is the test pack Michael asked for (2026-11-22).
 
 **Done when.**
-- [ ] Lane tests and the syscall check pass in `lane.yml`; the extractor's host test passes.
-- [ ] The medical pack is built twice with identical files, and `arcpack_open` reads it.
-- [ ] `docs/formats/article-stream.md` exists and `stack/README.md` lists `packbuild`.
+- [x] Lane tests and the syscall check pass in `lane.yml`; the extractor's host test passes.
+- [x] The medical pack is built twice with identical files, and `arcpack_open` reads it.
+- [x] `docs/formats/article-stream.md` exists and `stack/README.md` lists `packbuild`.
 
 **Cost.** `packbuild`: memory = the sorted key array (about 40 bytes per document) + one document's text and its
 chunk list + the writer's buffers; link lookup O(log documents); time linear in the text. `zimcat stream`: 8 bytes
@@ -93,4 +93,73 @@ plus the sort index (key and offset per article); the temporary file is about th
 - No FTS index, manifest or package yet: M3-04 adds them.
 
 **Notes.**
--
+- **Built (2026-11-22).** `zimcat stream` (`stack/zimcat/main.c`), `tools/content/zim_extract.py`, `stack/packbuild/`
+  (`packbuild_core` library + CLI), `docs/formats/article-stream.md`. Word splitter promoted from arcsearch to
+  libarcpack (`arcpack_word_char`, `arcpack_next_word`; pack-v1.md "Words", which now also states the chunking
+  rules); arcsearch uses it, so chunk sizes and query words can't drift apart. `arczim_mime_is_html` made public.
+- **Choices beyond the spec text** (small, inside the block's scope):
+  - The extractor **resolves redirects**: a link to a redirect names its final target (from `zimcat stream`'s
+    `redirect` lines), so 267,399 WikiMed redirects cost no documents and their links still resolve.
+  - Reference lists, navboxes, edit links and the ZIM footer are dropped; inside `<main>` only, when a page has one.
+    The first `<h1>` (the page title) is dropped. Formula images become their `alt` TeX inline.
+  - The extractor's **host test** runs on a stand-in for zimcat (a prepared stream), because the host CI job has no
+    lane binaries (`zim_fixture` and `zimcat` need the archived zstd port). The spec's fixture test (headings,
+    links, a redirect, a table, a figure, a script, three clusters out of path order) is the lane test
+    `lane.zim_extract`, which runs the real `zimcat` and then `packbuild`.
+  - Document ID = line number − 2 counting lines from 1 (line 1 is the header); the spec's "− 1" counted from the
+    first document line.
+  - `packbuild` uses musl's `realloc` → `mremap` (row added to `syscall-inventory.md`, provided by M1-07).
+- **Test packs** (Michael asked, 2026-11-22), private, in `/mnt/project-files/arc_os/content/sample/test-packs/`
+  with a demo manifest and FTS index from the lane helpers (M3-04 owns the real ones) so `search --root` works:
+
+  | | WikiMed mini 2026-10 | NHS Medicines 2026-09b |
+  |---|---|---|
+  | articles / redirects | 72,901 / 267,399 | 1,347 / 10 |
+  | articles without text | 29 (empty intros in the mini edition) | 0 |
+  | extract time / build time | 2 min 30 s / 15 s | 4.5 s / 1 s |
+  | chunks | 79,920 | 7,967 |
+  | words per chunk min / median / max | 4 / 136 / 360 | 3 / 64 / 360 |
+  | links resolved / kept as text | 694,464 / 20,404 | 3,786 / 0 |
+  | docs.zst / docs.idx / strings / chunks.idx (bytes) | 46,568,208 / 2,336,928 / 1,491,346 / 2,561,536 | 1,699,576 / 47,200 / 305,941 / 259,040 |
+  | packbuild peak RSS | 13 MiB | 13 MiB |
+
+  Both built twice: byte-identical. `arcpack_test scan` reads every document and chunk of both.
+- **Compression**: 81.4 MB of WikiMed mini text → 46.6 MB `docs.zst` (1.75×), because each document is its own
+  level-19 frame with no dictionary (pack-v1, Michael's 2026-11-10 decision). A shared dictionary or grouped frames
+  would compress better (not measured here); that is a pack-v2 question, not this block's.
+- **Short chunks on NHS** (median 64 words): its pages are many short `<h2>`/`<h3>` sections, and only sections
+  under 20 words join the next. Good for precise hits (search lands on "Pregnancy and paracetamol"), thin as LLM
+  context; the assistant (M3-09) can take neighbouring chunks. Raising `MIN_SECTION` would change chunk IDs, so
+  decide before the first release pack.
+- **Licences** (Michael's check; `sources.json` `license_basis` updated): neither ZIM has `License` metadata.
+  WikiMed pages' footer: "Creative Commons Attribution-Share Alike 4.0 unless otherwise noted". NHS pages' schema.org
+  data: copyright holder "Crown Copyright", licence `https://developer.api.nhs.uk/terms`; M3-01 recorded OGL v3.0
+  from the NHS website terms. `sha256` filled in `sources.json` for both.
+- **Medical pack** (wikimed-en, `wikipedia_en_medicine_maxi_2026-10.zim`, 1,864,210,320 bytes, SHA-256 checked
+  against Kiwix's `.sha256`; built in the cloud session, Michael's choice for long runs):
+  - `zimcat check` ok: 476,218 entries (208,818 content, 267,400 redirects), 3,815 clusters (3,415 zstd, 400
+    uncompressed, no xz), 6.69 GB of HTML; the largest cluster decompresses to 174 MB (so `zimcat stream` now
+    keeps one cache slot: in cluster order a cluster is never needed twice).
+  - Extract: 104,217 articles (25 without text), 2,077,156 links, 128,175 image lines, 100,773 icons dropped, 61
+    images outside the ZIM; 15 min (Python's HTML parser is the bottleneck: `zimcat stream` alone takes 5 s).
+    Stream 551 MB.
+  - **Images** (the M3-08 question): 98,655 WebP (808 MB), 5,856 SVG (36.6 MB, mostly formula and icon images
+    the extractor doesn't use as image lines), 4 PNG. So yes, WebP.
+  - packbuild: 104,217 documents, 573,920 chunks, words per chunk 1 / 102 / 625 (min / median / max; one chunk
+    over 360 is a single 625-word figure caption, below), 2,077,156 links resolved, 0 kept as text; 2 min, peak RSS
+    16 MiB. Built twice: byte-identical. `arcpack_test scan` reads all of it back.
+  - Bytes: `docs.zst` 195,907,684, `docs.idx` 3,339,040, `strings` 11,280,275, `chunks.idx` 18,369,536 (228.9 MB in
+    all) for 479.7 MB of text, 2.45× (14× smaller than the HTML). The demo FTS index adds 298,676,224 bytes, more than the
+    content. Against `tools/content/budget.py` (keyword-only terms): text 1,047,708,672 estimated (the nopic ZIM) vs
+    228,896,535 real; FTS 523,854,336 (0.5 × nopic) vs 298,676,224; chunks 561,273 vs 573,920. The estimate errs
+    about 3× large in total, so the 32 GB tier may hold more than M3-01 planned; M3-04 measures every pack and
+    should feed real ratios back into `budget.py`.
+  - Median 102 words per chunk: Wikipedia sections are short and a heading always starts a chunk. Fine for
+    precise hits ("Snakebite > Treatment > First aid" ranks first); thin for LLM context (see NHS above).
+  - **Bug found and fixed** by this build: an image line longer than 360 words (`Αr15_RNA`, a 625-word figure
+    caption) made the window before it end inside the previous chunk and left an empty chunk after it, which the
+    arcpack writer refused ("range outside the text"). Now the window before a long construct ends at its start
+    and the construct is one chunk of its own (pack-v1.md "Words"); lane test `test_long_construct`. The two test
+    packs rebuilt with the fix are byte-identical to before (they had no such line).
+- **Next**: M3-04 (FTS index, manifest from `sources.json`, `.arcpkg`, tier sizing) reads `packbuild`'s output;
+  Michael's licence check for WikiMed (CC BY-SA 4.0 evidence) before a release pack.
